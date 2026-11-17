@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Listener};
 
 pub const JOB_TYPE: &str = "licenses:sync";
+/// An asset whose read had started when the App stopped.
+const INTERRUPTED: &str = "LICENSE_READ_INTERRUPTED";
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS results(product_id TEXT PRIMARY KEY,state TEXT NOT NULL,kind TEXT,version TEXT,source TEXT,answers TEXT,code TEXT,checked_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS edits(product_id TEXT PRIMARY KEY,cells TEXT NOT NULL,edited_at TEXT NOT NULL);
 PRAGMA user_version=1;";
@@ -149,6 +151,17 @@ fn targets(catalogue: &Catalogue) -> Result<Vec<Target>> {
         "free" => 2,
         _ => 3,
     };
+    // A holder signed in on this device can download the 0-yen file; prefer one.
+    let mut signed_in: HashMap<String, bool> = HashMap::new();
+    let mut usable = |account: &str| {
+        *signed_in.entry(account.to_owned()).or_insert_with(|| {
+            catalogue
+                .get("account", account)
+                .ok()
+                .flatten()
+                .is_some_and(|record| record["disconnected"] != true && crate::stores::has_local_session(catalogue, &record))
+        })
+    };
     Ok(catalogue
         .license_sources()?
         .into_iter()
@@ -162,12 +175,21 @@ fn targets(catalogue: &Catalogue) -> Result<Vec<Target>> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|row| rank(row["source"].as_str().unwrap_or_default()) < 3)
-                .min_by_key(|row| rank(row["source"].as_str().unwrap_or_default()))
-                .and_then(|row| row["accountId"].as_str().map(str::to_owned));
+                .filter_map(|row| Some((row["accountId"].as_str()?, rank(row["source"].as_str().unwrap_or_default()))))
+                .filter(|(_, rank)| *rank < 3)
+                .min_by_key(|(account, rank)| (!usable(account), *rank))
+                .map(|(account, _)| account.to_owned());
             Some(Target { product, item, account })
         })
         .collect())
+}
+
+/// A job's failure code; one that is not a known code is the license sync's own.
+fn job_error(error: &anyhow::Error) -> String {
+    match crate::booth::error_code(error) {
+        code if code == "BOOTH_OPERATION_FAILED" => "LICENSE_SYNC_FAILED".into(),
+        code => code,
+    }
 }
 
 #[derive(Clone)]
@@ -369,25 +391,20 @@ impl LicenseService {
         }
     }
 
-    /// Resumes a job the last run left open, and after every BOOTH sync checks the products
+    /// Resumes a job the last run left open, and once store syncs settle checks the products
     /// no license read has seen yet.
     pub async fn start(&self, app: &AppHandle) -> Result<()> {
-        for mut job in self.inner.catalogue.list("job")? {
-            if job["type"] != JOB_TYPE || !matches!(job["state"].as_str(), Some("queued" | "running")) {
-                continue;
+        self.follow_syncs(app);
+        for job in self.inner.catalogue.list("job")? {
+            if job["type"] == JOB_TYPE && matches!(job["state"].as_str(), Some("queued" | "running")) {
+                // A job that cannot resume is left for the next start; reads still follow syncs.
+                let _ = self.resume(app, job);
             }
-            if self.enabled() && self.running_job().is_none() {
-                let done: BTreeSet<&str> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                let left: BTreeSet<&str> = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| !done.contains(id)).collect();
-                let work: Vec<Target> = targets(&self.inner.catalogue)?.into_iter().filter(|t| left.contains(t.product.as_str())).collect();
-                if self.run(app, job.clone(), work).is_ok() {
-                    continue;
-                }
-            }
-            job["state"] = json!("cancelled");
-            job["errorCode"] = json!("licenses_interrupted");
-            self.save_job(app, &job)?;
         }
+        Ok(())
+    }
+
+    fn follow_syncs(&self, app: &AppHandle) {
         let service = self.clone();
         let handle = app.clone();
         app.listen("nna:changed", move |event| {
@@ -403,15 +420,40 @@ impl LicenseService {
                 let _ = service.automatic(&handle).await;
             });
         });
-        Ok(())
+    }
+
+    fn resume(&self, app: &AppHandle, mut job: Value) -> Result<()> {
+        if self.enabled() && self.running_job().is_none() {
+            let mut done: BTreeSet<String> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            // The asset being read when the App stopped, perhaps because its file crashed the
+            // reader, is not read again automatically; Retry or Sync licenses reads it.
+            if let Some(current) = job["current"].as_str().filter(|id| !done.contains(*id)).map(str::to_owned) {
+                self.record(&current, fetch::Outcome::Failed(INTERRUPTED.into()))?;
+                job["failures"][&current] = json!({"productId": current, "errorCode": INTERRUPTED});
+                if let Some(completed) = job["completedProductIds"].as_array_mut() {
+                    completed.push(json!(current));
+                }
+                done.insert(current);
+            }
+            let left: BTreeSet<&str> = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| !done.contains(*id)).collect();
+            let work: Vec<Target> = targets(&self.inner.catalogue)?.into_iter().filter(|t| left.contains(t.product.as_str())).collect();
+            if self.run(app, job.clone(), work).is_ok() {
+                return Ok(());
+            }
+        }
+        job["state"] = json!("cancelled");
+        job["errorCode"] = json!("licenses_interrupted");
+        self.save_job(app, &job)
     }
 
     async fn automatic(&self, app: &AppHandle) -> Result<()> {
         if !self.enabled() || self.running_job().is_some() {
             return Ok(());
         }
+        // Every store's sync emits this scope; read once none of them is still working.
         let store_busy = self.inner.catalogue.list("job")?.iter().any(|job| {
-            job["type"].as_str().is_some_and(|t| t.starts_with("booth")) && matches!(job["state"].as_str(), Some("queued" | "running"))
+            job["type"].as_str().is_some_and(|t| ["booth", "gumroad", "jinxxy"].iter().any(|store| t.starts_with(store)))
+                && matches!(job["state"].as_str(), Some("queued" | "running"))
         });
         if !store_busy {
             self.sync(app, Selection::New).await?;
@@ -475,12 +517,20 @@ impl LicenseService {
             *running = Some((job_id.clone(), cancel.clone()));
         }
         job["state"] = json!("running");
-        self.save_job(app, &job)?;
+        if let Err(error) = self.save_job(app, &job) {
+            if let Ok(mut running) = self.inner.running.lock() {
+                *running = None;
+            }
+            return Err(error);
+        }
         let service = self.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
             let outcome = service.work(&app, &mut job, work, &cancel).await;
+            if let Some(job) = job.as_object_mut() {
+                job.remove("current");
+            }
             job["state"] = json!(match &outcome {
                 Err(_) => "failed",
                 Ok(()) if cancel.load(Ordering::Acquire) => "cancelled",
@@ -488,7 +538,7 @@ impl LicenseService {
                 Ok(()) => "completed",
             });
             if let Err(error) = &outcome {
-                job["errorCode"] = json!(crate::booth::error_code(error));
+                job["errorCode"] = json!(job_error(error));
             }
             job["completedAt"] = json!(now());
             let _ = service.save_job(&app, &job);
@@ -509,6 +559,17 @@ impl LicenseService {
             if cancel.load(Ordering::Acquire) {
                 break;
             }
+            // Say which asset is being read before reading it, so a file that brings the App
+            // down is not read again at the next start or by the next automatic read.
+            job["current"] = json!(target.product);
+            self.inner.catalogue.put("job", job["id"].as_str().unwrap_or_default(), job.clone())?;
+            self.with_db(true, |conn| {
+                conn.execute(
+                    "INSERT INTO results(product_id,state,code,checked_at) VALUES(?1,'failed',?2,?3) ON CONFLICT(product_id) DO NOTHING",
+                    params![target.product, INTERRUPTED, now()],
+                )?;
+                Ok(())
+            })?;
             let holder = target.account.as_deref().map(|account| Holder { booth: &self.inner.booth, app, account });
             let outcome = reader.read(&target.item, holder.as_ref().map(|h| h as &dyn fetch::FreeDownload)).await;
             if let fetch::Outcome::Failed(code) = &outcome {

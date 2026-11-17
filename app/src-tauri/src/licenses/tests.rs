@@ -136,6 +136,9 @@ fn cc0_needs_a_declaration_about_the_asset() {
         "This asset is released under CC0.",
         "このシェーダーのライセンスはCC0です",
         "CC0なので自由に改変・再配布できます",
+        "本商品のダウンロードデータはCC0です。",
+        "ご自由にお使いください。CC0ライセンスです。",
+        "・本パッケージもCC0です",
     ] {
         assert!(judge(declared, &[]), "{declared}");
     }
@@ -146,6 +149,13 @@ fn cc0_needs_a_declaration_about_the_asset() {
         "CC0素体対応の衣装です",
         "〇〇さんのCC0モデルを改変しました",
         "CC0",
+        // A part of the asset is not the asset.
+        "付属のテクスチャはCC0です",
+        "同梱HDRIはCC0です",
+        "この商品のテクスチャはCC0です",
+        "本商品に付属のフォントはCC0で配布します",
+        "The included textures are CC0.",
+        "各種テクスチャがCC0で配布されているサイトです。",
     ] {
         assert!(!judge(not, &[]), "{not}");
     }

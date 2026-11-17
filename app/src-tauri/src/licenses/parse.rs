@@ -397,8 +397,35 @@ fn cc0_declaration(line: &str) -> bool {
     .any(|re| re.is_match(line))
 }
 
+/// What a sentence calls CC0 is the asset itself, its download data or its license, or nothing
+/// is named ("CC0です"). Any other subject, such as bundled textures, is about a part.
+fn about_the_asset(sentence: &str) -> bool {
+    let Some(token) = regex!(r"(?i)(?:^|[^a-z0-9])(cc\s*-?\s*0)(?:$|[^0-9])|(creative\s*commons\s*zero)|(クリエイティブ・?コモンズ・?ゼロ)").captures(sentence) else {
+        return false;
+    };
+    let start = (1..=3).find_map(|group| token.get(group)).map_or(0, |found| found.start());
+    let subject = sentence[..start].to_lowercase();
+    regex!(
+        r"(?x)^[\W_]*
+        (?:
+            (?:(?:本|この|当|こちらの)\s*(?:商品|作品|データ|モデル|アセット|素材|コンテンツ|ツール|パッケージ|アイテム|ワールド|シェーダー?|ギミック|テクスチャ|アバター|衣装|小物|プレハブ|モーション|アニメーション|フォント|音源|vrm)
+              |本作|こちら|this\s+(?:asset|product|item|model|package|work|content|texture|shader|font|tool|world|avatar)|it|everything)
+            (?:\s*の\s*(?:ダウンロード\s*)?(?:データ|ファイル))?
+            (?:\s*の\s*(?:ライセンス(?:形態)?|利用規約|規約|著作権))?
+          |(?:ダウンロード\s*)?データ
+          |ライセンス(?:形態)?|license|licence|利用規約|規約|著作権|copyright
+        )?
+        [\W_]*(?:は|も|が|を|に関しては|については|に関して|について|として|is|are)?
+        [\W_]*(?:全て|すべて|全部|完全に|もちろん)?
+        \s*(?:(?:is|are)\s+)?(?:(?:released|licensed|distributed|published|provided|available|shared)\s+)?(?:(?:under|as|with)\s+)?(?:the\s+)?
+        [\W_]*$"
+    )
+    .is_match(&subject)
+}
+
 /// Only an explicit declaration that this asset is CC0 counts. Titles and tags alone, CC0
-/// materials, products made for a CC0 base, and any carve-out line on the page do not.
+/// materials, parts of the asset, products made for a CC0 base, and any carve-out line on
+/// the page do not.
 pub fn cc0(blocks: &[Block]) -> bool {
     let mut declared = false;
     for block in blocks {
@@ -415,7 +442,9 @@ pub fn cc0(blocks: &[Block]) -> bool {
             let deed = regex!(r"(?i)^[\W_]*(?:cc\s*-?\s*0|creative\s*commons\s*zero)\s*(?:1\.0)?\s*(?:universal|全世界|public\s*domain|パブリック\s*ドメイン)?[\W_]*(?:\(?cc\s*0\s*1\.0\)?)?[\W_]*$").is_match(&line)
                 && regex!(r"(?i)ライセンス|license|licence|利用規約|規約|terms|著作権|copyright").is_match(&heading)
                 && line != heading;
-            if !about_other && (cc0_declaration(&line) || deed) {
+            // Each sentence must both declare and be about the asset itself.
+            let stated = line.split(['。', '！', '!', '？', '?']).any(|s| cc0_token(s) && cc0_declaration(s) && about_the_asset(s));
+            if !about_other && (stated || deed) {
                 declared = true;
             }
         }

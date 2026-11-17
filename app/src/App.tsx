@@ -134,7 +134,7 @@ export default function App(){
  const queryResultRef=useRef(queryResult);queryResultRef.current=queryResult;
  const queryTask=useRef<(()=>Promise<void>)|null>(null),queryMounted=useRef(false),summaryCache=useRef(new Map<string,{fingerprint:string;product:Product}>());
  useEffect(()=>{queryMounted.current=true;return()=>{queryMounted.current=false;};},[]);
- const q=(key:string)=>(key.startsWith('licenses_')?licenseText(locale,key):undefined)||resetErrorText(locale,key)||((key.startsWith('UNITY_')||key.startsWith('unity_'))?unityError(locale,key):undefined)||uxText(locale,key)||(key.startsWith('ai_')||key==='AI_INPUT_STALE'?nativeWorkflowText(locale,key):nativeErrorText(locale,key)||shellText(locale,key)||t(locale,key)),notify=(message:string)=>setNotice(message);
+ const q=(key:string)=>(key.startsWith('licenses_')||key==='syncLicenses'?licenseText(locale,key):undefined)||resetErrorText(locale,key)||((key.startsWith('UNITY_')||key.startsWith('unity_'))?unityError(locale,key):undefined)||uxText(locale,key)||(key.startsWith('ai_')||key==='AI_INPUT_STALE'?nativeWorkflowText(locale,key):nativeErrorText(locale,key)||shellText(locale,key)||t(locale,key)),notify=(message:string)=>setNotice(message);
  const eventText=useRef(q);eventText.current=q;
  const aiEnabled=nativeState.preferences.aiFeaturesEnabled===true,licenseEnabled=nativeState.preferences.licenseFilter===true,batchEnabled=batchActionPreferences(nativeState.preferences.batchActions);licenseActive.current=licenseEnabled&&!!query.license;
  const settingsReturn=useRef({inspector:true,tab:'details' as 'details'|'files',view:'library'});

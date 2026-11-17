@@ -35,6 +35,8 @@ function useDialog(box:RefObject<HTMLDivElement|null>,onEscape:()=>void){
   (box.current?.querySelector<HTMLElement>('select:not(:disabled)')??focusable()[0]??box.current)?.focus();
   const key=(event:KeyboardEvent)=>{
    if(event.isComposing||event.keyCode===229)return;
+   // Library shortcuts (undo, select all, search, zoom) stay behind the dialog.
+   if(event.ctrlKey||event.metaKey){event.stopPropagation();if(['f','z','a','+','=','-','add','subtract'].includes(event.key.toLowerCase()))event.preventDefault();}
    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape.current();}
    if(event.key==='Tab'){
     event.stopPropagation();
@@ -72,21 +74,21 @@ interface LicenseDetail {synced:{kind:string;version?:string|null;source?:string
  *  Done reports `null` when the table matches the synced one, so saving removes any edit. */
 export function LicenseEditor({locale,productId,draft,onDone,onClose}:{locale:Locale;productId:string;draft:LicenseCells|null|undefined;onDone:(cells:LicenseCells|null)=>void;onClose:()=>void}){
  const box=useRef<HTMLDivElement>(null),L=text(locale);useDialog(box,onClose);
- const [detail,setDetail]=useState<LicenseDetail|null>(null),[cells,setCells]=useState<LicenseCells>({}),[error,setError]=useState('');
+ const [detail,setDetail]=useState<LicenseDetail|null>(null),[cells,setCells]=useState<LicenseCells>({}),[initial,setInitial]=useState<LicenseCells>({}),[failed,setFailed]=useState(false),[error,setError]=useState('');
  useEffect(()=>{let alive=true;void invokeAction<{synced?:LicenseDetail['synced'];edited?:unknown}>('licenses','get',{productId}).then(value=>{
   if(!alive)return;const synced=value?.synced?{...value.synced,cells:licenseCells(value.synced.cells)}:null,edited=value?.edited?licenseCells(value.edited):null;
-  setDetail({synced,edited});setCells(draft===undefined?edited??synced?.cells??{}:draft??synced?.cells??{});
- }).catch(failure=>{if(alive){setError(licenseError(locale,errorCode(failure)));setDetail({synced:null,edited:null});}});return()=>{alive=false;};},[productId]);
+  const opened=draft===undefined?edited??synced?.cells??{}:draft??synced?.cells??{};setDetail({synced,edited});setCells(opened);setInitial(opened);
+ }).catch(failure=>{if(alive){setError(licenseError(locale,errorCode(failure)));setFailed(true);}});return()=>{alive=false;};},[productId]);
  useEffect(()=>{if(detail&&(!box.current?.contains(document.activeElement)||document.activeElement?.closest('.modal-header')))box.current?.querySelector<HTMLSelectElement>('select')?.focus();},[detail]);
  const synced=detail?.synced?.cells??{},source=detail?.synced,kind=source?.kind==='vn3'?['VN3',source.version].filter(Boolean).join(' '):source?.kind==='uv'?'UV License':source?.kind==='cc0'?'CC0':'';
- return portal(<div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><div className="modal license-modal" role="dialog" aria-modal="true" aria-labelledby="license-editor-title" aria-busy={!detail} ref={box} tabIndex={-1}>
+ return portal(<div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><div className="modal license-modal" role="dialog" aria-modal="true" aria-labelledby="license-editor-title" aria-busy={!detail&&!failed} ref={box} tabIndex={-1}>
   <header className="modal-header"><h2 id="license-editor-title">{L('editLicense')}</h2><button type="button" aria-label={editorText(locale,'close')} onClick={onClose}>×</button></header>
   <div className="modal-body">
    {(kind||detail&&!sameCells(cells,synced))&&<p className="license-source">{kind&&<span>{kind}</span>}{source?.source&&<button type="button" className="license-link" onClick={()=>void openExternal(source.source!).catch(failure=>setError(licenseError(locale,errorCode(failure))))}>{L('openSource')}</button>}{detail&&!sameCells(cells,synced)&&<span className="license-edited">{L('edited')}</span>}</p>}
    {error&&<div className="callout error" role="alert">{error}</div>}
    <LicenseTable locale={locale} cells={cells} disabled={!detail} onChange={setCells} id="license-editor"/>
   </div>
-  <footer className="modal-footer"><button type="button" className="license-footer-start" disabled={!detail||sameCells(cells,synced)} onClick={()=>setCells(synced)}>{L('restore')}</button><button type="button" onClick={onClose}>{t(locale,'cancel')}</button><button type="button" className="primary" disabled={!detail} onClick={()=>onDone(sameCells(cells,synced)?null:cells)}>{L('done')}</button></footer>
+  <footer className="modal-footer"><button type="button" className="license-footer-start" disabled={!detail||sameCells(cells,synced)} onClick={()=>setCells(synced)}>{L('restore')}</button><button type="button" onClick={onClose}>{t(locale,'cancel')}</button><button type="button" className="primary" disabled={!detail} onClick={()=>{if(sameCells(cells,initial))onClose();else onDone(sameCells(cells,synced)?null:cells);}}>{L('done')}</button></footer>
  </div></div>);
 }
 

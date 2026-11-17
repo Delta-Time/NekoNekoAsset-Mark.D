@@ -105,6 +105,8 @@ impl Reader {
         }
         let mut best: Option<(Vn3, String)> = None;
         let mut retry = false;
+        // Why the 0-yen download failed, when that failure is worth another sync.
+        let mut refused: Option<String> = None;
         let mut tries = 0;
         let better = |v: &Vn3, best: &Option<(Vn3, String)>| {
             best.as_ref().is_none_or(|(b, _)| (v.complete(), v.answers.len()) > (b.complete(), b.answers.len()))
@@ -141,8 +143,11 @@ impl Reader {
                         }
                     }
                     Err(error) => {
-                        if transient(&crate::booth::error_code(&error)) {
-                            retry = true;
+                        // Only a file that is gone or too large is an answer. A sign-in, a
+                        // refusal or a dropped connection is read again by the next sync.
+                        let code = crate::booth::error_code(&error);
+                        if !matches!(code.as_str(), "FILE_UNAVAILABLE" | "LICENSE_DOCUMENT_TOO_LARGE" | "INVALID_RESOLVER") {
+                            refused.get_or_insert(code);
                         }
                     }
                 }
@@ -154,14 +159,17 @@ impl Reader {
         if let Some((vn3, source)) = best {
             return Outcome::Found(Found { kind: "vn3", version: vn3.version, source, answers: json!(vn3.answers) });
         }
+        // A document that could not be read may hold the license: neither CC0 nor none.
+        if let Some(code) = refused {
+            return Outcome::Failed(code);
+        }
+        if retry {
+            return Outcome::Failed("LICENSE_DOCUMENT_FAILED".into());
+        }
         if parse::cc0(&page.blocks) {
             return Outcome::Found(Found { kind: "cc0", version: None, source: item_url, answers: json!({}) });
         }
-        if retry {
-            Outcome::Failed("LICENSE_DOCUMENT_FAILED".into())
-        } else {
-            Outcome::Missing
-        }
+        Outcome::Missing
     }
 
     async fn texts(&self, link: &Link, tries: &mut usize) -> Texts {
@@ -169,6 +177,8 @@ impl Reader {
         if let Some(texts) = self.documents.lock().await.get(&key) {
             return texts.clone();
         }
+        // A folder read cut short by this asset's request budget is not the folder's answer.
+        let mut cut = false;
         let texts = match link {
             Link::DriveFile { id, resource_key } => {
                 *tries += 1;
@@ -198,6 +208,7 @@ impl Reader {
                         let mut texts = Texts::Unreadable;
                         for (file, _) in files.into_iter().take(2) {
                             if *tries >= TRIES {
+                                cut = true;
                                 break;
                             }
                             *tries += 1;
@@ -218,6 +229,7 @@ impl Reader {
                         }
                         texts
                     }
+                    Ok((status, _)) if status == 429 || status >= 500 => Texts::Retry,
                     Ok(_) => Texts::Unreadable,
                     Err(_) => Texts::Retry,
                 }
@@ -230,12 +242,13 @@ impl Reader {
                 };
                 match self.google_get(url::Url::parse(&url).unwrap()).await {
                     Ok((200, body)) if !html(&body) => Texts::Read(vec![String::from_utf8_lossy(&body).into_owned()]),
+                    Ok((status, _)) if status == 429 || status >= 500 => Texts::Retry,
                     Ok(_) => Texts::Unreadable,
                     Err(_) => Texts::Retry,
                 }
             }
         };
-        if !matches!(texts, Texts::Retry) {
+        if !cut && !matches!(texts, Texts::Retry) {
             self.documents.lock().await.insert(key, texts.clone());
         }
         texts
@@ -288,19 +301,23 @@ impl Reader {
     }
 }
 
-fn transient(code: &str) -> bool {
-    matches!(code, "NETWORK_UNAVAILABLE" | "RATE_LIMITED" | "DOWNLOAD_RESOLVER_FAILED" | "AUTH_REQUIRED" | "HTTP_CLIENT_FAILED")
-}
-
 fn html(body: &[u8]) -> bool {
     let head = String::from_utf8_lossy(&body[..body.len().min(2000)]).to_lowercase();
     head.contains("<html") || head.contains("<!doctype html")
 }
 
 fn link_url(link: &Link) -> String {
+    // Older link-shared Drive items open only with their resource key.
+    let keyed = |base: String, key: &Option<String>| match (url::Url::parse(&base), key) {
+        (Ok(mut url), Some(key)) => {
+            url.query_pairs_mut().append_pair("resourcekey", key);
+            url.to_string()
+        }
+        _ => base,
+    };
     match link {
-        Link::DriveFile { id, .. } => format!("https://drive.google.com/file/d/{id}/view"),
-        Link::DriveFolder { id, .. } => format!("https://drive.google.com/drive/folders/{id}"),
+        Link::DriveFile { id, resource_key } => keyed(format!("https://drive.google.com/file/d/{id}/view"), resource_key),
+        Link::DriveFolder { id, resource_key } => keyed(format!("https://drive.google.com/drive/folders/{id}"), resource_key),
         Link::Document(id) => format!("https://docs.google.com/document/d/{id}"),
         Link::Presentation(id) => format!("https://docs.google.com/presentation/d/{id}"),
     }
@@ -340,13 +357,16 @@ pub fn file_texts(bytes: &[u8]) -> Vec<String> {
             return vec![];
         };
         let mut texts = vec![];
+        let mut pdfs = 0;
         for index in 0..archive.len().min(200) {
             let Ok(mut entry) = archive.by_index(index) else { continue };
             let name = entry.name().to_lowercase();
             let pdf = name.ends_with(".pdf");
-            if !(pdf || name.ends_with(".txt")) || entry.size() > DOCUMENT_LIMIT || texts.len() >= 8 {
+            // A few PDFs at most: each may take up to the parser's whole time limit.
+            if !(pdf || name.ends_with(".txt")) || entry.size() > DOCUMENT_LIMIT || texts.len() >= 8 || (pdf && pdfs >= 4) {
                 continue;
             }
+            pdfs += usize::from(pdf);
             let mut data = vec![];
             if entry.by_ref().take(DOCUMENT_LIMIT).read_to_end(&mut data).is_err() {
                 continue;
@@ -368,18 +388,22 @@ pub fn file_texts(bytes: &[u8]) -> Vec<String> {
 }
 
 /// PDF text on its own thread: a malformed file can panic inside the parser or take too
-/// long, and either way it is only unreadable.
+/// long, and either way it is only unreadable. Nested objects recurse in the parser, so the
+/// thread gets a large stack; generator PDFs take well under a second.
 fn pdf_text(bytes: Vec<u8>) -> Option<String> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let text = std::panic::catch_unwind(|| {
-            let document = lopdf::Document::load_mem(&bytes).ok()?;
-            let pages: Vec<u32> = document.get_pages().keys().copied().collect();
-            document.extract_text(&pages).ok()
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let text = std::panic::catch_unwind(|| {
+                let document = lopdf::Document::load_mem(&bytes).ok()?;
+                let pages: Vec<u32> = document.get_pages().keys().copied().collect();
+                document.extract_text(&pages).ok()
+            })
+            .ok()
+            .flatten();
+            let _ = sender.send(text);
         })
-        .ok()
-        .flatten();
-        let _ = sender.send(text);
-    });
-    receiver.recv_timeout(Duration::from_secs(60)).ok().flatten()
+        .ok()?;
+    receiver.recv_timeout(Duration::from_secs(20)).ok().flatten()
 }
