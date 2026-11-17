@@ -136,11 +136,11 @@ impl Reader {
                 match holder.download(&free.route).await {
                     Ok(bytes) => {
                         let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&bytes)).await.unwrap_or_default();
-                        match best_vn3(&texts) {
-                            Some(v) if better(&v, &best) => best = Some((v, item_url.clone())),
-                            Some(_) => {}
-                            None if timed_out => retry = true,
-                            None => {}
+                        let found = best_vn3(&texts);
+                        // A PDF that ran out of time may hold what this file still lacks.
+                        retry |= timed_out && !found.as_ref().is_some_and(Vn3::complete);
+                        if let Some(v) = found.filter(|v| better(v, &best)) {
+                            best = Some((v, item_url.clone()));
                         }
                     }
                     Err(error) => {
@@ -157,10 +157,10 @@ impl Reader {
                 }
             }
         }
-        if let Some((vn3, source)) = best {
+        // A document that could not be read may hold the license: no partial VN3, CC0 or none.
+        if let Some((vn3, source)) = best.filter(|(v, _)| v.complete() || (refused.is_none() && !retry)) {
             return Outcome::Found(Found { kind: "vn3", version: vn3.version, source, answers: json!(vn3.answers) });
         }
-        // A document that could not be read may hold the license: neither CC0 nor none.
         if let Some(code) = refused {
             return Outcome::Failed(code);
         }
@@ -197,7 +197,7 @@ impl Reader {
                         let html = String::from_utf8_lossy(&body).into_owned();
                         let mut files = folder_files(&html);
                         files.sort_by_key(|(_, name)| document_rank(name));
-                        let mut texts = Texts::Unreadable;
+                        let (mut texts, mut failed, mut done) = (Texts::Unreadable, false, false);
                         for (file, _) in files.into_iter().take(2) {
                             if *tries >= TRIES {
                                 cut = true;
@@ -206,7 +206,7 @@ impl Reader {
                             *tries += 1;
                             match self.drive_file(&file, None).await {
                                 Texts::Read(read) => {
-                                    let done = best_vn3(&read).is_some_and(|v| v.complete());
+                                    done = best_vn3(&read).is_some_and(|v| v.complete());
                                     match &mut texts {
                                         Texts::Read(all) => all.extend(read),
                                         _ => texts = Texts::Read(read),
@@ -215,11 +215,16 @@ impl Reader {
                                         break;
                                     }
                                 }
-                                Texts::Retry if !matches!(texts, Texts::Read(_)) => texts = Texts::Retry,
-                                _ => {}
+                                Texts::Retry => failed = true,
+                                Texts::Unreadable => {}
                             }
                         }
-                        texts
+                        // A file that failed this time may hold the license the others lack.
+                        if failed && !done {
+                            Texts::Retry
+                        } else {
+                            texts
+                        }
                     }
                     Ok((status, _)) if status == 429 || status >= 500 => Texts::Retry,
                     Ok(_) => Texts::Unreadable,
@@ -257,7 +262,7 @@ impl Reader {
             Ok((200, body)) if !html(&body) => {
                 let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&body)).await.unwrap_or_default();
                 // A PDF that ran out of time may still hold the license.
-                if timed_out && best_vn3(&texts).is_none() {
+                if timed_out && !best_vn3(&texts).is_some_and(|v| v.complete()) {
                     Texts::Retry
                 } else {
                     Texts::Read(texts)
