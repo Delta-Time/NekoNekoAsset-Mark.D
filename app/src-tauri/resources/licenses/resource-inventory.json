@@ -1,7 +1,7 @@
 {
   "format": "NekoNekoAsset.PackagedResourceInventory",
   "formatVersion": 1,
-  "applicationVersion": "0.3.11",
+  "applicationVersion": "0.3.12",
   "sourceScope": "Exact explicit current Tauri resource mappings only; no private data, target tree, node_modules or toolchain payloads. This is expected-source inventory, not a claim the installer was executed or extracted.",
   "mappings": {
     "resources/tools/7zip/": "tools/7zip/",
@@ -52,7 +52,7 @@
     {
       "resourcePath": "licenses/dependency-ledger.json",
       "bytes": 848165,
-      "sha256": "ed5de738b96c879c01fb1484ca2b4b77e4a4dd7d0d3295303cab8255cd5e342b"
+      "sha256": "7e8d55d1bcb5eb0512e3cc15884f5eeb0c2580a08dee0762b7f4b62ac716c326"
     },
     {
       "resourcePath": "licenses/frontend/NOTICES.txt",
@@ -447,7 +447,7 @@
     {
       "resourcePath": "licenses/supplemental/index.json",
       "bytes": 95336,
-      "sha256": "34ecb792b9ab69c4501e5f41ae580bf9535344579a176ce50d975bf769e5a842"
+      "sha256": "1df38e8582da8622b42031b1b6b05d3661a5bee0be7ae6b36ec348af5f1aacba"
     },
     {
       "resourcePath": "licenses/supplemental/published/fxhash-0.2.1/LEGAL-HEADER.txt",

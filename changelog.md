@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.12 Beta - 2026-11-18
+
+### Added
+
+- Settings › Features adds License filter, off by default. Turn it on, and a License button beside Paid, Free and Gift filters assets by the 24 items of a VN3 license: allowed or not, credit and special notes. It works with categories, accounts and saved searches.
+- Licenses are read from each BOOTH listing, and from local assets linked to one: a UV License link, VN3 license documents the listing links on Google Drive or Docs, a 0-yen license file read with the account that owns the asset, or a CC0 statement about the asset itself. Only VN3, UV License and CC0 are read; anything else stays unknown.
+- Edit license, left of R-18 in Edit, lets you set an asset's license yourself. Syncing never overwrites it, and Restore returns to the synced license.
+- Sync licenses is in the right-click menu, More and the selection bar. Settings › Features has Sync all licenses and Delete license database. New BOOTH assets are read after each BOOTH sync.
+
+### Changed
+
+- Update and restart no longer waits for an open Settings page, unsaved AI settings, unsent AI chat text, downloads or local imports. Downloads, local imports and license syncs continue after the restart, like store syncs. Moves, backups, restores, ZIP exports, deletions, Unity imports, AI tagging and sign-ins still have to finish first.
+
+### Fixed
+
+- A gift now shows only under Gift, even when the same account also downloaded a free variant or bought the asset.
+- An asset you bought no longer also shows under Free when your BOOTH free-download history lists it too, for example after downloading its free license file.
+- The right-click menu no longer runs past the bottom of the window.
+
+### Release notes
+
+- Reading a 0-yen license file adds it to that BOOTH account's free-download history, so the next BOOTH sync attaches the file to the asset. An asset you had fully downloaded then shows as partly downloaded until you download that file.
+- Licenses are kept in their own file in the library. Turning License filter off keeps them; Delete license database removes only that file.
+- The Unity Bridge is unchanged and stays at [0.3.11 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.3.11); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.11 Beta - 2026-11-13
 
 ### Added
