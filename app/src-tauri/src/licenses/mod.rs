@@ -422,38 +422,53 @@ impl LicenseService {
         });
     }
 
+    /// Continues a job the last run left open; one that cannot continue is cancelled, so no
+    /// job stays running with nothing behind it.
     fn resume(&self, app: &AppHandle, mut job: Value) -> Result<()> {
-        if self.enabled() && self.running_job().is_none() {
-            let mut done: BTreeSet<String> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
-            // The asset being read when the App stopped, perhaps because its file crashed the
-            // reader, is not read again automatically; Retry or Sync licenses reads it.
-            if let Some(current) = job["current"].as_str().filter(|id| !done.contains(*id)).map(str::to_owned) {
-                self.record(&current, fetch::Outcome::Failed(INTERRUPTED.into()))?;
-                job["failures"][&current] = json!({"productId": current, "errorCode": INTERRUPTED});
-                if let Some(completed) = job["completedProductIds"].as_array_mut() {
-                    completed.push(json!(current));
-                }
-                done.insert(current);
-            }
-            let left: BTreeSet<&str> = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| !done.contains(*id)).collect();
-            let work: Vec<Target> = targets(&self.inner.catalogue)?.into_iter().filter(|t| left.contains(t.product.as_str())).collect();
-            if self.run(app, job.clone(), work).is_ok() {
-                return Ok(());
-            }
+        if self.enabled() && self.running_job().is_none() && self.resume_work(app, &mut job).is_ok() {
+            return Ok(());
         }
         job["state"] = json!("cancelled");
         job["errorCode"] = json!("licenses_interrupted");
         self.save_job(app, &job)
     }
 
+    fn resume_work(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
+        let mut done: BTreeSet<String> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+        // The asset being read when the App stopped is read once more, since the App may just
+        // have closed or updated. Stopped on it twice, as when its file crashes the reader, it
+        // is not read again automatically; Retry or Sync licenses reads it.
+        if let Some(current) = job["current"].as_str().filter(|id| !done.contains(*id)).map(str::to_owned) {
+            if job["resumedCurrent"].as_str() == Some(current.as_str()) {
+                self.record(&current, fetch::Outcome::Failed(INTERRUPTED.into()))?;
+                job["failures"][&current] = json!({"productId": current, "errorCode": INTERRUPTED});
+                if let Some(completed) = job["completedProductIds"].as_array_mut() {
+                    completed.push(json!(current));
+                }
+                done.insert(current);
+            } else {
+                job["resumedCurrent"] = json!(current);
+            }
+        }
+        let left: BTreeSet<&str> = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| !done.contains(*id)).collect();
+        let mut work: Vec<Target> = targets(&self.inner.catalogue)?.into_iter().filter(|t| left.contains(t.product.as_str())).collect();
+        // The interrupted asset goes first, so a second stop on it is recognised.
+        if let Some(current) = job["resumedCurrent"].as_str() {
+            if let Some(at) = work.iter().position(|t| t.product == current) {
+                let target = work.remove(at);
+                work.insert(0, target);
+            }
+        }
+        self.run(app, job.clone(), work)
+    }
+
     async fn automatic(&self, app: &AppHandle) -> Result<()> {
         if !self.enabled() || self.running_job().is_some() {
             return Ok(());
         }
-        // Every store's sync emits this scope; read once none of them is still working.
+        // BOOTH's own sync ends with this scope; other stores' events find nothing new to read.
         let store_busy = self.inner.catalogue.list("job")?.iter().any(|job| {
-            job["type"].as_str().is_some_and(|t| ["booth", "gumroad", "jinxxy"].iter().any(|store| t.starts_with(store)))
-                && matches!(job["state"].as_str(), Some("queued" | "running"))
+            job["type"].as_str().is_some_and(|t| t.starts_with("booth")) && matches!(job["state"].as_str(), Some("queued" | "running"))
         });
         if !store_busy {
             self.sync(app, Selection::New).await?;
@@ -562,6 +577,7 @@ impl LicenseService {
             // Say which asset is being read before reading it, so a file that brings the App
             // down is not read again at the next start or by the next automatic read.
             job["current"] = json!(target.product);
+            job["updatedAt"] = json!(now());
             self.inner.catalogue.put("job", job["id"].as_str().unwrap_or_default(), job.clone())?;
             self.with_db(true, |conn| {
                 conn.execute(

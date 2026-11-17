@@ -156,6 +156,8 @@ fn cc0_needs_a_declaration_about_the_asset() {
         "本商品に付属のフォントはCC0で配布します",
         "The included textures are CC0.",
         "各種テクスチャがCC0で配布されているサイトです。",
+        "本商品はCC0のテクスチャを同梱しています",
+        "本アセットはCC0の素材を含み、テクスチャはCC0です",
     ] {
         assert!(!judge(not, &[]), "{not}");
     }

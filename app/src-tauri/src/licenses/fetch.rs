@@ -135,11 +135,12 @@ impl Reader {
             for free in page.free_licenses.iter().take(2) {
                 match holder.download(&free.route).await {
                     Ok(bytes) => {
-                        let texts = tokio::task::spawn_blocking(move || file_texts(&bytes)).await.unwrap_or_default();
-                        if let Some(v) = best_vn3(&texts) {
-                            if better(&v, &best) {
-                                best = Some((v, item_url.clone()));
-                            }
+                        let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&bytes)).await.unwrap_or_default();
+                        match best_vn3(&texts) {
+                            Some(v) if better(&v, &best) => best = Some((v, item_url.clone())),
+                            Some(_) => {}
+                            None if timed_out => retry = true,
+                            None => {}
                         }
                     }
                     Err(error) => {
@@ -195,16 +196,7 @@ impl Reader {
                     Ok((200, body)) => {
                         let html = String::from_utf8_lossy(&body).into_owned();
                         let mut files = folder_files(&html);
-                        files.sort_by_key(|(_, name)| {
-                            let lower = name.to_lowercase();
-                            if lower.contains("_ja.") || lower.contains("jp") || name.contains("日本語") || name.contains("規約") {
-                                0
-                            } else if parse::other_language(name) {
-                                2
-                            } else {
-                                1
-                            }
-                        });
+                        files.sort_by_key(|(_, name)| document_rank(name));
                         let mut texts = Texts::Unreadable;
                         for (file, _) in files.into_iter().take(2) {
                             if *tries >= TRIES {
@@ -263,8 +255,13 @@ impl Reader {
         match self.google_get(url).await {
             // An HTML answer is a sign-in, a confirmation or "only the owner can download".
             Ok((200, body)) if !html(&body) => {
-                let texts = tokio::task::spawn_blocking(move || file_texts(&body)).await.unwrap_or_default();
-                Texts::Read(texts)
+                let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&body)).await.unwrap_or_default();
+                // A PDF that ran out of time may still hold the license.
+                if timed_out && best_vn3(&texts).is_none() {
+                    Texts::Retry
+                } else {
+                    Texts::Read(texts)
+                }
             }
             Ok((status, _)) if status == 429 || status >= 500 => Texts::Retry,
             Ok(_) => Texts::Unreadable,
@@ -346,24 +343,46 @@ fn best_vn3(texts: &[String]) -> Option<Vn3> {
     })
 }
 
+/// Japanese and license-named documents first, other languages last.
+fn document_rank(name: &str) -> u8 {
+    let lower = name.to_lowercase();
+    if lower.contains("_ja.") || lower.contains("jp") || name.contains("日本語") || name.contains("規約") {
+        0
+    } else if parse::other_language(name) {
+        2
+    } else {
+        1
+    }
+}
+
 /// Text of a PDF, a plain-text file, or the PDFs and text files inside a ZIP.
 pub fn file_texts(bytes: &[u8]) -> Vec<String> {
+    read_file(bytes).0
+}
+
+/// The texts, and whether a PDF ran out of time: then the file is worth another try.
+fn read_file(bytes: &[u8]) -> (Vec<String>, bool) {
     use std::io::Read;
     if bytes.starts_with(b"%PDF-") {
-        return pdf_text(bytes.to_vec()).into_iter().collect();
+        return match pdf_text(bytes.to_vec()) {
+            Pdf::Text(text) => (vec![text], false),
+            Pdf::Unreadable => (vec![], false),
+            Pdf::TimedOut => (vec![], true),
+        };
     }
     if bytes.starts_with(b"PK\x03\x04") {
         let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
-            return vec![];
+            return (vec![], false);
         };
-        let mut texts = vec![];
-        let mut pdfs = 0;
-        for index in 0..archive.len().min(200) {
+        let mut names: Vec<(usize, String)> = (0..archive.len().min(200)).filter_map(|index| Some((index, archive.by_index(index).ok()?.name().to_owned()))).collect();
+        names.sort_by_key(|(index, name)| (document_rank(name), *index));
+        let (mut texts, mut pdfs, mut timed_out) = (vec![], 0, false);
+        for (index, name) in names {
             let Ok(mut entry) = archive.by_index(index) else { continue };
-            let name = entry.name().to_lowercase();
-            let pdf = name.ends_with(".pdf");
+            let lower = name.to_lowercase();
+            let pdf = lower.ends_with(".pdf");
             // A few PDFs at most: each may take up to the parser's whole time limit.
-            if !(pdf || name.ends_with(".txt")) || entry.size() > DOCUMENT_LIMIT || texts.len() >= 8 || (pdf && pdfs >= 4) {
+            if !(pdf || lower.ends_with(".txt")) || entry.size() > DOCUMENT_LIMIT || texts.len() >= 8 || (pdf && pdfs >= 4) {
                 continue;
             }
             pdfs += usize::from(pdf);
@@ -372,38 +391,53 @@ pub fn file_texts(bytes: &[u8]) -> Vec<String> {
                 continue;
             }
             if pdf {
-                texts.extend(pdf_text(data));
+                match pdf_text(data) {
+                    Pdf::Text(text) => texts.push(text),
+                    Pdf::Unreadable => {}
+                    Pdf::TimedOut => timed_out = true,
+                }
             } else if let Ok(text) = String::from_utf8(data) {
                 texts.push(text.trim_start_matches('\u{feff}').to_owned());
             }
         }
-        return texts;
+        return (texts, timed_out);
     }
     if html(bytes) {
-        return vec![];
+        return (vec![], false);
     }
-    std::str::from_utf8(bytes)
+    let texts = std::str::from_utf8(bytes)
         .map(|text| vec![text.trim_start_matches('\u{feff}').to_owned()])
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (texts, false)
+}
+
+enum Pdf {
+    Text(String),
+    Unreadable,
+    TimedOut,
 }
 
 /// PDF text on its own thread: a malformed file can panic inside the parser or take too
-/// long, and either way it is only unreadable. Nested objects recurse in the parser, so the
-/// thread gets a large stack; generator PDFs take well under a second.
-fn pdf_text(bytes: Vec<u8>) -> Option<String> {
+/// long. Nested objects recurse in the parser, so the thread gets a large stack; generator
+/// PDFs take well under a second.
+fn pdf_text(bytes: Vec<u8>) -> Pdf {
     let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(move || {
-            let text = std::panic::catch_unwind(|| {
-                let document = lopdf::Document::load_mem(&bytes).ok()?;
-                let pages: Vec<u32> = document.get_pages().keys().copied().collect();
-                document.extract_text(&pages).ok()
-            })
-            .ok()
-            .flatten();
-            let _ = sender.send(text);
+    let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
+        let text = std::panic::catch_unwind(|| {
+            let document = lopdf::Document::load_mem(&bytes).ok()?;
+            let pages: Vec<u32> = document.get_pages().keys().copied().collect();
+            document.extract_text(&pages).ok()
         })
-        .ok()?;
-    receiver.recv_timeout(Duration::from_secs(20)).ok().flatten()
+        .ok()
+        .flatten();
+        let _ = sender.send(text);
+    });
+    if spawned.is_err() {
+        return Pdf::Unreadable;
+    }
+    match receiver.recv_timeout(Duration::from_secs(20)) {
+        Ok(Some(text)) => Pdf::Text(text),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Pdf::TimedOut,
+        _ => Pdf::Unreadable,
+    }
 }

@@ -438,7 +438,8 @@ pub fn cc0(blocks: &[Block]) -> bool {
             if regex!(r"(?i)ではありません|ではない|ではなく|では無い|じゃない|適用されません|適用外|対象外|対象には含まれ|含まれません|以外|除く|除き|not\s+(?:a\s+)?cc\s*-?\s*0|non-?cc0|except|excluding|does\s+not\s+apply").is_match(&line) {
                 return false;
             }
-            let about_other = regex!(r"(?i)(?:を|も|が)(?:使用|利用)(?:して|させて|した|しています|されて)|使用して(?:い|お)|使用素材|使用している|お借り|引用|から(?:の|お借り)|配布元|(?:素体|アバター|モデル|avatar|model|base)[^。]{0,8}(?:対応|向け|用|専用|for)|(?:対応|向け|専用)(?:素体|アバター|モデル)|さん|様|氏の|作者|by\s").is_match(&line);
+            // Pieces the asset uses, bundles or is made for are not the asset.
+            let about_other = regex!(r"(?i)(?:を|も|が)(?:使用|利用)(?:して|させて|した|しています|されて)|使用して(?:い|お)|使用素材|使用している|お借り|引用|から(?:の|お借り)|配布元|(?:素体|アバター|モデル|avatar|model|base)[^。]{0,8}(?:対応|向け|用|専用|for)|(?:対応|向け|専用)(?:素体|アバター|モデル)|さん|様|氏の|作者|by\s|同梱|付属|含(?:む|み|ま|め)|収録|入って|内包|bundled|included|includes|contains?").is_match(&line);
             let deed = regex!(r"(?i)^[\W_]*(?:cc\s*-?\s*0|creative\s*commons\s*zero)\s*(?:1\.0)?\s*(?:universal|全世界|public\s*domain|パブリック\s*ドメイン)?[\W_]*(?:\(?cc\s*0\s*1\.0\)?)?[\W_]*$").is_match(&line)
                 && regex!(r"(?i)ライセンス|license|licence|利用規約|規約|terms|著作権|copyright").is_match(&heading)
                 && line != heading;
