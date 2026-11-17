@@ -4369,13 +4369,24 @@ fn acquisition_filter_reads_each_accounts_own_route_before_paging() {
         ("library-only", "a", "library", unproven.clone()),
         ("two-routes", "a", "purchase", proven(800.0)),
         ("two-routes", "b", "gift", unproven.clone()),
+        // A gift beside that account's free variant or order stays a gift only.
+        ("gift-and-free", "b", "gift", unproven.clone()),
+        ("gift-and-free", "b", "free", unproven.clone()),
+        ("gift-and-order", "b", "gift", unproven.clone()),
+        ("gift-and-order", "b", "purchase", proven(300.0)),
+        // A bought product's free download, such as its 0-yen license file, stays bought.
+        ("order-and-free", "a", "purchase", proven(600.0)),
+        ("order-and-free", "a", "library", unproven.clone()),
+        ("order-and-free", "a", "free", unproven.clone()),
+        ("unproven-order-and-free", "a", "purchase", unproven.clone()),
+        ("unproven-order-and-free", "a", "free", unproven.clone()),
     ] {
         let id = format!("{product}:{account}:{source}");
         let mut row = json!({"id":id,"productId":product,"accountId":account,"source":source});
         row.as_object_mut().unwrap().extend(facts.as_object().unwrap().clone());
         c.put("acquisition", &id, row).unwrap();
     }
-    for id in ["bought", "zero-order", "free-history", "gifted", "library-only", "two-routes", "no-record"] {
+    for id in ["bought", "zero-order", "free-history", "gifted", "library-only", "two-routes", "gift-and-free", "gift-and-order", "order-and-free", "unproven-order-and-free", "no-record"] {
         c.put("product",id,json!({"id":id,"provider":"booth","title":id,"sourceCategory":{"name":"Hair"}})).unwrap();
     }
     c.put("product","local:file",json!({"id":"local:file","provider":"local","store":"Local Files","custom":true,"title":"local:file","sourceCategory":{"name":"Hair"}})).unwrap();
@@ -4385,17 +4396,17 @@ fn acquisition_filter_reads_each_accounts_own_route_before_paging() {
         args["direction"] = json!("asc");
         strings(&c.command("query", args).unwrap()["matchedIds"])
     };
-    assert_eq!(matched(json!({})).len(), 8);
-    assert_eq!(matched(json!({"acquisition":null})).len(), 8);
+    assert_eq!(matched(json!({})).len(), 12);
+    assert_eq!(matched(json!({"acquisition":null})).len(), 12);
     assert_eq!(matched(json!({"acquisition":[]})), Vec::<String>::new());
     assert_eq!(matched(json!({"acquisition":["free"]})), ["free-history", "zero-order"]);
-    assert_eq!(matched(json!({"acquisition":["gift"]})), ["gifted", "two-routes"]);
-    assert_eq!(matched(json!({"acquisition":["paid"]})), ["bought", "library-only", "no-record", "two-routes"]);
-    assert_eq!(matched(json!({"acquisition":["free","gift"]})), ["free-history", "gifted", "two-routes", "zero-order"]);
+    assert_eq!(matched(json!({"acquisition":["gift"]})), ["gift-and-free", "gift-and-order", "gifted", "two-routes"]);
+    assert_eq!(matched(json!({"acquisition":["paid"]})), ["bought", "library-only", "no-record", "order-and-free", "two-routes", "unproven-order-and-free"]);
+    assert_eq!(matched(json!({"acquisition":["free","gift"]})), ["free-history", "gift-and-free", "gift-and-order", "gifted", "two-routes", "zero-order"]);
     // Only the selected account's own route counts; another account's gift does not.
     assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["a"]})), Vec::<String>::new());
     assert_eq!(matched(json!({"acquisition":["paid"],"accountIds":["b"]})), Vec::<String>::new());
-    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["b"]})), ["gifted", "two-routes"]);
+    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["b"]})), ["gift-and-free", "gift-and-order", "gifted", "two-routes"]);
     assert_eq!(matched(json!({"acquisition":["free"],"accountIds":[]})), Vec::<String>::new());
     // An unproven row follows the price it can still show.
     let mut row = c.get("acquisition", "library-only:a:library").unwrap().unwrap();
