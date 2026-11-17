@@ -297,8 +297,8 @@ impl PreparedInstall {
     }
 }
 
-/// Store sync/update jobs resume from their checkpoints when the updated App starts,
-/// and downloads and local imports are queued again. Any other active job names why
+/// Store sync/update and license jobs resume from their checkpoints when the updated App
+/// starts, and downloads and local imports are queued again. Any other active job names why
 /// installation has to wait.
 pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
     if !matches!(job["state"].as_str(), Some("queued" | "running")) {
@@ -310,7 +310,7 @@ pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
     }
     Some(match kind {
         "boothSync" | "boothUpdate" | "gumroadSync" | "gumroadUpdate" | "jinxxySync"
-        | "jinxxyUpdate" => return None,
+        | "jinxxyUpdate" | crate::licenses::JOB_TYPE => return None,
         "boothLogin" | "gumroadLogin" | "jinxxyLogin" => "updates_busy_login",
         "storage:migrate_root" => "updates_busy_move",
         "storage:export_backup" => "updates_busy_backup",

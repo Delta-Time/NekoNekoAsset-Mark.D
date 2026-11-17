@@ -3,7 +3,7 @@ import {listen} from '@tauri-apps/api/event';
 import {getCurrentWebview} from '@tauri-apps/api/webview';
 import type {Product, Account, Locale, CustomCategory} from './model';
 
-export type Service = 'catalogue'|'booth'|'storage'|'unity';
+export type Service = 'catalogue'|'booth'|'storage'|'unity'|'licenses';
 export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number;incompleteProducts?:number}
 export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;cancelRequested?:boolean;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
 export function importOnlyUnityJob(job:NativeJob):NativeJob{

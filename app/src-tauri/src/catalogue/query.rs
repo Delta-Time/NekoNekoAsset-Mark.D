@@ -239,6 +239,10 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         };
         conditions.push(format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND));
     }
+    // The license database chose these; an empty list keeps nothing.
+    if let Some(ids) = args["licenseIds"].as_array() {
+        conditions.push(format!("p.id IN(SELECT value FROM json_each({}))", bind(Sql::Text(json!(ids).to_string()))));
+    }
     let avatar = text(args, "avatar");
     let mut pinned = vec![];
     if !avatar.is_empty() && avatar != "all" {

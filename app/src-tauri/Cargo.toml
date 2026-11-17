@@ -43,6 +43,9 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 fs2 = "0.4"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+regex = "1"
+# License filter: text of VN3 generator PDFs, through its own ToUnicode maps. Pure Rust, MIT.
+lopdf = { version = "0.36", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

@@ -8,6 +8,7 @@ mod app_reset;
 mod booth;
 mod catalogue;
 mod library_lock;
+mod licenses;
 mod native;
 mod preview;
 mod profile;
@@ -51,6 +52,7 @@ struct Services {
     storage: Arc<StorageService>,
     previews: Arc<preview::PreviewCache>,
     unity: Arc<unity::UnityService>,
+    licenses: licenses::LicenseService,
 }
 
 impl Services {
@@ -90,6 +92,7 @@ impl Services {
             storage.clone(),
             previews.clone(),
         ));
+        let licenses = licenses::LicenseService::new(catalogue.clone(), stores.booth());
         Ok(Self {
             setup_only,
             ai,
@@ -100,6 +103,7 @@ impl Services {
             storage,
             previews,
             unity,
+            licenses,
         })
     }
 }
@@ -598,6 +602,13 @@ async fn catalogue_action(
     };
     let is_exchange = action == "exchange";
     let account_view = matches!(action.as_str(), "bootstrap" | "state");
+    let mut args = args;
+    if action == "query" {
+        // The license database answers which products a license filter keeps.
+        if let Some(ids) = services.licenses.matching(&args["license"]).map_err(UiError::from_error)? {
+            args["licenseIds"] = json!(ids);
+        }
+    }
     let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.command(&action, args))
         .await
         .map_err(|_| UiError {
@@ -624,6 +635,9 @@ async fn catalogue_action(
             .reset_automatic_baseline()
             .await
             .map_err(UiError::from_error)?;
+    }
+    if previous_preferences["licenseFilter"] == true && result["licenseFilter"] == false {
+        services.licenses.cancel(None);
     }
     if previous_preferences["aiFeaturesEnabled"] == true && result["aiFeaturesEnabled"] == false {
         services
@@ -886,6 +900,22 @@ async fn storage_action(
         }
     }
     Ok(result)
+}
+#[tauri::command]
+async fn licenses_action(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    services: tauri::State<'_, LibraryHost>,
+    action: String,
+    args: Value,
+) -> Result<Value, UiError> {
+    let _operation = trusted(&window)?;
+    let services = services.services()?;
+    services
+        .licenses
+        .command(&app, &action, args)
+        .await
+        .map_err(UiError::from_error)
 }
 #[tauri::command]
 async fn unity_action(
@@ -1806,6 +1836,7 @@ pub fn run() {
             let storage = services.storage.clone();
             let ai_jobs = services.ai_jobs.clone();
             let unity = services.unity.clone();
+            let licenses = services.licenses.clone();
             app.manage(LibraryHost {
                 device_dir: data_dir,
                 status: Mutex::new(status),
@@ -1871,6 +1902,7 @@ pub fn run() {
                 let _ = stores.start(handle.clone()).await;
                 let _ = ai_jobs.start(&handle).await;
                 let _ = unity.start(&handle).await;
+                let _ = licenses.start(&handle).await;
                 drop(startup_permit);
                 #[cfg(debug_assertions)]
                 let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
@@ -1915,6 +1947,7 @@ pub fn run() {
             catalogue_action,
             booth_action,
             storage_action,
+            licenses_action,
             unity_action,
             native_dialog,
             native_file_action,

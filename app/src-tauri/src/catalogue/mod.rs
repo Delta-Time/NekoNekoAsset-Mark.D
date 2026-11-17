@@ -1240,7 +1240,7 @@ fn default_ai_scopes() -> Value {
     json!({"title":true,"tags":true,"description":true,"files":true,"images":false})
 }
 
-const BATCH_ACTION_KEYS: [&str; 11] = [
+const BATCH_ACTION_KEYS: [&str; 12] = [
     "edit",
     "collection",
     "unity",
@@ -1252,6 +1252,7 @@ const BATCH_ACTION_KEYS: [&str; 11] = [
     "selectAll",
     "update",
     "download",
+    "licenses",
 ];
 
 fn default_batch_actions() -> Value {
@@ -1285,6 +1286,7 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
         "aiFeaturesEnabled",
         "hideUnavailable",
         "hideUnclassified",
+        "licenseFilter",
         "nativeSinglePackage",
         "oneHandedDrag",
     ] {
@@ -1898,6 +1900,23 @@ impl Catalogue {
             .query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(ids)
+    }
+
+    /// Each product with the summary facts a license read needs: its provider, whether its
+    /// public page is gone, its link and its acquisition rows.
+    pub fn license_sources(&self) -> Result<Vec<(String, Value)>> {
+        let conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        let mut statement = conn.prepare("SELECT id,json_object('provider',json_extract(summary,'$.provider'),'availability',json_extract(summary,'$.publicPageAvailability'),'sourceUrl',json_extract(summary,'$.sourceUrl'),'provenance',json(COALESCE(json_extract(summary,'$.provenance'),'[]'))) FROM products ORDER BY id")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, facts)| (id, serde_json::from_str(&facts).unwrap_or(Value::Null)))
+            .collect())
     }
 
     /// Explicit chat retrieval: bounded effective metadata, without account,

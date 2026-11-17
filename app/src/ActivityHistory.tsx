@@ -12,6 +12,7 @@ import {unityText,unityError,unityProgressLabel} from './unity-i18n';
 import {supportText} from './support-i18n';
 import './ActivityHistory.css';
 import {contentLang} from './content-lang';
+import {licenseText} from './license-i18n';
 
 export interface ActivityHistoryProps {
  locale:Locale;jobs:NativeJob[];accounts:Account[];products:Product[];aiEnabled:boolean;
@@ -48,7 +49,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
  const knownAccounts=useMemo(()=>new Map(accounts.map(account=>[account.id,account])),[accounts]);
  const label=(key:string)=>uxText(locale,key)??nativeWorkflowText(locale,key);
  const reason=(value:unknown,fallback='operationFailed')=>{
-  const code=errorCode(value),localized=uxText(locale,code)??nativeWorkflowText(locale,code);
+  const code=errorCode(value),localized=licenseText(locale,code)??uxText(locale,code)??nativeWorkflowText(locale,code);
   return localized!==code?localized:nativeErrorText(locale,code)??label(fallback);
  };
  // Only visible jobs request metadata. A changing terminal job may replace its cached details;
@@ -81,7 +82,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
  },[requestKey]);
  const product=(id:string)=>details[id]?.product??knownProducts.get(id);
  const title=(id:string)=>knownProducts.get(id)?.title||product(id)?.title||t(locale,'unknown');
- const jobLabel=(job:NativeJob)=>job.type==='storage:delete_local_products'?shellText(locale,'deleteLocalProducts')!:job.type==='unity:import'?(uxText(locale,'importUnity')??nativeWorkflowText(locale,'unity')):label(job.type.startsWith('ai:')?'aiTags':isStoreJob(job.type)?(/login$/i.test(job.type)?'signIn':/update$/i.test(job.type)?'update':'sync'):job.type==='download'?'download':job.type==='storage:migrate_root'?'move':job.type==='storage:export_backup'?'export':job.type==='storage:restore_backup'||job.type==='storage:import_local'?'import':job.type==='storage:export_zip'?'exportZip':'storage');
+ const jobLabel=(job:NativeJob)=>job.type==='licenses:sync'?licenseText(locale,'licenseSync')!:job.type==='storage:delete_local_products'?shellText(locale,'deleteLocalProducts')!:job.type==='unity:import'?(uxText(locale,'importUnity')??nativeWorkflowText(locale,'unity')):label(job.type.startsWith('ai:')?'aiTags':isStoreJob(job.type)?(/login$/i.test(job.type)?'signIn':/update$/i.test(job.type)?'update':'sync'):job.type==='download'?'download':job.type==='storage:migrate_root'?'move':job.type==='storage:export_backup'?'export':job.type==='storage:restore_backup'||job.type==='storage:import_local'?'import':job.type==='storage:export_zip'?'exportZip':'storage');
  function failures(job:ActivityJob){
   const result:{key:string;name:string;reason:string}[]=[];
   const ids=productIds(job),files=ids.flatMap(id=>product(id)?.files??[]);
@@ -144,7 +145,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
     const provider=account?.store||job.store||(/^booth/i.test(job.type)?'BOOTH':/^gumroad/i.test(job.type)?'Gumroad':/^jinxxy/i.test(job.type)?'Jinxxy':'');
     const names=ids.map(title),identity=job.type==='unity:import'?[job.projectName,job.unityVersion].filter(Boolean).join(' · '):isStoreJob(job.type)?[provider,account?.name||job.accountName||(job.accountId?`${t(locale,'account')} · ${t(locale,'unknown')}`:'')].filter(Boolean).join(' · '):names[0];
     const errors=failures(job),percent=progressPercent(job),date=Date.parse(job.completedAt??job.updatedAt??job.createdAt??'');
-    const canRetry=job.type.startsWith('ai:')||isStoreJob(job.type)||job.type==='download'||job.type==='storage:import_local'||job.type==='storage:delete_local_products';
+    const canRetry=job.type==='licenses:sync'||job.type.startsWith('ai:')||isStoreJob(job.type)||job.type==='download'||job.type==='storage:import_local'||job.type==='storage:delete_local_products';
     const accountRemoved=isStoreJob(job.type)&&!!job.accountId&&!account;
     const accountBusy=isStoreJob(job.type)&&!!job.accountId&&jobs.some(other=>other.accountId===job.accountId&&active(other));const signInRequired=needsStoreSignIn(job,account);
     const copy=copyStates[job.id],copyStatus=copy?.stamp===jobStamp(job)?copy.status:undefined;

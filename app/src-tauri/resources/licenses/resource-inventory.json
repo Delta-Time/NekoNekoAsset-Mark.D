@@ -51,8 +51,8 @@
     },
     {
       "resourcePath": "licenses/dependency-ledger.json",
-      "bytes": 822999,
-      "sha256": "0ded416efe46d09e8b72248a88be6b267be196d51b7098186c44011d8d7353f1"
+      "bytes": 848165,
+      "sha256": "ed5de738b96c879c01fb1484ca2b4b77e4a4dd7d0d3295303cab8255cd5e342b"
     },
     {
       "resourcePath": "licenses/frontend/NOTICES.txt",
@@ -166,8 +166,8 @@
     },
     {
       "resourcePath": "licenses/rust/NOTICES.txt",
-      "bytes": 5145480,
-      "sha256": "4c56c870c82a2cf53c56f25a5bebbc623d5f78c1455ee299bf4b5a6b327f0cc0"
+      "bytes": 5326097,
+      "sha256": "349fe81c2cfe691912ff58e28efc8aa3c15e4a4424892eaf18d8db249a03f9c5"
     },
     {
       "resourcePath": "licenses/rust-standard-library/COPYRIGHT-library.html",
@@ -447,7 +447,7 @@
     {
       "resourcePath": "licenses/supplemental/index.json",
       "bytes": 95336,
-      "sha256": "3925a45ada046c07f866484e59bd4e702499e0f446ffeb6a6057222422a5c9d8"
+      "sha256": "34ecb792b9ab69c4501e5f41ae580bf9535344579a176ce50d975bf769e5a842"
     },
     {
       "resourcePath": "licenses/supplemental/published/fxhash-0.2.1/LEGAL-HEADER.txt",

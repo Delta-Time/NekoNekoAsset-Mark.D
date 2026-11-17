@@ -7,7 +7,7 @@ import TagPicker, { resolveTag } from './TagPicker';
 import AvatarPicker,{productsAvatarOptions,productAvatarOptions,productAvatarSelection,productAvatarValues,productAvatarDelta} from './AvatarPicker';
 import Preview from './Preview';
 import Toggle from './Toggle';
-import {dialog, nativeFileAction, previewSource, errorCode, dismissAiSourceUrlCandidate} from './backend';
+import {dialog, nativeFileAction, previewSource, errorCode, dismissAiSourceUrlCandidate, invokeAction} from './backend';
 import type {AvatarOption,TagOption,FetchedProductMetadata,ProductOverlayChange} from './backend';
 import {collectionMembership} from './collections';
 import ConfirmDelete from './ConfirmDelete';
@@ -18,10 +18,13 @@ import {localImportText} from './local-import-i18n';
 import './UnityWorkflow.css';
 import './editor-styles.css';
 import {contentLang} from './content-lang';
+import {LicenseEditor,type LicenseCells} from './Licenses';
+import {licenseText} from './license-i18n';
 
 export interface EditDialogsProps {
   dialog: string | null; locale: Locale; products: Product[]; selected: string[]; active: Product | undefined;
   aiFeaturesEnabled?:boolean;
+  licenseEnabled?:boolean;
   onClose: () => void; onPatch: (ids: string[], patch: Partial<Product>) => void | Promise<void>;
   onBatchPatch?: (changes: ProductOverlayChange[]) => void | Promise<void>;
   onNotice: (s: string) => void; onSaveSearch: (name: string) => void | Promise<void>; onCollection: (name: string, ids: string[], included: boolean) => void | Promise<void>;
@@ -132,6 +135,11 @@ function DialogBody(props: EditDialogsProps) {
   const [avatarsRefreshing,setAvatarsRefreshing]=useState(false);
   const [avatarPickerOpen,setAvatarPickerOpen]=useState(false);
   const avatarPickerShown=useRef(avatarPickerOpen);avatarPickerShown.current=avatarPickerOpen;
+  // undefined: untouched; null: back to the synced license; cells: the user's table.
+  const [licenseDraft,setLicenseDraft]=useState<LicenseCells|null|undefined>(undefined),[licenseOpen,setLicenseOpen]=useState(false);
+  const licenseShown=useRef(licenseOpen);licenseShown.current=licenseOpen;
+  const licenseTrigger=useRef<HTMLButtonElement>(null),licenseWasOpen=useRef(false);
+  useLayoutEffect(()=>{if(licenseWasOpen.current&&!licenseOpen)licenseTrigger.current?.focus();licenseWasOpen.current=licenseOpen;},[licenseOpen]);
   const avatarTrigger=useRef<HTMLButtonElement>(null),avatarWasOpen=useRef(false);
   useLayoutEffect(()=>{if(avatarWasOpen.current&&!avatarPickerOpen)avatarTrigger.current?.focus();avatarWasOpen.current=avatarPickerOpen;},[avatarPickerOpen]);
   const avatarChanged=!equal([...selectedAvatars].sort(),[...initialAvatarSelection].sort());
@@ -220,7 +228,7 @@ function DialogBody(props: EditDialogsProps) {
   useEffect(()=>{if(!error)return;const frame=requestAnimationFrame(()=>box.current?.querySelector('[role="alert"]')?.scrollIntoView({block:'nearest'}));return()=>cancelAnimationFrame(frame);},[error]);
   const themeValid = Object.keys(builtInTheme).every(key => validColor(theme[key]));
   if(themeValid) lastValidTheme.current = theme;
-  const singleChanged = opening && (resetTitle || title !== opening.title || sourceUrl!==(opening.sourceUrl??'') || sourceThumbnailUrl!==opening.sourceThumbnailUrl || note !== opening.note || category !== opening.category || avatarChanged || !equal(tags, initialTags) || !!pendingTag.trim() || !equal(rejected, opening.rejectedTags ?? []) || thumbnailPath!==undefined || thumbnailChoice !== initialThumbnailChoice || thumbnailURL !== initialThumbnailURL || sensitive !== opening.sensitive);
+  const singleChanged = opening && (resetTitle || title !== opening.title || sourceUrl!==(opening.sourceUrl??'') || sourceThumbnailUrl!==opening.sourceThumbnailUrl || note !== opening.note || category !== opening.category || avatarChanged || !equal(tags, initialTags) || !!pendingTag.trim() || !equal(rejected, opening.rejectedTags ?? []) || thumbnailPath!==undefined || thumbnailChoice !== initialThumbnailChoice || thumbnailURL !== initialThumbnailURL || sensitive !== opening.sensitive || licenseDraft !== undefined);
   const dirty = p.dialog === 'theme' ? !equal(theme, initialTheme.current) || name !== (p.themeName??'') : batch ? !!category || noteChanged || ratingChanged || batchAvatarChanged || (tagMode !== 'unchanged' && (!!tagDelta.length || !!pendingDelta.trim())) : p.dialog === 'edit' ? !!singleChanged||!!addedFiles.length||!!removedFiles.length : !!name.trim();
   const close = () => { if(inFlight.current)return;cancelFetch();if (p.dialog === 'theme') p.onThemePreview(null); p.onClose(); };
   const requestClose = () => {if(inFlight.current)return;cancelFetch();confirmClose ? setConfirmClose(false) : dirty ? setConfirmClose(true) : close();};
@@ -245,7 +253,7 @@ function DialogBody(props: EditDialogsProps) {
     const elements=focusable(box.current); (elements.find(element=>element.tagName!=='BUTTON')??elements[0])?.focus();
     const key = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode===229) return;
-      if(avatarPickerShown.current)return;
+      if(avatarPickerShown.current||licenseShown.current)return;
       if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); closeRef.current(); }
       if (e.key === 'Tab') {
         const elements = focusable(confirmationOpen.current ? confirmation.current : box.current);
@@ -293,6 +301,7 @@ function DialogBody(props: EditDialogsProps) {
         else {patch.thumbnailOverrideUrl='';patch.previewUrl='';}
       }
       await p.onPatch([active.id], patch);
+      if(licenseDraft!==undefined)await invokeAction('licenses','set',{productId:active.id,cells:licenseDraft});
       if(localFilesEditable&&(addedFiles.length||removedFiles.length))await p.onLocalFiles!(active.id,{draftId:filesDraft.current,addSources:addedFiles,removeFileIds:removedFiles});
     } else if (batch) {
       const delta=withPendingTag(tagDelta,pendingDelta,suggestions,aliases);
@@ -353,7 +362,7 @@ function DialogBody(props: EditDialogsProps) {
   const labelKey = p.dialog === 'saveSearch' ? 'saveSearch' : p.dialog ?? 'edit';
   return <>
     <div className="modal-backdrop" onMouseDown={e => {if(e.target === e.currentTarget) requestClose();}}>
-      <div className="modal editor-modal" role="dialog" aria-modal={!confirmClose&&!avatarPickerOpen} aria-hidden={confirmClose||avatarPickerOpen||undefined} inert={confirmClose||avatarPickerOpen} aria-busy={busy} aria-labelledby="edit-dialog-title" ref={box} style={themeDialogStyle}>
+      <div className="modal editor-modal" role="dialog" aria-modal={!confirmClose&&!avatarPickerOpen&&!licenseOpen} aria-hidden={confirmClose||avatarPickerOpen||licenseOpen||undefined} inert={confirmClose||avatarPickerOpen||licenseOpen} aria-busy={busy} aria-labelledby="edit-dialog-title" ref={box} style={themeDialogStyle}>
         <div className="modal-header"><h2 id="edit-dialog-title">{L(labelKey)}{batch && ` · ${scoped.length}`}</h2><button disabled={busy} aria-label={L('close')} onClick={requestClose}>×</button></div>
         <form onSubmit={e=>{e.preventDefault();save();}} style={{display:'contents'}}>
           <div className="modal-body" inert={busy}>
@@ -369,7 +378,7 @@ function DialogBody(props: EditDialogsProps) {
               {batch&&<div className="editor-batch-rating"><span className="editor-sensitive-toggle"><span className="nna-toggle"><span id="editor-batch-sensitive-label">R-18</span><button type="button" role="checkbox" aria-checked={batchRating==='mixed'?'mixed':batchRating==='on'} aria-labelledby="editor-batch-sensitive-label" title={ratingChanged?L(batchRating==='on'?'ratingOn':'ratingOff'):L('unchanged')+(batchRating==='mixed'?' · '+L('mixed'):'')} onClick={()=>setRating(batchRating==='on'?'off':'on')}><span aria-hidden="true"/></button></span></span></div>}
               {!batch&&<>
                 <div className="editor-thumbnail-note"><div><div className="field"><span>{L('thumbnail')}</span></div><button type="button" className="editor-thumbnail-preview" title={L('uploadThumbnail')} aria-label={L('uploadThumbnail')} onClick={()=>void uploadThumbnail()}><Preview src={thumbnailPreview} title={L('thumbnail')} placeholderTitle={L('noImage')}/><span className="editor-thumbnail-upload" aria-hidden="true"><ImageUp size={26}/></span></button></div><Field label={L('note')}><textarea rows={5} value={note} onChange={e=>setNote(e.target.value)}/></Field></div>
-                <div className="editor-thumbnail-bottom"><div className="editor-thumbnail-actions"><button type="button" disabled={!!fetching||!p.onFetchMetadata} aria-busy={fetching==='thumbnail'} onClick={resetThumbnail}>{L(fetching==='thumbnail'?'resettingThumbnail':'resetThumbnail')}</button></div><label className="editor-sensitive-toggle" htmlFor="editor-sensitive"><Toggle id="editor-sensitive" label="R-18" checked={sensitive} onChange={setSensitive}/></label></div>
+                <div className="editor-thumbnail-bottom"><div className="editor-thumbnail-actions"><button type="button" disabled={!!fetching||!p.onFetchMetadata} aria-busy={fetching==='thumbnail'} onClick={resetThumbnail}>{L(fetching==='thumbnail'?'resettingThumbnail':'resetThumbnail')}</button></div>{p.licenseEnabled&&!batch&&<button type="button" ref={licenseTrigger} className="editor-license-button" onClick={()=>setLicenseOpen(true)}>{licenseText(p.locale,'editLicense')}</button>}<label className="editor-sensitive-toggle" htmlFor="editor-sensitive"><Toggle id="editor-sensitive" label="R-18" checked={sensitive} onChange={setSensitive}/></label></div>
                 {localFilesEditable&&<div className="editor-local-files"><div className="unity-file-heading editor-local-file-heading"><strong>{L('files')}</strong><button type="button" onClick={()=>void chooseLocalFiles()}>{L('addFiles')}</button></div><div className={`unity-file-list editor-local-file-list${filesDropping?' is-dropping':''}`} ref={localFileList} tabIndex={0} role="group" aria-label={L('files')} title={localImportText(p.locale,'dropFiles')} onDragOver={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();setFilesDropping(true);}}} onDragLeave={event=>{if(!(event.relatedTarget instanceof Node)||!event.currentTarget.contains(event.relatedTarget))setFilesDropping(false);}} onDrop={event=>{event.preventDefault();setFilesDropping(false);}}>{active?.files.filter(file=>!removedFiles.includes(file.id)).map(file=><div className="unity-file-row editor-local-file-row" key={file.id}><span className="unity-file-name"><span title={file.name}>{file.name}</span></span><button type="button" title={L('removeFile')} aria-label={`${L('removeFile')} ${file.name}`} onClick={()=>{setRemovedFiles(ids=>[...new Set([...ids,file.id])]);returnToFileList();}}><X size={14}/></button></div>)}{addedFiles.map(path=><div className="unity-file-row editor-local-file-row" key={path}><span className="unity-file-name"><span title={path}>{localFileName(path)}</span></span><button type="button" title={L('removeFile')} aria-label={`${L('removeFile')} ${localFileName(path)}`} onClick={()=>{setAddedFiles(paths=>paths.filter(value=>value!==path));returnToFileList();}}><X size={14}/></button></div>)}{!addedFiles.length&&!active?.files.some(file=>!removedFiles.includes(file.id))&&<div className="editor-local-file-empty">{localImportText(p.locale,'dropFiles')}</div>}</div></div>}
               </>}
             </>}
@@ -389,6 +398,7 @@ function DialogBody(props: EditDialogsProps) {
       </div>
     </div>
     {avatarPickerOpen&&<AvatarPicker locale={p.locale} options={avatarOptions} value={pickerSelection} mixed={batch?batchAvatarMixed:undefined} label={id=>{const option=avatarOptions.find(option=>option.id===id);return option&&'legacyValue' in option?String(option.legacyValue):p.avatarLabel?.(id)||option?.displayName||option?.officialName||id;}} onChange={(ids,selected)=>{if(batch)setBatchAvatarSelections(current=>Object.fromEntries(scoped.map(item=>{const values=current[item.id]??[];return [item.id,selected?[...new Set([...values,...ids])]:values.filter(id=>!ids.includes(id))];})));else setSelectedAvatars(current=>selected?[...new Set([...current,...ids])]:current.filter(id=>!ids.includes(id)));}} onClose={()=>setAvatarPickerOpen(false)}/>}
+    {licenseOpen&&active&&<LicenseEditor locale={p.locale} productId={active.id} draft={licenseDraft} onDone={cells=>{setLicenseDraft(cells);setLicenseOpen(false);}} onClose={()=>setLicenseOpen(false)}/>}
     {confirmClose && <div className="modal-backdrop editor-confirm-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!inFlight.current)setConfirmClose(false);}}>
       <div className="modal editor-confirm" role="alertdialog" aria-modal="true" aria-labelledby="editor-unsaved-title" ref={confirmation} style={themeDialogStyle}>
         <div className="modal-header"><h2 id="editor-unsaved-title">{L('unsavedChanges')}</h2></div>

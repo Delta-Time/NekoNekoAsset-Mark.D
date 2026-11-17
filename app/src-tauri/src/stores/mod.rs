@@ -181,6 +181,10 @@ impl StoreService {
         })
     }
 
+    pub(crate) fn booth(&self) -> BoothService {
+        (*self.booth).clone()
+    }
+
     pub(crate) fn rebind_catalogue(&self, catalogue: Catalogue) -> Result<Self> {
         ensure!(catalogue.device_dir() == self.catalogue.device_dir(), "STORE_DEVICE_MISMATCH");
         Ok(Self {

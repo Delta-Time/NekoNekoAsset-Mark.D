@@ -189,6 +189,10 @@ fn blocked(running: &BTreeSet<String>, key: &str) -> bool {
         || running.contains("booth-global")
         || (key == "booth-global" && !running.is_empty())
 }
+/// The fixed code of a BOOTH failure, never a message that could carry a URL.
+pub(crate) fn error_code(error: &anyhow::Error) -> String {
+    code(error)
+}
 fn code(error: &anyhow::Error) -> String {
     let value = error.to_string();
     if value.len() <= 100
@@ -1208,6 +1212,37 @@ impl BoothService {
             Ok((status, body)) => free_offer_closed(status.as_u16(), &body, id),
             Err(_) => false,
         }
+    }
+    /// A cookie-less client for public item pages, past the R-18 confirmation.
+    pub fn public_client(&self) -> Result<reqwest::Client> {
+        let jar = Arc::new(reqwest::cookie::Jar::default());
+        jar.add_cookie_str("adult=t; Domain=booth.pm; Path=/", &url::Url::parse("https://booth.pm/").unwrap());
+        http::build_client(jar, false)
+    }
+    /// A public item page, paced with the store sync's own requests.
+    pub async fn public_item_page(&self, client: &reqwest::Client, id: &str) -> Result<(u16, String)> {
+        ensure!(safety::numeric(id), "INVALID_PRODUCT_ID");
+        let url = url::Url::parse(&format!("https://booth.pm/ja/items/{id}"))?;
+        let (status, body) = self.inner.http.get(client, url).await?;
+        Ok((status.as_u16(), body))
+    }
+    /// The bytes of a 0-yen download control from a public item page, read with an account
+    /// that holds the product. BOOTH records it in that account's free-download history.
+    pub async fn free_license_file(&self, app: &AppHandle, account: &str, route: &str, limit: u64) -> Result<Vec<u8>> {
+        let (_, variant, route) = safety::resolver(route).ok_or_else(|| anyhow::anyhow!("INVALID_RESOLVER"))?;
+        ensure!(variant.is_some(), "INVALID_RESOLVER");
+        let client = self.client(app, account, true).await?;
+        let mut response = self.inner.http.resolve(&client, url::Url::parse(&route)?).await?;
+        validate_download_response(&response)?;
+        if response.content_length().is_some_and(|n| n > limit) {
+            bail!("LICENSE_DOCUMENT_TOO_LARGE");
+        }
+        let mut body = vec![];
+        while let Some(chunk) = response.chunk().await.map_err(|_| anyhow::anyhow!("NETWORK_UNAVAILABLE"))? {
+            ensure!(body.len() + chunk.len() <= limit as usize, "LICENSE_DOCUMENT_TOO_LARGE");
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
     pub async fn download_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
         let file = self
