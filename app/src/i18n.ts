@@ -59,7 +59,7 @@ const labels: Record<string, [string, string, string, string, string]> = {
   compatibleAvatar: ['Compatible avatar', '対応アバター', '호환 아바타', '兼容素体', '相容素體'],
   fileCount: ['File count', 'ファイル数', '파일 수', '文件数', '檔案數'],
   library: ['Library', 'ライブラリ', '라이브러리', '资产库', '資產庫'],
-  activity: ['Activity', '処理状況', '활동', '活动', '活動'],
+  activity: ['Activity', '進行状況', '활동', '活动', '活動'],
   settings: ['Settings', '設定', '설정', '设置', '設定'],
   search: ['Search', '検索', '검색', '搜索', '搜尋'],
   searchPlaceholder: ['Search assets, shops, tags or files', '名前・ショップ・タグ・ファイルを検索', '에셋, 상점, 태그, 파일 검색', '搜索资产、商店、标签或文件', '搜尋資產、商店、標籤或檔案'],
