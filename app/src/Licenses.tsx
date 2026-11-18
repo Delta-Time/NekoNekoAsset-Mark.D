@@ -92,7 +92,7 @@ export function LicenseEditor({locale,productId,draft,onDone,onClose}:{locale:Lo
  </div></div>);
 }
 
-/** Features section: the switch, what can be read, sync all and the red delete. */
+/** Features section: the switch and, while it is on, what can be read, sync all and the red delete. */
 export function LicenseSettings({locale,enabled,busy,job,onToggle,onNotice}:{locale:Locale;enabled:boolean;busy:boolean;job?:{state:string;progress?:unknown};onToggle:(enabled:boolean)=>void;onNotice:(text:string)=>void}){
  const L=text(locale),[exists,setExists]=useState(false),[pending,setPending]=useState(false),[confirming,setConfirming]=useState(false),trigger=useRef<HTMLButtonElement>(null);
  const running=!!job&&['queued','running'].includes(job.state);
@@ -100,7 +100,7 @@ export function LicenseSettings({locale,enabled,busy,job,onToggle,onNotice}:{loc
  const syncAll=async()=>{setPending(true);try{const result=await invokeAction<{jobId?:string|null}>('licenses','sync',{});if(!result?.jobId)onNotice(L('noLicenseWork'));}catch(failure){onNotice(licenseError(locale,errorCode(failure)));}finally{setPending(false);}};
  return <section className="wf-section license-settings">
   <Toggle label={L('licenseFilter')} checked={enabled} disabled={busy} onChange={onToggle}/>
-  <small className="license-hint">{L('licenseHint')}</small>
+  {enabled&&<small className="license-hint">{L('licenseHint')}</small>}
   {enabled&&<div className="license-actions"><button type="button" disabled={pending||running} onClick={()=>void syncAll()}>{L('syncAllLicenses')}{running&&typeof job?.progress==='number'?` · ${job.progress}%`:''}</button><button type="button" ref={trigger} className="danger" disabled={pending||!exists} onClick={()=>setConfirming(true)}>{L('deleteLicenses')}</button></div>}
   {confirming&&<LicenseDeleteConfirmation locale={locale} onClose={deleted=>{if(deleted)setExists(false);setConfirming(false);requestAnimationFrame(()=>{const section=trigger.current?.closest('.license-settings');(deleted?section?.querySelector<HTMLElement>('.license-actions button:not(:disabled)')??section?.querySelector<HTMLElement>('[role=switch]'):trigger.current)?.focus({preventScroll:true});});}}/>}
  </section>;
