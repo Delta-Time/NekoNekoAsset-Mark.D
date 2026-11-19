@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    time::UNIX_EPOCH,
+    time::{Instant, UNIX_EPOCH},
 };
 
 const JOB_TYPE: &str = "storage:import_local";
@@ -83,7 +83,8 @@ fn path_name(path: &Path) -> Result<String> {
     archive::validate_relative_path(name)?;
     Ok(name.to_owned())
 }
-fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup) -> Result<()> {
+fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup, cancel: Option<&AtomicBool>) -> Result<()> {
+    ensure!(!cancel.is_some_and(|stop| stop.load(Ordering::Acquire)), "cancelled");
     // Parents inside the selection were checked on the way down.
     reject_source_link(path)?;
     archive::validate_relative_path(relative)?;
@@ -98,7 +99,7 @@ fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup) -> Result<()> 
             .collect::<Result<Vec<_>>>()?;
         children.sort();
         for child in children {
-            enumerate(&child, &format!("{relative}/{}", path_name(&child)?), group)?;
+            enumerate(&child, &format!("{relative}/{}", path_name(&child)?), group, cancel)?;
         }
     } else {
         let (size, modified) = signature(path, relative)?;
@@ -151,6 +152,129 @@ mod tests {
             )
             .unwrap();
         (path, service)
+    }
+
+    #[tokio::test]
+    async fn accepts_multiple_local_requests_while_an_import_holds_the_disk_lock() {
+        let (path, service) = fixture();
+        let lock = service.operations.write().await;
+        let request = |name: &str| {
+            json!({"draftId":uuid::Uuid::new_v4(),"sources":[path.join(name)],"name":name})
+        };
+        let first = request("First");
+        let accepted = service.enqueue_local(&first).await.unwrap();
+        let second = service.enqueue_local(&request("Second")).await.unwrap();
+        assert_eq!(accepted["waiting"], 1);
+        assert_eq!(second["waiting"], 2);
+        assert_ne!(accepted["jobId"], second["jobId"]);
+        assert_eq!(service.enqueue_local(&first).await.unwrap()["jobId"], accepted["jobId"]);
+        let mut changed = first.clone();
+        changed["name"] = json!("A different name");
+        assert_eq!(service.enqueue_local(&changed).await.unwrap_err().to_string(), "local_draft_changed");
+
+        // Only the requests exist on disk. Neither source needs to be read during acceptance.
+        let reopened = Catalogue::open(&path.join("data")).unwrap();
+        let jobs = reopened.queued_jobs(Some(JOB_TYPE), None).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job["localRequest"].is_object() && job.get("localPlan").is_none()));
+        drop(reopened);
+        drop(lock);
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_discards_waiting_additions_without_waiting_for_disk_work() {
+        let (path, service) = fixture();
+        let lock = service.operations.write().await;
+        let source = path.join("source.txt");
+        fs::write(&source, b"authored sample").unwrap();
+        let request = || json!({"draftId":uuid::Uuid::new_v4(),"sources":[source],"name":"Sample"});
+        let waiting = service.enqueue_local(&request()).await.unwrap();
+        let running = service.enqueue_local(&request()).await.unwrap();
+        let old = service.prepare_local_import(&request()).unwrap();
+        let load = |accepted: &Value| {
+            service.catalogue.get("job", accepted["jobId"].as_str().unwrap()).unwrap()
+        };
+        let running_id = running["jobId"].as_str().unwrap();
+        let (claimed, _) = service.claim_local_job(running_id, None).await.unwrap().unwrap();
+        assert!(claimed["localPlan"].is_object());
+        assert!(claimed.get("localRequest").is_none());
+        service.catalogue.put("job", "queued-download", json!({
+            "id":"queued-download","type":"download","state":"queued"
+        })).unwrap();
+        assert!(service.begin_local_import_shutdown());
+        service.discard_waiting_local_imports().await.unwrap();
+        assert!(load(&waiting).is_none());
+        assert_eq!(load(&running).unwrap()["state"], "running");
+        let old = load(&old).unwrap();
+        assert_eq!(old["state"], "needsAction");
+        assert!(old["localPlan"].is_object());
+        assert_eq!(service.catalogue.get("job", "queued-download").unwrap().unwrap()["state"], "queued");
+        assert!(service.enqueue_local(&request()).await.is_err());
+        drop(lock);
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_requests_can_be_retried_after_planning_failure_or_queue_cancellation() {
+        let (path, service) = fixture();
+        let source = path.join("source.txt");
+        let args = json!({"draftId":uuid::Uuid::new_v4(),"sources":[source],"name":"Sample"});
+        let accepted = service.enqueue_local(&args).await.unwrap();
+        let id = accepted["jobId"].as_str().unwrap();
+        let load = || service.catalogue.get("job", id).unwrap().unwrap();
+        assert_eq!(service.cancel_job(id).unwrap()["cancelRequested"], true);
+        assert_eq!(load()["state"], "cancelled");
+        service.retry_local_import(id).await.unwrap();
+        assert!(service.claim_local_job(id, None).await.unwrap().is_none());
+        let failed = load();
+        assert_eq!(failed["state"], "needsAction");
+        assert_eq!(failed["errorCode"], "file_missing");
+        assert!(failed["localRequest"].is_object());
+
+        fs::write(&source, b"authored sample").unwrap();
+        service.retry_local_import(id).await.unwrap();
+        let (mut job, cancel) = service.claim_local_job(id, None).await.unwrap().unwrap();
+        service.run_local_import(&mut job, Path::new("unused"), &cancel).unwrap();
+        let saved = load();
+        assert!(saved["localPlan"].is_object());
+        assert!(saved.get("localRequest").is_none());
+        assert_eq!(saved["completedProductIds"], saved["productIds"]);
+        assert_eq!(saved["productIds"].as_array().unwrap().len(), 1);
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn local_copy_reports_streamed_bytes_and_cleans_up_on_cancellation() {
+        let (path, service) = fixture();
+        let source = path.join("source.txt");
+        let bytes = vec![7; 256 * 1024];
+        fs::write(&source, &bytes).unwrap();
+        let accepted = service.prepare_local_import(&json!({
+            "draftId":uuid::Uuid::new_v4(),"sources":[source],"name":"Sample"
+        })).unwrap();
+        let saved = service.catalogue.get("job", accepted["jobId"].as_str().unwrap()).unwrap().unwrap();
+        let plan: LocalPlan = serde_json::from_value(saved["localPlan"].clone()).unwrap();
+        let group = &plan.groups[0];
+        let file = &group.files[0];
+        let root = path.join("library");
+        let cancel = AtomicBool::new(false);
+        let mut reported = 0;
+        let error = service.copy_local_file(&root, &plan.draft_id, group, file, &cancel, |copied| {
+            if let Some(copied) = copied {
+                reported = copied;
+                cancel.store(true, Ordering::Release);
+            }
+        }).unwrap_err();
+        assert_eq!(local_error(&error), "cancelled");
+        assert!((1..bytes.len() as u64).contains(&reported));
+        assert!(!root.join(&group.prefix).join(&file.relative).exists());
+        assert!(service.catalogue.list("checkpoint").unwrap().is_empty());
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -688,6 +812,8 @@ fn listing_to_read(product: &Value) -> Option<&str> {
 fn local_error(error: &anyhow::Error) -> &'static str {
     for code in [
         "no_import_files",
+        "local_source_contains_library",
+        "local_source_overlap",
         "local_source_changed",
         "local_import_too_many_files",
         "local_batch_requires_folder_or_zip",
@@ -697,6 +823,9 @@ fn local_error(error: &anyhow::Error) -> &'static str {
         if error.to_string().contains(code) {
             return code;
         }
+    }
+    if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return "file_missing";
     }
     io::stable_error(error)
 }
@@ -917,7 +1046,7 @@ impl StorageService {
                 n += 1;
             }
             names.insert(relative.to_lowercase());
-            enumerate(&path, &relative, &mut group)?;
+            enumerate(&path, &relative, &mut group, None)?;
         }
         let plan = LocalPlan {
             draft_id: draft,
@@ -970,61 +1099,77 @@ impl StorageService {
 
     pub(super) async fn enqueue_local(&self, args: &Value) -> Result<Value> {
         let _work = self.catalogue.begin_catalogue_work()?;
-        let _operation = self
-            .operations
-            .try_read()
-            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
         let _gate = self.queue_gate.lock().await;
+        ensure!(!self.closing_local_imports.load(Ordering::Acquire), "storage_busy");
         let service = self.clone();
         let args = args.clone();
-        tokio::task::spawn_blocking(move || service.prepare_local_import(&args)).await?
+        tokio::task::spawn_blocking(move || {
+            let (job, is_new) = service.local_request_job(&args)?;
+            let id = io::required_string(&job, "id")?;
+            if is_new {
+                service.catalogue.put("job", id, job.clone())?;
+            }
+            let waiting = service.catalogue.queued_device_job_count(JOB_TYPE).unwrap_or(0);
+            Ok(json!({"jobId":id,"productIds":job["productIds"],"waiting":waiting}))
+        }).await?
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_local_import(&self, args: &Value) -> Result<Value> {
+        let (mut job, is_new) = self.local_request_job(args)?;
+        if !is_new {
+            return Ok(json!({"jobId":job["id"],"productIds":job["productIds"],"state":job["state"]}));
+        }
+        self.plan_local_request(&mut job, None)?;
+        self.catalogue.put("job", io::required_string(&job, "id")?, job.clone())?;
+        Ok(json!({"jobId":job["id"],"productIds":job["productIds"]}))
+    }
+
+    fn local_request_job(&self, args: &Value) -> Result<(Value, bool)> {
         let draft = uuid::Uuid::parse_str(io::required_string(args, "draftId")?)?.to_string();
         let id = format!("local-import:{draft}");
-        // A repeated submission resumes the durable draft; paths are not re-enumerated.
+        let fingerprint = io::key(&serde_json::to_string(args)?);
         if let Some(job) = self.catalogue.get("job", &id)? {
             ensure!(job["type"] == JOB_TYPE, "invalid_job");
-            ensure!(
-                job["requestFingerprint"] == io::key(&serde_json::to_string(args)?),
-                "local_draft_changed"
-            );
-            return Ok(json!({"jobId":id,"productIds":job["productIds"],"state":job["state"]}));
+            ensure!(job["requestFingerprint"] == fingerprint, "local_draft_changed");
+            return Ok((job, false));
         }
         let mode = args["mode"].as_str().unwrap_or("single");
         ensure!(matches!(mode, "single" | "batch"), "invalid_arguments");
-        let raw = args["sources"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("invalid_arguments"))?;
+        let sources = args["sources"].as_array().ok_or_else(|| anyhow::anyhow!("invalid_arguments"))?;
         ensure!(
-            !raw.is_empty() && raw.len() <= 10_000 && raw.iter().all(Value::is_string),
+            !sources.is_empty() && sources.len() <= 10_000 && sources.iter().all(Value::is_string),
             "invalid_arguments"
+        );
+        ensure!(
+            sources.iter().all(|path| Path::new(path.as_str().unwrap()).is_absolute()),
+            "root_not_absolute"
         );
         let root = self.root(args["rootId"].as_str())?;
+        let title = args["name"].as_str().filter(|name| !name.trim().is_empty())
+            .or_else(|| Path::new(sources[0].as_str().unwrap()).file_name().and_then(|name| name.to_str()));
+        let time = now();
+        let job = json!({
+            "id":id, "type":JOB_TYPE, "originDeviceId":self.catalogue.device_id(),
+            "rootId":root["id"], "requestFingerprint":fingerprint, "localRequest":args,
+            "localTitle":title, "productIds":[], "completedProductIds":[], "mode":mode,
+            "state":"queued", "progress":0, "createdAt":time, "updatedAt":time
+        });
+        Ok((job, true))
+    }
+
+    fn plan_local_request(&self, job: &mut Value, cancel: Option<&AtomicBool>) -> Result<()> {
+        let args = &job["localRequest"];
+        let draft = uuid::Uuid::parse_str(io::required_string(args, "draftId")?)?.to_string();
+        let mode = job["mode"].as_str().unwrap_or("single");
+        let raw = args["sources"].as_array().ok_or_else(|| anyhow::anyhow!("invalid_arguments"))?;
+        let root = self.root(Some(io::required_string(job, "rootId")?))?;
         let root_path = self.root_path(&root)?.canonicalize()?;
-        let category = args["category"].as_str().unwrap_or("NonVRChat");
-        ensure!(
-            [
-                "Base",
-                "Clothes",
-                "Hair",
-                "Accessory",
-                "Texture",
-                "Motion",
-                "Tool",
-                "Shader",
-                "Gimmick",
-                "World",
-                "Udon",
-                "NonVRChat"
-            ]
-            .contains(&category),
-            "invalid_arguments"
-        );
+        let metadata = self.local_metadata(args)?;
         let mut sources: Vec<PathBuf> = Vec::new();
         for value in raw {
-            let source = PathBuf::from(value.as_str().unwrap());
+            ensure!(!cancel.is_some_and(|stop| stop.load(Ordering::Acquire)), "cancelled");
+            let source = PathBuf::from(value.as_str().ok_or_else(|| anyhow::anyhow!("invalid_arguments"))?);
             ensure!(source.is_absolute(), "root_not_absolute");
             reject_source_link(&source)?;
             let source = source.canonicalize()?;
@@ -1115,7 +1260,7 @@ impl StorageService {
                     };
                     suffix += 1;
                 }
-                enumerate(source, &relative, &mut group)?;
+                enumerate(source, &relative, &mut group, cancel)?;
             }
             ensure!(!group.files.is_empty(), "no_import_files");
             // Windows and portable archives must not alias distinct source entries.
@@ -1133,30 +1278,27 @@ impl StorageService {
             group.directories.sort();
             groups.push(group);
         }
-        let metadata = self.local_metadata(args)?;
         let plan = LocalPlan {
             draft_id: draft,
             groups,
             metadata,
         };
         let product_ids: Vec<_> = plan.groups.iter().map(|g| g.product_id.clone()).collect();
-        let job = json!({"id":id,"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"rootId":root["id"],"requestFingerprint":io::key(&serde_json::to_string(args)?),"productIds":product_ids,"completedProductIds":[],"mode":mode,"localPlan":plan,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
-        self.catalogue.put("job", &id, job)?;
-        Ok(json!({"jobId":id,"productIds":product_ids}))
+        job["productIds"] = json!(product_ids);
+        job["localPlan"] = serde_json::to_value(plan)?;
+        job.as_object_mut().unwrap().remove("localRequest");
+        Ok(())
     }
 
     pub(super) async fn retry_local_import(&self, id: &str) -> Result<Value> {
-        let _operation = self
-            .operations
-            .try_read()
-            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
         let _gate = self.queue_gate.lock().await;
+        ensure!(!self.closing_local_imports.load(Ordering::Acquire), "storage_busy");
         let mut job = self
             .catalogue
             .get("job", id)?
             .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
         ensure!(
-            job["type"] == JOB_TYPE && job["localPlan"].is_object(),
+            job["type"] == JOB_TYPE && (job["localPlan"].is_object() || job["localRequest"].is_object()),
             "invalid_job"
         );
         ensure!(
@@ -1173,6 +1315,42 @@ impl StorageService {
             self.put_job(&mut job, "queued", None)?;
         }
         Ok(json!({"jobId":id,"productIds":job["productIds"]}))
+    }
+
+    pub(crate) fn begin_local_import_shutdown(&self) -> bool {
+        !self.closing_local_imports.swap(true, Ordering::AcqRel)
+    }
+
+    pub(crate) async fn discard_waiting_local_imports(&self) -> Result<()> {
+        let _gate = self.queue_gate.lock().await;
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut records = Vec::new();
+            let mut expected = Vec::new();
+            for mut job in service.catalogue.queued_jobs(Some(JOB_TYPE), None)? {
+                if job["originDeviceId"] != service.catalogue.device_id()
+                    || !matches!(job["mode"].as_str(), Some("single" | "batch"))
+                {
+                    continue;
+                }
+                let id = io::required_string(&job, "id")?.to_owned();
+                expected.push(("job".into(), id.clone(), Some(job.clone())));
+                let record = if job["localRequest"].is_object() && job.get("localPlan").is_none() {
+                    None
+                } else {
+                    // An older job or a retry may own checkpoints or published files.
+                    job["state"] = json!("needsAction");
+                    job["updatedAt"] = json!(now());
+                    job["errorCode"] = json!("interrupted");
+                    Some(job)
+                };
+                records.push(("job".into(), id, record));
+            }
+            if !records.is_empty() {
+                ensure!(service.catalogue.write_many_if_unchanged(records, expected)?, "storage_busy");
+            }
+            Ok(())
+        }).await?
     }
 
     /// Called under the existing queue gate; local products never request store tickets.
@@ -1309,6 +1487,7 @@ impl StorageService {
         group: &LocalGroup,
         file: &LocalFile,
         cancel: &AtomicBool,
+        mut copying: impl FnMut(Option<u64>),
     ) -> Result<Value> {
         io::check_cancel(cancel)?;
         let checkpoint = checkpoint_id(draft, group, file);
@@ -1318,12 +1497,14 @@ impl StorageService {
         if let Some(record) = recorded.as_ref() {
             ensure!(record["relativePath"] == relative, "file_integrity_failed");
             if target.try_exists()? {
-                io::verify(
+                copying(None);
+                io::verify_cancel(
                     &target,
                     io::required_string(record, "hash")?,
                     record["sizeBytes"]
                         .as_u64()
                         .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?,
+                    cancel,
                 )?;
                 return Ok(record.clone());
             }
@@ -1342,7 +1523,8 @@ impl StorageService {
                         let size = artifact["sizeBytes"]
                             .as_u64()
                             .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?;
-                        io::verify(&target, hash, size)?;
+                        copying(None);
+                        io::verify_cancel(&target, hash, size, cancel)?;
                         let record = json!({"id":checkpoint,"kind":"localImportCopy","relativePath":relative,"hash":hash,"sizeBytes":size});
                         self.catalogue
                             .put("checkpoint", &checkpoint, record.clone())?;
@@ -1388,7 +1570,9 @@ impl StorageService {
                 output.write_all(&buffer[..count])?;
                 hash.update(&buffer[..count]);
                 size += count as u64;
+                copying(Some(size));
             }
+            copying(None);
             output.sync_all()?;
             ensure!(
                 size == file.size
@@ -1402,7 +1586,7 @@ impl StorageService {
                     "local_source_changed"
                 );
             }
-            io::verify(&partial, &hash, size)?;
+            io::verify_cancel(&partial, &hash, size, cancel)?;
             Ok((hash, size))
         })();
         drop(output);
@@ -1416,7 +1600,7 @@ impl StorageService {
         io::check_cancel(cancel)?;
         if target.exists() {
             // Crash between publishing a copy and recording its checkpoint.
-            io::verify(&target, &hash, size)?;
+            io::verify_cancel(&target, &hash, size, cancel)?;
         } else {
             // Hard-link is exclusive and publishes the already flushed file without overwriting.
             if fs::hard_link(&partial, &target).is_err() {
@@ -1432,6 +1616,7 @@ impl StorageService {
         Ok(record)
     }
 
+    #[cfg(test)]
     pub(super) fn run_local_import(
         &self,
         job: &mut Value,
@@ -1448,16 +1633,36 @@ impl StorageService {
         cancel: &AtomicBool,
         app: Option<&tauri::AppHandle>,
     ) -> Result<()> {
+        ensure!(!cancel.load(Ordering::Acquire), "cancelled");
+        let id = io::required_string(job, "id")?.to_owned();
+        let mut last_progress = None::<Instant>;
+        let mut report = |phase: &str, bytes: Option<(u64, u64)>, immediate: bool| {
+            if let Some(app) = app {
+                if immediate || last_progress.is_none_or(|last| last.elapsed() >= Duration::from_millis(350)) {
+                    last_progress = Some(Instant::now());
+                    let _ = app.emit("local-import:progress", json!({
+                        "jobId":id, "phase":phase, "bytes":bytes.map(|(done, _)| done),
+                        "totalBytes":bytes.map(|(_, total)| total)
+                    }));
+                }
+            }
+        };
         let plan: LocalPlan = serde_json::from_value(job["localPlan"].clone())?;
         let root = self.root(job["rootId"].as_str())?;
         let root_path = self.root_path(&root)?;
         let mut first_error = None;
         let mut failures = Vec::new();
+        let total_bytes = plan.groups.iter().flat_map(|group| &group.files)
+            .fold(0u64, |total, file| total.saturating_add(file.size));
+        let mut processed_bytes = 0u64;
         for (index, group) in plan.groups.iter().enumerate() {
+            let group_end = group.files.iter()
+                .fold(processed_bytes, |total, file| total.saturating_add(file.size));
             let completed = job["completedGroupIndexes"]
                 .as_array()
                 .is_some_and(|a| a.contains(&json!(index)));
             if completed && !group.membership && plan.groups.len() > 1 {
+                processed_bytes = group_end;
                 continue;
             }
             let outcome = (|| -> Result<()> {
@@ -1483,16 +1688,25 @@ impl StorageService {
             }
             io::check_cancel(cancel)?;
             for directory in &group.directories {
+                io::check_cancel(cancel)?;
                 fs::create_dir_all(io::safe_join(
                     &root_path,
                     &format!("{}/{directory}", group.prefix),
                 )?)?;
             }
-            let copies = group
-                .files
-                .iter()
-                .map(|file| self.copy_local_file(&root_path, &plan.draft_id, group, file, cancel))
-                .collect::<Result<Vec<_>>>()?;
+            report("copying", Some((processed_bytes, total_bytes)), true);
+            let mut copies = Vec::with_capacity(group.files.len());
+            for file in &group.files {
+                let copy = self.copy_local_file(&root_path, &plan.draft_id, group, file, cancel, |bytes| {
+                    match bytes {
+                        Some(bytes) => report("copying", Some((processed_bytes.saturating_add(bytes.min(file.size)), total_bytes)), false),
+                        None => report("verifying", None, file.size >= 16 * 1024 * 1024),
+                    }
+                })?;
+                copies.push(copy);
+                processed_bytes = processed_bytes.saturating_add(file.size);
+            }
+            report("finalizing", None, true);
             let facts: Vec<_> = group
                 .files
                 .iter()
@@ -1591,6 +1805,7 @@ impl StorageService {
                 }
                 // Expand only supplied managed archive files, never nested extraction output.
                 let mut extracted = HashSet::new();
+                let mut extracting = false;
                 for n in 0..artifacts.len() {
                     if extracted.contains(&n) {
                         continue;
@@ -1601,6 +1816,10 @@ impl StorageService {
                     )?;
                     if !archive::is_supported_archive(&path) {
                         continue;
+                    }
+                    if !extracting {
+                        report("extracting", None, true);
+                        extracting = true;
                     }
                     // Explicitly selected split files can occupy separate selection containers.
                     // Match only entries from the same original directory, never unrelated trees.
@@ -1634,7 +1853,7 @@ impl StorageService {
                                 })
                                 .try_for_each(|a| {
                                     io::check_cancel(cancel)?;
-                                    io::verify(
+                                    io::verify_cancel(
                                         &io::safe_join(
                                             &root_path,
                                             io::required_string(a, "relativePath")?,
@@ -1643,6 +1862,7 @@ impl StorageService {
                                         a["sizeBytes"].as_u64().ok_or_else(|| {
                                             anyhow::anyhow!("file_integrity_failed")
                                         })?,
+                                        cancel,
                                     )
                                 });
                             if let Err(e) = unchanged {
@@ -1691,7 +1911,12 @@ impl StorageService {
                 group.product_id.clone()
             };
             let mut next_job = job.clone();
+            io::check_cancel(cancel)?;
+            report("finalizing", None, true);
             next_job["productIds"][index] = json!(product_id);
+            if product_id != group.product_id {
+                next_job["reusedLocalAsset"] = json!(true);
+            }
             if error.is_none() {
                 let mut completed = strings(&next_job["completedProductIds"]);
                 if !completed.contains(&product_id) {
@@ -1911,24 +2136,86 @@ impl StorageService {
         Ok((relative, inventory, extraction.source_paths.clone()))
     }
 
-    pub(super) async fn process_local_job(&self, app: &tauri::AppHandle, mut job: Value) {
-        let _operation = self.operations.write().await;
-        let id = job["id"].as_str().unwrap_or("").to_owned();
-        // Cancellation may be requested while waiting for the operation barrier.
-        if let Ok(Some(current)) = self.catalogue.get("job", &id) {
-            job = current;
+    async fn claim_local_job(
+        &self,
+        id: &str,
+        app: Option<&tauri::AppHandle>,
+    ) -> Result<Option<(Value, Arc<AtomicBool>)>> {
+        let gate = self.queue_gate.lock().await;
+        if self.closing_local_imports.load(Ordering::Acquire) {
+            return Ok(None);
         }
-        if job["state"] != "queued" {
-            return;
-        }
-        let cancel = self.cancellation(&id);
-        if job["cancelRequested"] == true {
+        let Some(before) = self.catalogue.get("job", id)?.filter(|job| job["state"] == "queued") else {
+            return Ok(None);
+        };
+        let cancel = self.cancellation(id);
+        if before["cancelRequested"] == true {
             cancel.store(true, Ordering::Release);
         }
-        if self.put_job(&mut job, "running", None).is_err() {
-            return;
+        drop(gate);
+
+        let mut job = before.clone();
+        let result = if job["localRequest"].is_object() {
+            if let Some(app) = app {
+                let _ = app.emit("local-import:progress", json!({"jobId":id,"phase":"preparing","bytes":null,"totalBytes":null}));
+            }
+            let service = self.clone();
+            let stop = cancel.clone();
+            match tokio::task::spawn_blocking(move || {
+                let result = service.plan_local_request(&mut job, Some(&stop));
+                (job, result)
+            }).await {
+                Ok((planned, result)) => {
+                    job = planned;
+                    result
+                }
+                Err(_) => {
+                    job = before.clone();
+                    Err(anyhow::anyhow!("storage_failed"))
+                }
+            }
+        } else if job["localPlan"].is_object() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("invalid_job"))
+        };
+
+        let _gate = self.queue_gate.lock().await;
+        if self.closing_local_imports.load(Ordering::Acquire) {
+            return Ok(None);
         }
-        self.jobs_changed(app, &id);
+        let (state, error) = match result.and_then(|()| io::check_cancel(&cancel)) {
+            Ok(()) => ("running", None),
+            Err(e) if local_error(&e) == "cancelled" => ("cancelled", None),
+            Err(e) => ("needsAction", Some(local_error(&e))),
+        };
+        // A running job always has the inventory needed by older versions.
+        // Publish it and claim the queue entry in one write, after scanning.
+        job["state"] = json!(state);
+        job["updatedAt"] = json!(now());
+        job["errorCode"] = json!(error);
+        let saved = self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.to_owned(), job.clone())],
+            vec![("job".into(), id.to_owned(), Some(before))],
+        )?;
+        if saved {
+            if let Some(app) = app {
+                self.jobs_changed(app, id);
+            }
+        }
+        if !saved || state != "running" {
+            self.cancellations.lock().unwrap().remove(id);
+            return Ok(None);
+        }
+        Ok(Some((job, cancel)))
+    }
+
+    pub(super) async fn process_local_job(&self, app: &tauri::AppHandle, job: Value) {
+        let _operation = self.operations.write().await;
+        let Some(id) = job["id"].as_str() else { return };
+        let Ok(Some((mut job, cancel))) = self.claim_local_job(id, Some(app)).await else {
+            return;
+        };
         #[cfg(windows)]
         let tool = app
             .path()
@@ -1960,9 +2247,12 @@ impl StorageService {
             Err(e) if local_error(e) == "cancelled" => ("cancelled", None),
             Err(e) => ("needsAction", Some(local_error(e))),
         };
-        let _ = self.put_job(&mut job, state, error);
-        self.cancellations.lock().unwrap().remove(&id);
-        self.changed(app, Some(&id));
+        {
+            let _gate = self.queue_gate.lock().await;
+            let _ = self.put_job(&mut job, state, error);
+            self.cancellations.lock().unwrap().remove(id);
+        }
+        self.changed(app, Some(id));
         self.fill_listing_prices(app, &job);
     }
 

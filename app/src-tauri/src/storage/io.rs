@@ -12,12 +12,18 @@ use std::{
 };
 
 pub fn hash_file(path: &Path) -> Result<(String, u64)> {
+    hash_file_inner(path, None)
+}
+fn hash_file_inner(path: &Path, cancel: Option<&AtomicBool>) -> Result<(String, u64)> {
     ensure_regular(path)?;
     let mut input = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut size = 0;
     let mut buffer = [0u8; 128 * 1024];
     loop {
+        if let Some(cancel) = cancel {
+            check_cancel(cancel)?;
+        }
         let n = input.read(&mut buffer)?;
         if n == 0 {
             break;
@@ -245,7 +251,13 @@ pub fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 pub fn verify(path: &Path, hash: &str, size: u64) -> Result<()> {
-    let actual = hash_file(path)?;
+    verify_inner(path, hash, size, None)
+}
+pub(super) fn verify_cancel(path: &Path, hash: &str, size: u64, cancel: &AtomicBool) -> Result<()> {
+    verify_inner(path, hash, size, Some(cancel))
+}
+fn verify_inner(path: &Path, hash: &str, size: u64, cancel: Option<&AtomicBool>) -> Result<()> {
+    let actual = hash_file_inner(path, cancel)?;
     ensure!(
         actual.0 == hash && actual.1 == size,
         "file_integrity_failed"
@@ -276,7 +288,7 @@ pub fn copy_new_verified(
             output.write_all(&buffer[..n])?;
         }
         output.sync_all()?;
-        verify(target, hash, size)
+        verify_cancel(target, hash, size, cancel)
     })();
     drop(output);
     if copied.is_err() {

@@ -5,7 +5,7 @@ import type {Product, Account, Locale, CustomCategory} from './model';
 
 export type Service = 'catalogue'|'booth'|'storage'|'unity'|'licenses';
 export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number;incompleteProducts?:number}
-export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;cancelRequested?:boolean;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
+export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];localTitle?:string;reusedLocalAsset?:boolean;fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;cancelRequested?:boolean;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
 export function importOnlyUnityJob(job:NativeJob):NativeJob{
  if(job.type!=='unity:import')return job;
  const projected={...job};
@@ -102,6 +102,8 @@ export interface UpdateProgress {stage:'downloading'|'verifying'|'installing';do
 export async function checkUpdates():Promise<UpdateCheck>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('updates_check');}
 export async function installUpdate(version:string):Promise<void>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('updates_install',{version});}
 export async function subscribeUpdateProgress(callback:(progress:UpdateProgress)=>void):Promise<()=>void>{return isTauri()?listen<UpdateProgress>('updates:progress',event=>callback(event.payload)):()=>{};}
+export type LocalImportProgress={jobId:string;phase:'preparing'|'copying'|'verifying'|'extracting'|'finalizing';bytes:number|null;totalBytes:number|null};
+export async function subscribeLocalImportProgress(callback:(progress:LocalImportProgress)=>void):Promise<()=>void>{return isTauri()?listen<LocalImportProgress>('local-import:progress',event=>callback(event.payload)):()=>{};}
 export async function fetchProductMetadata(url:string):Promise<FetchedProductMetadata>{return invokeAction('booth','fetch_product_metadata',{url});}
 export function previewSource(path:string|undefined):string|undefined{if(!path)return undefined;if(/^(https:\/\/|asset:|https?:\/\/asset\.localhost\/)/.test(path))return path;return isTauri()?convertFileSrc(path):undefined;}
 /** Only stable codes reach UI; private response text and URLs are never surfaced. */

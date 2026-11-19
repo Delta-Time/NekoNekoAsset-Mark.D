@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {isTauri} from '@tauri-apps/api/core';
 import type {Account,AssetFile,Locale,Product} from './model';
-import {errorCode,invokeAction,nativeFileAction,progressPercent,type NativeJob} from './backend';
+import {errorCode,invokeAction,nativeFileAction,progressPercent,subscribeLocalImportProgress,type LocalImportProgress,type NativeJob} from './backend';
 import {isStoreJob,isStoreSyncJob,needsStoreSignIn,syncProgressLabel} from './Workflows';
 import {nativeErrorText} from './error-i18n';
 import {nativeWorkflowText} from './native-workflow-i18n';
@@ -13,11 +13,12 @@ import {supportText} from './support-i18n';
 import './ActivityHistory.css';
 import {contentLang} from './content-lang';
 import {licenseText} from './license-i18n';
+import {localImportText} from './local-import-i18n';
 
 export interface ActivityHistoryProps {
  locale:Locale;jobs:NativeJob[];accounts:Account[];products:Product[];aiEnabled:boolean;
  onClear:()=>Promise<void>;onCancel:(job:NativeJob)=>void;onRetry:(job:NativeJob)=>void;onSignIn:(job:NativeJob)=>void;onOpenStorage:()=>void;onUnityResults:(job:NativeJob)=>void;onUnityRetry:(job:NativeJob)=>void;
- onCancelDownloads?:()=>void;
+ onCancelDownloads?:()=>void;focusJobId:string;onOpenLocalProduct:(id:string)=>void;latestLocalProgress:()=>LocalImportProgress|null;
 }
 type ActivityJob=NativeJob&{store?:string;fileIds?:string[];selectedFileIds?:string[];failures?:Record<string,unknown>;args?:{productIds?:unknown}};
 type Detail={stamp:string;product?:Product};
@@ -32,10 +33,23 @@ const jobTime=(job:NativeJob)=>Date.parse(job.createdAt??job.updatedAt??'')||0;
 const basename=(value:string)=>value.replaceAll('\\','/').split('/').at(-1)?.slice(0,512)||'';
 const jobStamp=(job:NativeJob)=>[job.id,job.state,job.updatedAt,job.completedAt,job.errorCode].join('\0');
 
-export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled,onClear,onCancel,onRetry,onSignIn,onOpenStorage,onUnityResults,onUnityRetry,onCancelDownloads}:ActivityHistoryProps){
+export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled,onClear,onCancel,onRetry,onSignIn,onOpenStorage,onUnityResults,onUnityRetry,onCancelDownloads,focusJobId,onOpenLocalProduct,latestLocalProgress}:ActivityHistoryProps){
  const [limit,setLimit]=useState(200),[details,setDetails]=useState<Record<string,Detail>>({});
  const [clearing,setClearing]=useState(false),[clearError,setClearError]=useState('');
  const [copyStates,setCopyStates]=useState<Record<string,CopyState>>({});
+ const [localProgress,setLocalProgress]=useState(latestLocalProgress);
+ useEffect(()=>{
+  let active=true,stop:(()=>void)|undefined;
+  void subscribeLocalImportProgress(progress=>{if(active)setLocalProgress(progress);}).then(unlisten=>{
+   if(active){stop=unlisten;setLocalProgress(latestLocalProgress());}else unlisten();
+  }).catch(()=>{});
+  return()=>{active=false;stop?.();};
+ },[latestLocalProgress]);
+ const formatBytes=(size:number)=>{
+  const unit=size>=1024**4?4:size>=1024**3?3:size>=1024**2?2:size>=1024?1:0;
+  return sizeFormatter.format(size/1024**unit)+' '+['B','KiB','MiB','GiB','TiB'][unit];
+ };
+ const sizeFormatter=new Intl.NumberFormat(locale,{maximumFractionDigits:1});
  const copying=useRef(new Set<string>()),currentJobs=useRef(jobs),mounted=useRef(true);currentJobs.current=jobs;
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
  useEffect(()=>{
@@ -44,12 +58,22 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
    return Object.keys(kept).length===Object.keys(current).length?current:kept;
   });
  },[jobs]);
- const rows=useMemo(()=>[...jobs].sort((a,b)=>jobTime(b)-jobTime(a)||b.id.localeCompare(a.id)).slice(0,limit) as ActivityJob[],[jobs,limit]);
+ const rows=useMemo(()=>{
+  const ordered=[...jobs].sort((a,b)=>jobTime(b)-jobTime(a)||b.id.localeCompare(a.id));
+  const focused=focusJobId?ordered.findIndex(job=>job.id===focusJobId):-1;
+  return ordered.slice(0,Math.max(limit,focused+1)) as ActivityJob[];
+ },[jobs,limit,focusJobId]);
+ const focusedRow=useRef<HTMLElement>(null),hasFocusedRow=!!focusJobId&&rows.some(job=>job.id===focusJobId);
+ useEffect(()=>{
+  if(!hasFocusedRow)return;
+  focusedRow.current?.focus({preventScroll:true});
+  focusedRow.current?.scrollIntoView({block:'nearest'});
+ },[focusJobId,hasFocusedRow]);
  const knownProducts=useMemo(()=>new Map(products.map(product=>[product.id,product])),[products]);
  const knownAccounts=useMemo(()=>new Map(accounts.map(account=>[account.id,account])),[accounts]);
  const label=(key:string)=>uxText(locale,key)??nativeWorkflowText(locale,key);
  const reason=(value:unknown,fallback='operationFailed')=>{
-  const code=errorCode(value),localized=licenseText(locale,code)??uxText(locale,code)??nativeWorkflowText(locale,code);
+  const code=errorCode(value),localized=licenseText(locale,code)??uxText(locale,code)??localImportText(locale,code);
   return localized!==code?localized:nativeErrorText(locale,code)??label(fallback);
  };
  // Only visible jobs request metadata. A changing terminal job may replace its cached details;
@@ -143,19 +167,27 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
    {rows.map(job=>{
     const ids=productIds(job),account=job.accountId?knownAccounts.get(job.accountId):undefined;
     const provider=account?.store||job.store||(/^booth/i.test(job.type)?'BOOTH':/^gumroad/i.test(job.type)?'Gumroad':/^jinxxy/i.test(job.type)?'Jinxxy':'');
-    const names=ids.map(title),identity=job.type==='unity:import'?[job.projectName,job.unityVersion].filter(Boolean).join(' · '):isStoreJob(job.type)?[provider,account?.name||job.accountName||(job.accountId?`${t(locale,'account')} · ${t(locale,'unknown')}`:'')].filter(Boolean).join(' · '):names[0];
-    const errors=failures(job),percent=progressPercent(job),date=Date.parse(job.completedAt??job.updatedAt??job.createdAt??'');
+     const localImport=job.type==='storage:import_local';
+     const localResults=localImport?ids.filter(id=>job.state==='completed'||job.completedProductIds?.includes(id)):[];
+     const names=ids.map(title),identity=job.type==='unity:import'?[job.projectName,job.unityVersion].filter(Boolean).join(' · '):isStoreJob(job.type)?[provider,account?.name||job.accountName||(job.accountId?`${t(locale,'account')} · ${t(locale,'unknown')}`:'')].filter(Boolean).join(' · '):localImport?(localResults.length?names[0]:job.localTitle??names[0]):names[0];
+     const transfer=localImport&&localProgress?.jobId===job.id&&(job.state==='running'||job.state==='queued'&&localProgress.phase==='preparing')?localProgress:null;
+     const copyBytes=transfer?.phase==='copying'&&transfer.bytes!==null&&transfer.totalBytes!==null&&transfer.totalBytes>0?{bytes:transfer.bytes,total:transfer.totalBytes}:null;
+     const phase=transfer?localImportText(locale,transfer.phase):'';
+     const errors=failures(job),percent=localImport?(copyBytes?100*copyBytes.bytes/copyBytes.total:undefined):progressPercent(job),date=Date.parse(job.completedAt??job.updatedAt??job.createdAt??'');
     const canRetry=job.type==='licenses:sync'||job.type.startsWith('ai:')||isStoreJob(job.type)||job.type==='download'||job.type==='storage:import_local'||job.type==='storage:delete_local_products';
     const accountRemoved=isStoreJob(job.type)&&!!job.accountId&&!account;
     const accountBusy=isStoreJob(job.type)&&!!job.accountId&&jobs.some(other=>other.accountId===job.accountId&&active(other));const signInRequired=needsStoreSignIn(job,account);
     const copy=copyStates[job.id],copyStatus=copy?.stamp===jobStamp(job)?copy.status:undefined;
-    return <article className="activity-row" key={job.id}>
+     return <article className="activity-row" key={job.id} ref={job.id===focusJobId?focusedRow:undefined} tabIndex={job.id===focusJobId?-1:undefined}>
      <div className="activity-info">
       <strong title={identity||jobLabel(job)}>{identity||jobLabel(job)}</strong>
       <div className="activity-history-meta"><span>{jobLabel(job)} · {job.type==='unity:import'?unityProgressLabel(locale,{...job,stage:job.stage??job.state}):isStoreSyncJob(job.type)?syncProgressLabel(locale,job):label(job.state)}</span></div>
       {isStoreJob(job.type)&&names.length===1&&<small className="activity-history-reason">{names[0]}</small>}
-      {names.length>1&&<details className="activity-history-products"><summary>{t(locale,'products')} · {names.length.toLocaleString(locale)}</summary><ul>{ids.map(id=><li key={id} lang={contentLang(title(id))}>{title(id)}</li>)}</ul></details>}
-      {active(job)&&<progress aria-label={jobLabel(job)} value={percent===undefined?undefined:Math.max(0,Math.min(100,percent))} max={100}/>}
+      {names.length>1&&<details className="activity-history-products"><summary>{t(locale,'products')} · {names.length.toLocaleString(locale)}</summary><ul>{ids.map(id=><li key={id} lang={contentLang(title(id))}>{localResults.includes(id)?<button type="button" onClick={()=>onOpenLocalProduct(id)}>{title(id)}</button>:title(id)}</li>)}</ul></details>}
+      {localResults.length===1&&ids.length===1&&<button type="button" className="activity-history-open-product" onClick={()=>onOpenLocalProduct(localResults[0])}>{localImportText(locale,'openImportedAsset')}</button>}
+      {job.reusedLocalAsset&&<small className="activity-history-reason">{t(locale,'assetExists')}</small>}
+       {phase&&<small className="activity-history-reason">{phase}{copyBytes&&' · '+formatBytes(copyBytes.bytes)+' / '+formatBytes(copyBytes.total)}</small>}
+       {active(job)&&(!localImport||job.state==='running'||transfer?.phase==='preparing')&&<progress aria-label={phase||jobLabel(job)} value={percent===undefined?undefined:Math.max(0,Math.min(100,percent))} max={100}/>}
       {job.type==='unity:import'&&job.resultCounts&&Object.values(job.resultCounts).some(Boolean)&&<small className="activity-history-reason">{(['applied','skipped','failed'] as const).filter(state=>job.resultCounts![state]>0).map(state=>`${unityText(locale,state)} ${job.resultCounts![state].toLocaleString(locale)}`).join(' · ')}</small>}
       {job.errorCode&&<small className="activity-history-reason">{job.type==='unity:import'?unityError(locale,job.errorCode):reason(job.errorCode)}</small>}
       {errors.length>0&&<div className="activity-history-failures">{errors.slice(0,3).map(item=><div key={item.key}><span>{item.name}</span><small>{item.reason}</small></div>)}{errors.length>3&&<details><summary>{t(locale,'more')} · {(errors.length-3).toLocaleString(locale)}</summary>{errors.slice(3).map(item=><div key={item.key}><span>{item.name}</span><small>{item.reason}</small></div>)}</details>}</div>}
@@ -165,7 +197,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
      <div className={job.type==='unity:import'?'activity-history-actions unity-job-actions':'activity-history-actions'}>{job.type==='unity:import'?<><button type="button" onClick={()=>onUnityResults(job)}>{unityText(locale,'results')}</button>{active(job)&&!job.writesStarted&&<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>}{['failed','interrupted','cancelled'].includes(job.stage??'')&&<button type="button" onClick={()=>onUnityRetry(job)}>{unityText(locale,'retry')}</button>}</>:active(job)?job.type==='storage:delete_local_products'?null:<button type="button" disabled={job.cancelRequested===true} onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>:job.state!=='completed'&&(canRetry?<button type="button" disabled={accountRemoved||accountBusy||job.type.startsWith('ai:')&&!aiEnabled} onClick={()=>signInRequired?onSignIn(job):onRetry(job)}>{t(locale,signInRequired?'signIn':'retry')}</button>:<button type="button" onClick={onOpenStorage}>{t(locale,'storage')}</button>)}{diagnosable(job)&&<><button type="button" disabled={copying.current.has(job.id)} aria-busy={copying.current.has(job.id)} onClick={event=>void copyDiagnostics(job,event.currentTarget)}>{supportText(locale,'copyDiagnostics')}</button><small className="activity-history-copy-state" role="status" aria-live="polite" aria-atomic="true">{copyStatus?supportText(locale,copyStatus):''}</small></>}</div>
     </article>;
    })}
-   {jobs.length>limit&&<button className="activity-history-more" type="button" onClick={()=>setLimit(value=>value+200)}>{t(locale,'more')} · {(jobs.length-limit).toLocaleString(locale)}</button>}
+   {jobs.length>rows.length&&<button className="activity-history-more" type="button" onClick={()=>setLimit(rows.length+200)}>{t(locale,'more')} · {(jobs.length-rows.length).toLocaleString(locale)}</button>}
   </div>}
  </section>;
 }

@@ -2286,6 +2286,14 @@ impl Catalogue {
             store,
         )
     }
+    pub(crate) fn queued_device_job_count(&self, job_type: &str) -> Result<usize> {
+        let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        Ok(conn.query_row(
+            "SELECT count(*) FROM entities WHERE kind='job' AND json_extract(body,'$.state')='queued' AND json_extract(body,'$.type')=?1 AND json_extract(body,'$.originDeviceId')=?2",
+            params![job_type, self.device_id()],
+            |row| row.get(0),
+        )?)
+    }
     pub fn related(&self, kind: &str, product_id: &str) -> Result<Vec<Value>> {
         kind_valid(kind)?;
         related(
