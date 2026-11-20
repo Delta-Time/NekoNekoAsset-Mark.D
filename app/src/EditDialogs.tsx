@@ -18,6 +18,7 @@ import {
   isLightTheme,
 } from './model';
 import { editorText } from './editor-i18n';
+import { table } from './messages';
 import { nativeWorkflowText } from './native-workflow-i18n';
 import TagPicker, { resolveTag } from './TagPicker';
 import AvatarPicker, {
@@ -184,22 +185,10 @@ export async function exportThemeConfig(
   });
   return true;
 }
-const operationLabels: Record<Locale, string> = {
-  en: 'Could not complete this action. Your changes are retained.',
-  ja: '操作を完了できませんでした。変更内容は残っています。',
-  ko: '작업을 완료하지 못했습니다. 변경 사항은 유지됩니다.',
-  'zh-Hans': '无法完成操作。更改已保留。',
-  'zh-Hant': '無法完成操作。變更已保留。',
-};
-const nativeLabels: Record<Locale, string> = {
-  en: 'This action requires the desktop app.',
-  ja: 'この操作にはデスクトップアプリが必要です。',
-  ko: '이 작업은 데스크톱 앱에서 사용할 수 있습니다.',
-  'zh-Hans': '此操作需要桌面应用。',
-  'zh-Hant': '此操作需要桌面應用程式。',
-};
 const operationMessage = (locale: Locale, code: string) =>
-  code === 'nativeUnavailable' ? nativeLabels[locale] : operationLabels[locale];
+  table(locale, 'editDialog')[
+    code === 'nativeUnavailable' ? 'nativeUnavailable' : 'operationFailed'
+  ];
 export function normalizeProductUrl(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return '';

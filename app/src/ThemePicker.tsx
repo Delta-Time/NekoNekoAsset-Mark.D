@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { Check } from 'lucide-react';
+import { message, table } from './messages';
 import type { Locale } from './model';
 import { isLightTheme } from './model';
 import { wf } from './workflow-i18n';
@@ -269,26 +270,10 @@ const groupOrder = {
   ],
   light: ['light', 'ink', 'contrast', 'sky', 'aqua', 'mint', 'lemon', 'peach', 'rose', 'lilac'],
 };
-const labels: Record<string, Record<Locale, string>> = {
-  contrast: {
-    en: 'High contrast',
-    ja: '高コントラスト',
-    ko: '고대비',
-    'zh-Hans': '高对比度',
-    'zh-Hant': '高對比',
-  },
-  custom: {
-    en: 'Custom',
-    ja: 'カスタム',
-    ko: '사용자 지정',
-    'zh-Hans': '自定义',
-    'zh-Hant': '自訂',
-  },
-};
 export function themeDisplayName(locale: Locale, option: ThemeOption): string {
   return ['dark', 'light'].includes(option.id)
     ? wf(locale, option.id)
-    : (labels[option.id]?.[locale] ?? option.name);
+    : (message(locale, 'theme', option.id) ?? option.name);
 }
 function previewTokens(tokens: Record<string, string>): CSSProperties {
   const defaults = defaultThemeOptions[0].tokens;
@@ -321,7 +306,9 @@ export default function ThemePicker({ locale, options, value, onChange }: ThemeP
       {groups.map((group) => (
         <div className="theme-picker-group" key={group.key}>
           <div className="theme-picker-heading" aria-hidden="true">
-            <span>{group.key === 'custom' ? labels.custom[locale] : wf(locale, group.key)}</span>
+            <span>
+              {group.key === 'custom' ? table(locale, 'theme').custom : wf(locale, group.key)}
+            </span>
             <small>{group.items.length}</small>
           </div>
           <div className="theme-picker-grid">

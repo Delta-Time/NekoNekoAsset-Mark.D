@@ -28,24 +28,13 @@ import {
   giftedVariant,
 } from './model';
 import { t } from './i18n';
+import { table } from './messages';
 import { shellText } from './shell-i18n';
 import { wf } from './workflow-i18n';
 import Preview from './Preview';
 import { StatusIcon } from './LibraryIcons';
 import { contentLang } from './content-lang';
 import './inspector.css';
-const fileActionLabels: Record<Locale, { openFolder: string; openFile: string; openPage: string }> =
-  {
-    en: { openFolder: 'Open folder', openFile: 'Open file', openPage: 'Open listing' },
-    ja: {
-      openFolder: 'フォルダーを開く',
-      openFile: 'ファイルを開く',
-      openPage: '販売ページを開く',
-    },
-    ko: { openFolder: '폴더 열기', openFile: '파일 열기', openPage: '판매 페이지 열기' },
-    'zh-Hans': { openFolder: '打开文件夹', openFile: '打开文件', openPage: '打开销售页面' },
-    'zh-Hant': { openFolder: '開啟資料夾', openFile: '開啟檔案', openPage: '開啟販售頁面' },
-  };
 function isZip(file: { name: string; type: string }): boolean {
   const extension = file.name
     .trim()
@@ -367,14 +356,14 @@ export default function AssetInspector({
           <button
             type="button"
             className="asset-inspector-page-link"
-            aria-label={fileActionLabels[locale].openPage}
-            title={fileActionLabels[locale].openPage}
+            aria-label={table(locale, 'fileAction').openPage}
+            title={table(locale, 'fileAction').openPage}
             onClick={openPage}
           >
             <Preview src={image} title={p.title} />
             <span className="asset-inspector-page-hint" aria-hidden="true">
               <ExternalLink size={14} />
-              <span>{fileActionLabels[locale].openPage}</span>
+              <span>{table(locale, 'fileAction').openPage}</span>
             </span>
           </button>
         ) : (
@@ -628,15 +617,15 @@ export default function AssetInspector({
           <button
             type="button"
             className="asset-inspector-open-folder"
-            aria-label={fileActionLabels[locale].openFolder}
-            title={fileActionLabels[locale].openFolder}
+            aria-label={table(locale, 'fileAction').openFolder}
+            title={table(locale, 'fileAction').openFolder}
             disabled={folderAvailable !== true || !onOpenFolder}
             onClick={() => {
               if (folderAvailable === true) onOpenFolder?.();
             }}
           >
             <FolderOpen size={14} />
-            <span>{fileActionLabels[locale].openFolder}</span>
+            <span>{table(locale, 'fileAction').openFolder}</span>
           </button>
         </div>
       </div>
@@ -657,8 +646,8 @@ export default function AssetInspector({
                 <button
                   type="button"
                   className="asset-inspector-file-name"
-                  aria-label={fileActionLabels[locale].openFile + ' ' + file.name}
-                  title={fileActionLabels[locale].openFile}
+                  aria-label={table(locale, 'fileAction').openFile + ' ' + file.name}
+                  title={table(locale, 'fileAction').openFile}
                   onClick={() => {
                     if (openableFileIds.includes(file.id)) onFileOpen?.(file.id);
                   }}

@@ -43,6 +43,11 @@ with meaningful regression risk; no new test framework or broad testing gate is
 required. Inspect rendered UI and relevant keyboard, loading and error states for
 visual changes. Never treat a successful build as proof of visual quality.
 
+UI text lives in `app/src/locales/<language>.json`, with `en.json` as the source,
+so a translation fix touches only its language's file. Keys are `<table>.<key>`;
+`app/src/messages.ts` lists which lookup function reads each table. A new key goes
+into every language file: `pnpm build` fails when one lacks it.
+
 Use synthetic catalogues and authored assets when developing or reporting bugs.
 Do not commit or attach personal catalogue records, account/order information,
 cookies, tokens, keys, browser profiles or acquired asset files. Keep diagnostics
