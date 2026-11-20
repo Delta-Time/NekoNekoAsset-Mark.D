@@ -760,26 +760,26 @@
   .ai-chat-composer-actions .ai-chat-send {
     min-height: 35px;
   }
-  .app.corrected-shell[data-view="ai-suggestions"] .topbar {
+  .app.app[data-view="ai-suggestions"] .topbar {
     flex-wrap: wrap;
     gap: 4px;
   }
-  .app.corrected-shell[data-view="ai-suggestions"] .top-actions button > span {
+  .app.app[data-view="ai-suggestions"] .top-actions button > span {
     display: none;
   }
-  .app.corrected-shell[data-view="ai-suggestions"] .top-actions button {
+  .app.app[data-view="ai-suggestions"] .top-actions button {
     width: 29px;
     min-width: 29px;
     padding: 4px;
   }
-  .app.corrected-shell[data-view="ai-suggestions"] .searchbox {
+  .app.app[data-view="ai-suggestions"] .searchbox {
     min-width: 80px;
     gap: 4px;
     padding: 0 6px;
   }
 }
 @media (max-width: 760px), (max-height: 599px) {
-  .app.corrected-shell[data-view="ai-suggestions"] {
+  .app.app[data-view="ai-suggestions"] {
     min-width: 0;
     min-height: 0;
   }

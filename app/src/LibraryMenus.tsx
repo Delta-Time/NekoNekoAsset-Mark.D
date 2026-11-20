@@ -151,11 +151,7 @@ export function ResponsiveLibraryToolbar({
     return () => document.removeEventListener('pointerdown', close);
   }, []);
   return (
-    <div
-      className="toolbar revised-toolbar library-toolbar-008"
-      ref={root}
-      data-collapsed={collapsed}
-    >
+    <div className="toolbar library-toolbar" ref={root} data-collapsed={collapsed}>
       <div
         className="toolbar-account"
         ref={account}

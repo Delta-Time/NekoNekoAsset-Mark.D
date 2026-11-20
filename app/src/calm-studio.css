@@ -639,7 +639,7 @@
 }
 
 /* ---------- shell ---------- */
-.app.corrected-shell .topbar {
+.app.app .topbar {
   min-height: 52px;
   height: 52px;
   gap: 10px;
@@ -648,7 +648,7 @@
   border-bottom: 0;
   animation: calm-boot-down 0.6s var(--ease) backwards;
 }
-.app.corrected-shell .brand {
+.app.app .brand {
   flex: 0 0 auto;
   width: var(--nav-width, 176px);
   min-width: 0;
@@ -659,7 +659,7 @@
   font-weight: 700;
   letter-spacing: -0.01em;
 }
-.app.corrected-shell .brand > span:last-child {
+.app.app .brand > span:last-child {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -726,7 +726,7 @@
 .app .main-nav:not(:has(> button.active))::before {
   opacity: 0;
 }
-.app.corrected-shell .main-nav > button {
+.app.app .main-nav > button {
   position: relative;
   z-index: 1;
   min-height: 26px;
@@ -739,15 +739,15 @@
   font-size: 12.5px;
   font-weight: 600;
 }
-.app.corrected-shell .main-nav > button:hover {
+.app.app .main-nav > button:hover {
   background: transparent;
   color: var(--text);
 }
-.app.corrected-shell .main-nav > button.active {
+.app.app .main-nav > button.active {
   background: transparent;
   color: var(--text);
 }
-.app.corrected-shell .searchbox {
+.app.app .searchbox {
   flex: 1 1 auto;
   max-width: 520px;
   min-width: 140px;
@@ -764,10 +764,10 @@
     max-width 0.4s var(--ease),
     background-color 0.3s;
 }
-.app.corrected-shell .searchbox:hover {
+.app.app .searchbox:hover {
   box-shadow: inset 0 0 0 1px var(--line-2);
 }
-.app.corrected-shell .searchbox:focus-within {
+.app.app .searchbox:focus-within {
   max-width: 600px;
   border: 0;
   box-shadow:
@@ -837,7 +837,7 @@
 .app .top-actions > .button:hover svg {
   color: var(--text);
 }
-.app.corrected-shell .top-actions {
+.app.app .top-actions {
   gap: 2px;
   margin-left: auto;
 }
@@ -859,11 +859,11 @@
 .app .top-actions .sync-spinning {
   color: var(--accent);
 }
-.app.corrected-shell .shell {
+.app.app .shell {
   padding: 0 8px 0 0;
   min-height: 0;
 }
-.app.corrected-shell .sidebar {
+.app.app .sidebar {
   padding: 2px 4px 16px 8px;
   gap: 14px;
   background: transparent;
@@ -905,7 +905,7 @@
   transform: none;
 }
 .app .result-workspace,
-.app.corrected-shell .revised-inspector,
+.app.app .inspector-pane,
 .app .workspace > .activity-page,
 .app .workspace > div > .ai-chat {
   background: var(--panel);
@@ -921,7 +921,7 @@
   position: relative;
   animation: calm-boot-up 0.75s 0.12s var(--ease) backwards;
 }
-.app.corrected-shell .revised-inspector {
+.app.app .inspector-pane {
   position: relative;
   animation: calm-boot-up 0.75s 0.2s var(--ease) backwards;
 }
@@ -930,7 +930,7 @@
   margin-left: 8px;
   animation: calm-boot-up 0.6s var(--ease) backwards;
 }
-.app.corrected-shell .statusbar {
+.app.app .statusbar {
   min-height: 30px;
   height: 30px;
   gap: 10px;
@@ -1021,7 +1021,7 @@
 .app .quick-scopes {
   gap: 1px;
 }
-.app.corrected-shell .nav-item {
+.app.app .nav-item {
   position: relative;
   min-height: 31px;
   padding: 5px 8px 5px 9px;
@@ -1039,23 +1039,23 @@
     background-color 0.15s,
     color 0.15s;
 }
-.app.corrected-shell .nav-item.quick-scope,
-.app.corrected-shell .nav-item.category-item,
-.app.corrected-shell .nav-item.avatar-row {
+.app.app .nav-item.quick-scope,
+.app.app .nav-item.category-item,
+.app.app .nav-item.avatar-row {
   min-height: 31px;
   padding: 5px 8px 5px 9px;
   gap: 9px;
   line-height: 1.3;
 }
-.app.corrected-shell .nav-item:hover {
+.app.app .nav-item:hover {
   background: var(--hover);
   color: var(--text);
 }
-.app.corrected-shell .nav-item.active {
+.app.app .nav-item.active {
   background: var(--acc-1);
   color: var(--text);
 }
-.app.corrected-shell .nav-item:active:not(:disabled) {
+.app.app .nav-item:active:not(:disabled) {
   transform: none;
 }
 .app .nav-item > svg {
@@ -1136,7 +1136,7 @@
 .app .nav-foldout > summary:hover {
   color: var(--muted);
 }
-.app.corrected-shell .nav-section-heading summary {
+.app.app .nav-section-heading summary {
   padding-right: 2px;
 }
 .app .nav-foldout::details-content,
@@ -1156,7 +1156,7 @@
 .app .nav-section-heading {
   padding-right: 0;
 }
-.app.corrected-shell .avatar-manager {
+.app.app .avatar-manager {
   position: absolute;
   right: 2px;
   top: 2px;
@@ -1182,7 +1182,7 @@
 .app .nav-section-heading:focus-within > .avatar-manager {
   opacity: 1;
 }
-.app.corrected-shell .avatar-manager:hover {
+.app.app .avatar-manager:hover {
   background: var(--hover);
   color: var(--text);
 }
@@ -1191,7 +1191,7 @@
 }
 
 /* ---------- results: toolbar ---------- */
-.app.corrected-shell .revised-toolbar {
+.app.app .library-toolbar {
   min-height: 48px;
   padding: 9px 10px;
   gap: 6px;
@@ -1201,7 +1201,7 @@
 .app .toolbar-control-group {
   gap: 6px;
 }
-.app .revised-toolbar select,
+.app .library-toolbar select,
 .app .result-controls select {
   height: 30px;
   min-height: 30px;
@@ -1216,11 +1216,11 @@
     box-shadow 0.16s,
     background-color 0.3s;
 }
-.app .revised-toolbar select:hover,
+.app .library-toolbar select:hover,
 .app .result-controls select:hover {
   box-shadow: inset 0 0 0 1px var(--line-2);
 }
-.app .revised-toolbar select:focus,
+.app .library-toolbar select:focus,
 .app .result-controls select:focus {
   box-shadow:
     inset 0 0 0 1px var(--acc-ring),
@@ -1312,7 +1312,7 @@
   background: var(--hover);
   color: var(--text);
 }
-.app:has(.revised-inspector) .toolbar-control-group > .button:last-child {
+.app:has(.inspector-pane) .toolbar-control-group > .button:last-child {
   background: var(--acc-1);
   color: var(--accent);
 }
@@ -1562,7 +1562,7 @@
 }
 /* Secondary text on the tinted selection keeps 4.5:1. */
 .app
-  :is(.product-card, .revised-row).selected
+  :is(.product-card, .product-row).selected
   :is(
     .product-shop,
     .card-acquired,
@@ -1573,13 +1573,13 @@
   ) {
   color: color-mix(in oklab, var(--muted) 62%, var(--text));
 }
-.app :is(.product-card, .revised-row).selected .product-status[data-status="ready"] {
+.app :is(.product-card, .product-row).selected .product-status[data-status="ready"] {
   color: color-mix(in oklab, var(--ok-ink) 82%, var(--text));
 }
-.app :is(.product-card, .revised-row).selected .product-status[data-status="attention"] {
+.app :is(.product-card, .product-row).selected .product-status[data-status="attention"] {
   color: color-mix(in oklab, var(--warn-ink) 82%, var(--text));
 }
-.app :is(.product-card, .revised-row).selected .product-status[data-status="processing"] {
+.app :is(.product-card, .product-row).selected .product-status[data-status="processing"] {
   color: color-mix(in oklab, var(--acc-ink) 82%, var(--text));
 }
 .app .grid-mode .product-title {
@@ -1672,7 +1672,7 @@
 }
 
 /* ---------- results: list ---------- */
-.app .revised-row {
+.app .product-row {
   gap: 12px;
   padding: 0 10px 0 9px;
   border: 1px solid transparent;
@@ -1683,47 +1683,47 @@
     background-color 0.15s,
     box-shadow 0.15s;
 }
-.app .density-compact.list-mode .revised-row {
+.app .density-compact.list-mode .product-row {
   padding: 0 10px 0 9px;
 }
-.app .revised-row:hover {
+.app .product-row:hover {
   background-color: var(--hover);
 }
-.app .revised-row.selected {
+.app .product-row.selected {
   background-color: color-mix(in oklab, var(--accent) 9%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent);
 }
-.app .revised-row:focus-visible {
+.app .product-row:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px var(--acc-ring);
 }
-.app .revised-row .row-thumb {
+.app .product-row .row-thumb {
   border-radius: 7px;
   overflow: hidden;
   background: var(--field);
 }
-.app .revised-row .product-info {
+.app .product-row .product-info {
   gap: 2px;
 }
-.app .revised-row .product-title {
+.app .product-row .product-title {
   font-size: 13px;
   font-weight: 650;
 }
-.app .revised-row .product-shop {
+.app .product-row .product-shop {
   font-size: 11.5px;
   color: var(--muted);
 }
-.app .revised-row .product-status {
+.app .product-row .product-status {
   align-self: flex-start;
 }
-.app .density-compact.list-mode .revised-row .product-status {
+.app .density-compact.list-mode .product-row .product-status {
   align-self: center;
 }
 .app .list-extra {
   font-size: 12px;
   color: var(--muted);
 }
-.app .revised-row > input[type="checkbox"] {
+.app .product-row > input[type="checkbox"] {
   margin-left: 2px;
 }
 .app .result-workspace > .empty-state {
@@ -2076,10 +2076,10 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
 .app .asset-inspector {
   background: transparent;
 }
-.app .revised-inspector:has(> .asset-inspector > .asset-inspector-tabs) > .inspector-header {
+.app .inspector-pane:has(> .asset-inspector > .asset-inspector-tabs) > .inspector-header {
   display: none;
 }
-.app .revised-inspector > .asset-inspector > .asset-inspector-tabs {
+.app .inspector-pane > .asset-inspector > .asset-inspector-tabs {
   margin-top: 10px;
 }
 .app .asset-inspector-tabs {
@@ -2607,8 +2607,7 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   font-weight: 600;
 }
 .app .asset-inspector-file-meta summary,
-.app .activity-history summary,
-.app .revised-files summary {
+.app .activity-history summary {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2660,10 +2659,10 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
 .app .asset-inspector-wide .asset-inspector-files {
   border-left: 1px solid var(--line);
 }
-.app .revised-inspector > .empty-state {
+.app .inspector-pane > .empty-state {
   color: var(--faint);
 }
-.app .revised-batch {
+.app .selection-summary {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -2702,7 +2701,7 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   filter: blur(12px);
   transform: scale(1.15);
 }
-.app .revised-batch .batch-count {
+.app .selection-summary .batch-count {
   display: flex;
   align-items: baseline;
   gap: 7px;
@@ -2720,34 +2719,34 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   font-size: 13px;
   font-weight: 600;
 }
-.app .revised-batch .scope-actions {
+.app .selection-summary .scope-actions {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
   gap: 6px;
   overflow: visible;
   padding: 0;
 }
-.app .revised-batch .scope-actions-left,
-.app .revised-batch .scope-actions-right {
+.app .selection-summary .scope-actions-left,
+.app .selection-summary .scope-actions-right {
   display: contents;
 }
-.app .revised-batch .scope-actions .button {
+.app .selection-summary .scope-actions .button {
   justify-content: flex-start;
   min-width: 0;
   padding: 0 10px;
 }
-.app .revised-batch .scope-actions .button > span {
+.app .selection-summary .scope-actions .button > span {
   display: inline;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.app .revised-batch .scope-actions .button.unity-action {
+.app .selection-summary .scope-actions .button.unity-action {
   background: var(--uni-1) !important;
   color: var(--uni-ink) !important;
   box-shadow: none;
 }
-.app .revised-batch .scope-actions .button.unity-action:hover {
+.app .selection-summary .scope-actions .button.unity-action:hover {
   background: color-mix(in oklab, var(--secondary-accent) 24%, transparent) !important;
 }
 .app .selected-products {
@@ -2774,10 +2773,10 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   padding: 0 10px 10px;
   border-bottom: 1px solid var(--line);
 }
-.app .revised-inspector.wide .embedded-settings-nav {
+.app .inspector-pane.wide .embedded-settings-nav {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
-.app .revised-inspector.wide .embedded-settings-nav:not(:has(> button:nth-child(6))) {
+.app .inspector-pane.wide .embedded-settings-nav:not(:has(> button:nth-child(6))) {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .app .embedded-settings-nav button {
@@ -3273,7 +3272,7 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   letter-spacing: -0.015em;
   line-height: 1.3;
 }
-.app.corrected-shell .activity-list {
+.app.app .activity-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3542,11 +3541,11 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
 
 /* ---------- responsive ---------- */
 @media (max-width: 1000px) {
-  .app.corrected-shell .brand {
+  .app.app .brand {
     width: auto;
     padding-left: 12px;
   }
-  .app.corrected-shell .brand > span:last-child {
+  .app.app .brand > span:last-child {
     display: none;
   }
   .app .searchbox kbd {
@@ -3558,10 +3557,10 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   .app .main-nav::before {
     display: none;
   }
-  .app.corrected-shell .main-nav > button {
+  .app.app .main-nav > button {
     padding: 0 9px;
   }
-  .app.corrected-shell .main-nav > button.active {
+  .app.app .main-nav > button.active {
     background: var(--raised);
     box-shadow:
       var(--sh-1),
@@ -3578,15 +3577,15 @@ html:is(.box-selecting, .dragging-products) .app .product-card {
   }
 }
 @media (max-width: 760px) {
-  .app.corrected-shell .topbar {
+  .app.app .topbar {
     gap: 6px;
     padding-right: 6px;
   }
-  .app.corrected-shell .main-nav > button {
+  .app.app .main-nav > button {
     padding: 0 7px;
     font-size: 12px;
   }
-  .app.corrected-shell .searchbox {
+  .app.app .searchbox {
     min-width: 110px;
     margin-left: 0;
   }

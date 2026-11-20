@@ -46,7 +46,7 @@ export default function BatchSummary({
   const { query } = filters;
   const { revealed } = selection;
   return (
-    <div className="revised-batch">
+    <div className="selection-summary">
       <div className="batch-stack" aria-hidden="true">
         {products
           .filter((p) => selectedSet.has(p.id))

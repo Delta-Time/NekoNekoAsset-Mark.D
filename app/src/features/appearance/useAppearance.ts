@@ -129,7 +129,7 @@ export function useAppearance({
       ? 'light'
       : 'dark';
   const appClass =
-    'app corrected-shell variant-a' +
+    'app' +
     (roundedCorners ? '' : ' square-corners') +
     (reduceMotion ? ' reduce-motion' : '') +
     (bundledFonts ? '' : ' system-fonts');

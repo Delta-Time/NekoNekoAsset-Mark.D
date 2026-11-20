@@ -1,4 +1,4 @@
-.corrected-shell .library-toolbar-008 {
+.app .library-toolbar {
   position: relative;
   flex-wrap: wrap;
   gap: 8px;
@@ -110,7 +110,7 @@
 .filter-clear-all {
   padding: 3px 6px !important;
 }
-.library-toolbar-008 .account-scope .popup-menu {
+.library-toolbar .account-scope .popup-menu {
   width: min(320px, calc(100cqw - 16px));
   min-width: 0;
   max-width: calc(100cqw - 16px);
@@ -120,7 +120,7 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.library-toolbar-008 .acquisition-scope .popup-menu {
+.library-toolbar .acquisition-scope .popup-menu {
   width: max-content;
 }
 .library-context {
@@ -187,10 +187,10 @@
 .selection-actions .scope-actions span {
   white-space: nowrap;
 }
-.revised-batch .scope-actions-right {
+.selection-summary .scope-actions-right {
   margin-left: 0;
 }
-.revised-batch .scope-actions {
+.selection-summary .scope-actions {
   gap: 7px;
   flex-wrap: nowrap;
 }
@@ -204,12 +204,12 @@
   }
 }
 .product-card,
-.revised-row {
+.product-row {
   -webkit-user-select: none;
   user-select: none;
 }
 .product-card img,
-.revised-row img {
+.product-row img {
   -webkit-user-drag: none;
 }
 .product-card {

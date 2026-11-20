@@ -83,7 +83,7 @@ export default function ProductItem({
       aria-selected={selectedSet.has(p.id)}
       tabIndex={0}
       className={
-        (list ? 'revised-row' : 'product-card') + ' ' + (selectedSet.has(p.id) ? 'selected' : '')
+        (list ? 'product-row' : 'product-card') + ' ' + (selectedSet.has(p.id) ? 'selected' : '')
       }
       onClick={(e) => select(p, e)}
       onContextMenu={(e) => {

@@ -106,7 +106,7 @@ export default function InspectorPane({
         }}
       />
       <aside
-        className={`inspector revised-inspector ${wide ? 'wide' : ''}`}
+        className={`inspector inspector-pane ${wide ? 'wide' : ''}`}
         style={{ width: paneWidth, flexBasis: paneWidth }}
       >
         <header className="inspector-header">
