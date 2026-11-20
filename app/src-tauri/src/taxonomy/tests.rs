@@ -1,4 +1,3 @@
-
 #[test]
 fn gumroad_requires_explicit_vrchat_in_source_title_or_description() {
     for (category, title, description) in [

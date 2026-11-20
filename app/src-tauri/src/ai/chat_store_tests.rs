@@ -1,4 +1,3 @@
-
 use super::*;
 fn fixture() -> (std::path::PathBuf, ChatStore) {
     let path = std::env::temp_dir().join(format!("nna-ai-chat-authored-{}", uuid::Uuid::new_v4()));

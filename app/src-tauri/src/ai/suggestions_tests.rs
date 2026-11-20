@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn personalization_prompt_applies_language_and_style_without_avatar() {

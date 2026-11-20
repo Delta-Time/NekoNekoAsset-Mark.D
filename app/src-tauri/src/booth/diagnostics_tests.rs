@@ -1,4 +1,3 @@
-
 use super::*;
 const MANIFEST_HTML: &str = r#"<main><h1>Library</h1><article data-test='library-item'><a href='https://synthetic.booth.pm/items/900001'>PRIVATE_TITLE</a><div data-test='downloadable-list'><div><b data-test='filename'>PRIVATE_FILE.psd</b><a data-test='downloadable' href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a></div></div></article><nav class='pagination'><a aria-current='page' href='/library?page=1'>1</a></nav></main>"#;
 fn manifest_value(html: &str) -> serde_json::Value {

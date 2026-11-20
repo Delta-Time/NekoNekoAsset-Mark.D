@@ -1,4 +1,3 @@
-
 use super::*;
 fn input() -> AnalysisInput {
     AnalysisInput {

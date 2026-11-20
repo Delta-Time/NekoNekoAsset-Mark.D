@@ -1,4 +1,3 @@
-
 use super::*;
 use serde_json::json;
 struct Fixture(PathBuf);

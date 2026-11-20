@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn gift_date_comes_only_from_this_items_accepted_field() {

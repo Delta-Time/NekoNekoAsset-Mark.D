@@ -1,4 +1,3 @@
-
 use super::*;
 // Independently authored structural fixture, no provider page or script copied.
 const HTML: &str = r#"<html><head><link rel='canonical' href='https://booth.pm/ja/items/900001'><meta property='og:url' content='https://booth.pm/ja/items/900001'></head><body><div id='items' class='market' data-product-id='900001'><ul id='variations'><li class='variation-item'><div class='cart-button-wrap'><a title='authored.zip' href='https://booth.pm/downloadables/700001?variation_id=800001'><span class='cmd-label'>無料ダウンロード</span></a><div class='text-14 text-text-default font-normal text-left mb-8'>authored.zip</div></div></li><li class='variation-item'><form><button class='add-cart' data-product-id='900001'>Authored donation</button></form></li></ul></div></body></html>"#;

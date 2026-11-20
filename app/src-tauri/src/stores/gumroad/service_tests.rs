@@ -1,4 +1,3 @@
-
 #[test]
 fn startup_recovery_isolates_orphan_jobs_and_keeps_later_jobs_resumable() {
     let path = std::env::temp_dir().join(format!("gumroad-startup-{}", uuid::Uuid::new_v4()));

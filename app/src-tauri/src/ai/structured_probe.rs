@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn safe_code(error: &anyhow::Error) -> &'static str {

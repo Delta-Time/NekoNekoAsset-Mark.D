@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn malformed_inventory_detail_keeps_its_record_unresolved_and_later_grants_publish() {

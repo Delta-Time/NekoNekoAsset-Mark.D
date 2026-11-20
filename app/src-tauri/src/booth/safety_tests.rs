@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn sign_in_follows_provider_hops_without_expanding_purchase_scope() {

@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn discarded_draft_clears_only_its_snapshot_and_retains_established_profiles() {

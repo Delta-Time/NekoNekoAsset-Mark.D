@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{booth::BoothService, catalogue::Catalogue, stores::StoreService};
 use std::sync::atomic::Ordering;

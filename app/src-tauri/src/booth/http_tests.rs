@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn listing_and_detail_slots_are_bounded_separately() {

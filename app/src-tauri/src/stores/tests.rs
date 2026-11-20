@@ -1,4 +1,3 @@
-
 #[cfg(windows)]
 #[test]
 fn shared_account_views_follow_device_credentials_without_changing_ownership() {

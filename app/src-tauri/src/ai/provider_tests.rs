@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn gemini_structured_output_uses_generate_content_mime_enum() {

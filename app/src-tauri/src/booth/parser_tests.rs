@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn anonymous_account_marker_rejects_oauth_and_empty_library_without_rejecting_signed_in_shelf() {
