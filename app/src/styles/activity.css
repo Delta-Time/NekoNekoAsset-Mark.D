@@ -1,0 +1,186 @@
+/* from styles.css */
+.activity-list {
+  overflow: auto;
+  padding: 0 18px 18px;
+  flex: 1;
+  min-height: 0;
+}
+.activity-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--border);
+}
+.activity-row > .activity-info {
+  flex: 1;
+  min-width: 0;
+}
+.activity-row strong {
+  display: block;
+  font-weight: 500;
+}
+.activity-row small {
+  color: var(--muted);
+}
+.activity-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.activity-row .activity-info strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+.activity-row .product-status {
+  max-width: 230px;
+}
+.activity-row progress {
+  display: block;
+  margin-top: 7px;
+  max-width: 440px;
+}
+.app .activity-page {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app .activity-list {
+  min-height: 0;
+  overflow: auto;
+}
+/* from calm-studio.css */
+.app .nav-foldout::details-content,
+.app .asset-inspector-section::details-content,
+.app .activity-history details::details-content {
+  block-size: 0;
+  overflow-y: clip;
+  transition:
+    block-size 0.34s var(--ease),
+    content-visibility 0.34s allow-discrete;
+}
+.app .nav-foldout[open]::details-content,
+.app .asset-inspector-section[open]::details-content,
+.app .activity-history details[open]::details-content {
+  block-size: auto;
+}
+.app .asset-inspector-file-meta summary,
+.app .activity-history summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  list-style: none;
+}
+.app .asset-inspector-file-meta summary::-webkit-details-marker,
+.app .activity-history summary::-webkit-details-marker {
+  display: none;
+}
+.app .asset-inspector-file-meta summary::before,
+.app .activity-history summary::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  flex: none;
+  background: currentColor;
+  -webkit-mask: var(--chevron) center / contain no-repeat;
+  mask: var(--chevron) center / contain no-repeat;
+  transform: rotate(-90deg);
+  transition: transform 0.28s var(--ease);
+}
+.app .asset-inspector-file-meta details[open] > summary::before,
+.app .activity-history details[open] > summary::before {
+  transform: none;
+}
+
+/* ---------- activity ---------- */
+.app .activity-history > .toolbar {
+  min-height: 0;
+  padding: 16px 16px 12px;
+  gap: 12px;
+}
+.app .activity-history > .toolbar h1 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+.app.app .activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 18px;
+}
+.app .activity-row {
+  gap: 6px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--raised);
+  animation: calm-fade-up 0.45s var(--ease) backwards;
+  transition:
+    border-color 0.2s,
+    background-color 0.45s;
+}
+.app .activity-row:nth-child(2) {
+  animation-delay: 35ms;
+}
+.app .activity-row:nth-child(3) {
+  animation-delay: 70ms;
+}
+.app .activity-row:nth-child(4) {
+  animation-delay: 105ms;
+}
+.app .activity-row:nth-child(5) {
+  animation-delay: 140ms;
+}
+.app .activity-row:nth-child(n + 6) {
+  animation-delay: 175ms;
+}
+.app .activity-row:has(progress) {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+.app .activity-row .activity-info strong {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.app .activity-history-meta {
+  gap: 3px 10px;
+  font-size: 12px;
+}
+.app .activity-history-time {
+  color: var(--faint);
+  font-weight: 600;
+}
+.app .activity-row progress {
+  margin-top: 9px;
+  max-width: none;
+}
+.app .activity-history-reason {
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .activity-history-failures {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--hover);
+}
+.app .activity-history summary {
+  color: var(--muted);
+  font-weight: 600;
+}
+.app .activity-history-actions {
+  gap: 6px;
+}
+.app .activity-history-copy-state {
+  color: var(--positive);
+  font-weight: 600;
+}
+.app .activity-history-error {
+  color: var(--negative);
+}

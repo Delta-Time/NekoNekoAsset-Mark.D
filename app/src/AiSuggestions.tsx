@@ -44,6 +44,8 @@ import Preview from './Preview';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import './ai-suggestions.css';
+import './ai-chat.css';
+import './ai-suggestions-responsive.css';
 import { contentLang } from './content-lang';
 
 const MAX_IMAGES = 4;

@@ -1,0 +1,239 @@
+/* from calm-studio.css */
+.app .result-workspace,
+.app.app .inspector-pane,
+.app .workspace > .activity-page,
+.app .workspace > div > .ai-chat {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--sh-1);
+  overflow: hidden;
+  transition:
+    background-color 0.45s var(--ease),
+    border-color 0.45s;
+}
+.app .workspace > .activity-page,
+.app .workspace > div > .ai-chat {
+  margin-left: 8px;
+  animation: calm-boot-up 0.6s var(--ease) backwards;
+}
+.app .ai-settings .ai-entry-list {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+}
+.app .ai-settings .ai-entry {
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+}
+.app .ai-settings .ai-entry:hover {
+  background: var(--hover);
+}
+.app .ai-settings .ai-entry[aria-selected="true"] {
+  background: var(--acc-1);
+  border-color: color-mix(in oklab, var(--accent) 50%, transparent);
+}
+.app .ai-settings .ai-editor {
+  border-top-color: var(--line);
+}
+
+/* ---------- AI suggestions ---------- */
+.app .ai-chat {
+  background: var(--panel);
+}
+.app .ai-chat-sidebar {
+  flex-basis: 236px;
+  padding: 12px 10px;
+  gap: 6px;
+  background: transparent;
+  border-right: 1px solid var(--line);
+}
+.app .ai-chat-free {
+  border-bottom-color: var(--line);
+}
+.app .ai-preset-choice {
+  min-height: 0;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+.app .ai-preset-choice:hover {
+  background: var(--hover);
+}
+.app .ai-preset-choice:active:not(:disabled),
+.app .ai-history-open:active:not(:disabled) {
+  transform: none;
+}
+.app .ai-preset-choice strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+.app .ai-preset-choice.selected,
+.app .ai-history-row.selected {
+  background: var(--acc-1);
+}
+.app .ai-history-row {
+  border-radius: 10px;
+}
+.app .ai-history-row:hover {
+  background: var(--hover);
+}
+.app .ai-history-open {
+  border: 0;
+  background: transparent;
+}
+.app .ai-history-open strong {
+  font-weight: 700;
+}
+.app .ai-history-actions {
+  background: var(--raised);
+  border-radius: 8px;
+}
+.app .ai-chat-options {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+.app .ai-chat-options label {
+  font-weight: 600;
+}
+.app .ai-chat-messages {
+  padding: 22px 20px 10px;
+}
+.app .ai-preset-intro {
+  animation: calm-fade-up 0.5s var(--ease) backwards;
+}
+.app .ai-preset-intro h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+.app .ai-chat-turn {
+  gap: 10px;
+  margin-bottom: 18px;
+  animation: calm-msg-in 0.45s var(--ease) backwards;
+}
+.app .ai-chat-avatar {
+  border: 0;
+  background: var(--acc-1);
+  color: var(--accent);
+}
+.app .ai-chat-user .ai-chat-avatar {
+  background: var(--hover);
+  color: var(--muted);
+}
+.app .ai-chat-bubble {
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--raised);
+  line-height: 1.65;
+}
+.app .ai-chat-user .ai-chat-bubble {
+  border-color: transparent;
+  border-top-right-radius: 5px;
+  background: var(--acc-1);
+}
+.app .ai-chat-assistant .ai-chat-bubble {
+  border-top-left-radius: 5px;
+}
+.app .ai-chat-turn header strong {
+  color: var(--muted);
+  font-weight: 700;
+}
+.app .ai-chat-result-heading {
+  color: var(--faint);
+  font-weight: 700;
+}
+.app .ai-chat-result {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--raised);
+  transition:
+    transform 0.28s var(--ease),
+    box-shadow 0.28s,
+    border-color 0.2s;
+}
+.app .ai-chat-result:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-2);
+  background: var(--raised);
+  box-shadow: var(--sh-2);
+}
+.app .ai-chat-result:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+.app .ai-chat-result-image {
+  background: var(--field);
+}
+.app .ai-chat-result-image > span {
+  border-radius: 6px;
+  background: rgb(12 12 14 / 0.58);
+  color: #fff;
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+}
+.app .ai-chat-result-body strong {
+  font-weight: 700;
+}
+.app .ai-chat-composer {
+  margin: 8px 16px 16px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--field);
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+.app .ai-chat-composer:focus-within {
+  border-color: var(--acc-ring);
+  box-shadow: 0 0 0 3px var(--acc-1);
+}
+.app .ai-chat-composer textarea {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.app .ai-chat-composer textarea:focus {
+  box-shadow: none;
+}
+.app .ai-add-images {
+  border: 1.5px dashed color-mix(in oklab, var(--text) 22%, transparent);
+  border-radius: 10px;
+  background: transparent;
+}
+.app .ai-chat-images,
+.app .ai-preset-editor {
+  border-color: var(--line-2);
+  border-radius: 12px;
+  background: var(--raised);
+}
+.app .ai-preset-editor {
+  border-radius: 18px;
+  box-shadow: var(--sh-3);
+  animation: calm-dialog-in 0.4s var(--ease) both;
+}
+.app .ai-preset-editor-backdrop {
+  background: color-mix(in oklab, var(--bg) 58%, transparent);
+  backdrop-filter: blur(7px);
+  animation: calm-fade-in 0.24s var(--ease) both;
+}
+.app .ai-preset-editor > header,
+.app .ai-preset-editor > footer {
+  border-color: var(--line);
+}
+.app .ai-drop-indicator {
+  border-radius: 14px;
+}
+@media (max-width: 639px) {
+  .app[data-view="settings"] .topbar,
+  .app[data-view="ai-suggestions"] .topbar {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-block: 6px;
+  }
+}

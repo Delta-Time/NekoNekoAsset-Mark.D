@@ -1,0 +1,220 @@
+/* from styles.css */
+.asset-art {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+/* A cover crop inside the image makes WebView2 sample the full-size original without mipmaps (jagged); the clipping thumbnail box crops instead. */
+img.asset-art {
+  overflow: visible;
+}
+.asset-art.sensitive {
+  filter: blur(12px);
+  transform: scale(1.08);
+}
+.product-status .file-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.inspector {
+  flex: 0 0 var(--inspector-width);
+  width: var(--inspector-width);
+  display: flex;
+  flex-direction: column;
+  min-width: 230px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow: auto;
+}
+.inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 8px 12px;
+  min-height: 39px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.inspector-header button {
+  min-height: 23px;
+  width: 23px;
+  padding: 2px;
+}
+.preview {
+  aspect-ratio: 1.35;
+  overflow: hidden;
+  background: var(--raised);
+  flex-shrink: 0;
+}
+.preview button {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+.detail-actions .primary {
+  flex: 1;
+}
+@media (max-width: 900px) {
+  .inspector {
+    width: 245px;
+    flex-basis: 245px;
+    min-width: 220px;
+  }
+}
+.thumb.blurred > .asset-art {
+  filter: blur(16px);
+  transform: scale(1.13);
+}
+.inspector {
+  flex-basis: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.inspector .preview {
+  aspect-ratio: 1.2;
+}
+.inspector .preview .thumb {
+  height: 100%;
+}
+.row-thumb .thumb .asset-art {
+  width: 100%;
+  height: 100%;
+}
+/* Corrections from inspected synthetic A/B/C renders. */
+.inspector .preview {
+  max-height: 220px;
+}
+@media (max-width: 1000px), (max-height: 650px) {
+  .inspector .preview {
+    height: 180px;
+    max-height: 180px;
+    aspect-ratio: auto;
+  }
+  .inspector .preview .thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .inspector .preview .asset-art {
+    width: auto;
+    max-width: 100%;
+    height: 100%;
+    object-fit: contain;
+    margin: 0 auto;
+  }
+}
+.list-extra.file-count {
+  width: 48px;
+  flex-basis: 48px;
+  text-align: right;
+}
+.app .inspector-pane {
+  min-width: 240px;
+  overflow: hidden;
+  border-left: 0;
+}
+.selection-summary {
+  padding: 15px;
+  overflow: auto;
+  min-height: 0;
+}
+.selection-summary h2 {
+  font-size: 16px;
+}
+.selected-products {
+  margin-top: 16px;
+}
+.selected-products > div {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.selection-summary .scope-actions {
+  padding-bottom: 4px;
+}
+.selection-summary .scope-actions > button > span {
+  display: none;
+}
+.selection-summary .scope-actions > button {
+  min-width: 28px;
+  padding: 4px 6px;
+}
+
+@media (max-width: 639px) {
+  .app[data-view="settings"] .sidebar,
+  .app[data-view="settings"] .left-divider,
+  .app[data-view="settings"] .library-toolbar,
+  .app[data-view="settings"] .result-workspace,
+  .app[data-view="settings"] .right-divider {
+    display: none;
+  }
+  .app[data-view="settings"] .inspector-pane {
+    width: 100% !important;
+    flex: 1 1 0 !important;
+    min-width: 0;
+  }
+}
+
+/* from library-008.css */
+.selection-summary .scope-actions-right {
+  margin-left: 0;
+}
+.selection-summary .scope-actions {
+  gap: 7px;
+  flex-wrap: nowrap;
+}
+.card-file-count {
+  flex: none;
+  color: var(--muted);
+}
+.card-file-count > span {
+  font-size: 8px;
+}
+/* from calm-studio.css */
+.app.app .inspector-pane {
+  position: relative;
+  animation: calm-boot-up 0.75s 0.2s var(--ease) backwards;
+}
+.app:has(.inspector-pane) .toolbar-control-group > .button:last-child {
+  background: var(--acc-1);
+  color: var(--accent);
+}
+.app .product-card .asset-art {
+  transition:
+    transform 0.7s var(--ease),
+    filter 0.35s var(--ease);
+}
+.app .product-card:hover .asset-art {
+  transform: scale(1.045);
+}
+.app .thumb.blurred > .asset-art {
+  filter: blur(16px) saturate(1.15);
+  transform: scale(1.18);
+}
+.app .product-card:hover .thumb.blurred > .asset-art {
+  transform: scale(1.2);
+}
+.app .card-file-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.app .card-file-count > span {
+  font-size: 7px;
+  color: var(--positive);
+}

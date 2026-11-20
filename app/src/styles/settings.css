@@ -1,0 +1,227 @@
+/* from styles.css */
+.theme-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 16px;
+}
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  width: 138px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.theme-option.active {
+  border-color: var(--accent);
+}
+.theme-option > span:last-child {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 12px;
+}
+.theme-option > span:last-child svg {
+  color: var(--accent);
+}
+.theme-mini {
+  display: grid;
+  grid-template-columns: 24px 1fr 25px;
+  gap: 4px;
+  height: 69px;
+  background: #171717;
+  border: 1px solid #373737;
+  border-radius: 3px;
+  padding: 14px 5px 5px;
+  position: relative;
+}
+.theme-mini::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  height: 4px;
+  width: 52%;
+  background: #454545;
+  border-radius: 1px;
+}
+.theme-mini i {
+  display: block;
+  background: #292929;
+  border-radius: 1px;
+}
+.theme-mini i:nth-child(2) {
+  background: #414141;
+}
+.theme-mini.light {
+  background: #eaeaea;
+  border-color: #c8c8c8;
+}
+.theme-mini.light::before {
+  background: #bfbfbf;
+}
+.theme-mini.light i {
+  background: #fcfcfc;
+}
+.theme-mini.light i:nth-child(2) {
+  background: #d6d6d6;
+}
+.theme-mini.custom {
+  background: var(--bg);
+  border-color: var(--border);
+}
+.theme-mini.custom::before {
+  background: var(--accent);
+}
+.theme-mini.custom i {
+  background: var(--raised);
+}
+.theme-mini.custom i:nth-child(2) {
+  background: var(--control);
+}
+.embedded-settings-nav {
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.embedded-settings-nav button {
+  font-size: 11px;
+  min-height: 27px;
+  padding: 4px 7px;
+}
+.embedded-settings-nav button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.embedded-settings-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.embedded-settings-content .workflow-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.appearance-content {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+@media (max-width: 639px) {
+  .app[data-view="settings"] .embedded-settings-nav {
+    padding: 4px;
+  }
+}
+
+/* from calm-studio.css */
+
+/* ---------- settings ---------- */
+/* Three tabs per row, two when the pane is too narrow for the longest label. */
+.app .embedded-settings-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(88px, (100% - 7px) / 3), 1fr));
+  gap: 3px;
+  padding: 0 10px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.app .inspector-pane.wide .embedded-settings-nav {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.app .inspector-pane.wide .embedded-settings-nav:not(:has(> button:nth-child(6))) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.app .embedded-settings-nav button {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.app .embedded-settings-nav button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.app .embedded-settings-nav button.active {
+  background: var(--acc-1);
+  color: var(--text);
+  border: 0;
+}
+.app .embedded-settings-nav button:active:not(:disabled) {
+  transform: none;
+}
+.app .appearance-content {
+  padding: 16px 14px 24px;
+  gap: 18px;
+}
+.app .appearance-content > .field {
+  margin: 0;
+}
+.app .appearance-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.app .appearance-toggles .nna-toggle,
+.app .embedded-settings-content .nna-toggle {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+  font-size: 13px;
+  font-weight: 600;
+}
+.app .theme-actions {
+  gap: 6px;
+}
+.app .wf-setup-themes .theme-picker {
+  gap: 10px;
+}
+.app .wf-setup-themes .theme-picker-grid {
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 6px;
+}
+.app .wf-setup-themes .nna-theme-option {
+  gap: 5px;
+  padding: 5px 5px 6px;
+  border-radius: 10px;
+}
+.app .wf-setup-themes .theme-miniature {
+  height: 38px;
+  padding: 4px;
+  gap: 3px;
+  border-radius: 6px;
+}
+.app .wf-setup-themes .theme-mini-panel {
+  padding: 4px;
+  gap: 3px;
+}
+.app .wf-setup-themes .theme-option-name {
+  font-size: 11.5px;
+}
+.app .embedded-settings-content .workflow-content .wf-scroll {
+  padding: 16px 14px 20px;
+}
+.app .embedded-settings-content .workflow-content .wf-actions {
+  padding: 12px 14px;
+}

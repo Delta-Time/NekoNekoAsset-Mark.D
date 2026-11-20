@@ -1,0 +1,313 @@
+/* from calm-studio.css */
+.app:lang(ja) :is(.product-title, .statusbar .inline-notice > span) {
+  word-break: normal;
+}
+.app ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--text) 14%, transparent);
+  border: 3px solid transparent;
+  border-radius: 99px;
+  background-clip: padding-box;
+}
+.app ::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--text) 28%, transparent);
+}
+:where(.app) input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow:
+    0 0 0 3px var(--panel),
+    0 1px 3px rgb(0 0 0 / 0.4);
+  transition: transform 0.2s var(--spring);
+}
+:where(.app) input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+:where(.app) input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+.app .result-workspace {
+  position: relative;
+  animation: calm-boot-up 0.75s 0.12s var(--ease) backwards;
+}
+
+/* ---------- results: cards ---------- */
+.app .result-viewport {
+  padding-top: 2px;
+}
+.app .product-card {
+  border: 0;
+  border-radius: 12px;
+  background: var(--raised);
+  cursor: default;
+  isolation: isolate;
+  transition:
+    transform 0.3s var(--ease),
+    box-shadow 0.3s var(--ease),
+    background-color 0.45s;
+}
+.app .product-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--line);
+  pointer-events: none;
+  transition: box-shadow 0.2s;
+}
+.app .product-card:hover {
+  border: 0;
+  transform: translateY(-2px);
+  box-shadow: var(--sh-2);
+}
+.app .product-card:hover::after {
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.app .product-card:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 0.12s;
+}
+.app .product-card:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--acc-ring),
+    var(--sh-2);
+}
+.app .product-card.selected {
+  border: 0;
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--sh-2);
+}
+.app .product-card.selected::after {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.app .product-card .thumb {
+  background: var(--field);
+}
+.app .card-category {
+  left: 7px;
+  right: auto;
+  top: 7px;
+  max-width: calc(100% - 44px);
+  height: 20px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(12 12 14 / 0.58);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 20px;
+  backdrop-filter: blur(8px) saturate(1.3);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
+}
+/* The reveal button covers the whole blurred thumbnail; the pill keeps its look and reacts to it. */
+.app .thumb .reveal {
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  cursor: pointer;
+}
+.app .thumb .reveal:hover {
+  background: transparent;
+}
+.app .thumb .reveal:active:not(:disabled) {
+  transform: none;
+}
+.app .thumb .reveal:focus-visible {
+  outline: none;
+}
+.app .thumb .reveal-label {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 11px;
+  gap: 5px;
+  border: 0;
+  border-radius: 99px;
+  background: rgb(12 12 14 / 0.55);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18);
+  transition:
+    background-color 0.15s,
+    transform 0.2s var(--spring);
+}
+.app .thumb .reveal:hover .reveal-label {
+  background: rgb(12 12 14 / 0.72);
+  transform: scale(1.04);
+}
+.app .thumb .reveal:active:not(:disabled) .reveal-label {
+  transform: scale(0.97);
+}
+.app .thumb .reveal:focus-visible .reveal-label {
+  outline: 2px solid var(--acc-ring);
+  outline-offset: 2px;
+}
+.app .row-thumb .thumb .reveal-label {
+  height: 20px;
+  min-height: 20px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+.app .result-items .product-card > input[type="checkbox"] {
+  position: absolute;
+  left: auto;
+  right: 8px;
+  top: 8px;
+  z-index: 4;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(12 12 14 / 0.34);
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.7);
+  opacity: 0;
+  transition:
+    opacity 0.16s var(--ease),
+    background-color 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
+}
+.app .result-items .product-card > input[type="checkbox"]::after {
+  width: 9px;
+  height: 5px;
+  transform: translateY(-1px) rotate(-45deg) scale(0.75);
+  transition:
+    opacity 0.12s var(--ease),
+    transform 0.18s var(--ease);
+}
+.app .result-items .product-card:hover > input,
+.app .result-items .product-card > input:focus-visible,
+.app .result-items:has(.product-card.selected ~ .product-card.selected) .product-card > input {
+  opacity: 1;
+}
+.app .result-items .product-card.selected > input[type="checkbox"] {
+  opacity: 1;
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
+}
+.app .result-items .product-card.selected > input[type="checkbox"]::after {
+  opacity: 1;
+  transform: translateY(-1px) rotate(-45deg) scale(1);
+}
+.app .result-items .product-info {
+  padding: 8px 10px 9px;
+  gap: 2px;
+  transition: background-color 0.25s;
+}
+.app .product-card.selected .product-info {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+/* Secondary text on the tinted selection keeps 4.5:1. */
+.app
+  :is(.product-card, .product-row).selected
+  :is(
+    .product-shop,
+    .card-acquired,
+    .card-metrics,
+    .list-extra,
+    .product-status[data-status="notDownloaded"],
+    .product-status[data-status="unknown"]
+  ) {
+  color: color-mix(in oklab, var(--muted) 62%, var(--text));
+}
+.app :is(.product-card, .product-row).selected .product-status[data-status="ready"] {
+  color: color-mix(in oklab, var(--ok-ink) 82%, var(--text));
+}
+.app :is(.product-card, .product-row).selected .product-status[data-status="attention"] {
+  color: color-mix(in oklab, var(--warn-ink) 82%, var(--text));
+}
+.app :is(.product-card, .product-row).selected .product-status[data-status="processing"] {
+  color: color-mix(in oklab, var(--acc-ink) 82%, var(--text));
+}
+.app .grid-mode .product-title {
+  flex: 0 0 34px;
+  min-height: 34px;
+  max-height: 34px;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 17px;
+}
+.app .product-card .product-shop,
+.app .card-acquired {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.app .card-acquired {
+  color: var(--faint);
+}
+.app .card-bottom {
+  gap: 6px;
+  min-height: 20px;
+}
+.app .product-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  max-width: 100%;
+  padding: 0 8px 0 6px;
+  border-radius: 99px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  min-width: 0;
+  flex: none;
+}
+.app .product-card .card-bottom .product-status {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.app .product-status > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  stroke-width: 2.2;
+}
+.app .product-status > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app .product-status[data-status="ready"] {
+  background: var(--ok-1);
+  color: var(--ok-ink);
+}
+.app .product-status[data-status="attention"] {
+  background: var(--warn-1);
+  color: var(--warn-ink);
+}
+.app .product-status[data-status="processing"] {
+  background: var(--acc-1);
+  color: var(--acc-ink);
+}
+.app .product-status[data-status="partial"] {
+  color: var(--text);
+}
+.app .card-metrics {
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+@container (max-width: 210px) {
+  .app .card-bottom.has-metrics .product-status {
+    padding: 0 5px;
+  }
+}

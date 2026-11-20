@@ -1,0 +1,384 @@
+/* from styles.css */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 51px;
+  padding: 10px 16px 9px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.toolbar h1,
+.toolbar h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 29px;
+}
+@media (max-width: 1120px) {
+  .toolbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+@media (max-height: 650px) {
+  .toolbar {
+    min-height: 43px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+}
+.app .library-toolbar {
+  padding: 8px 12px;
+  min-height: 45px;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: 7px;
+}
+.result-total {
+  margin-right: auto;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+.library-toolbar select {
+  max-width: 150px;
+  min-width: 60px;
+}
+.account-scope .popup-menu {
+  left: 0;
+  right: auto;
+}
+.app .library-toolbar {
+  gap: 9px;
+}
+.library-toolbar > select {
+  width: 152px;
+  max-width: none;
+  flex: 0 1 152px;
+}
+.account-scope summary {
+  width: 140px;
+  max-width: none;
+}
+.toolbar-spacer {
+  flex: 1;
+}
+.result-total {
+  margin-left: 0;
+  white-space: nowrap;
+}
+@media (max-width: 1000px) {
+  .library-toolbar .result-total {
+    display: none;
+  }
+  .library-toolbar > select {
+    width: 125px;
+    flex-basis: 125px;
+  }
+  .account-scope summary {
+    width: 145px;
+    max-width: none;
+  }
+}
+@media (max-width: 1000px) {
+  .app .library-toolbar {
+    padding: 7px 9px;
+    gap: 5px;
+  }
+  .result-total {
+    font-size: 10px;
+  }
+  .account-scope summary {
+    max-width: 138px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 11px;
+  }
+  .library-toolbar select {
+    font-size: 11px;
+    max-width: 135px;
+  }
+}
+@media (max-width: 760px) {
+  .app .library-toolbar {
+    overflow: visible;
+  }
+  .library-toolbar .result-total {
+    display: none;
+  }
+  .account-scope summary {
+    max-width: 113px;
+    padding-inline: 4px;
+  }
+}
+.library-toolbar > .sort-direction {
+  width: 112px;
+  flex-basis: 112px;
+}
+@media (max-width: 1100px) {
+  .library-toolbar {
+    gap: 5px;
+  }
+  .library-toolbar > select {
+    width: 126px;
+    flex-basis: 126px;
+  }
+  .library-toolbar > .sort-direction {
+    width: 100px;
+    flex-basis: 100px;
+  }
+  .library-toolbar .account-scope summary {
+    width: 120px;
+  }
+}
+/* from library-008.css */
+.app .library-toolbar {
+  position: relative;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
+  align-items: center;
+}
+.toolbar-account {
+  flex: none;
+  min-width: 0;
+  max-width: calc(100% - 46px);
+}
+.toolbar-account summary {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: max-content;
+}
+.toolbar-control-group select {
+  max-width: 200px;
+}
+.toolbar-control-group .toolbar-spacer {
+  min-width: 8px;
+  flex: 1;
+}
+.toolbar-measure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  max-width: none;
+  width: max-content;
+}
+.toolbar-options {
+  margin-left: auto;
+}
+.toolbar-options > summary {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 8px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.toolbar-options .popup-menu {
+  right: 8px;
+  left: auto;
+  top: 42px;
+  width: min(330px, calc(100% - 16px));
+  min-width: 0;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+}
+.toolbar-options .popup-menu select {
+  width: 100%;
+  max-width: none;
+}
+.toolbar-options .result-total {
+  padding: 3px 0;
+}
+.toolbar-options .toolbar-spacer {
+  display: none;
+}
+.active-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+}
+.active-filter-chips:empty {
+  display: none;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 4px 3px 8px;
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.filter-chip span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+.filter-chip button {
+  padding: 1px;
+  border: 0;
+  min-width: 19px;
+  min-height: 19px;
+}
+.filter-clear-all {
+  padding: 3px 6px !important;
+}
+.library-toolbar .account-scope .popup-menu {
+  width: min(320px, calc(100cqw - 16px));
+  min-width: 0;
+  max-width: calc(100cqw - 16px);
+}
+.toolbar-account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.library-toolbar .acquisition-scope .popup-menu {
+  width: max-content;
+}
+@container results (max-width: 360px) {
+  .toolbar-options > summary > span {
+    display: none;
+  }
+  .toolbar-options > summary {
+    min-width: 29px;
+    justify-content: center;
+    padding: 5px 6px;
+  }
+}
+/* from calm-studio.css */
+
+/* ---------- results: toolbar ---------- */
+.app.app .library-toolbar {
+  min-height: 48px;
+  padding: 9px 10px;
+  gap: 6px;
+  flex-wrap: wrap;
+  border: 0;
+}
+.app .toolbar-control-group {
+  gap: 6px;
+}
+.app .toolbar-account .account-scope > summary {
+  display: block;
+  position: relative;
+  width: auto;
+  min-width: 96px;
+  max-width: 240px;
+  padding-right: 28px;
+  line-height: 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .account-scope > summary::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  margin-top: -6.5px;
+  width: 13px;
+  height: 13px;
+  background: var(--muted);
+  -webkit-mask: var(--chevron) center / contain no-repeat;
+  mask: var(--chevron) center / contain no-repeat;
+  transition: transform 0.28s var(--ease);
+}
+.app .account-scope[open] > summary::after {
+  transform: rotate(180deg);
+}
+.app .result-total {
+  padding: 0 4px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .result-total b {
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.app .toolbar-control-group > .button:last-child {
+  width: 30px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.app .toolbar-control-group > .button:last-child:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.app .active-filter-chips {
+  gap: 6px;
+  align-items: center;
+}
+.app .filter-chip {
+  height: 26px;
+  padding: 0 3px 0 10px;
+  gap: 5px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--acc-1);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  animation: calm-chip-in 0.34s var(--spring) backwards;
+}
+.app .filter-chip > button {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+.app .filter-chip > button:hover {
+  background: var(--acc-2);
+  color: var(--text);
+}
+.app .filter-chip > button svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.2;
+}
+.app .active-filter-chips .filter-clear-all {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 8px !important;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--muted);
+}
+.app .active-filter-chips .filter-clear-all:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.app .account-scope .popup-menu,
+.app .toolbar-options .popup-menu {
+  transform-origin: top left;
+}
