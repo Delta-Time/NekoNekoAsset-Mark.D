@@ -50,3 +50,4 @@ export function useNavigation() {
     settingsReturn,
   };
 }
+export type Navigation = ReturnType<typeof useNavigation>;

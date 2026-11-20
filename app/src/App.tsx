@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { CSSProperties, MouseEvent, KeyboardEvent } from 'react';
+import type { CSSProperties } from 'react';
 import {
   Search,
   Grid2X2,
@@ -40,24 +40,10 @@ import {
   cardPriceLabel,
   fileCountLabel,
 } from './model';
-import type {
-  Product,
-  Locale,
-  Account,
-  SensitiveMode,
-  SortDirection,
-  CustomCategory,
-} from './model';
+import type { Product, Locale, SortDirection } from './model';
 import { version as appVersion } from '../package.json';
 import { localeNames } from './i18n';
 import Preview from './Preview';
-import { coalescedRefresh, changedPreferences } from './refresh';
-import {
-  collectionMutationQueue,
-  collectionQueryKey,
-  collectionSnapshotKey,
-  reconciledCollectionName,
-} from './collections';
 import AvatarManager from './AvatarManager';
 import AssetInspector from './AssetInspector';
 import DeleteLocalProducts from './DeleteLocalProducts';
@@ -72,14 +58,14 @@ import { resumesAfterRestart, updateJobBlocker, updateText } from './update-i18n
 import { resetText } from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
-import FeaturesSettings, { batchActionPreferences } from './FeaturesSettings';
+import FeaturesSettings from './FeaturesSettings';
 import SpendingDialog from './SpendingDialog';
 import { LibraryContextMenu, ResponsiveLibraryToolbar } from './LibraryMenus';
 import type { ContextAction } from './LibraryMenus';
 import ActivityHistory from './ActivityHistory';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
 import ThemePicker, { defaultThemeOptions, themeDisplayName } from './ThemePicker';
-import Workflows, { WorkflowContent, LibraryAccess, isStoreJob, isStoreSyncJob } from './Workflows';
+import Workflows, { WorkflowContent, LibraryAccess, isStoreJob } from './Workflows';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import EditDialogs, { exportThemeConfig } from './EditDialogs';
@@ -88,8 +74,6 @@ import { licenseText } from './license-i18n';
 import {
   invokeAction,
   dialog as nativeDialog,
-  emptyState,
-  subscribeChanged,
   errorCode,
   nativeFileAction,
   nativeZoom,
@@ -100,33 +84,32 @@ import {
   retryAi,
   cancelUnity,
   retryUnityInventory,
-  libraryStatus,
-  openLibrary,
   type LocalFileChanges,
 } from './backend';
-import type {
-  NativeState,
-  NativeJob,
-  Service,
-  NativeCollection,
-  LibraryStatus,
-  ProductOverlayChange,
-} from './backend';
+import type { NativeJob, ProductOverlayChange } from './backend';
 import { nativeWorkflowText } from './native-workflow-i18n';
 import Button from './shared/Button';
 import SmallDialog from './shared/SmallDialog';
 import { appText } from './shared/app-text';
 import ProductStatus from './features/results/ProductStatus';
 import Results from './features/results/Results';
-import { configuredLibraryRoot, libraryAvailable } from './features/library/library-root';
-import { acquisitionKinds, fresh, leavingHidden, restoreQuery } from './features/filters/query';
-import type { Query, Saved } from './features/filters/query';
+import { configuredLibraryRoot } from './features/library/library-root';
+import { acquisitionKinds, fresh, leavingHidden } from './features/filters/query';
 import { neutralTokens } from './features/appearance/themes';
 import { useUiPreferences } from './features/preferences/useUiPreferences';
 import { useLayout } from './features/shell/useLayout';
 import { useNavigation } from './features/shell/useNavigation';
 import { useNotice } from './features/shell/useNotice';
+import { useLibrary } from './features/library/useLibrary';
+import { useSelection } from './features/selection/useSelection';
+import { useFilters } from './features/filters/useFilters';
+import { useCollections } from './features/collections/useCollections';
+import { useResults } from './features/results/useResults';
+import { useSelectedProducts } from './features/selection/useSelectedProducts';
+import { useNative } from './features/library/useNative';
+import { usePreferenceSync } from './features/preferences/usePreferenceSync';
 export default function App() {
+  const uiPrefs = useUiPreferences();
   const {
     locale,
     setLocale,
@@ -143,7 +126,6 @@ export default function App() {
     inspectorWidth,
     setInspectorWidth,
     cardColumns,
-    listColumns,
     columns,
     setColumns,
     avatarSettings,
@@ -159,14 +141,15 @@ export default function App() {
     setBundledFonts,
     oneHandedDrag,
     setOneHandedDrag,
-    hydrate,
-  } = useUiPreferences();
-  const { paneWidth, wide, resize } = useLayout({
+  } = uiPrefs;
+  const layout = useLayout({
     navWidth,
     setNavWidth,
     inspectorWidth,
     setInspectorWidth,
   });
+  const { paneWidth, wide, resize } = layout;
+  const nav = useNavigation();
   const {
     view,
     setView,
@@ -190,44 +173,116 @@ export default function App() {
     importSeed,
     setImportSeed,
     settingsReturn,
-  } = useNavigation();
-  const [nativeState, setNativeState] = useState<NativeState>(emptyState),
-    [loaded, setLoaded] = useState(false),
-    [loadingError, setLoadingError] = useState('');
-  const [libraryState, setLibraryState] = useState<LibraryStatus | null>(null),
-    [libraryOpening, setLibraryOpening] = useState(false),
-    libraryStateRef = useRef<LibraryStatus | null>(null),
-    credentialsPromptSeen = useRef(false),
-    libraryRefreshPending = useRef(false),
-    libraryEpoch = useRef(0);
-  const blockedLibraryRequest = useRef<{ path: string; newLibrary: boolean } | null>(null);
-  const applyLibraryStatus = (status: LibraryStatus) => {
-    libraryStateRef.current = status;
-    setLibraryState(status);
-  };
-  const [products, setProducts] = useState<Product[]>([]),
-    [catalogueTotal, setCatalogueTotal] = useState(0),
-    [catalogueCounts, setCatalogueCounts] = useState<{
-      all: number;
-      downloaded: number;
-      attention: number;
-      hidden?: number;
-    }>({ all: 0, downloaded: 0, attention: 0 });
-  const preferencesRef = useRef<Record<string, unknown>>({}),
-    initialLoad = useRef(false),
-    reloadSequence = useRef(0),
-    reloadTask = useRef<(() => Promise<void>) | null>(null);
-  const displayedPreferences = useRef<Record<string, unknown> | null>(null),
-    pendingPreferences = useRef<Record<string, unknown>>({}),
-    preferenceSaves = useRef(new Set<Promise<void>>());
+  } = nav;
+  const q = (key: string) => appText(locale, key);
+  const notices = useNotice({ q, flow, dialog });
+  const { notice, setNotice, notify, run } = notices;
+  const library = useLibrary();
+  const {
+    nativeState,
+    loaded,
+    loadingError,
+    setLoadingError,
+    libraryState,
+    libraryOpening,
+    libraryStateRef,
+    libraryRefreshPending,
+    libraryEpoch,
+    blockedLibraryRequest,
+    initialLoad,
+    saved,
+    customCategories,
+    setCustomCategories,
+    snapshotVersion,
+    libraryReady,
+    autoAll,
+    setAutoAll,
+    setupDone,
+    setSetupDone,
+    accounts,
+    syncing,
+    aiEnabled,
+    licenseEnabled,
+    batchEnabled,
+  } = library;
+  const selection = useSelection();
+  const { setSelected, focusId, setFocusId, revealed, setRevealed, anchor, clearSelection } =
+    selection;
+  const filters = useFilters({ selection, notices, nav, library });
+  const {
+    query,
+    setQuery,
+    sort,
+    setSort,
+    direction,
+    setDirection,
+    collection,
+    setCollection,
+    savedScope,
+    setSavedScope,
+    updateQuery,
+    openSuggestedProduct,
+    clearFilters,
+    changeSort,
+    defaultAccounts,
+    filtersActive,
+  } = filters;
+  const collectionStore = useCollections({ notices, filters, q });
+  const { collections, collectionRows, collectionBusy } = collectionStore;
+  const results = useResults({ library, filters, collectionStore, notices, q });
+  const {
+    products,
+    setProducts,
+    catalogueTotal,
+    scrollState,
+    queryResult,
+    setQueryResult,
+    queryBusy,
+    summaryCache,
+    queryKey,
+    filtered,
+    matchedIds,
+    resultsPending,
+    quickCounts,
+  } = results;
+  const selectedProducts = useSelectedProducts({ results, selection, library, nav, notices, q });
+  const {
+    visibleSelected,
+    selectedSet,
+    productMap,
+    setProductDetails,
+    active,
+    chosen,
+    availability,
+    availabilityKey,
+    select,
+    keySelect,
+    resultKeys,
+  } = selectedProducts;
+  const native = useNative({
+    library,
+    filters,
+    collectionStore,
+    uiPrefs,
+    nav,
+    results,
+    notices,
+    q,
+  });
+  const {
+    reload,
+    openSelectedLibrary,
+    chooseLibrary,
+    refreshState,
+    refreshAvatarOptions,
+    onNative,
+  } = native;
+  const preferenceSync = usePreferenceSync({ library, notices, uiPrefs, q });
+  const { displayedPreferences, pendingPreferences, onPreferences, drainPreferenceWrites } =
+    preferenceSync;
   const localFileLocks = useRef(new Set<string>()),
     [localFilePending, setLocalFilePending] = useState(new Set<string>());
-  const [themePreview, setThemePreview] = useState<Record<string, string> | null>(null),
-    [query, setQuery] = useState<Query>({ ...fresh }),
-    [sort, setSort] = useState('acquired'),
-    [direction, setDirection] = useState<SortDirection>('desc');
-  const [selected, setSelected] = useState<string[]>([]),
-    [focusId, setFocusId] = useState('');
+  const [themePreview, setThemePreview] = useState<Record<string, string> | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false),
     [updateRequest, setUpdateRequest] = useState(0),
     [updateAvailable, setUpdateAvailable] = useState(false),
@@ -238,22 +293,6 @@ export default function App() {
     aiChatUpdateBlockedRef.current = blocked;
     setAiChatUpdateBlocked(blocked);
   }, []);
-  const [saved, setSaved] = useState<Saved[]>([]),
-    [customCategories, setCustomCategories] = useState<CustomCategory[]>([]),
-    [collections, setCollections] = useState<Record<string, string[]>>({}),
-    [collection, setCollection] = useState(''),
-    [savedScope, setSavedScope] = useState<number | null>(null);
-  const reconciledCollections = useRef<NativeCollection[]>([]),
-    collectionRows = useRef<NativeCollection[]>([]),
-    collectionPending = useRef(false),
-    collectionEpoch = useRef(0),
-    collectionRefreshNeeded = useRef(false),
-    collectionTask = useRef<(() => Promise<void>) | null>(null);
-  const [snapshotVersion, setSnapshotVersion] = useState(0),
-    [collectionBusy, setCollectionBusy] = useState(false),
-    [committedCollections, setCommittedCollections] = useState<NativeCollection[]>([]);
-  const [libraryReady, setLibraryReady] = useState(false),
-    licenseActive = useRef(false);
   const [deleteLocalSelection, setDeleteLocalSelection] = useState<{
     ids: string[];
     names: string[];
@@ -266,11 +305,7 @@ export default function App() {
     [deletingDownloads, setDeletingDownloads] = useState<ReadonlySet<string>>(new Set());
   const watchedDownloads = useRef(new Set<string>()),
     staleProducts = useRef(new Set<string>());
-  const [undo, setUndo] = useState<string | null>(null),
-    [autoAll, setAutoAll] = useState(false),
-    [setupDone, setSetupDone] = useState(false);
-  const [accounts, setAccounts] = useState<Account[]>([]),
-    [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [undo, setUndo] = useState<string | null>(null);
   const avatarSettingsRef = useRef(avatarSettings);
   avatarSettingsRef.current = avatarSettings;
   const latestLocalImport = useRef<{
@@ -317,12 +352,7 @@ export default function App() {
     };
   }, []);
   const zoomQueue = useRef(Promise.resolve());
-  const searchRef = useRef<HTMLInputElement>(null),
-    anchor = useRef(''),
-    scrollState = useRef({ index: 0, offset: 0 });
-  const syncing = nativeState.jobs.some(
-    (job) => isStoreSyncJob(job.type) && ['queued', 'running'].includes(job.state),
-  );
+  const searchRef = useRef<HTMLInputElement>(null);
   const jobs = useMemo(
     () =>
       new Map(
@@ -340,320 +370,6 @@ export default function App() {
       ),
     [nativeState.jobs],
   );
-  const [queryResult, setQueryResult] = useState<{
-      products: Product[];
-      matchedIds: string[];
-      total: number;
-      allDownloaded?: boolean;
-      key: string;
-    } | null>(null),
-    [queryBusy, setQueryBusy] = useState(false),
-    [failedQueryKey, setFailedQueryKey] = useState('');
-  const queryResultRef = useRef(queryResult);
-  queryResultRef.current = queryResult;
-  const queryTask = useRef<(() => Promise<void>) | null>(null),
-    queryMounted = useRef(false),
-    summaryCache = useRef(new Map<string, { fingerprint: string; product: Product }>());
-  useEffect(() => {
-    queryMounted.current = true;
-    return () => {
-      queryMounted.current = false;
-    };
-  }, []);
-  const q = (key: string) => appText(locale, key);
-  const { notice, setNotice, notify, run } = useNotice({ q, flow, dialog });
-  const eventText = useRef(q);
-  eventText.current = q;
-  const aiEnabled = nativeState.preferences.aiFeaturesEnabled === true,
-    licenseEnabled = nativeState.preferences.licenseFilter === true,
-    batchEnabled = batchActionPreferences(nativeState.preferences.batchActions);
-  licenseActive.current = licenseEnabled && !!query.license;
-  const reloadOnce = async () => {
-    const sequence = ++reloadSequence.current,
-      collectionsAtStart = collectionEpoch.current;
-    try {
-      const status = await libraryStatus();
-      if (sequence !== reloadSequence.current) return;
-      applyLibraryStatus(status);
-      if (!initialLoad.current && Object.hasOwn(localeNames, String(status.locale)))
-        setLocale(status.locale as Locale);
-      if (status.state === 'blocked') {
-        setLibraryReady(false);
-        setLoaded(true);
-        return;
-      }
-      const state = await invokeAction<NativeState>('catalogue', 'bootstrap', {
-        includeProducts: false,
-      });
-      if (sequence !== reloadSequence.current) return;
-      if (status.state === 'unconfigured') {
-        setNativeState(state);
-        setLibraryReady(false);
-        setFlow('setup');
-        setLoaded(true);
-        setLoadingError('');
-        return;
-      }
-      setNativeState(state);
-      setCatalogueTotal(state.total ?? 0);
-      setCatalogueCounts(state.counts ?? { all: 0, downloaded: 0, attention: 0 });
-      setAccounts(state.accounts);
-      preferencesRef.current = state.preferences ?? {};
-      if (!collectionPending.current && collectionsAtStart === collectionEpoch.current)
-        applyCollections((state.collections ?? []) as unknown as NativeCollection[]);
-      else collectionRefreshNeeded.current = true;
-      setSnapshotVersion((version) => version + 1);
-      setSaved(
-        (state.savedSearches ?? []).map((search) => ({
-          ...search,
-          query: restoreQuery(search.query),
-        })) as Saved[],
-      );
-      setCustomCategories(state.customCategories ?? []);
-      libraryRefreshPending.current = false;
-      setLibraryReady(libraryAvailable(state));
-      if (status.state === 'setup') setFlow('setup');
-      if (!initialLoad.current) {
-        const p = state.preferences ?? {};
-        hydrate(p);
-        setQuery((old) => ({
-          ...old,
-          sensitive: ['blur', 'hide', 'show', 'only'].includes(String(p.sensitiveMode))
-            ? (p.sensitiveMode as SensitiveMode)
-            : 'blur',
-        }));
-        setAutoAll(typeof p.autoDownloadAll === 'boolean' ? p.autoDownloadAll : false);
-        setSetupDone(p.setupComplete === true);
-        if (!p.setupComplete) setFlow('setup');
-        else if (!credentialsPromptSeen.current && status.missingCredentials?.length)
-          setFlow('signInOnDevice');
-        credentialsPromptSeen.current = true;
-        initialLoad.current = true;
-      }
-      setLoaded(true);
-      setLoadingError('');
-    } catch (error) {
-      const code = errorCode(error);
-      setLoadingError(code);
-      if (libraryRefreshPending.current) setLibraryReady(false);
-      if (!initialLoad.current)
-        applyLibraryStatus({
-          state: 'blocked',
-          path: libraryStateRef.current?.path,
-          errorCode: code,
-        });
-      setLoaded(true);
-    }
-  };
-  const reload = () => {
-    if (!reloadTask.current) reloadTask.current = coalescedRefresh(reloadOnce);
-    return reloadTask.current();
-  };
-  const openSelectedLibrary = async (path: string, newLibrary = false) => {
-    const previous = libraryStateRef.current;
-    let activated = false;
-    setLibraryOpening(true);
-    try {
-      const result = await openLibrary(path, locale, newLibrary);
-      blockedLibraryRequest.current = null;
-      if (!result.restarting) {
-        // Native selection has committed. Retain the setup draft and the new
-        // candidate or library if its bootstrap fails, then retry that selection.
-        activated = true;
-        initialLoad.current = true;
-        reloadSequence.current++;
-        libraryEpoch.current++;
-        libraryRefreshPending.current = true;
-        setLibraryReady(false);
-        setNativeState(emptyState);
-        setAccounts([]);
-        setProducts([]);
-        summaryCache.current.clear();
-        setQueryResult(null);
-        setQueryBusy(false);
-        setFailedQueryKey('');
-        applyLibraryStatus({ state: 'unconfigured', path, defaultPath: path, locale });
-        await reload();
-        setLibraryOpening(false);
-      }
-    } catch (error) {
-      if (!activated) {
-        if (
-          previous?.state === 'ready' ||
-          previous?.state === 'setup' ||
-          previous?.state === 'unconfigured'
-        )
-          applyLibraryStatus(previous);
-        else {
-          blockedLibraryRequest.current = { path, newLibrary };
-          applyLibraryStatus({ state: 'blocked', path, errorCode: errorCode(error), locale });
-        }
-      }
-      setLibraryOpening(false);
-      throw error;
-    }
-  };
-  const chooseLibrary = async () => {
-    setLibraryOpening(true);
-    try {
-      const selected = await nativeDialog('folder', { defaultPath: libraryStateRef.current?.path });
-      if (selected?.path) await openSelectedLibrary(selected.path, true);
-      else setLibraryOpening(false);
-    } catch (error) {
-      setLibraryOpening(false);
-      if (libraryStateRef.current?.state !== 'blocked')
-        applyLibraryStatus({
-          state: 'blocked',
-          path: libraryStateRef.current?.path,
-          errorCode: errorCode(error),
-          locale,
-        });
-    }
-  };
-  const stateTask = useRef<(() => Promise<void>) | null>(null);
-  const refreshState = () => {
-    if (!stateTask.current)
-      stateTask.current = coalescedRefresh(async () => {
-        if (libraryRefreshPending.current) {
-          await reload();
-          return;
-        }
-        const sequence = reloadSequence.current,
-          status = await libraryStatus();
-        if (sequence !== reloadSequence.current) return;
-        applyLibraryStatus(status);
-        if (status.state !== 'ready' && status.state !== 'setup') return;
-        const state = await invokeAction<
-          Pick<
-            NativeState,
-            'accounts' | 'roots' | 'jobs' | 'preferences' | 'sourceCoverage' | 'conflicts'
-          >
-        >('catalogue', 'state');
-        if (sequence !== reloadSequence.current) return;
-        setNativeState((old) => ({ ...old, ...state }));
-        setAccounts(state.accounts);
-        preferencesRef.current = state.preferences;
-        setLibraryReady(libraryAvailable(state));
-      });
-    return stateTask.current();
-  };
-  const avatarOptionsTask = useRef<(() => Promise<void>) | null>(null);
-  const refreshAvatarOptions = () => {
-    if (!avatarOptionsTask.current)
-      avatarOptionsTask.current = coalescedRefresh(async () => {
-        if (libraryRefreshPending.current || libraryStateRef.current?.state !== 'ready') return;
-        const epoch = libraryEpoch.current,
-          sequence = reloadSequence.current;
-        const state = await invokeAction<Pick<NativeState, 'avatarOptions'>>(
-          'catalogue',
-          'avatar_options',
-        );
-        if (
-          epoch !== libraryEpoch.current ||
-          sequence !== reloadSequence.current ||
-          libraryRefreshPending.current
-        )
-          return;
-        setNativeState((old) => ({ ...old, avatarOptions: state.avatarOptions ?? [] }));
-      });
-    return avatarOptionsTask.current();
-  };
-  const collectionError = useRef<(error: unknown) => void>(() => {});
-  collectionError.current = (error) => notify(q(errorCode(error)));
-  const collectionQueue = useRef<ReturnType<typeof collectionMutationQueue> | null>(null);
-  if (!collectionQueue.current)
-    collectionQueue.current = collectionMutationQueue(
-      (args) => invokeAction<{ collections: NativeCollection[] }>('catalogue', 'collection', args),
-      (rows, committed, busy) => {
-        collectionEpoch.current++;
-        collectionPending.current = busy;
-        if (!busy) {
-          const before = reconciledCollections.current;
-          reconciledCollections.current = committed;
-          setCollection((name) => reconciledCollectionName(before, committed, name));
-        }
-        setCollectionBusy(busy);
-        setCommittedCollections((before) =>
-          collectionSnapshotKey(before) === collectionSnapshotKey(committed) ? before : committed,
-        );
-        if (collectionSnapshotKey(rows) !== collectionSnapshotKey(collectionRows.current)) {
-          collectionRows.current = rows;
-          setCollections(Object.fromEntries(rows.map((row) => [row.name, row.productIds ?? []])));
-        }
-        if (!busy && collectionRefreshNeeded.current) {
-          collectionRefreshNeeded.current = false;
-          queueMicrotask(
-            () => void refreshCollections().catch((error) => collectionError.current(error)),
-          );
-        }
-      },
-      (error) => collectionError.current(error),
-      () => crypto.randomUUID(),
-    );
-  const applyCollections = (rows: NativeCollection[]) =>
-    collectionQueue.current!.setCommitted(rows);
-  const reconcileCollections = async () => {
-    if (collectionPending.current) return;
-    const epoch = collectionEpoch.current;
-    const result = await invokeAction<{ collections: NativeCollection[] }>(
-      'catalogue',
-      'collections',
-    );
-    if (!collectionPending.current && epoch === collectionEpoch.current)
-      applyCollections(result.collections);
-  };
-  const refreshCollections = () => {
-    if (collectionPending.current) {
-      collectionRefreshNeeded.current = true;
-      return Promise.resolve();
-    }
-    if (!collectionTask.current) collectionTask.current = coalescedRefresh(reconcileCollections);
-    return collectionTask.current();
-  };
-  const changeCollection = (input: Record<string, unknown>) =>
-    collectionQueue.current!.enqueue(input);
-  const onNative = async (
-    service: Service | 'dialog',
-    action: string,
-    args: Record<string, unknown> = {},
-  ) => {
-    try {
-      const setupAction =
-        libraryStateRef.current?.state === 'setup' &&
-        ((service === 'booth' &&
-          [
-            'account_add',
-            'account_login',
-            'account_logout',
-            'account_rename',
-            'account_remove',
-            'cancel_sync',
-          ].includes(action)) ||
-          (service === 'catalogue' && action === 'preferences'));
-      if (
-        service !== 'dialog' &&
-        ((!setupAction && libraryStateRef.current?.state !== 'ready') ||
-          libraryRefreshPending.current)
-      )
-        throw new Error('library_not_open');
-      const result =
-        service === 'catalogue' && action === 'collection'
-          ? await changeCollection(args)
-          : service === 'dialog'
-            ? await nativeDialog(action as 'folder' | 'open_file' | 'save_file', args)
-            : await invokeAction(service, action, args);
-      if (result?.restartRequired === true) {
-        setLibraryOpening(true);
-        return result;
-      }
-      if (service === 'booth' && !action.startsWith('fetch_') && !action.startsWith('diagnose_'))
-        await refreshState();
-      return result;
-    } catch (error) {
-      notify(q(errorCode(error)));
-      throw error;
-    }
-  };
   async function changeLocalFiles(
     productId: string,
     changes: LocalFileChanges | (() => Promise<LocalFileChanges | undefined>),
@@ -683,47 +399,6 @@ export default function App() {
           : undefined;
       }),
     );
-
-  const onPreferences = (patch: Record<string, unknown>) => {
-    const save = (async () => {
-      try {
-        if (
-          !['ready', 'setup'].includes(libraryStateRef.current?.state ?? '') ||
-          libraryRefreshPending.current
-        )
-          throw new Error('library_not_open');
-        const result = await invokeAction('catalogue', 'preferences', { patch });
-        if (result?.restartRequired === true) {
-          setLibraryOpening(true);
-          return;
-        }
-        preferencesRef.current = { ...preferencesRef.current, ...patch };
-        setNativeState((old) => ({ ...old, preferences: { ...old.preferences, ...patch } }));
-      } catch (error) {
-        notify(q(errorCode(error)));
-        throw error;
-      }
-    })();
-    preferenceSaves.current.add(save);
-    void save.then(
-      () => preferenceSaves.current.delete(save),
-      () => preferenceSaves.current.delete(save),
-    );
-    return save;
-  };
-  const drainPreferenceWrites = async () => {
-    while (preferenceSaves.current.size) await Promise.all([...preferenceSaves.current]);
-    const patch = pendingPreferences.current;
-    pendingPreferences.current = {};
-    if (Object.keys(patch).length) {
-      try {
-        await onPreferences(patch);
-      } catch (error) {
-        pendingPreferences.current = { ...patch, ...pendingPreferences.current };
-        throw error;
-      }
-    }
-  };
   const changeAvatarDetails = async (
     id: string,
     patch: { displayName: string; shopName: string },
@@ -742,55 +417,6 @@ export default function App() {
     setAvatarSettings(next);
     await refreshAvatarOptions().catch((error) => notify(q(errorCode(error))));
   };
-  const pendingSuggestionProduct = useRef('');
-  const clearSelection = () => {
-    setSelected([]);
-    setFocusId('');
-    setRevealed(new Set());
-  };
-  const updateQuery = (patch: Partial<Query>) => {
-    pendingSuggestionProduct.current = '';
-    setQuery((old) => ({
-      ...old,
-      ...(patch.category || patch.avatar || patch.quick ? leavingHidden(old) : {}),
-      ...patch,
-    }));
-    clearSelection();
-    setSavedScope(null);
-  };
-  const openSuggestedProduct = (id: string) =>
-    run(
-      invokeAction<Product>('catalogue', 'product_details', { id }).then((product) => {
-        pendingSuggestionProduct.current = id;
-        setQuery({
-          ...fresh,
-          sensitive: query.sensitive,
-          search: product.title,
-          category: product.category,
-        });
-        setCollection('');
-        setSavedScope(null);
-        clearSelection();
-        setView('library');
-        setTab('details');
-        setInspector(true);
-      }),
-    );
-  const clearFilters = () => {
-    setQuery({ ...fresh, sensitive: query.sensitive });
-    setSort('acquired');
-    setDirection('desc');
-    setCollection('');
-    setSavedScope(null);
-    clearSelection();
-  };
-  const changeSort = (value: string) => {
-    setSort(value);
-    setDirection(defaultSortDirection(value));
-    setSavedScope(null);
-    clearSelection();
-  };
-  const selectedCollectionKey = collectionQueryKey(committedCollections, collection);
   const categoryLabel = (key: string) => categoryName(key, customCategories, q),
     categoryList = [...customCategories].sort((a, b) =>
       a.name.localeCompare(b.name, locale, { numeric: true }),
@@ -801,181 +427,6 @@ export default function App() {
     if (args.op === 'delete')
       setQuery((old) => (old.category === args.id ? { ...old, category: 'all' } : old));
   };
-  const hideUnavailable = nativeState.preferences.hideUnavailable !== false,
-    hideUnclassified = nativeState.preferences.hideUnclassified !== false,
-    queryKey = JSON.stringify({
-      query,
-      collection,
-      sort,
-      direction,
-      hideUnavailable,
-      hideUnclassified,
-      licenseEnabled,
-    }),
-    accountScopeKey = JSON.stringify(
-      query.accountIds === null ? null : [...new Set(query.accountIds)].sort(),
-    );
-  const filtered = queryResult?.key === queryKey ? queryResult.products : [];
-  const matchedIds = queryResult?.key === queryKey ? queryResult.matchedIds : [];
-  // A changed search, filter or sort has no rows until its query answers: show progress, never "no results".
-  const resultsPending =
-    !loaded ||
-    (libraryState?.state === 'ready' &&
-      !loadingError &&
-      queryResult?.key !== queryKey &&
-      failedQueryKey !== queryKey);
-  // Product events can share a result; changed filters or collection membership cannot.
-  const queryIdentity = JSON.stringify([queryKey, selectedCollectionKey]);
-  const queryRequest = useRef({
-    identity: queryIdentity,
-    epoch: 0,
-    key: queryKey,
-    args: {
-      ...query,
-      license: licenseEnabled ? query.license : null,
-      hiddenOnly: query.quick === 'hidden',
-      hideUnavailable,
-      hideUnclassified,
-      collectionId: committedCollections.find((c) => c.name === collection)?.id,
-      sort,
-      direction,
-      limit: 10000,
-      includeFiles: false,
-      presentation: 'list',
-      allSummaries: true,
-    },
-    onError: (error: unknown) => notify(q(errorCode(error))),
-  });
-  queryRequest.current = {
-    identity: queryIdentity,
-    epoch: queryRequest.current.epoch + (queryRequest.current.identity === queryIdentity ? 0 : 1),
-    key: queryKey,
-    args: {
-      ...query,
-      license: licenseEnabled ? query.license : null,
-      hiddenOnly: query.quick === 'hidden',
-      hideUnavailable,
-      hideUnclassified,
-      collectionId: committedCollections.find((c) => c.name === collection)?.id,
-      sort,
-      direction,
-      limit: 10000,
-      includeFiles: false,
-      presentation: 'list',
-      allSummaries: true,
-    },
-    onError: (error: unknown) => notify(q(errorCode(error))),
-  };
-  if (!queryTask.current)
-    queryTask.current = coalescedRefresh(async () => {
-      if (
-        !queryMounted.current ||
-        !initialLoad.current ||
-        libraryStateRef.current?.state !== 'ready' ||
-        libraryRefreshPending.current
-      )
-        return;
-      const request = queryRequest.current,
-        epoch = libraryEpoch.current,
-        hasCurrent = queryResultRef.current?.key === request.key;
-      const current = () =>
-        queryMounted.current &&
-        request.epoch === queryRequest.current.epoch &&
-        epoch === libraryEpoch.current &&
-        !libraryRefreshPending.current;
-      try {
-        // Native returns only summaries whose fingerprint differs from this cache.
-        const knownSummaries = Object.fromEntries(
-          Array.from(summaryCache.current, ([id, entry]) => [id, entry.fingerprint]),
-        );
-        const result = await invokeAction<{
-          products: Product[];
-          fingerprints?: Record<string, string>;
-          matchedIds: string[];
-          total: number;
-          allDownloaded: boolean;
-          counts: { all: number; downloaded: number; attention: number; hidden?: number };
-        }>('catalogue', 'query', { ...request.args, knownSummaries });
-        if (epoch !== libraryEpoch.current) return;
-        for (const product of result.products)
-          summaryCache.current.set(product.id, {
-            fingerprint: result.fingerprints?.[product.id] ?? '',
-            product,
-          });
-        if (!current()) return;
-        const products = result.matchedIds.flatMap((id) => {
-          const product = summaryCache.current.get(id)?.product;
-          return product ? [product] : [];
-        });
-        setQueryResult({ ...result, products, key: request.key });
-        setFailedQueryKey('');
-        setCatalogueTotal(result.total);
-        setCatalogueCounts(result.counts);
-        if (result.products.length)
-          setProducts((old) => {
-            const cache = new Map(old.map((product) => [product.id, product]));
-            for (const product of result.products) cache.set(product.id, product);
-            return [...cache.values()];
-          });
-      } catch (error) {
-        if (current()) {
-          if (!hasCurrent) setQueryResult(null);
-          setFailedQueryKey(request.key);
-          request.onError(error);
-        }
-      } finally {
-        if (current()) setQueryBusy(false);
-      }
-    });
-  const defaultAccounts = query.includeOffline && query.accountIds === null;
-  const filtersActive =
-    !!query.search ||
-    query.category !== 'all' ||
-    query.avatar !== 'all' ||
-    query.status !== 'all' ||
-    !defaultAccounts ||
-    query.quick !== 'all' ||
-    !!query.acquisition ||
-    (licenseEnabled && !!query.license) ||
-    !!collection ||
-    sort !== 'acquired' ||
-    direction !== 'desc';
-  const quickCounts = catalogueCounts;
-  const selectedScope = useMemo(() => new Set(matchedIds), [queryResult, queryKey]);
-  const visibleSelected = selected.filter((id) => selectedScope.has(id));
-  const selectedSet = useMemo(() => new Set(visibleSelected), [selectedScope, selected]);
-  const productMap = useMemo(
-    () => new Map(products.map((product) => [product.id, product])),
-    [products],
-  );
-  const activeSummary =
-    filtered.find(
-      (p) =>
-        p.id ===
-        (visibleSelected.length === 1 ? visibleSelected[0] : focusId || visibleSelected[0]),
-    ) || filtered[0];
-  const detailsKey = JSON.stringify([activeSummary?.id, accountScopeKey]);
-  const [productDetails, setProductDetails] = useState<{ key: string; product: Product } | null>(
-    null,
-  );
-  const active = productDetails?.key === detailsKey ? productDetails.product : activeSummary,
-    chosen = visibleSelected.length ? visibleSelected : active ? [active.id] : [];
-  const [availability, setAvailability] = useState<{
-    key: string;
-    folderAvailable: boolean;
-    openableFileIds: string[];
-  } | null>(null);
-  const availabilityKey = JSON.stringify({
-    id: active?.id,
-    files: active?.files.map((file) => [
-      file.id,
-      file.status,
-      file.originalAvailable,
-      file.verifiedHash,
-      file.relativePath,
-    ]),
-    roots: nativeState.roots.map((root) => [root.id, root.status, root.path]),
-  });
   const avatarOptions = (nativeState.avatarOptions ?? []).map((option) => {
       const settings = avatarSettings[option.id];
       return {
@@ -1300,79 +751,6 @@ export default function App() {
     }
   };
   const edit = () => setDialog(visibleSelected.length > 1 ? 'batch' : 'edit');
-  const select = (p: Product, e?: Pick<MouseEvent, 'shiftKey' | 'ctrlKey' | 'metaKey'>) => {
-    if (view === 'settings') {
-      setView('library');
-      setTab('details');
-      setInspector(true);
-    } else if (view === 'activity') setView('library');
-    setFocusId(p.id);
-    if (e?.shiftKey && anchor.current) {
-      const a = filtered.findIndex((p) => p.id === anchor.current),
-        b = filtered.findIndex((item) => item.id === p.id);
-      setSelected(filtered.slice(Math.max(0, Math.min(a, b)), Math.max(a, b) + 1).map((p) => p.id));
-    } else if (e?.ctrlKey || e?.metaKey) {
-      setSelected((ids) => (ids.includes(p.id) ? ids.filter((id) => id !== p.id) : [...ids, p.id]));
-      anchor.current = p.id;
-    } else {
-      setSelected([p.id]);
-      anchor.current = p.id;
-    }
-  };
-  const keySelect = (e: KeyboardEvent, p: Product) => {
-    if (e.nativeEvent.isComposing) return;
-    if (e.key === 'Enter') {
-      select(p);
-      setInspector(true);
-      return;
-    }
-    if (e.key === ' ') {
-      e.preventDefault();
-      select(p, { ctrlKey: true, metaKey: false, shiftKey: e.shiftKey });
-    }
-    if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      e.preventDefault();
-      const index = filtered.findIndex((item) => item.id === p.id),
-        next =
-          filtered[
-            Math.max(
-              0,
-              Math.min(
-                filtered.length - 1,
-                index +
-                  (['ArrowDown', 'ArrowRight'].includes(e.key) ? 1 : -1) *
-                    (['ArrowDown', 'ArrowUp'].includes(e.key)
-                      ? Number(
-                          e.currentTarget.closest('.result-viewport')?.getAttribute('data-columns'),
-                        ) || 1
-                      : 1),
-              ),
-            )
-          ];
-      if (next) {
-        select(next, { shiftKey: e.shiftKey, ctrlKey: false, metaKey: false });
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() =>
-            document.getElementById('product-' + next.id)?.focus({ preventScroll: true }),
-          ),
-        );
-      }
-    }
-  };
-  const resultKeys = (e: KeyboardEvent) => {
-    const editing =
-      e.target instanceof Element &&
-      !!e.target.closest('input,textarea,select,[contenteditable="true"]');
-    if (
-      (e.ctrlKey || e.metaKey) &&
-      e.key.toLowerCase() === 'a' &&
-      !e.nativeEvent.isComposing &&
-      !editing
-    ) {
-      e.preventDefault();
-      setSelected(matchedIds);
-    }
-  };
   const choosePreset = async (tokens: Record<string, string>, name = 'Custom') => {
     let unique = name.trim() || 'Custom',
       suffix = 2;
@@ -1448,153 +826,6 @@ export default function App() {
   useEffect(() => {
     if (loaded && initialLoad.current) changeScale(zoomTarget.current);
   }, [loaded]);
-  // A refresh refused while the update installer launches reruns on the next change; nothing failed.
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    let active = true;
-    const report = (error: unknown) => {
-      const code = errorCode(error);
-      if (code !== 'updates_busy') notify(eventText.current(code));
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined,
-      registryTimer: ReturnType<typeof setTimeout> | undefined,
-      productTimer: ReturnType<typeof setTimeout> | undefined,
-      licenseTimer: ReturnType<typeof setTimeout> | undefined;
-    void subscribeChanged(({ scope, productIds }) => {
-      if (!active) return;
-      if (scope === 'licenses') {
-        if (licenseActive.current && !licenseTimer)
-          licenseTimer = setTimeout(() => {
-            licenseTimer = undefined;
-            if (active) setSnapshotVersion((version) => version + 1);
-          }, 1000);
-        return;
-      }
-      if (scope === 'collections') {
-        void refreshCollections().catch(report);
-        return;
-      }
-      if (scope === 'jobs' || scope === 'state') {
-        void refreshState().catch(report);
-        return;
-      }
-      if (scope === 'products' || (scope === 'catalogue' && productIds?.length)) {
-        if (!registryTimer)
-          registryTimer = setTimeout(() => {
-            registryTimer = undefined;
-            if (active) void refreshAvatarOptions().catch(report);
-          }, 500);
-        if (!productTimer)
-          productTimer = setTimeout(() => {
-            productTimer = undefined;
-            if (active) {
-              setSnapshotVersion((version) => version + 1);
-              void refreshState().catch(report);
-            }
-          }, 150);
-        return;
-      }
-      if (registryTimer) {
-        clearTimeout(registryTimer);
-        registryTimer = undefined;
-      }
-      if (!timer)
-        timer = setTimeout(() => {
-          timer = undefined;
-          if (active) void reload();
-        }, 250);
-    })
-      .then((stop) => {
-        if (active) dispose = stop;
-        else stop();
-      })
-      .catch(report);
-    void reload();
-    return () => {
-      active = false;
-      dispose?.();
-      if (timer) clearTimeout(timer);
-      if (registryTimer) clearTimeout(registryTimer);
-      if (productTimer) clearTimeout(productTimer);
-      if (licenseTimer) clearTimeout(licenseTimer);
-    };
-  }, []);
-  useEffect(() => {
-    if (
-      !loaded ||
-      !initialLoad.current ||
-      !['ready', 'setup'].includes(libraryStateRef.current?.state ?? '') ||
-      libraryRefreshPending.current
-    )
-      return;
-    const current = {
-      locale,
-      theme,
-      presets,
-      thumb,
-      density,
-      navWidth,
-      inspectorWidth,
-      cardColumns,
-      listColumns,
-      avatarSettings,
-      uiScale,
-      roundedCorners,
-      reduceMotion,
-      bundledFonts,
-      oneHandedDrag,
-    };
-    if (!displayedPreferences.current) {
-      displayedPreferences.current = current;
-      return;
-    }
-    Object.assign(
-      pendingPreferences.current,
-      changedPreferences(displayedPreferences.current, current),
-    );
-    displayedPreferences.current = current;
-    if (!Object.keys(pendingPreferences.current).length) return;
-    const timer = setTimeout(() => {
-      const patch = pendingPreferences.current;
-      if (!Object.keys(patch).length) return;
-      pendingPreferences.current = {};
-      run(
-        onPreferences(patch).catch((error) => {
-          pendingPreferences.current = { ...patch, ...pendingPreferences.current };
-          throw error;
-        }),
-      );
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [
-    loaded,
-    locale,
-    theme,
-    presets,
-    thumb,
-    density,
-    navWidth,
-    inspectorWidth,
-    cardColumns,
-    listColumns,
-    avatarSettings,
-    uiScale,
-    roundedCorners,
-    reduceMotion,
-    bundledFonts,
-    oneHandedDrag,
-  ]);
-  useEffect(() => {
-    if (!loaded) return;
-    const prefs = nativeState.preferences;
-    setAutoAll(typeof prefs.autoDownloadAll === 'boolean' ? prefs.autoDownloadAll : false);
-    const complete = prefs.setupComplete === true;
-    setSetupDone(complete);
-    if (complete) setFlow((current) => (current === 'setup' ? null : current));
-  }, [loaded, nativeState.preferences]);
-  useEffect(() => {
-    if (flow === 'signInOnDevice' && !libraryState?.missingCredentials?.length) setFlow(null);
-  }, [flow, libraryState?.missingCredentials]);
   useEffect(() => {
     const accepted = latestLocalImport.current;
     if (!accepted || accepted.handled) return;
@@ -1622,62 +853,6 @@ export default function App() {
       })
       .catch((error) => notify(q(errorCode(error))));
   }, [nativeState.jobs, locale, flow]);
-  useEffect(() => {
-    if (!initialLoad.current) return;
-    setQueryBusy(queryResultRef.current?.key !== queryKey);
-    void queryTask.current!();
-  }, [
-    snapshotVersion,
-    selectedCollectionKey,
-    query,
-    sort,
-    direction,
-    collection,
-    hideUnavailable,
-    hideUnclassified,
-    licenseEnabled,
-  ]);
-  useEffect(() => {
-    if (!activeSummary) {
-      setProductDetails(null);
-      return;
-    }
-    let current = true;
-    void invokeAction<Product>('catalogue', 'product_details', {
-      id: activeSummary.id,
-      accountIds: JSON.parse(accountScopeKey),
-    })
-      .then((product) => {
-        if (current) setProductDetails({ key: detailsKey, product });
-      })
-      .catch((error) => {
-        if (current) notify(q(errorCode(error)));
-      });
-    return () => {
-      current = false;
-    };
-  }, [activeSummary?.id, accountScopeKey, snapshotVersion]);
-  useEffect(() => {
-    if (!active || active.filesLoaded === false) {
-      setAvailability(null);
-      return;
-    }
-    let current = true;
-    void invokeAction<{ folderAvailable: boolean; openableFileIds: string[] }>(
-      'storage',
-      'product_availability',
-      { productId: active.id },
-    )
-      .then((result) => {
-        if (current) setAvailability({ ...result, key: availabilityKey });
-      })
-      .catch(() => {
-        if (current) setAvailability(null);
-      });
-    return () => {
-      current = false;
-    };
-  }, [availabilityKey]);
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
@@ -1752,34 +927,6 @@ export default function App() {
     updateOpen,
     themeDeleteTarget,
   ]);
-  useEffect(() => {
-    if (pendingSuggestionProduct.current) {
-      if (queryResult?.key !== queryKey) return;
-      const id = pendingSuggestionProduct.current;
-      pendingSuggestionProduct.current = '';
-      if (selectedScope.has(id)) {
-        setSelected([id]);
-        setFocusId(id);
-        anchor.current = id;
-        return;
-      }
-    }
-    if (selected.some((id) => !selectedScope.has(id)))
-      setSelected((old) => old.filter((id) => selectedScope.has(id)));
-    if (focusId && !selectedScope.has(focusId)) setFocusId('');
-  }, [selectedScope, queryResult, queryKey]);
-  useEffect(() => {
-    const mode = nativeState.preferences.sensitiveMode;
-    if (['blur', 'hide', 'show', 'only'].includes(String(mode)))
-      setQuery((old) =>
-        old.sensitive === mode ? old : { ...old, sensitive: mode as SensitiveMode },
-      );
-    if (!aiEnabled) {
-      if (view === 'ai-suggestions') setView('library');
-      if (settingsRoute === 'ai-settings') setSettingsRoute('features');
-      if (flow === 'ai') setFlow(null);
-    }
-  }, [nativeState.preferences.sensitiveMode, aiEnabled]);
   const cardArt = (p: Product, compact = false) => (
     <div
       className={`thumb ${p.sensitive && query.sensitive === 'blur' && !revealed.has(p.id) ? 'blurred' : ''}`}

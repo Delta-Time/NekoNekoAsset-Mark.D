@@ -115,3 +115,4 @@ export function useUiPreferences() {
     hydrate,
   };
 }
+export type UiPreferences = ReturnType<typeof useUiPreferences>;

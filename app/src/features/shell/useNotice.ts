@@ -27,3 +27,4 @@ export function useNotice({
   }, [flow, dialog]);
   return { notice, setNotice, notify, run };
 }
+export type Notices = ReturnType<typeof useNotice>;

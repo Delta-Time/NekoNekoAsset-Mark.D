@@ -44,3 +44,4 @@ export function useLayout({
   }, []);
   return { paneWidth, wide, resize };
 }
+export type Layout = ReturnType<typeof useLayout>;
