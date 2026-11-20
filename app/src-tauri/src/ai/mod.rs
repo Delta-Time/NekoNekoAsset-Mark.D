@@ -1,10 +1,15 @@
-use crate::ai_analysis::{
+pub(crate) mod analysis;
+pub(crate) mod images;
+pub(crate) mod jobs;
+pub(crate) mod provider;
+pub(crate) mod suggestions;
+use analysis::{
     normalize_input, parse_output, structured_output_schema, AnalysisInput, AnalysisOutput,
 };
-pub use crate::ai_images::{normalize_images, AiImage};
-use crate::ai_provider::{self, AiWire};
-pub use crate::ai_provider::{AiConfig, AiProviderPreset};
 use anyhow::{anyhow, ensure, Result};
+pub use images::{normalize_images, AiImage};
+use provider::AiWire;
+pub use provider::{AiConfig, AiProviderPreset};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -215,7 +220,7 @@ impl AiService {
         match request {
             AiRequest::KeyStatus => Ok(AiResponse::KeyStatus(self.key_status().await?)),
             AiRequest::Providers => Ok(AiResponse::Providers(AiProviders {
-                presets: ai_provider::presets(),
+                presets: provider::presets(),
             })),
             AiRequest::ListEntries => {
                 let _guard = self.gate.lock().await;
@@ -274,7 +279,7 @@ impl AiService {
                     let target = target.clone();
                     vault_task(move || vault::write(&target, key.as_bytes())).await?;
                 }
-                if let Err(error) = ai_provider::save_entry(&self.settings_path, config) {
+                if let Err(error) = provider::save_entry(&self.settings_path, config) {
                     let _ = vault_task(move || vault::delete(&target)).await;
                     return Err(error);
                 }
@@ -283,23 +288,23 @@ impl AiService {
             }
             AiRequest::SelectEntry { entry_id } => {
                 let _guard = self.gate.lock().await;
-                ai_provider::select_entry(&self.settings_path, &entry_id)?;
+                provider::select_entry(&self.settings_path, &entry_id)?;
                 self.draft_tests.lock().await.clear();
                 Ok(AiResponse::Entries(self.entries_locked().await?))
             }
             AiRequest::RemoveEntry { entry_id } => {
                 let _guard = self.gate.lock().await;
-                let config = ai_provider::entry_config(&self.settings_path, &entry_id)?;
+                let config = provider::entry_config(&self.settings_path, &entry_id)?;
                 let target = self.target_for(&config);
                 vault_task(move || vault::delete(&target)).await?;
-                ai_provider::remove_entry(&self.settings_path, &entry_id)?;
+                provider::remove_entry(&self.settings_path, &entry_id)?;
                 self.draft_tests.lock().await.clear();
                 Ok(AiResponse::Entries(self.entries_locked().await?))
             }
             AiRequest::TestEntry { entry_id } => {
                 let (config, key) = {
                     let _guard = self.gate.lock().await;
-                    let config = ai_provider::entry_config(&self.settings_path, &entry_id)?;
+                    let config = provider::entry_config(&self.settings_path, &entry_id)?;
                     let key = self.config_key(&config).await?;
                     (config, key)
                 };
@@ -323,7 +328,7 @@ impl AiService {
     }
 
     async fn entries_locked(&self) -> Result<AiEntryList> {
-        let (configs, active_entry_id) = ai_provider::list_entries(&self.settings_path)?;
+        let (configs, active_entry_id) = provider::list_entries(&self.settings_path)?;
         let mut entries = Vec::with_capacity(configs.len());
         for config in configs {
             let key_present = configured_key(&config, self.target_for(&config))
@@ -360,21 +365,21 @@ impl AiService {
 
     pub async fn current_config(&self) -> Result<AiConfig> {
         let _guard = self.gate.lock().await;
-        ai_provider::load_config(&self.settings_path)
+        provider::load_config(&self.settings_path)
     }
 
     /// Chat chooses a saved entry for this request without changing the app-wide choice.
     pub async fn config_for_entry(&self, entry_id: Option<&str>) -> Result<AiConfig> {
         let _guard = self.gate.lock().await;
         match entry_id {
-            Some(id) => ai_provider::entry_config(&self.settings_path, id),
-            None => ai_provider::load_config(&self.settings_path),
+            Some(id) => provider::entry_config(&self.settings_path, id),
+            None => provider::load_config(&self.settings_path),
         }
     }
 
     pub async fn key_status(&self) -> Result<AiKeyStatus> {
         let _guard = self.gate.lock().await;
-        let (configs, active) = ai_provider::list_entries(&self.settings_path)?;
+        let (configs, active) = provider::list_entries(&self.settings_path)?;
         let Some(config) = active.and_then(|id| {
             configs
                 .into_iter()
@@ -406,7 +411,7 @@ impl AiService {
         expected: Option<&AiConfig>,
     ) -> Result<(AiConfig, Option<String>)> {
         let _guard = self.gate.lock().await;
-        let config = ai_provider::load_config(&self.settings_path)?;
+        let config = provider::load_config(&self.settings_path)?;
         ensure!(
             expected.is_none_or(|expected| expected == &config),
             "ai_config_changed"
@@ -421,8 +426,8 @@ impl AiService {
     ) -> Result<(AiConfig, Option<String>)> {
         let _guard = self.gate.lock().await;
         let config = match expected.and_then(|config| config.entry_id.as_deref()) {
-            Some(id) => ai_provider::entry_config(&self.settings_path, id)?,
-            None => ai_provider::load_config(&self.settings_path)?,
+            Some(id) => provider::entry_config(&self.settings_path, id)?,
+            None => provider::load_config(&self.settings_path)?,
         };
         ensure!(
             expected.is_none_or(|expected| expected == &config),
@@ -859,7 +864,7 @@ async fn post_config_json(
     timeout_secs: u64,
     max_response: usize,
 ) -> Result<Value> {
-    let payload = ai_provider::request_payload(config, payload.clone())?;
+    let payload = provider::request_payload(config, payload.clone())?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
@@ -908,7 +913,7 @@ async fn post_config_json(
             &value
         )));
     }
-    ai_provider::response_payload(config.wire(), value)
+    provider::response_payload(config.wire(), value)
 }
 
 fn network_error(error: reqwest::Error) -> anyhow::Error {
@@ -1112,10 +1117,9 @@ mod tests {
         }
         .validated()
         .unwrap();
-        ai_provider::save_entry(&service.settings_path, first.clone()).unwrap();
-        ai_provider::save_entry(&service.settings_path, second.clone()).unwrap();
-        ai_provider::select_entry(&service.settings_path, first.entry_id.as_deref().unwrap())
-            .unwrap();
+        provider::save_entry(&service.settings_path, first.clone()).unwrap();
+        provider::save_entry(&service.settings_path, second.clone()).unwrap();
+        provider::select_entry(&service.settings_path, first.entry_id.as_deref().unwrap()).unwrap();
         let chosen = service
             .config_for_entry(second.entry_id.as_deref())
             .await
@@ -1143,7 +1147,7 @@ mod tests {
                 .to_string(),
             "ai_config_changed"
         );
-        ai_provider::remove_entry(&service.settings_path, second.entry_id.as_deref().unwrap())
+        provider::remove_entry(&service.settings_path, second.entry_id.as_deref().unwrap())
             .unwrap();
         assert!(service.chat_request_snapshot(Some(&chosen)).await.is_err());
         drop(service);
@@ -1613,7 +1617,7 @@ mod tests {
             source_tags: vec![],
             description: String::new(),
             rejected_tags: vec![],
-            files: vec![crate::ai_analysis::FileEvidence {
+            files: vec![analysis::FileEvidence {
                 evidence_ref: "e-synthetic".into(),
                 file_name: "README.md".into(),
                 text_excerpt: "Synthetic jacket instructions".into(),
@@ -1778,7 +1782,7 @@ mod structured_probe {
         );
         let service =
             AiService::new(&profile).map_err(|_| anyhow!("ai_probe_profile_unavailable"))?;
-        let (configs, _) = ai_provider::list_entries(&service.settings_path)
+        let (configs, _) = provider::list_entries(&service.settings_path)
             .map_err(|_| anyhow!("ai_probe_settings_unavailable"))?;
         let configured_entries = configs.len();
         let mut groups: BTreeMap<(String, String, String), Vec<AiConfig>> = BTreeMap::new();
@@ -1796,7 +1800,7 @@ mod structured_probe {
         // Only fixed provider labels and aggregate counts leave this process.
         // No entry IDs, models, endpoints, keys, raw responses or catalogue reads.
         let mut reports = BTreeMap::new();
-        for preset in ai_provider::presets() {
+        for preset in provider::presets() {
             reports.insert(preset.id, json!({"provider":preset.id,"configuredEntries":0,"distinctTargets":0,"keylessLocalTargets":0,"credentialReadyTargets":0,"requests":0,"passed":0,"unavailable":{},"failures":{}}));
         }
         let input = normalize_input(AnalysisInput {

@@ -1,6 +1,7 @@
 //! Original parsers for the source-derived Gumroad buyer/public payloads.
 //! Deployed-shape verification and collector wiring are separate from parsing.
 //! Bearer content/resolver routes are transient capabilities, never catalogue fields.
+pub(super) mod service;
 use anyhow::{bail, ensure, Result};
 use chrono::{DateTime, Utc};
 use scraper::{Html, Selector};

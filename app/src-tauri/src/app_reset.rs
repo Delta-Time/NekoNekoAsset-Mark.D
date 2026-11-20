@@ -133,7 +133,7 @@ fn write_request(device: &Path, request: &Request) -> Result<()> {
         file.write_all(&serde_json::to_vec(request)?)?;
         file.sync_all()?;
         drop(file);
-        crate::ai_provider::replace_file(&temporary, &destination)?;
+        crate::ai::provider::replace_file(&temporary, &destination)?;
         Ok(())
     })();
     if result.is_err() {

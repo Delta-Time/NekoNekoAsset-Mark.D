@@ -42,12 +42,15 @@ mod ai_overlay_tests {
         .unwrap();
         let mut snapshot = c.collect_ai_metadata(id).unwrap();
         let reference = format!("i-{}", "a".repeat(64));
-        snapshot.input.files.push(crate::ai_analysis::FileEvidence {
-            evidence_ref: reference.clone(),
-            file_name: "image-1.png".into(),
-            text_excerpt: String::new(),
-            candidate_public_urls: vec![],
-        });
+        snapshot
+            .input
+            .files
+            .push(crate::ai::analysis::FileEvidence {
+                evidence_ref: reference.clone(),
+                file_name: "image-1.png".into(),
+                text_excerpt: String::new(),
+                candidate_public_urls: vec![],
+            });
         let result=serde_json::from_value(json!({"category":{"category":"Clothes","evidenceRefs":[reference],"basis":"Visual garment evidence","confidence":0.8},"tags":[],"tagAliases":[],"sourceUrlCandidates":[]})).unwrap();
         assert!(c
             .publish_ai_analysis(
@@ -195,7 +198,7 @@ mod ai_overlay_tests {
             "synthetic-model",
         )
         .unwrap();
-        let aliases = vec![crate::ai_analysis::TagAliasSuggestion {
+        let aliases = vec![crate::ai::analysis::TagAliasSuggestion {
             from: "Source Tag".into(),
             to: "Organized Tag".into(),
             evidence_refs: vec!["sourceTags".into()],
@@ -300,7 +303,7 @@ mod ai_overlay_tests {
             candidates[0].candidate_public_urls,
             vec!["https://maker.gumroad.com/l/futura-meadow"]
         );
-        let result:crate::ai_analysis::AnalysisOutput=serde_json::from_value(json!({"category":null,"tags":[],"tagAliases":[],"sourceUrlCandidates":[{"url":candidates[0].candidate_public_urls[0],"evidenceRefs":[candidates[0].evidence_ref],"basis":"Filename matches an existing public title; local origin unverified","confidence":0.99}]})).unwrap();
+        let result:crate::ai::analysis::AnalysisOutput=serde_json::from_value(json!({"category":null,"tags":[],"tagAliases":[],"sourceUrlCandidates":[{"url":candidates[0].candidate_public_urls[0],"evidenceRefs":[candidates[0].evidence_ref],"basis":"Filename matches an existing public title; local origin unverified","confidence":0.99}]})).unwrap();
         snapshot.input.files.extend(candidates);
         c.publish_ai_analysis(
             local,
@@ -317,7 +320,7 @@ mod ai_overlay_tests {
         assert!(c.related("entitlement", local).unwrap().is_empty());
         let mut unrelated = snapshot.input;
         unrelated.title = "VRChat Outfit Version 2".into();
-        unrelated.files = vec![crate::ai_analysis::FileEvidence {
+        unrelated.files = vec![crate::ai::analysis::FileEvidence {
             evidence_ref: "e-generic".into(),
             file_name: "Unity_Avatar_v2.unitypackage".into(),
             text_excerpt: String::new(),
@@ -369,7 +372,7 @@ mod ai_overlay_tests {
         snapshot.input.files[0]
             .candidate_public_urls
             .push(url.into());
-        let result: crate::ai_analysis::AnalysisOutput=serde_json::from_value(json!({
+        let result: crate::ai::analysis::AnalysisOutput=serde_json::from_value(json!({
             "category":{"category":"Clothes","evidenceRefs":["title"],"basis":"Authored garment evidence","confidence":0.8},
             "tags":[{"label":"AI Tag","evidenceRefs":["title"],"basis":"Authored style","confidence":0.8},{"label":"Casual","evidenceRefs":["title"],"basis":"Rejected style","confidence":0.8}],
             "tagAliases":[],"sourceUrlCandidates":[{"url":url,"evidenceRefs":[snapshot.input.files[0].evidence_ref],"basis":"Embedded reference only","confidence":0.7}]
@@ -523,14 +526,14 @@ mod ai_overlay_tests {
             .is_empty());
         let organized = c.collect_ai_metadata(id).unwrap();
         let aliases = vec![
-            crate::ai_analysis::TagAliasSuggestion {
+            crate::ai::analysis::TagAliasSuggestion {
                 from: "Source Tag".into(),
                 to: "Organized Tag".into(),
                 evidence_refs: vec!["sourceTags".into()],
                 basis: "Explicit organization".into(),
                 confidence: 0.9,
             },
-            crate::ai_analysis::TagAliasSuggestion {
+            crate::ai::analysis::TagAliasSuggestion {
                 from: "Not An Existing Tag".into(),
                 to: "Invented".into(),
                 evidence_refs: vec!["sourceTags".into()],
@@ -668,7 +671,7 @@ const EDITABLE: &[&str] = &[
 ];
 
 pub struct AiMetadataSnapshot {
-    pub input: crate::ai_analysis::AnalysisInput,
+    pub input: crate::ai::analysis::AnalysisInput,
     pub catalogue_fingerprint: String,
     pub preview_fingerprint: String,
 }
@@ -684,7 +687,7 @@ pub struct AiPreviewSource {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AiOverlay {
-    analysis: crate::ai_analysis::AnalysisOutput,
+    analysis: crate::ai::analysis::AnalysisOutput,
     evidence_refs: Vec<String>,
     observed_source_urls: Vec<String>,
     catalogue_fingerprint: String,
@@ -702,7 +705,7 @@ struct AiOverlay {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AiTagOrganization {
-    aliases: Vec<crate::ai_analysis::TagAliasSuggestion>,
+    aliases: Vec<crate::ai::analysis::TagAliasSuggestion>,
     catalogue_fingerprint: String,
     #[serde(default)]
     evidence_fingerprint: Option<String>,
@@ -711,11 +714,11 @@ struct AiTagOrganization {
 }
 
 fn normalize_ai_aliases(
-    aliases: Vec<crate::ai_analysis::TagAliasSuggestion>,
+    aliases: Vec<crate::ai::analysis::TagAliasSuggestion>,
     rejected: &[String],
-) -> Result<Vec<crate::ai_analysis::TagAliasSuggestion>> {
-    let output = crate::ai_analysis::normalize_output(
-        crate::ai_analysis::AnalysisOutput {
+) -> Result<Vec<crate::ai::analysis::TagAliasSuggestion>> {
+    let output = crate::ai::analysis::normalize_output(
+        crate::ai::analysis::AnalysisOutput {
             category: None,
             tags: vec![],
             tag_aliases: aliases,
@@ -1017,7 +1020,7 @@ fn ai_match_tokens(value: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn ai_input_refs(input: &crate::ai_analysis::AnalysisInput) -> BTreeSet<String> {
+fn ai_input_refs(input: &crate::ai::analysis::AnalysisInput) -> BTreeSet<String> {
     let mut refs: BTreeSet<_> = input
         .files
         .iter()
@@ -1049,7 +1052,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
             .take(128)
             .collect()
     };
-    let mut input = crate::ai_analysis::AnalysisInput {
+    let mut input = crate::ai::analysis::AnalysisInput {
         title: ai_text(
             overlay["title"]
                 .as_str()
@@ -1127,7 +1130,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
         .into_iter()
         .take(64)
         .map(
-            |(evidence_ref, file_name)| crate::ai_analysis::FileEvidence {
+            |(evidence_ref, file_name)| crate::ai::analysis::FileEvidence {
                 evidence_ref,
                 file_name,
                 text_excerpt: String::new(),
@@ -1147,7 +1150,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
         }
     }
     Ok(AiMetadataSnapshot {
-        input: crate::ai_analysis::normalize_input(input)?,
+        input: crate::ai::analysis::normalize_input(input)?,
         catalogue_fingerprint,
         preview_fingerprint: ai_preview_fingerprint(&source, &overlay)?,
     })
@@ -1210,10 +1213,10 @@ fn validate_ai_overlay(value: &Value) -> Result<AiOverlay> {
             && ai
                 .observed_source_urls
                 .iter()
-                .all(|v| crate::ai_analysis::public_product_url(v).as_deref() == Some(v)),
+                .all(|v| crate::ai::analysis::public_product_url(v).as_deref() == Some(v)),
         "AI_INVALID_ANALYSIS"
     );
-    ai.analysis = crate::ai_analysis::normalize_output(
+    ai.analysis = crate::ai::analysis::normalize_output(
         ai.analysis,
         &ai.evidence_refs.iter().cloned().collect(),
         &[],
@@ -1227,7 +1230,7 @@ fn validate_ai_dismissals(value: &Value) -> Result<()> {
         values.len() <= 128
             && values.iter().all(|v| v
                 .as_str()
-                .is_some_and(|v| crate::ai_analysis::public_product_url(v).as_deref() == Some(v))),
+                .is_some_and(|v| crate::ai::analysis::public_product_url(v).as_deref() == Some(v))),
         "AI_INVALID_ANALYSIS"
     );
     Ok(())
@@ -1905,7 +1908,7 @@ impl Catalogue {
             .filter(|url| !url.is_empty())
         {
             result.public_url = Some(
-                crate::ai_suggestions::public_thumbnail_url(url)
+                crate::ai::suggestions::public_thumbnail_url(url)
                     .ok_or_else(|| anyhow::anyhow!("preview_url_refused"))?
                     .to_string(),
             );
@@ -2001,7 +2004,7 @@ impl Catalogue {
                 }
                 .into(),
             };
-            let url = crate::ai_analysis::public_product_url(text(&value, "sourceUrl"));
+            let url = crate::ai::analysis::public_product_url(text(&value, "sourceUrl"));
             value = json!({"productId":id,"title":title,"category":value["category"],"provider":provider,"tags":tags,
                 "ownedAvatars":strings(&value["ownedAvatars"]).into_iter().take(24).map(|label| ai_text(&label,160)).collect::<Vec<_>>(),
                 "listingAvatars":strings(&value["listingAvatars"]).into_iter().take(24).map(|label| ai_text(&label,160)).collect::<Vec<_>>(),"url":url,"free":value["free"]==1});
@@ -2016,9 +2019,9 @@ impl Catalogue {
     /// No accounts, prices, receipts, remote fetch, or ownership conversion.
     pub fn ai_source_candidates(
         &self,
-        input: &crate::ai_analysis::AnalysisInput,
-    ) -> Result<Vec<crate::ai_analysis::FileEvidence>> {
-        let input = crate::ai_analysis::normalize_input(input.clone())?;
+        input: &crate::ai::analysis::AnalysisInput,
+    ) -> Result<Vec<crate::ai::analysis::FileEvidence>> {
+        let input = crate::ai::analysis::normalize_input(input.clone())?;
         let samples: Vec<_> = std::iter::once(input.title.as_str())
             .chain(
                 input
@@ -2055,7 +2058,7 @@ impl Catalogue {
             if !matches!(provider.as_str(), "booth" | "gumroad" | "jinxxy") {
                 continue;
             }
-            let Some(url) = crate::ai_analysis::public_product_url(&url) else {
+            let Some(url) = crate::ai::analysis::public_product_url(&url) else {
                 continue;
             };
             if existing.contains(&url) {
@@ -2116,7 +2119,7 @@ impl Catalogue {
         best.into_iter()
             .enumerate()
             .map(|(index, (_, url, title))| {
-                Ok(crate::ai_analysis::FileEvidence {
+                Ok(crate::ai::analysis::FileEvidence {
                     evidence_ref: format!("c-{}", ai_digest(&url)?),
                     file_name: format!("catalogue-candidate-{}.txt", index + 1),
                     text_excerpt: format!("Possible catalogue match: {title}"),
@@ -2131,8 +2134,8 @@ impl Catalogue {
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        input: &crate::ai_analysis::AnalysisInput,
-        result: &crate::ai_analysis::AnalysisOutput,
+        input: &crate::ai::analysis::AnalysisInput,
+        result: &crate::ai::analysis::AnalysisOutput,
         model: &str,
     ) -> Result<()> {
         self.publish_ai_analysis_with_preview(
@@ -2149,12 +2152,12 @@ impl Catalogue {
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        input: &crate::ai_analysis::AnalysisInput,
-        result: &crate::ai_analysis::AnalysisOutput,
+        input: &crate::ai::analysis::AnalysisInput,
+        result: &crate::ai::analysis::AnalysisOutput,
         model: &str,
         preview_fingerprint: Option<&str>,
     ) -> Result<()> {
-        let input = crate::ai_analysis::normalize_input(input.clone())?;
+        let input = crate::ai::analysis::normalize_input(input.clone())?;
         ensure!(
             !input
                 .files
@@ -2175,7 +2178,7 @@ impl Catalogue {
             );
             let mut overlay = raw(tx, "overlay", product_id)?.unwrap_or(json!({"id":product_id}));
             let known = ai_input_refs(&input);
-            let analysis = crate::ai_analysis::normalize_output(
+            let analysis = crate::ai::analysis::normalize_output(
                 result.clone(),
                 &known,
                 &strings(&overlay["rejectedTags"]),
@@ -2232,7 +2235,7 @@ impl Catalogue {
     }
 
     pub fn dismiss_ai_source_url_candidate(&self, product_id: &str, url: &str) -> Result<()> {
-        let url = crate::ai_analysis::public_product_url(url).context("AI_INVALID_SOURCE_URL")?;
+        let url = crate::ai::analysis::public_product_url(url).context("AI_INVALID_SOURCE_URL")?;
         self.mutate(|tx, projections| {
             ensure!(
                 raw(tx, "product", product_id)?.is_some(),
@@ -2253,7 +2256,7 @@ impl Catalogue {
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        aliases: &[crate::ai_analysis::TagAliasSuggestion],
+        aliases: &[crate::ai::analysis::TagAliasSuggestion],
         model: &str,
     ) -> Result<()> {
         self.mutate(|tx, projections| {

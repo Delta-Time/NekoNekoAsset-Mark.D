@@ -193,7 +193,7 @@ pub(crate) fn select_library(device_dir: &Path, selection: &LibrarySelection) ->
             file.write_all(&serde_json::to_vec(selection)?)?;
             file.sync_all()?;
         }
-        crate::ai_provider::replace_file(&temporary, &destination)?;
+        crate::ai::provider::replace_file(&temporary, &destination)?;
         Ok(())
     })();
     result.context("library_preferences_write_failed")

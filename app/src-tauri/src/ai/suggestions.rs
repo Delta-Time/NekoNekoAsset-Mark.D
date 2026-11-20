@@ -1,6 +1,6 @@
 //! Explicit, device-local chat. Recommendations are selected from observed local or
 //! public storefront records; a model never supplies a product URL or identity.
-#[path = "ai_chat_store.rs"]
+#[path = "chat_store.rs"]
 mod chat_store;
 use crate::{
     ai::{AiImage, AiMessage, AiRole, AiService},
@@ -756,7 +756,7 @@ fn add_store(
         return Ok(());
     }
     url.set_query(None);
-    let Some(url) = crate::ai_analysis::public_product_url(url.as_str()) else {
+    let Some(url) = crate::ai::analysis::public_product_url(url.as_str()) else {
         return Ok(());
     };
     let host = Url::parse(&url)?.host_str().unwrap_or("").to_owned();
@@ -1187,7 +1187,7 @@ mod tests {
         }
         .validated()
         .unwrap();
-        crate::ai_provider::save_entry(&dir.join("ai-settings.json"), entry).unwrap();
+        crate::ai::provider::save_entry(&dir.join("ai-settings.json"), entry).unwrap();
         let service = Arc::new(AiSuggestions::new(catalogue, ai).unwrap());
         let created = service
             .command(AiSuggestionRequest::CreateChat {

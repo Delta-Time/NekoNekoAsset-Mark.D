@@ -1,6 +1,5 @@
 //! Small store dispatch boundary. Provider collectors retain their own source contracts.
 pub mod gumroad;
-mod gumroad_service;
 pub mod http;
 pub mod jinxxy;
 mod public_metadata;
@@ -72,7 +71,7 @@ pub fn validate_download_response(
 ) -> Result<()> {
     match provider {
         StoreProvider::Booth => crate::booth::validate_download_response(response),
-        StoreProvider::Gumroad => gumroad_service::validate_download_response(response),
+        StoreProvider::Gumroad => gumroad::service::validate_download_response(response),
         StoreProvider::Jinxxy => jinxxy::validate_download_response(response, expected_origin),
     }
 }
@@ -112,7 +111,7 @@ pub(crate) fn has_local_session(catalogue: &Catalogue, account: &Value) -> bool 
 pub struct StoreService {
     catalogue: Catalogue,
     booth: Arc<BoothService>,
-    gumroad: gumroad_service::GumroadService,
+    gumroad: gumroad::service::GumroadService,
     jinxxy: jinxxy::JinxxyService,
     command_gate: Arc<tokio::sync::Mutex<()>>,
     public_gumroad: http::MetadataHttp,
@@ -168,7 +167,7 @@ impl StoreService {
     }
 
     pub fn new(catalogue: Catalogue, booth: Arc<BoothService>) -> Result<Self> {
-        let gumroad = gumroad_service::GumroadService::new(catalogue.clone())?;
+        let gumroad = gumroad::service::GumroadService::new(catalogue.clone())?;
         let jinxxy = jinxxy::JinxxyService::new(catalogue.clone())?;
         Ok(Self {
             catalogue,

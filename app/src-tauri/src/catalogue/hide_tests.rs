@@ -223,7 +223,7 @@ fn hidden_choice_survives_three_store_refresh_ai_reopen_and_restore() {
         product(&c, provider, provider);
         let snapshot = c.collect_ai_metadata(provider).unwrap();
         hide(&c, &[provider], true);
-        let result: crate::ai_analysis::AnalysisOutput = serde_json::from_value(json!({
+        let result: crate::ai::analysis::AnalysisOutput = serde_json::from_value(json!({
             "category":null,"tags":[{"label":"Authored AI tag","evidenceRefs":["title"],"basis":"Authored input","confidence":0.8}],"tagAliases":[],"sourceUrlCandidates":[]
         })).unwrap();
         // An already-running AI result preserves the later user visibility edit.

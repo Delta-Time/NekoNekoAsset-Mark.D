@@ -1,5 +1,5 @@
 //! Native Gumroad buyer collector. Capability routes are transient, never persisted.
-use super::{
+use crate::stores::{
     gumroad::{self, ContentObservation, FileAccess, LibraryPage, LibraryPurchase},
     http, session, DownloadTicket, StoreProvider,
 };
@@ -71,7 +71,7 @@ struct DownloadManifest {
 }
 impl DownloadSession {
     fn valid(&self, account: &Value, now: Instant) -> bool {
-        super::active_bound_account(account)
+        crate::stores::active_bound_account(account)
             && account["identityHash"] == self.identity
             && now.saturating_duration_since(self.verified_at) < Duration::from_secs(120)
     }
@@ -424,7 +424,7 @@ impl GumroadService {
             if self.inner.catalogue.library_root().is_some()
                 && (job["originDeviceId"] != self.inner.catalogue.device_id()
                     || (job["type"] != "gumroadLogin"
-                        && !super::has_local_session(&self.inner.catalogue, &account)))
+                        && !crate::stores::has_local_session(&self.inner.catalogue, &account)))
             {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
@@ -622,8 +622,8 @@ impl GumroadService {
                             continue;
                         }
                         let record = self.account(account)?;
-                        if !super::active_bound_account(&record)
-                            || !super::has_local_session(&self.inner.catalogue, &record)
+                        if !crate::stores::active_bound_account(&record)
+                            || !crate::stores::has_local_session(&self.inner.catalogue, &record)
                         {
                             continue;
                         }
@@ -2196,7 +2196,10 @@ impl GumroadService {
             return Ok(cached);
         }
         let record = self.account(account)?;
-        ensure!(super::active_bound_account(&record), "AUTH_REQUIRED");
+        ensure!(
+            crate::stores::active_bound_account(&record),
+            "AUTH_REQUIRED"
+        );
         let identity = field(&record, "identityHash")?.to_owned();
         let cached_session = {
             let cache = self
@@ -2216,7 +2219,7 @@ impl GumroadService {
             self.authenticate(app, account, &client, None).await?;
             let record = self.account(account)?;
             ensure!(
-                super::active_bound_account(&record) && record["identityHash"] == identity,
+                crate::stores::active_bound_account(&record) && record["identityHash"] == identity,
                 "ACCOUNT_IDENTITY_MISMATCH"
             );
             DownloadSession {
@@ -2347,7 +2350,8 @@ impl GumroadService {
     ) -> Result<()> {
         let record = self.account(account)?;
         ensure!(
-            super::active_bound_account(&record) && record["identityHash"] == session.identity,
+            crate::stores::active_bound_account(&record)
+                && record["identityHash"] == session.identity,
             "STORE_IDENTITY_CHANGED"
         );
         let mut cache = self
@@ -2418,7 +2422,8 @@ impl GumroadService {
         };
         let record = self.account(account)?;
         ensure!(
-            super::active_bound_account(&record) && record["identityHash"] == session.identity,
+            crate::stores::active_bound_account(&record)
+                && record["identityHash"] == session.identity,
             "STORE_IDENTITY_CHANGED"
         );
         let mut cache = self
@@ -2467,7 +2472,10 @@ impl GumroadService {
         let saved_account = self.account(account)?;
         let product = field(&file, "productId")?;
         let result = async {
-            ensure!(super::active_bound_account(&saved_account), "AUTH_REQUIRED");
+            ensure!(
+                crate::stores::active_bound_account(&saved_account),
+                "AUTH_REQUIRED"
+            );
             let (session, offered) =
                 if let Some(cached) = self.cached_download(account, product, &file)? {
                     cached
@@ -2507,7 +2515,7 @@ impl GumroadService {
                 .ok_or_else(|| anyhow::anyhow!("UNSAFE_DOWNLOAD_URL"))?;
             let account_record = self.account(account)?;
             ensure!(
-                super::active_bound_account(&account_record)
+                crate::stores::active_bound_account(&account_record)
                     && account_record["identityHash"] == session.identity,
                 "STORE_IDENTITY_CHANGED"
             );
@@ -4454,7 +4462,7 @@ mod tests {
             .path("/")
             .secure(true)
             .build();
-        super::super::session_cache::save(
+        crate::stores::session_cache::save(
             &profile,
             StoreProvider::Gumroad,
             &account_id,
@@ -4485,26 +4493,26 @@ mod tests {
             ] {
                 assert_eq!(stored[field], account[field]);
             }
-            assert!(!super::super::session_cache::load(
+            assert!(!crate::stores::session_cache::load(
                 &profile,
                 StoreProvider::Gumroad,
                 &account_id
             )
             .unwrap()
             .is_empty());
-            assert!(!super::super::has_local_session(&catalogue, &stored));
+            assert!(!crate::stores::has_local_session(&catalogue, &stored));
             // A sign-in saves the session again and this device is ready.
             let cookies =
-                super::super::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
+                crate::stores::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
                     .unwrap();
-            super::super::session_cache::save(
+            crate::stores::session_cache::save(
                 &profile,
                 StoreProvider::Gumroad,
                 &account_id,
                 cookies,
             )
             .unwrap();
-            assert!(super::super::has_local_session(&catalogue, &stored));
+            assert!(crate::stores::has_local_session(&catalogue, &stored));
         }
         drop(service);
         drop(catalogue);

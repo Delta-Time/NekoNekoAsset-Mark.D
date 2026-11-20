@@ -1,7 +1,7 @@
 //! Sequential, cancellable AI jobs. Restart never resubmits a paid request.
 use crate::{
+    ai::analysis::{self, AnalysisInput, FileEvidence, TagAliasSuggestion},
     ai::{AiConfig, AiImage, AiRequest, AiService},
-    ai_analysis::{self, AnalysisInput, FileEvidence, TagAliasSuggestion},
     catalogue::Catalogue,
     preview::{self, PreviewCache},
     storage::StorageService,
@@ -110,7 +110,7 @@ fn selected_input(mut input: AnalysisInput, scopes: &AiScopes) -> Result<Analysi
     if !scopes.files {
         input.files.clear();
     }
-    ai_analysis::normalize_input(input)
+    analysis::normalize_input(input)
 }
 
 fn read_preview(path: &Path) -> Result<AiImage> {
@@ -158,7 +158,7 @@ fn add_preview_evidence(input: &mut AnalysisInput, image: &AiImage) -> Result<()
         ensure!(input.files.len() > 1, "AI_INVALID_ANALYSIS");
         input.files.pop();
     }
-    *input = ai_analysis::normalize_input(input.clone())?;
+    *input = analysis::normalize_input(input.clone())?;
     Ok(())
 }
 
@@ -552,7 +552,7 @@ impl AiJobs {
                         while serde_json::to_vec(&input)?.len() > 128 * 1024 {
                             input.files.pop();
                         }
-                        input = ai_analysis::normalize_input(input)?;
+                        input = analysis::normalize_input(input)?;
                     }
                     Ok::<_, anyhow::Error>((snapshot.catalogue_fingerprint, snapshot.preview_fingerprint, input))
                     }.await;
@@ -707,7 +707,7 @@ impl AiJobs {
             if *cancellation.borrow() {
                 anyhow::bail!("ai_cancelled");
             }
-            let input = ai_analysis::normalize_input(AnalysisInput {
+            let input = analysis::normalize_input(AnalysisInput {
                 title: String::new(),
                 source_tags: batch.to_vec(),
                 description: String::new(),

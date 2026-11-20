@@ -595,7 +595,7 @@ mod tests {
             endpoint: "https://example.invalid/v1beta".into(),
             model: "synthetic-model".into(),
         };
-        let schema = crate::ai_analysis::structured_output_schema();
+        let schema = crate::ai::analysis::structured_output_schema();
         let payload = request_payload(&config, json!({"messages":[{"role":"user","content":"synthetic"}],"max_completion_tokens":4096,"response_format":{"type":"json_schema","json_schema":schema.clone()}})).unwrap();
         assert_eq!(
             payload["generationConfig"]["responseFormat"],
@@ -611,7 +611,7 @@ mod tests {
     }
     #[test]
     fn anthropic_wire_bounds_transform_does_not_relax_native_confidence_validation() {
-        let schema = crate::ai_analysis::structured_output_schema();
+        let schema = crate::ai::analysis::structured_output_schema();
         let config = AiConfig {
             entry_id: None,
             provider: "anthropic".into(),
@@ -636,7 +636,7 @@ mod tests {
             schema["schema"]["properties"]["tags"]["items"]["properties"]["confidence"]["maximum"],
             1
         );
-        let input = crate::ai_analysis::AnalysisInput {
+        let input = crate::ai::analysis::AnalysisInput {
             title: "Synthetic jacket".into(),
             source_tags: vec![],
             description: String::new(),
@@ -644,9 +644,9 @@ mod tests {
             files: vec![],
         };
         let mut output = json!({"category":null,"tags":[{"label":"jacket","evidenceRefs":["title"],"basis":"Synthetic title","confidence":1.2}],"tagAliases":[],"sourceUrlCandidates":[]});
-        assert!(crate::ai_analysis::parse_output(&output.to_string(), None, &input).is_err());
+        assert!(crate::ai::analysis::parse_output(&output.to_string(), None, &input).is_err());
         output["tags"][0]["confidence"] = json!(0.8);
-        assert!(crate::ai_analysis::parse_output(&output.to_string(), None, &input).is_ok());
+        assert!(crate::ai::analysis::parse_output(&output.to_string(), None, &input).is_ok());
     }
     #[test]
     fn provider_settings_preserve_models_without_credentials() {

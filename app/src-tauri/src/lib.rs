@@ -1,9 +1,4 @@
 mod ai;
-mod ai_analysis;
-mod ai_images;
-mod ai_jobs;
-mod ai_provider;
-mod ai_suggestions;
 mod app_reset;
 mod booth;
 mod catalogue;
@@ -45,8 +40,8 @@ use tauri::{Emitter, Listener, Manager};
 struct Services {
     setup_only: bool,
     ai: Arc<ai::AiService>,
-    ai_jobs: Arc<ai_jobs::AiJobs>,
-    ai_suggestions: Arc<ai_suggestions::AiSuggestions>,
+    ai_jobs: Arc<ai::jobs::AiJobs>,
+    ai_suggestions: Arc<ai::suggestions::AiSuggestions>,
     catalogue: Catalogue,
     stores: Arc<StoreService>,
     storage: Arc<StorageService>,
@@ -69,7 +64,7 @@ impl Services {
             .get("preferences", "app")?
             .is_none_or(|preferences| preferences["setupComplete"] != true);
         let ai = Arc::new(ai::AiService::new(device_dir)?);
-        let ai_suggestions = Arc::new(ai_suggestions::AiSuggestions::new(
+        let ai_suggestions = Arc::new(ai::suggestions::AiSuggestions::new(
             catalogue.clone(),
             ai.clone(),
         )?);
@@ -86,7 +81,7 @@ impl Services {
             storage.clone(),
         )?);
         let previews = Arc::new(preview::PreviewCache::new(catalogue.data_dir())?);
-        let ai_jobs = Arc::new(ai_jobs::AiJobs::new(
+        let ai_jobs = Arc::new(ai::jobs::AiJobs::new(
             catalogue.clone(),
             ai.clone(),
             storage.clone(),
@@ -453,7 +448,7 @@ async fn ai_analysis_action(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     services: tauri::State<'_, LibraryHost>,
-    request: ai_jobs::AiJobRequest,
+    request: ai::jobs::AiJobRequest,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
@@ -468,7 +463,7 @@ async fn ai_analysis_action(
 async fn ai_suggestion_action(
     window: tauri::WebviewWindow,
     services: tauri::State<'_, LibraryHost>,
-    request: ai_suggestions::AiSuggestionRequest,
+    request: ai::suggestions::AiSuggestionRequest,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;

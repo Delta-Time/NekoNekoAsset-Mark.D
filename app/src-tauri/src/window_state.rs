@@ -237,7 +237,7 @@ mod windows {
             file.write_all(&serde_json::to_vec(placement)?)?;
             file.sync_all()?;
             drop(file);
-            crate::ai_provider::replace_file(&temporary, &state.path)?;
+            crate::ai::provider::replace_file(&temporary, &state.path)?;
             Ok(())
         })();
         if result.is_err() {
