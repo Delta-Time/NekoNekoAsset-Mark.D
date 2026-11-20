@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { CSSProperties, MouseEvent, KeyboardEvent, PointerEvent } from 'react';
+import type { CSSProperties, MouseEvent, KeyboardEvent } from 'react';
 import {
   Search,
   Grid2X2,
@@ -80,14 +80,11 @@ import ActivityHistory from './ActivityHistory';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
 import ThemePicker, { defaultThemeOptions, themeDisplayName } from './ThemePicker';
 import Workflows, { WorkflowContent, LibraryAccess, isStoreJob, isStoreSyncJob } from './Workflows';
-import type { ImportSeed } from './Workflows';
-import type { UnitySeed } from './UnityWorkflow';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import EditDialogs, { exportThemeConfig } from './EditDialogs';
 import { LicenseFilterDialog, licenseSummary } from './Licenses';
 import { licenseText } from './license-i18n';
-const params = new URLSearchParams(location.search);
 import {
   invokeAction,
   dialog as nativeDialog,
@@ -111,7 +108,6 @@ import type {
   NativeState,
   NativeJob,
   Service,
-  AvatarSetting,
   NativeCollection,
   LibraryStatus,
   ProductOverlayChange,
@@ -125,9 +121,76 @@ import Results from './features/results/Results';
 import { configuredLibraryRoot, libraryAvailable } from './features/library/library-root';
 import { acquisitionKinds, fresh, leavingHidden, restoreQuery } from './features/filters/query';
 import type { Query, Saved } from './features/filters/query';
-import { initialPresets, neutralTokens, safeTokens } from './features/appearance/themes';
-import type { Preset } from './features/appearance/themes';
+import { neutralTokens } from './features/appearance/themes';
+import { useUiPreferences } from './features/preferences/useUiPreferences';
+import { useLayout } from './features/shell/useLayout';
+import { useNavigation } from './features/shell/useNavigation';
+import { useNotice } from './features/shell/useNotice';
 export default function App() {
+  const {
+    locale,
+    setLocale,
+    theme,
+    setTheme,
+    presets,
+    setPresets,
+    thumb,
+    setThumb,
+    density,
+    setDensity,
+    navWidth,
+    setNavWidth,
+    inspectorWidth,
+    setInspectorWidth,
+    cardColumns,
+    listColumns,
+    columns,
+    setColumns,
+    avatarSettings,
+    setAvatarSettings,
+    uiScale,
+    setUiScale,
+    zoomTarget,
+    roundedCorners,
+    setRoundedCorners,
+    reduceMotion,
+    setReduceMotion,
+    bundledFonts,
+    setBundledFonts,
+    oneHandedDrag,
+    setOneHandedDrag,
+    hydrate,
+  } = useUiPreferences();
+  const { paneWidth, wide, resize } = useLayout({
+    navWidth,
+    setNavWidth,
+    inspectorWidth,
+    setInspectorWidth,
+  });
+  const {
+    view,
+    setView,
+    settingsRoute,
+    setSettingsRoute,
+    unitySeed,
+    openUnity,
+    flow,
+    setFlow,
+    dialog,
+    setDialog,
+    tab,
+    setTab,
+    inspector,
+    setInspector,
+    context,
+    setContext,
+    licenseOpen,
+    setLicenseOpen,
+    licenseButton,
+    importSeed,
+    setImportSeed,
+    settingsReturn,
+  } = useNavigation();
   const [nativeState, setNativeState] = useState<NativeState>(emptyState),
     [loaded, setLoaded] = useState(false),
     [loadingError, setLoadingError] = useState('');
@@ -159,28 +222,12 @@ export default function App() {
     preferenceSaves = useRef(new Set<Promise<void>>());
   const localFileLocks = useRef(new Set<string>()),
     [localFilePending, setLocalFilePending] = useState(new Set<string>());
-  const [locale, setLocale] = useState<Locale>(() => {
-    const value = params.get('locale') || 'en';
-    return Object.hasOwn(localeNames, value) ? (value as Locale) : 'en';
-  });
-  const [theme, setTheme] = useState(params.get('theme') || 'dark');
-  const [presets, setPresets] = useState<Preset[]>(initialPresets);
   const [themePreview, setThemePreview] = useState<Record<string, string> | null>(null),
     [query, setQuery] = useState<Query>({ ...fresh }),
     [sort, setSort] = useState('acquired'),
     [direction, setDirection] = useState<SortDirection>('desc');
   const [selected, setSelected] = useState<string[]>([]),
-    [focusId, setFocusId] = useState(''),
-    [view, setView] = useState('library'),
-    [settingsRoute, setSettingsRoute] = useState('appearance');
-  const [unitySeed, setUnitySeed] = useState<UnitySeed>({ productIds: [] });
-  const openUnity = (productIds: string[], leafRefs?: string[]) => {
-    setUnitySeed({ productIds: [...new Set(productIds)], leafRefs });
-    setFlow('unity');
-  };
-  const [flow, setFlow] = useState<string | null>(null),
-    [dialog, setDialog] = useState<string | null>(null),
-    [tab, setTab] = useState<'details' | 'files'>('details');
+    [focusId, setFocusId] = useState('');
   const [updateOpen, setUpdateOpen] = useState(false),
     [updateRequest, setUpdateRequest] = useState(0),
     [updateAvailable, setUpdateAvailable] = useState(false),
@@ -191,22 +238,6 @@ export default function App() {
     aiChatUpdateBlockedRef.current = blocked;
     setAiChatUpdateBlocked(blocked);
   }, []);
-  const [thumb, setThumb] = useState(128),
-    [density, setDensity] = useState(74),
-    [inspector, setInspector] = useState(true);
-  const [navWidth, setNavWidth] = useState(176),
-    [inspectorWidth, setInspectorWidth] = useState(336),
-    [viewportWidth, setViewportWidth] = useState(innerWidth),
-    [cardColumns, setCardColumns] = useState<string[]>(['shop']),
-    [listColumns, setListColumns] = useState<string[]>([
-      'shop',
-      'category',
-      'files',
-      'acquired',
-      'price',
-    ]);
-  const columns = thumb === 0 ? listColumns : cardColumns,
-    setColumns = thumb === 0 ? setListColumns : setCardColumns;
   const [saved, setSaved] = useState<Saved[]>([]),
     [customCategories, setCustomCategories] = useState<CustomCategory[]>([]),
     [collections, setCollections] = useState<Record<string, string[]>>({}),
@@ -222,10 +253,7 @@ export default function App() {
     [collectionBusy, setCollectionBusy] = useState(false),
     [committedCollections, setCommittedCollections] = useState<NativeCollection[]>([]);
   const [libraryReady, setLibraryReady] = useState(false),
-    [context, setContext] = useState<{ x: number; y: number; ids: string[] } | null>(null),
-    [licenseOpen, setLicenseOpen] = useState(false),
-    licenseActive = useRef(false),
-    licenseButton = useRef<HTMLButtonElement>(null);
+    licenseActive = useRef(false);
   const [deleteLocalSelection, setDeleteLocalSelection] = useState<{
     ids: string[];
     names: string[];
@@ -238,14 +266,11 @@ export default function App() {
     [deletingDownloads, setDeletingDownloads] = useState<ReadonlySet<string>>(new Set());
   const watchedDownloads = useRef(new Set<string>()),
     staleProducts = useRef(new Set<string>());
-  const [notice, setNotice] = useState(''),
-    [undo, setUndo] = useState<string | null>(null),
+  const [undo, setUndo] = useState<string | null>(null),
     [autoAll, setAutoAll] = useState(false),
     [setupDone, setSetupDone] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]),
-    [revealed, setRevealed] = useState<Set<string>>(new Set()),
-    [avatarSettings, setAvatarSettings] = useState<Record<string, AvatarSetting>>({}),
-    [importSeed, setImportSeed] = useState<ImportSeed | undefined>();
+    [revealed, setRevealed] = useState<Set<string>>(new Set());
   const avatarSettingsRef = useRef(avatarSettings);
   avatarSettingsRef.current = avatarSettings;
   const latestLocalImport = useRef<{
@@ -291,13 +316,7 @@ export default function App() {
       unlisten?.();
     };
   }, []);
-  const [uiScale, setUiScale] = useState(100),
-    zoomTarget = useRef(100),
-    zoomQueue = useRef(Promise.resolve());
-  const [roundedCorners, setRoundedCorners] = useState(true),
-    [reduceMotion, setReduceMotion] = useState(false),
-    [bundledFonts, setBundledFonts] = useState(true),
-    [oneHandedDrag, setOneHandedDrag] = useState(false);
+  const zoomQueue = useRef(Promise.resolve());
   const searchRef = useRef<HTMLInputElement>(null),
     anchor = useRef(''),
     scrollState = useRef({ index: 0, offset: 0 });
@@ -341,19 +360,14 @@ export default function App() {
       queryMounted.current = false;
     };
   }, []);
-  const q = (key: string) => appText(locale, key),
-    notify = (message: string) => setNotice(message);
+  const q = (key: string) => appText(locale, key);
+  const { notice, setNotice, notify, run } = useNotice({ q, flow, dialog });
   const eventText = useRef(q);
   eventText.current = q;
   const aiEnabled = nativeState.preferences.aiFeaturesEnabled === true,
     licenseEnabled = nativeState.preferences.licenseFilter === true,
     batchEnabled = batchActionPreferences(nativeState.preferences.batchActions);
   licenseActive.current = licenseEnabled && !!query.license;
-  const settingsReturn = useRef({
-    inspector: true,
-    tab: 'details' as 'details' | 'files',
-    view: 'library',
-  });
   const reloadOnce = async () => {
     const sequence = ++reloadSequence.current,
       collectionsAtStart = collectionEpoch.current;
@@ -401,46 +415,7 @@ export default function App() {
       if (status.state === 'setup') setFlow('setup');
       if (!initialLoad.current) {
         const p = state.preferences ?? {};
-        if (Object.hasOwn(localeNames, String(p.locale))) setLocale(p.locale as Locale);
-        if (typeof p.theme === 'string') setTheme(p.theme);
-        if (Array.isArray(p.presets))
-          setPresets(
-            p.presets.flatMap((value) => {
-              if (!value || typeof value !== 'object') return [];
-              const preset = value as Preset,
-                tokens = safeTokens(preset.tokens);
-              return typeof preset.name === 'string' && typeof preset.id === 'string' && tokens
-                ? [{ ...preset, tokens }]
-                : [];
-            }),
-          );
-        if (typeof p.thumb === 'number' && thumbnailSizes.includes(p.thumb as any))
-          setThumb(p.thumb);
-        if ([40, 74, 90].includes(Number(p.density))) setDensity(Number(p.density));
-        if (typeof p.navWidth === 'number') setNavWidth(Math.max(132, Math.min(300, p.navWidth)));
-        if (typeof p.inspectorWidth === 'number')
-          setInspectorWidth(Math.max(240, Math.min(900, p.inspectorWidth)));
-        if (Array.isArray(p.cardColumns)) setCardColumns(p.cardColumns as string[]);
-        if (Array.isArray(p.listColumns)) setListColumns(p.listColumns as string[]);
-        if (
-          p.avatarSettings &&
-          typeof p.avatarSettings === 'object' &&
-          !Array.isArray(p.avatarSettings)
-        )
-          setAvatarSettings(p.avatarSettings as Record<string, AvatarSetting>);
-        if (
-          typeof p.uiScale === 'number' &&
-          Number.isFinite(p.uiScale) &&
-          p.uiScale >= 80 &&
-          p.uiScale <= 300
-        ) {
-          zoomTarget.current = p.uiScale;
-          setUiScale(p.uiScale);
-        }
-        if (typeof p.roundedCorners === 'boolean') setRoundedCorners(p.roundedCorners);
-        if (typeof p.reduceMotion === 'boolean') setReduceMotion(p.reduceMotion);
-        if (typeof p.bundledFonts === 'boolean') setBundledFonts(p.bundledFonts);
-        if (typeof p.oneHandedDrag === 'boolean') setOneHandedDrag(p.oneHandedDrag);
+        hydrate(p);
         setQuery((old) => ({
           ...old,
           sensitive: ['blur', 'hide', 'show', 'only'].includes(String(p.sensitiveMode))
@@ -678,9 +653,6 @@ export default function App() {
       notify(q(errorCode(error)));
       throw error;
     }
-  };
-  const run = (operation: Promise<unknown>) => {
-    void operation.catch((error) => notify(q(errorCode(error))));
   };
   async function changeLocalFiles(
     productId: string,
@@ -1045,13 +1017,8 @@ export default function App() {
     if (!enabled && ids.includes(query.avatar)) updateQuery({ avatar: 'all' });
   };
   const avatarChoices = avatarOptions
-      .filter((option) => avatarEnabled(option.id))
-      .map((option) => option.id),
-    paneWidth = Math.max(
-      240,
-      Math.min(inspectorWidth, Math.max(640, viewportWidth) - navWidth - 248),
-    ),
-    wide = paneWidth >= 520;
+    .filter((option) => avatarEnabled(option.id))
+    .map((option) => option.id);
   const selectedTheme =
       presets.find((p) => p.id === theme) ||
       defaultThemeOptions.find((p) => p.id === theme) ||
@@ -1406,24 +1373,6 @@ export default function App() {
       setSelected(matchedIds);
     }
   };
-  const resize = (side: 'left' | 'right', e: PointerEvent) => {
-    e.preventDefault();
-    const x = e.clientX,
-      start = side === 'left' ? navWidth : inspectorWidth;
-    const move = (event: globalThis.PointerEvent) => {
-      const value = start + (event.clientX - x) * (side === 'left' ? 1 : -1);
-      if (side === 'left') setNavWidth(Math.max(132, Math.min(300, viewportWidth - 500, value)));
-      else setInspectorWidth(Math.max(240, Math.min(900, viewportWidth - navWidth - 248, value)));
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      document.body.classList.remove('resizing');
-    };
-    document.body.classList.add('resizing');
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up, { once: true });
-  };
   const choosePreset = async (tokens: Record<string, string>, name = 'Custom') => {
     let unique = name.trim() || 'Custom',
       suffix = 2;
@@ -1499,11 +1448,6 @@ export default function App() {
   useEffect(() => {
     if (loaded && initialLoad.current) changeScale(zoomTarget.current);
   }, [loaded]);
-  useEffect(() => {
-    const resize = () => setViewportWidth(innerWidth);
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, []);
   // A refresh refused while the update installer launches reruns on the next change; nothing failed.
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -1751,14 +1695,6 @@ export default function App() {
     for (const family of new Set([ui, 'Noto Sans JP']))
       void document.fonts.load(`13px "${family}"`, 'あ一').catch(() => {});
   }, [loaded, bundledFonts, locale]);
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(''), 5000);
-    return () => clearTimeout(timer);
-  }, [notice]);
-  useEffect(() => {
-    if (flow || dialog) setNotice('');
-  }, [flow, dialog]);
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent) => {
       if (updateOpen || themeDeleteTarget) return;
