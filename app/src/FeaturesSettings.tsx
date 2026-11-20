@@ -1,27 +1,184 @@
-import {useState} from 'react';
-import type {Locale,SensitiveMode} from './model';
-import {t} from './i18n';
-import {uxText} from './ux-i18n';
-import {shellText} from './shell-i18n';
+import { useState } from 'react';
+import type { Locale, SensitiveMode } from './model';
+import { t } from './i18n';
+import { uxText } from './ux-i18n';
+import { shellText } from './shell-i18n';
 import Toggle from './Toggle';
-import {LicenseSettings} from './Licenses';
-import {licenseText} from './license-i18n';
+import { LicenseSettings } from './Licenses';
+import { licenseText } from './license-i18n';
 import './features.css';
 
-export const DEFAULT_BATCH_ACTIONS:Record<string,boolean>={edit:true,collection:true,unity:true,export:true,ai:true,spending:true,delete:true,hide:true,selectAll:true,update:true,download:true,licenses:true};
-export function batchActionPreferences(value:unknown):Record<string,boolean>{return {...DEFAULT_BATCH_ACTIONS,...(value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).filter(([key,item])=>key in DEFAULT_BATCH_ACTIONS&&typeof item==='boolean')):{})};}
-const actions=[['selectAll','selectAll'],['edit','edit'],['collection','addToCollection'],['export','exportZip'],['ai','aiTags'],['spending','spending'],['delete','delete'],['hide','hide'],['update','update'],['licenses','syncLicenses'],['download','download'],['unity','importUnity']];
-export default function FeaturesSettings({locale,preferences,onPreferences,licenseJob,onNotice}:{locale:Locale;preferences:Record<string,unknown>;onPreferences:(patch:Record<string,unknown>)=>Promise<void>;licenseJob?:{state:string;progress?:unknown};onNotice:(text:string)=>void}){
- const q=(key:string)=>uxText(locale,key)||shellText(locale,key)||licenseText(locale,key)||t(locale,key),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const batch=batchActionPreferences(preferences.batchActions);
- const save=async(patch:Record<string,unknown>)=>{setBusy(true);setError('');try{await onPreferences(patch);return true;}catch{setError(t(locale,'operationFailed'));return false;}finally{setBusy(false);}};
- return <div className="workflow-content feature-settings">
-  <section className="wf-section"><h3>R-18</h3><div className="segmented sensitive-modes" role="group" aria-label="R-18">{(['blur','hide','show','only'] as SensitiveMode[]).map(mode=>{const active=String(preferences.sensitiveMode||'blur')===mode,label=mode==='only'?t(locale,'r18Only'):t(locale,mode);return <button key={mode} type="button" title={label} aria-pressed={active} disabled={busy} onClick={()=>{if(!active)void save({sensitiveMode:mode});}}><span>{label}</span></button>;})}</div></section>
-  <section className="wf-section"><div className="appearance-toggles"><Toggle label={q('hideUnavailable')} checked={preferences.hideUnavailable!==false} disabled={busy} onChange={enabled=>void save({hideUnavailable:enabled})}/><Toggle label={q('hideUnclassified')} checked={preferences.hideUnclassified!==false} disabled={busy} onChange={enabled=>void save({hideUnclassified:enabled})}/></div></section>
-  <section className="wf-section"><Toggle label={q('nativeSinglePackage')} checked={preferences.nativeSinglePackage!==false} disabled={busy} onChange={enabled=>void save({nativeSinglePackage:enabled})}/></section>
-  <LicenseSettings locale={locale} enabled={preferences.licenseFilter===true} busy={busy} job={licenseJob} onToggle={enabled=>void save({licenseFilter:enabled})} onNotice={onNotice}/>
-  <section className="wf-section"><Toggle label={q('aiFeatures')} checked={preferences.aiFeaturesEnabled===true} disabled={busy} onChange={enabled=>void save({aiFeaturesEnabled:enabled})}/></section>
-  <section className="wf-section"><h3>{q('batchActions')}</h3><div className="feature-actions">{actions.map(([id,label])=><label key={id} className={id==='ai'&&preferences.aiFeaturesEnabled!==true||id==='licenses'&&preferences.licenseFilter!==true?'feature-disabled':undefined}><input type="checkbox" checked={batch[id]} disabled={busy||id==='ai'&&preferences.aiFeaturesEnabled!==true||id==='licenses'&&preferences.licenseFilter!==true} onChange={event=>void save({batchActions:{...batch,[id]:event.target.checked}})}/><span>{q(label)}</span></label>)}</div>
-  </section>{error&&<small role="status" className="feature-error">{error}</small>}
- </div>;
+export const DEFAULT_BATCH_ACTIONS: Record<string, boolean> = {
+  edit: true,
+  collection: true,
+  unity: true,
+  export: true,
+  ai: true,
+  spending: true,
+  delete: true,
+  hide: true,
+  selectAll: true,
+  update: true,
+  download: true,
+  licenses: true,
+};
+export function batchActionPreferences(value: unknown): Record<string, boolean> {
+  return {
+    ...DEFAULT_BATCH_ACTIONS,
+    ...(value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).filter(
+            ([key, item]) => key in DEFAULT_BATCH_ACTIONS && typeof item === 'boolean',
+          ),
+        )
+      : {}),
+  };
+}
+const actions = [
+  ['selectAll', 'selectAll'],
+  ['edit', 'edit'],
+  ['collection', 'addToCollection'],
+  ['export', 'exportZip'],
+  ['ai', 'aiTags'],
+  ['spending', 'spending'],
+  ['delete', 'delete'],
+  ['hide', 'hide'],
+  ['update', 'update'],
+  ['licenses', 'syncLicenses'],
+  ['download', 'download'],
+  ['unity', 'importUnity'],
+];
+export default function FeaturesSettings({
+  locale,
+  preferences,
+  onPreferences,
+  licenseJob,
+  onNotice,
+}: {
+  locale: Locale;
+  preferences: Record<string, unknown>;
+  onPreferences: (patch: Record<string, unknown>) => Promise<void>;
+  licenseJob?: { state: string; progress?: unknown };
+  onNotice: (text: string) => void;
+}) {
+  const q = (key: string) =>
+      uxText(locale, key) || shellText(locale, key) || licenseText(locale, key) || t(locale, key),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  const batch = batchActionPreferences(preferences.batchActions);
+  const save = async (patch: Record<string, unknown>) => {
+    setBusy(true);
+    setError('');
+    try {
+      await onPreferences(patch);
+      return true;
+    } catch {
+      setError(t(locale, 'operationFailed'));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="workflow-content feature-settings">
+      <section className="wf-section">
+        <h3>R-18</h3>
+        <div className="segmented sensitive-modes" role="group" aria-label="R-18">
+          {(['blur', 'hide', 'show', 'only'] as SensitiveMode[]).map((mode) => {
+            const active = String(preferences.sensitiveMode || 'blur') === mode,
+              label = mode === 'only' ? t(locale, 'r18Only') : t(locale, mode);
+            return (
+              <button
+                key={mode}
+                type="button"
+                title={label}
+                aria-pressed={active}
+                disabled={busy}
+                onClick={() => {
+                  if (!active) void save({ sensitiveMode: mode });
+                }}
+              >
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+      <section className="wf-section">
+        <div className="appearance-toggles">
+          <Toggle
+            label={q('hideUnavailable')}
+            checked={preferences.hideUnavailable !== false}
+            disabled={busy}
+            onChange={(enabled) => void save({ hideUnavailable: enabled })}
+          />
+          <Toggle
+            label={q('hideUnclassified')}
+            checked={preferences.hideUnclassified !== false}
+            disabled={busy}
+            onChange={(enabled) => void save({ hideUnclassified: enabled })}
+          />
+        </div>
+      </section>
+      <section className="wf-section">
+        <Toggle
+          label={q('nativeSinglePackage')}
+          checked={preferences.nativeSinglePackage !== false}
+          disabled={busy}
+          onChange={(enabled) => void save({ nativeSinglePackage: enabled })}
+        />
+      </section>
+      <LicenseSettings
+        locale={locale}
+        enabled={preferences.licenseFilter === true}
+        busy={busy}
+        job={licenseJob}
+        onToggle={(enabled) => void save({ licenseFilter: enabled })}
+        onNotice={onNotice}
+      />
+      <section className="wf-section">
+        <Toggle
+          label={q('aiFeatures')}
+          checked={preferences.aiFeaturesEnabled === true}
+          disabled={busy}
+          onChange={(enabled) => void save({ aiFeaturesEnabled: enabled })}
+        />
+      </section>
+      <section className="wf-section">
+        <h3>{q('batchActions')}</h3>
+        <div className="feature-actions">
+          {actions.map(([id, label]) => (
+            <label
+              key={id}
+              className={
+                (id === 'ai' && preferences.aiFeaturesEnabled !== true) ||
+                (id === 'licenses' && preferences.licenseFilter !== true)
+                  ? 'feature-disabled'
+                  : undefined
+              }
+            >
+              <input
+                type="checkbox"
+                checked={batch[id]}
+                disabled={
+                  busy ||
+                  (id === 'ai' && preferences.aiFeaturesEnabled !== true) ||
+                  (id === 'licenses' && preferences.licenseFilter !== true)
+                }
+                onChange={(event) =>
+                  void save({ batchActions: { ...batch, [id]: event.target.checked } })
+                }
+              />
+              <span>{q(label)}</span>
+            </label>
+          ))}
+        </div>
+      </section>
+      {error && (
+        <small role="status" className="feature-error">
+          {error}
+        </small>
+      )}
+    </div>
+  );
 }
