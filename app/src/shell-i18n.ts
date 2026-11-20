@@ -49,9 +49,6 @@ const labels:Record<string,string[]>={
  paidShort:['Paid','有料','유료','付费','付費'],freeShort:['Free','無料','무료','免费','免費'],giftShort:['Gift','ギフト','선물','礼物','禮物'],
  paidAssets:['Paid assets','有料アセット','유료 에셋','付费资产','付費資產'],freeAssets:['Free assets','無料アセット','무료 에셋','免费资产','免費資產'],giftAssets:['Gift assets','受け取ったギフト','선물 에셋','礼物资产','禮物資產'],
  noAssets:['None','なし','없음','无','無'],
- staleDownloadTitle:['File list out of date','ファイル一覧が古くなっています','파일 목록이 최신이 아닙니다','文件列表不是最新的','檔案清單不是最新的'],
- confirmStaleDownload:['The file list of {count} asset(s) is out of date, so some files could not be downloaded. Update and then download automatically?','{count}件のアセットのファイル一覧が古いため、一部のファイルをダウンロードできませんでした。更新してから自動でダウンロードしますか？','에셋 {count}개의 파일 목록이 최신이 아니어서 일부 파일을 다운로드하지 못했습니다. 업데이트한 후 자동으로 다운로드할까요?','{count} 个资产的文件列表不是最新的，部分文件无法下载。要更新后自动下载吗？','{count} 個資產的檔案清單不是最新的，部分檔案無法下載。要更新後自動下載嗎？'],
- updateAndDownload:['Update and download','更新してダウンロード','업데이트 후 다운로드','更新并下载','更新並下載'],
  deleteDownloadedFile:['Delete downloaded file','ダウンロードしたファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],confirmDeleteFile:['Confirm deletion','削除する','삭제 확인','确认删除','確認刪除'],
  movedToCategory:['Moved {count} asset(s) to {category}','{count}件のアセットを「{category}」に移動しました','에셋 {count}개를 {category}(으)로 옮겼습니다','已将 {count} 个资产移到“{category}”','已將 {count} 個資產移到「{category}」'],
 };
