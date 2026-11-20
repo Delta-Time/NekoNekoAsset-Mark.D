@@ -58,6 +58,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check Rust format and lint
+        run: |
+          cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked --all-targets --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run existing Rust tests
         run: |
           cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml | Tee-Object -Variable output

@@ -15,11 +15,20 @@ From the repository root:
 
 ```powershell
 pnpm --dir app install --frozen-lockfile
+pnpm --dir app exec biome ci
 pnpm --dir app build
+cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
+cargo clippy --locked --all-targets --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
 python scripts/test_release.py
 python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/bridge
 ```
+
+CI runs the same checks. Format before committing with `pnpm --dir app format`
+and `cargo fmt --all --manifest-path app/src-tauri/Cargo.toml`; never reformat
+`unity/Packages`, whose bytes the Bridge release attests. Formatting-only commits
+are listed in `.git-blame-ignore-revs`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip them locally.
 
 Run the App with `pnpm --dir app tauri dev`. Release packaging requires the
 maintainer's updater signing key; unsigned local builds can use
