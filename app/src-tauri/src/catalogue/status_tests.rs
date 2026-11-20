@@ -306,7 +306,7 @@ fn exact_avatar_tags_add_compatibility_evidence_without_entitlement_and_honor_ov
 }
 
 #[test]
-fn a_file_its_store_refused_is_listed_only_from_disk_and_raises_no_attention() {
+fn a_file_its_store_refused_counts_as_dropped_and_raises_no_attention() {
     // The record a download leaves when the store answers that a file is no longer offered.
     fn refuse(conn: &Connection, index: usize) {
         let id = format!("pending-f{index}");
@@ -343,10 +343,18 @@ fn a_file_its_store_refused_is_listed_only_from_disk_and_raises_no_attention() {
     failed(&conn, json!({"f1":refusal}));
     artifact(&conn, 2, "ready", None);
     assert_eq!(projected(&conn)["status"], "ready");
-    // A file downloaded before stays listed and usable when its store later refuses it.
+    // A file downloaded before stays as a kept row, usable even while a sync asks to
+    // verify the store's files: there is nothing left to verify it against.
     artifact(&conn, 1, "ready", None);
+    let mut file = raw(&conn, "remote_file", "f1").unwrap().unwrap();
+    file["requiresContentVerification"] = json!(true);
+    set_raw(&conn, "remote_file", "f1", &file).unwrap();
     let product = projected(&conn);
     assert_eq!(listed(&product), ["f0", "f1", "f2"]);
+    assert_eq!(
+        (product["files"][1]["kept"].clone(), product["files"][1]["status"].clone(), product["keptFiles"].clone()),
+        (json!(true), json!("ready"), json!(1))
+    );
     assert_eq!(product["status"], "ready");
     // A new attempt replaces the refusal, so the file is listed again.
     conn.execute("DELETE FROM entities WHERE kind='artifact' AND id='f1'", [])

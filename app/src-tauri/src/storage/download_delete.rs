@@ -108,14 +108,13 @@ impl StorageService {
 
     fn remove_downloads(&self, products: &[String], file: Option<&str>) -> Result<Value> {
         // Removing a product's downloads leaves every file outside the store's
-        // current download list, shown or not: the store cannot provide it again.
-        // Each kept file's own delete still removes it.
+        // current download list, shown or not, and every file the store refused:
+        // the store cannot provide it again. Each kept file's own delete still removes it.
         let mut irreplaceable = HashSet::new();
         if file.is_none() {
             for product in products {
                 let attached: HashSet<String> = self
-                    .remote_files(product)?
-                    .0
+                    .without_last_failure(self.remote_files(product)?.0, &["store_file_unavailable"])?
                     .iter()
                     .filter_map(|f| f["id"].as_str().map(str::to_owned))
                     .collect();
@@ -403,6 +402,24 @@ mod tests {
         let details = c.command("product_details", json!({"id":"alpha"})).unwrap();
         let ids: Vec<_> = details["files"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["alpha-New.zip"]);
+        f.finish();
+    }
+
+    #[tokio::test]
+    async fn product_delete_keeps_a_downloaded_file_its_store_refused() {
+        let f = Fixture::new();
+        let directory = f.product("beta", &["New.zip", "Old.zip"]);
+        let c = &f.service.catalogue;
+        // The grant still names Old.zip, but its last download was refused as no longer offered.
+        let pending = format!("pending-{}", io::key("beta-Old.zip"));
+        c.put("artifact",&pending,json!({"id":pending,"productId":"beta","fileId":"beta-Old.zip","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+        let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
+        let result = f.service.delete_downloads(&json!({"productIds":["beta"]})).await.unwrap();
+        assert_eq!(result["deletedFileIds"], json!(["beta-New.zip"]));
+        assert!(old.exists());
+        let details = c.command("product_details", json!({"id":"beta"})).unwrap();
+        let row = details["files"].as_array().unwrap().iter().find(|row| row["id"] == "beta-Old.zip").unwrap().clone();
+        assert_eq!((row["kept"].clone(), row["status"].clone()), (json!(true), json!("ready")));
         f.finish();
     }
 

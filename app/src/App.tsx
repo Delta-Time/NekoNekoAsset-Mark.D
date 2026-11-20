@@ -106,7 +106,7 @@ export default function App(){
  const [libraryReady,setLibraryReady]=useState(false),[context,setContext]=useState<{x:number;y:number;ids:string[]}|null>(null),[licenseOpen,setLicenseOpen]=useState(false),licenseActive=useRef(false),licenseButton=useRef<HTMLButtonElement>(null);
  const [deleteLocalSelection,setDeleteLocalSelection]=useState<{ids:string[];names:string[]}|null>(null);
  const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
- const watchedDownloads=useRef(new Set<string>()),staleProducts=useRef(new Map<string,boolean>());
+ const watchedDownloads=useRef(new Set<string>()),staleProducts=useRef(new Set<string>());
  const [notice,setNotice]=useState(''),[undo,setUndo]=useState<string|null>(null),[autoAll,setAutoAll]=useState(false),[setupDone,setSetupDone]=useState(false);
  const [accounts,setAccounts]=useState<Account[]>([]),[revealed,setRevealed]=useState<Set<string>>(new Set()),[avatarSettings,setAvatarSettings]=useState<Record<string,AvatarSetting>>({}),[importSeed,setImportSeed]=useState<ImportSeed|undefined>();
  const avatarSettingsRef=useRef(avatarSettings);avatarSettingsRef.current=avatarSettings;
@@ -252,9 +252,9 @@ export default function App(){
  const deleteDownloads=async(args:Record<string,unknown>,ids:string[])=>{setDeletingDownloads(old=>new Set([...old,...ids]));try{await invokeAction('storage','delete_downloads',args);}finally{setDeletingDownloads(old=>new Set([...old].filter(id=>!ids.includes(id))));}};
  /** Downloads started here update their product when the store no longer offers a file. */
  const watchDownloads=(result:unknown)=>{for(const id of (result as {jobIds?:unknown[]}|undefined)?.jobIds??[])if(typeof id==='string')watchedDownloads.current.add(id);};
- // One update covers every such product once those downloads settle, because a store
- // update slows that store's transfers to one. Product downloads then fetch the new
- // list; a single file leaves the choice in Files.
+ // One update per store covers every such product once those downloads settle, because a
+ // store update slows that store's transfers to one. An asset downloaded whole then gets
+ // its updated list through the download request it already holds.
  useEffect(()=>{
   let active=false;
   for(const job of nativeState.jobs as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})[]){
@@ -262,11 +262,15 @@ export default function App(){
    // A download waiting for its account's sign-in holds up no other update.
    if(['queued','running'].includes(job.state)){if(job.errorCode!=='auth_required')active=true;continue;}
    watchedDownloads.current.delete(job.id);
-   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))staleProducts.current.set(job.productId,!job.selectedFileIds||staleProducts.current.get(job.productId)===true);
+   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))staleProducts.current.add(job.productId);
   }
   if(active||!staleProducts.current.size)return;
-  const productIds=[...staleProducts.current.keys()],wanted=productIds.filter(id=>staleProducts.current.get(id));staleProducts.current.clear();
-  run((wanted.length?onNative('storage','want_download',{productIds:wanted}):Promise.resolve()).then(()=>onNative('booth','update_products',{productIds})));
+  // Store IDs carry their store (BOOTH's are bare numbers), so a busy or signed-out
+  // account of one store cannot fail another store's update.
+  const stores=new Map<string,string[]>();
+  for(const id of staleProducts.current){const store=id.includes(':')?id.slice(0,id.indexOf(':')):'booth';stores.set(store,[...stores.get(store)??[],id]);}
+  staleProducts.current.clear();
+  for(const productIds of stores.values())run(onNative('booth','update_products',{productIds}));
  },[nativeState.jobs]);
  const download=(ids:string[])=>{if(ids.length)run(onNative('storage','enqueue_products',{productIds:ids}).then(watchDownloads));};
  const downloadFile=(fileId:string,redownload:boolean)=>run(onNative('storage','enqueue_file',{fileId,redownload}).then(watchDownloads));

@@ -313,8 +313,8 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
-/// Store products whose projection predates leaving out refused files: a file the
-/// store refused as no longer offered is listed with nothing of it on disk.
+/// Store products whose projection predates refused files counting as dropped: a
+/// file the store refused as no longer offered is still an ordinary row.
 pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT a.product_id FROM entities a
@@ -322,9 +322,7 @@ pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
          WHERE a.kind='artifact'
            AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
            AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
-           AND COALESCE(json_extract(f.value,'$.kept'),0)=0
-           AND COALESCE(json_extract(f.value,'$.status'),'') NOT IN
-             ('ready','downloaded','extracting','extractionFailed','missing')",
+           AND COALESCE(json_extract(f.value,'$.kept'),0)=0",
     )?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -1082,9 +1080,14 @@ fn effective_with_jobs(
     let mut evidence = vec![];
     let mut known_file_count = 0;
     let mut kept_count = 0;
+    // A file its store refused as no longer offered counts as dropped, however long
+    // a grant still names it.
     for (fid, retained) in file_ids
         .into_iter()
-        .map(|fid| (fid, false))
+        .map(|fid| {
+            let dropped = refused.contains(fid.as_str());
+            (fid, dropped)
+        })
         .chain(kept.into_iter().map(|fid| (fid, true)))
     {
         let known = remote_map.contains_key(&fid);
@@ -1130,11 +1133,6 @@ fn effective_with_jobs(
         } else {
             status
         };
-        // A file its store refused is gone like a dropped one: listed only while
-        // something of it is on disk, however long a grant still names it.
-        if !retained && refused.contains(fid.as_str()) && kept_status(false, status).is_none() {
-            continue;
-        }
         known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {

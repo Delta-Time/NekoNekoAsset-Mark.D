@@ -4,10 +4,10 @@
 
 ### Changed
 
-- Downloading assets no longer stops to ask whether to update when a store no longer offers one of their files. Once the downloads you started finish, the App updates those assets in one update and downloads their new files. A single file that fails this way only updates its asset, so you pick its new files in Files.
-- A file a store no longer offers that you never downloaded leaves the asset's file list, and the asset no longer shows Attention because of it. Versions you downloaded before stay listed and usable.
+- Downloading assets no longer stops to ask whether to update when a store no longer offers one of their files. Once the downloads you started finish, the App updates those assets, one update per store, and assets you downloaded whole download again from the updated list.
+- A file a store no longer offers leaves the asset's file list if you never downloaded it, and stays listed as Removed from store if you did. Delete downloaded files keeps it, since the store can no longer provide it, and the asset no longer shows Attention because of it.
 - Japanese uses the words VRChat and BOOTH users already use, such as 利用規約, 解凍, 入手, ライブラリ, 購入履歴 and ギフト, and Activity is 進行状況. The Unity Bridge's Japanese matches the App.
-- Settings › Features shows the License filter's readable licenses, Sync all licenses and Delete license database only while the filter is on.
+- Settings › Features shows which licenses the License filter reads only while the filter is on.
 
 ### Fixed
 
