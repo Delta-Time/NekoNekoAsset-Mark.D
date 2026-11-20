@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } from 'react';
-import type { CSSProperties, MouseEvent, KeyboardEvent, PointerEvent, ReactNode } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import type { CSSProperties, MouseEvent, KeyboardEvent, PointerEvent } from 'react';
 import {
   Search,
   Grid2X2,
@@ -35,7 +35,6 @@ import {
   getProductDisplayStatus,
   defaultSortDirection,
   thumbnailSizes,
-  resultGeometry,
   isLightTheme,
   currentPriceLabel,
   cardPriceLabel,
@@ -50,8 +49,7 @@ import type {
   CustomCategory,
 } from './model';
 import { version as appVersion } from '../package.json';
-import { t, localeNames } from './i18n';
-import { shellText } from './shell-i18n';
+import { localeNames } from './i18n';
 import Preview from './Preview';
 import { coalescedRefresh, changedPreferences } from './refresh';
 import {
@@ -64,16 +62,14 @@ import AvatarManager from './AvatarManager';
 import AssetInspector from './AssetInspector';
 import DeleteLocalProducts from './DeleteLocalProducts';
 import ConfirmProducts from './ConfirmProducts';
-import { useDragGestures } from './drag-gestures';
-import type { DragGestures } from './drag-gestures';
 import ConfirmDelete from './ConfirmDelete';
 import ScaleControl from './ScaleControl';
 import Toggle from './Toggle';
 import { contentLang } from './content-lang';
-import { StatusIcon, CategoryIcon } from './LibraryIcons';
+import { CategoryIcon } from './LibraryIcons';
 import UpdatePrompt from './UpdatePrompt';
 import { resumesAfterRestart, updateJobBlocker, updateText } from './update-i18n';
-import { resetText, resetErrorText } from './settings-reset-i18n';
+import { resetText } from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
 import FeaturesSettings, { batchActionPreferences } from './FeaturesSettings';
@@ -81,241 +77,17 @@ import SpendingDialog from './SpendingDialog';
 import { LibraryContextMenu, ResponsiveLibraryToolbar } from './LibraryMenus';
 import type { ContextAction } from './LibraryMenus';
 import ActivityHistory from './ActivityHistory';
-import { uxText } from './ux-i18n';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
 import ThemePicker, { defaultThemeOptions, themeDisplayName } from './ThemePicker';
 import Workflows, { WorkflowContent, LibraryAccess, isStoreJob, isStoreSyncJob } from './Workflows';
 import type { ImportSeed } from './Workflows';
 import type { UnitySeed } from './UnityWorkflow';
-import { unityError } from './unity-i18n';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import EditDialogs, { builtInTheme, exportThemeConfig } from './EditDialogs';
-import { LicenseFilterDialog, licenseCells, licenseSummary } from './Licenses';
+import EditDialogs, { exportThemeConfig } from './EditDialogs';
+import { LicenseFilterDialog, licenseSummary } from './Licenses';
 import { licenseText } from './license-i18n';
-type Query = {
-  search: string;
-  category: string;
-  avatar: string;
-  status: string;
-  sensitive: SensitiveMode;
-  accountIds: string[] | null;
-  includeOffline: boolean;
-  quick: 'all' | 'downloaded' | 'attention' | 'hidden';
-  acquisition: string[] | null;
-  license: Record<string, string> | null;
-};
-type Saved = { id?: string; name: string; query: Query; sort?: string; direction?: SortDirection };
-type Preset = { id: string; name: string; tokens: Record<string, string> };
-
-const fresh: Query = {
-  search: '',
-  category: 'all',
-  avatar: 'all',
-  status: 'all',
-  sensitive: 'blur',
-  accountIds: null,
-  includeOffline: true,
-  quick: 'all',
-  acquisition: null,
-  license: null,
-};
-const acquisitionKinds = ['paid', 'free', 'gift'];
-function restoreQuery(raw: unknown): Query {
-  const saved =
-    raw && typeof raw === 'object'
-      ? (raw as Partial<Query>)
-      : { search: typeof raw === 'string' ? raw : '' };
-  const license = licenseCells(saved.license);
-  return {
-    ...fresh,
-    ...saved,
-    includeOffline:
-      typeof saved.includeOffline === 'boolean' ? saved.includeOffline : saved.accountIds == null,
-    license: Object.keys(license).length ? license : null,
-  };
-}
 const params = new URLSearchParams(location.search);
-const neutralTokens = Object.fromEntries(
-  Object.entries(builtInTheme).map(([key, value]) => ['--' + key, value]),
-);
-const initialPresets: Preset[] = [
-  {
-    id: 'mint',
-    name: 'Mint',
-    tokens: {
-      '--secondary-accent': '#375e9a',
-      '--secondary-accent-text': '#ffffff',
-      '--bg': '#eef5f0',
-      '--panel': '#f8fcf9',
-      '--raised': '#ffffff',
-      '--border': '#acbfb2',
-      '--text': '#20392d',
-      '--muted': '#496454',
-      '--accent': '#306449',
-      '--control': '#dceadf',
-      '--positive': '#326545',
-      '--warning': '#815516',
-      '--negative': '#a33745',
-    },
-  },
-  {
-    id: 'violet',
-    name: 'Violet',
-    tokens: {
-      '--secondary-accent': '#8ebdec',
-      '--secondary-accent-text': '#211b29',
-      '--bg': '#211b29',
-      '--panel': '#2c2337',
-      '--raised': '#382d45',
-      '--border': '#665573',
-      '--text': '#f5edf9',
-      '--muted': '#c0adcf',
-      '--accent': '#d2b5ee',
-      '--control': '#493957',
-      '--positive': '#aad3b4',
-      '--warning': '#e5c386',
-      '--negative': '#f0acb9',
-    },
-  },
-  {
-    id: 'sky',
-    name: 'Sky',
-    tokens: {
-      '--secondary-accent': '#6a43a5',
-      '--secondary-accent-text': '#ffffff',
-      '--bg': '#eaf2f8',
-      '--panel': '#f6faff',
-      '--raised': '#ffffff',
-      '--border': '#a8bdcd',
-      '--text': '#20394d',
-      '--muted': '#496174',
-      '--accent': '#315d85',
-      '--control': '#d5e5f1',
-      '--positive': '#326448',
-      '--warning': '#825619',
-      '--negative': '#a33644',
-    },
-  },
-  {
-    id: 'amber',
-    name: 'Amber',
-    tokens: {
-      '--secondary-accent': '#96bfea',
-      '--secondary-accent-text': '#292117',
-      '--bg': '#292117',
-      '--panel': '#352c20',
-      '--raised': '#433728',
-      '--border': '#75644a',
-      '--text': '#f6edda',
-      '--muted': '#c9b693',
-      '--accent': '#f0cb83',
-      '--control': '#50412e',
-      '--positive': '#b8d29a',
-      '--warning': '#f1cc8b',
-      '--negative': '#f0a6a0',
-    },
-  },
-  {
-    id: 'rose',
-    name: 'Rose',
-    tokens: {
-      '--secondary-accent': '#416eb4',
-      '--secondary-accent-text': '#ffffff',
-      '--bg': '#f7eef1',
-      '--panel': '#fff8fa',
-      '--raised': '#ffffff',
-      '--border': '#cbb0ba',
-      '--text': '#4b2d39',
-      '--muted': '#765565',
-      '--accent': '#8e3e62',
-      '--control': '#eddce3',
-      '--positive': '#38634c',
-      '--warning': '#865617',
-      '--negative': '#aa3047',
-    },
-  },
-  {
-    id: 'silver',
-    name: 'Silver',
-    tokens: {
-      '--secondary-accent': '#7cb9f2',
-      '--secondary-accent-text': '#10161c',
-      '--bg': '#10161c',
-      '--panel': '#1b242d',
-      '--raised': '#283440',
-      '--border': '#526373',
-      '--text': '#e9f1f8',
-      '--muted': '#abbccc',
-      '--accent': '#c3d4e3',
-      '--control': '#354554',
-      '--positive': '#a6d4bb',
-      '--warning': '#e2c28b',
-      '--negative': '#eda6ad',
-    },
-  },
-];
-
-function safeTokens(value: unknown): Record<string, string> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const entries = Object.entries(value);
-  if (
-    !entries.length ||
-    entries.some(
-      ([key, color]) =>
-        !Object.hasOwn(neutralTokens, key) ||
-        typeof color !== 'string' ||
-        !/^#[a-f0-9]{6}$/i.test(color),
-    )
-  )
-    return null;
-  return { ...neutralTokens, ...value };
-}
-function Button({
-  children,
-  onClick,
-  onMouseDown,
-  title,
-  primary = false,
-  disabled = false,
-  className = '',
-}: {
-  children: ReactNode;
-  onClick?: () => void;
-  onMouseDown?: (event: MouseEvent<HTMLButtonElement>) => void;
-  title?: string;
-  primary?: boolean;
-  disabled?: boolean;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      className={`button ${primary ? 'primary' : ''} ${className}`}
-      onClick={onClick}
-      onMouseDown={onMouseDown}
-      disabled={disabled}
-    >
-      {children}
-    </button>
-  );
-}
-function Status({ p, q }: { p: Product; q: (key: string) => string }) {
-  const status = getProductDisplayStatus(p);
-  return (
-    <span
-      className={`product-status ${status === 'ready' ? 'good' : status === 'attention' ? 'warn' : ''}`}
-      data-status={status}
-      title={q(status)}
-      aria-label={q(status)}
-    >
-      <StatusIcon status={status} />
-      <span title={q(status)}>{q(status)}</span>
-    </span>
-  );
-}
 import {
   invokeAction,
   dialog as nativeDialog,
@@ -338,26 +110,23 @@ import {
 import type {
   NativeState,
   NativeJob,
-  NativeRoot,
   Service,
   AvatarSetting,
   NativeCollection,
   LibraryStatus,
   ProductOverlayChange,
 } from './backend';
-const configuredLibraryRoot = (state: Pick<NativeState, 'roots' | 'preferences'>) =>
-  typeof state.preferences.libraryRootId === 'string'
-    ? state.roots.find((root) => root.id === state.preferences.libraryRootId)
-    : state.roots.find((root) => Reflect.get(root, 'active') !== false);
-const mappedLibraryRoot = (root: NativeRoot | undefined) =>
-  !!root &&
-  typeof root.path === 'string' &&
-  !!root.path.trim() &&
-  ['active', 'online', 'ready', 'configured'].includes(root.status);
-const libraryAvailable = (state: Pick<NativeState, 'roots' | 'preferences'>) =>
-  mappedLibraryRoot(configuredLibraryRoot(state));
-import { nativeErrorText } from './error-i18n';
 import { nativeWorkflowText } from './native-workflow-i18n';
+import Button from './shared/Button';
+import SmallDialog from './shared/SmallDialog';
+import { appText } from './shared/app-text';
+import ProductStatus from './features/results/ProductStatus';
+import Results from './features/results/Results';
+import { configuredLibraryRoot, libraryAvailable } from './features/library/library-root';
+import { acquisitionKinds, fresh, leavingHidden, restoreQuery } from './features/filters/query';
+import type { Query, Saved } from './features/filters/query';
+import { initialPresets, neutralTokens, safeTokens } from './features/appearance/themes';
+import type { Preset } from './features/appearance/themes';
 export default function App() {
   const [nativeState, setNativeState] = useState<NativeState>(emptyState),
     [loaded, setLoaded] = useState(false),
@@ -572,18 +341,7 @@ export default function App() {
       queryMounted.current = false;
     };
   }, []);
-  const q = (key: string) =>
-      (key.startsWith('licenses_') || key === 'syncLicenses'
-        ? licenseText(locale, key)
-        : undefined) ||
-      resetErrorText(locale, key) ||
-      (key.startsWith('UNITY_') || key.startsWith('unity_')
-        ? unityError(locale, key)
-        : undefined) ||
-      uxText(locale, key) ||
-      (key.startsWith('ai_') || key === 'AI_INPUT_STALE'
-        ? nativeWorkflowText(locale, key)
-        : nativeErrorText(locale, key) || shellText(locale, key) || t(locale, key)),
+  const q = (key: string) => appText(locale, key),
     notify = (message: string) => setNotice(message);
   const eventText = useRef(q);
   eventText.current = q;
@@ -1018,9 +776,6 @@ export default function App() {
     setFocusId('');
     setRevealed(new Set());
   };
-  // Hidden assets is a place of its own: going anywhere else leaves it.
-  const leavingHidden = (old: Query): Partial<Query> =>
-    old.quick === 'hidden' ? { quick: 'all' } : {};
   const updateQuery = (patch: Partial<Query>) => {
     pendingSuggestionProduct.current = '';
     setQuery((old) => ({
@@ -2354,7 +2109,7 @@ export default function App() {
           .map((p) => (
             <div key={p.id} title={p.title}>
               <span lang={contentLang(p.title)}>{p.title}</span>
-              <Status p={p} q={q} />
+              <ProductStatus p={p} q={q} />
             </div>
           ))}
       </div>
@@ -2946,7 +2701,7 @@ export default function App() {
           </span>
         )}
         {list ? (
-          <Status p={p} q={q} />
+          <ProductStatus p={p} q={q} />
         ) : (
           <>
             {columns.includes('acquired') && (
@@ -2966,7 +2721,7 @@ export default function App() {
                   : '')
               }
             >
-              <Status p={p} q={q} />
+              <ProductStatus p={p} q={q} />
               <span className="card-metrics">
                 {columns.includes('price') && cardPriceLabel(locale, p) && (
                   <span className="card-price" title={cardPriceLabel(locale, p)!}>
@@ -3938,187 +3693,6 @@ export default function App() {
           />
         </div>
       )}
-    </div>
-  );
-}
-function SmallDialog({
-  label,
-  close,
-  q,
-  children,
-  className = '',
-}: {
-  label: string;
-  close: () => void;
-  q: (key: string) => string;
-  children: ReactNode;
-  className?: string;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement;
-    (
-      ref.current?.querySelector<HTMLElement>('input,select') ??
-      ref.current?.querySelector<HTMLElement>('button')
-    )?.focus();
-    return () => {
-      if (previous?.isConnected) previous.focus();
-    };
-  }, []);
-  return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
-    >
-      <div
-        className={`modal shell-dialog ${className}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={label}
-        ref={ref}
-        onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing) return;
-          if (e.key === 'Escape') {
-            e.stopPropagation();
-            close();
-          }
-          if (e.key === 'Tab') {
-            const nodes = Array.from(
-              ref.current?.querySelectorAll<HTMLElement>(
-                'button:not(:disabled),input:not(:disabled),select:not(:disabled),summary,[tabindex="0"]',
-              ) ?? [],
-            ).filter((node) => node.getClientRects().length);
-            if (e.shiftKey && document.activeElement === nodes[0]) {
-              e.preventDefault();
-              nodes.at(-1)?.focus();
-            } else if (!e.shiftKey && document.activeElement === nodes.at(-1)) {
-              e.preventDefault();
-              nodes[0]?.focus();
-            }
-          }
-        }}
-      >
-        <header className="modal-header">
-          <h2>{label}</h2>
-          <Button title={q('close')} onClick={close}>
-            <X size={14} />
-          </Button>
-        </header>
-        <div className="modal-body">{children}</div>
-        <footer className="modal-footer">
-          <Button onClick={close}>{q('close')}</Button>
-        </footer>
-      </div>
-    </div>
-  );
-}
-function Results({
-  items,
-  size,
-  density,
-  state,
-  activeId,
-  metadataCount,
-  render,
-  gestures,
-}: {
-  items: Product[];
-  size: number;
-  density: number;
-  state: { index: number; offset: number };
-  activeId: string;
-  metadataCount: number;
-  render: (p: Product, list: boolean) => ReactNode;
-  gestures: DragGestures | null;
-}) {
-  const ref = useRef<HTMLDivElement>(null),
-    previousActive = useRef(activeId);
-  const [width, setWidth] = useState(500),
-    [height, setHeight] = useState(500),
-    [top, setTop] = useState(0);
-  const { list, gap, columns, actual, info, row } = resultGeometry(
-      width,
-      size,
-      density,
-      metadataCount,
-    ),
-    total = Math.ceil(items.length / columns) * row,
-    pointerDown = useDragGestures({ list, gap, columns, actual, row }, items, gestures);
-  useLayoutEffect(() => {
-    const element = ref.current!;
-    const observer = new ResizeObserver(([entry]) => {
-      setWidth(entry.contentRect.width);
-      setHeight(entry.contentRect.height);
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    let target =
-      Math.floor(Math.min(state.index, Math.max(0, items.length - 1)) / columns) * row +
-      Math.min(state.offset, row - 1);
-    if (activeId !== previousActive.current) {
-      previousActive.current = activeId;
-      const index = items.findIndex((p) => p.id === activeId),
-        start = Math.floor(index / columns) * row;
-      if (index >= 0) {
-        if (start < target) target = start;
-        else if (start + row > target + height) target = start + row - height;
-      }
-    }
-    target = Math.max(0, Math.min(target, total - height));
-    element.scrollTop = target;
-    setTop(target);
-    state.index = Math.floor(target / row) * columns;
-    state.offset = target % row;
-  }, [row, columns, items, height, activeId]);
-  const first = Math.max(0, Math.floor(top / row) - 2),
-    end = Math.min(Math.ceil(items.length / columns), Math.ceil((top + height) / row) + 2);
-  return (
-    <div
-      className={`result-viewport ${list ? 'list-mode' : 'grid-mode'} ${density === 40 ? 'density-compact' : density === 74 ? 'density-standard' : 'density-comfortable'}`}
-      ref={ref}
-      data-columns={columns}
-      role="listbox"
-      aria-multiselectable="true"
-      onPointerDown={pointerDown}
-      style={
-        {
-          '--result-row': `${row}px`,
-          '--result-info': `${info}px`,
-          '--result-gap': `${gap}px`,
-          '--density': `${density}px`,
-        } as CSSProperties
-      }
-      onScroll={(e) => {
-        const value = e.currentTarget.scrollTop;
-        setTop(value);
-        state.index = Math.floor(value / row) * columns;
-        state.offset = value % row;
-      }}
-    >
-      <div style={{ height: total, position: 'relative' }}>
-        <div
-          className="result-items"
-          style={{
-            position: 'absolute',
-            top: first * row,
-            left: 12,
-            right: 12,
-            display: 'grid',
-            gridTemplateColumns: list
-              ? 'minmax(0,1fr)'
-              : `repeat(${columns},minmax(0,${actual}px))`,
-            gap: list ? 0 : gap,
-          }}
-        >
-          {items.slice(first * columns, end * columns).map((p) => render(p, list))}
-        </div>
-      </div>
     </div>
   );
 }
