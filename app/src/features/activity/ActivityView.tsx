@@ -7,7 +7,7 @@ import {
   retryAi,
   retryUnityInventory,
 } from '../../backend';
-import { isStoreJob } from '../../Workflows';
+import { isStoreJob } from '../workflows/jobs';
 import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Library } from '../library/useLibrary';
 import type { Results } from '../results/useResults';

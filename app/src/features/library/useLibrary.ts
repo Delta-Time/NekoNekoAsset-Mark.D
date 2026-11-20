@@ -3,7 +3,7 @@ import { emptyState } from '../../backend';
 import type { LibraryStatus, NativeState } from '../../backend';
 import type { Account, CustomCategory } from '../../model';
 import { batchActionPreferences } from '../../FeaturesSettings';
-import { isStoreSyncJob } from '../../Workflows';
+import { isStoreSyncJob } from '../workflows/jobs';
 import type { Saved } from '../filters/query';
 
 /** The open library as the UI holds it: native state, load status, accounts, saved searches and

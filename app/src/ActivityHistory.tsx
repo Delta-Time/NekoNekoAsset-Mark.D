@@ -8,7 +8,12 @@ import {
   progressPercent,
   type NativeJob,
 } from './backend';
-import { isStoreJob, isStoreSyncJob, needsStoreSignIn, syncProgressLabel } from './Workflows';
+import {
+  isStoreJob,
+  isStoreSyncJob,
+  needsStoreSignIn,
+  syncProgressLabel,
+} from './features/workflows/jobs';
 import { nativeErrorText } from './error-i18n';
 import { nativeWorkflowText } from './native-workflow-i18n';
 import { uxText } from './ux-i18n';
