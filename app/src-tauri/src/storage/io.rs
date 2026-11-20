@@ -630,7 +630,11 @@ mod launch_path_tests {
     #[cfg(windows)]
     #[test]
     fn locked_files_and_vanished_library_drives_keep_their_own_codes() {
-        let os = |code| stable_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(code)));
+        let os = |code| {
+            stable_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+                code,
+            )))
+        };
         assert_eq!((os(32), os(33)), ("file_in_use", "file_in_use"));
         for code in [21, 53, 59, 64, 67, 1231] {
             assert_eq!(os(code), "root_offline", "{code}");

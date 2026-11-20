@@ -792,7 +792,10 @@ https://jingo1016.booth.pm/items/5058077</p></section>
         }
         assert_eq!(listing_price_display(&json!(0)).as_deref(), Some("¥ 0"));
         assert_eq!(listing_starting_price(&json!("¥ 1,500 ~")), Some(1500.0));
-        assert_eq!(listing_starting_price(&json!("¥ 100 〜 ¥ 1,500")), Some(100.0));
+        assert_eq!(
+            listing_starting_price(&json!("¥ 100 〜 ¥ 1,500")),
+            Some(100.0)
+        );
         assert_eq!(listing_starting_price(&json!(0)), Some(0.0));
         assert_eq!(listing_starting_price(&json!("¥ 500 ~ 100")), None);
         for text in [

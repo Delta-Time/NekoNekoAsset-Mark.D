@@ -186,7 +186,10 @@ impl StoreService {
     }
 
     pub(crate) fn rebind_catalogue(&self, catalogue: Catalogue) -> Result<Self> {
-        ensure!(catalogue.device_dir() == self.catalogue.device_dir(), "STORE_DEVICE_MISMATCH");
+        ensure!(
+            catalogue.device_dir() == self.catalogue.device_dir(),
+            "STORE_DEVICE_MISMATCH"
+        );
         Ok(Self {
             booth: Arc::new(self.booth.rebind_catalogue(catalogue.clone())?),
             gumroad: self.gumroad.rebind_catalogue(catalogue.clone())?,
@@ -377,7 +380,9 @@ impl StoreService {
 
     /// What a pasted store link asks now. Any other link never reaches the network.
     pub(crate) async fn listing_price(&self, raw: &str) -> Result<Option<Value>> {
-        let product = self.public_product(&public_metadata::bare_url(raw)?).await?;
+        let product = self
+            .public_product(&public_metadata::bare_url(raw)?)
+            .await?;
         Ok(product.get("listingPrice").cloned())
     }
 

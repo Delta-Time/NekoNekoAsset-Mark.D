@@ -114,7 +114,10 @@ impl StorageService {
         if file.is_none() {
             for product in products {
                 let attached: HashSet<String> = self
-                    .without_last_failure(self.remote_files(product)?.0, &["store_file_unavailable"])?
+                    .without_last_failure(
+                        self.remote_files(product)?.0,
+                        &["store_file_unavailable"],
+                    )?
                     .iter()
                     .filter_map(|f| f["id"].as_str().map(str::to_owned))
                     .collect();
@@ -127,12 +130,12 @@ impl StorageService {
                 );
             }
         }
-        let (targets, kept): (Vec<_>, Vec<_>) =
-            self.catalogue
-                .list("artifact")?
-                .into_iter()
-                .partition(|artifact| {
-                    artifact["productId"]
+        let (targets, kept): (Vec<_>, Vec<_>) = self
+            .catalogue
+            .list("artifact")?
+            .into_iter()
+            .partition(|artifact| {
+                artifact["productId"]
                         .as_str()
                         .is_some_and(|id| products.iter().any(|product| product == id))
                         && file.is_none_or(|file| artifact["fileId"] == file)
@@ -142,7 +145,7 @@ impl StorageService {
                         // The store's refusal stays, so a refused file's own delete takes
                         // it out of the list instead of offering it again.
                         && artifact["errorCode"] != "store_file_unavailable"
-                });
+            });
         let mut tops = HashSet::new();
         for artifact in &targets {
             let directory = io::required_string(artifact, "productDirectory")?;
@@ -179,7 +182,9 @@ impl StorageService {
                         && path.components().count() > directory.components().count(),
                     "local_delete_unsafe_path"
                 );
-                if plan.iter().any(|(root, planned, ..)| root == root_id && planned == relative)
+                if plan
+                    .iter()
+                    .any(|(root, planned, ..)| root == root_id && planned == relative)
                     || references.iter().any(|(root, other)| {
                         *root == root_id
                             && archive::validate_relative_path(other).map_or(true, |other| {
@@ -203,7 +208,12 @@ impl StorageService {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
-                plan.push((root_id.to_owned(), relative.to_owned(), absolute, root.join("assets")));
+                plan.push((
+                    root_id.to_owned(),
+                    relative.to_owned(),
+                    absolute,
+                    root.join("assets"),
+                ));
             }
         }
         let mut failed = HashSet::new();
@@ -234,7 +244,10 @@ impl StorageService {
             {
                 incomplete.extend(artifact["fileId"].as_str());
                 let mut missing = artifact.clone();
-                missing.as_object_mut().unwrap().remove("attentionDismissed");
+                missing
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("attentionDismissed");
                 missing["status"] = json!("missing");
                 missing["errorCode"] = json!("download_delete_incomplete");
                 missing["updatedAt"] = json!(now());
@@ -291,8 +304,10 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("nna-download-delete-authored-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!(
+                "nna-download-delete-authored-{}",
+                uuid::Uuid::new_v4()
+            ));
             let library = path.join("library");
             fs::create_dir_all(&library).unwrap();
             let catalogue = Catalogue::open(&path.join("data")).unwrap();
@@ -390,20 +405,35 @@ mod tests {
         c.put("artifact","artifact-mine",json!({"id":"artifact-mine","productId":"alpha","fileId":"local-file:mine","rootId":"root","relativePath":relative,"productDirectory":directory,"revision":revision,"hash":hash,"sizeBytes":size,"status":"ready","originalAvailable":true})).unwrap();
         let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
 
-        let result = f.service.delete_downloads(&json!({"productIds":["alpha"]})).await.unwrap();
+        let result = f
+            .service
+            .delete_downloads(&json!({"productIds":["alpha"]}))
+            .await
+            .unwrap();
         assert_eq!(result["deletedFileIds"], json!(["alpha-New.zip"]));
         assert!(old.exists() && mine.exists() && hidden.exists());
         assert_eq!(f.file_status("alpha", "alpha-Old.zip"), "ready");
         assert_eq!(f.file_status("alpha", "local-file:mine"), "ready");
 
         // Each file's own delete removes them; an added file leaves with its record.
-        f.service.delete_downloads(&json!({"fileId":"local-file:mine"})).await.unwrap();
-        f.service.delete_downloads(&json!({"fileId":"alpha-Old.zip"})).await.unwrap();
+        f.service
+            .delete_downloads(&json!({"fileId":"local-file:mine"}))
+            .await
+            .unwrap();
+        f.service
+            .delete_downloads(&json!({"fileId":"alpha-Old.zip"}))
+            .await
+            .unwrap();
         assert!(!old.exists() && !mine.exists());
         assert!(c.get("remote_file", "local-file:mine").unwrap().is_none());
         assert!(c.get("remote_file", "alpha-Old.zip").unwrap().is_some());
         let details = c.command("product_details", json!({"id":"alpha"})).unwrap();
-        let ids: Vec<_> = details["files"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+        let ids: Vec<_> = details["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, ["alpha-New.zip"]);
         f.finish();
     }
@@ -418,18 +448,39 @@ mod tests {
         let pending = format!("pending-{}", io::key("beta-Old.zip"));
         c.put("artifact",&pending,json!({"id":pending,"productId":"beta","fileId":"beta-Old.zip","rootId":"root","relativePath":format!("{directory}/Old.zip--dir-1/Old.zip"),"productDirectory":directory,"revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
         let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
-        let result = f.service.delete_downloads(&json!({"productIds":["beta"]})).await.unwrap();
+        let result = f
+            .service
+            .delete_downloads(&json!({"productIds":["beta"]}))
+            .await
+            .unwrap();
         assert_eq!(result["deletedFileIds"], json!(["beta-New.zip"]));
         assert!(old.exists());
         let details = c.command("product_details", json!({"id":"beta"})).unwrap();
-        let row = details["files"].as_array().unwrap().iter().find(|row| row["id"] == "beta-Old.zip").unwrap().clone();
-        assert_eq!((row["kept"].clone(), row["status"].clone()), (json!(true), json!("ready")));
+        let row = details["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "beta-Old.zip")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (row["kept"].clone(), row["status"].clone()),
+            (json!(true), json!("ready"))
+        );
         // Its own delete removes the bytes and keeps the refusal, so it leaves the list.
-        f.service.delete_downloads(&json!({"fileId":"beta-Old.zip"})).await.unwrap();
+        f.service
+            .delete_downloads(&json!({"fileId":"beta-Old.zip"}))
+            .await
+            .unwrap();
         assert!(!old.exists());
         assert!(c.get("artifact", &pending).unwrap().is_some());
         let details = c.command("product_details", json!({"id":"beta"})).unwrap();
-        let ids: Vec<_> = details["files"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+        let ids: Vec<_> = details["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, ["beta-New.zip"]);
         f.finish();
     }
@@ -467,20 +518,50 @@ mod tests {
             json!(["alpha-Body.unitypackage", "alpha-Texture.zip"])
         );
         assert!(!extracted.exists());
-        assert!(!f.library.join(&directory).join("Body.unitypackage--dir").exists());
+        assert!(!f
+            .library
+            .join(&directory)
+            .join("Body.unitypackage--dir")
+            .exists());
         assert_eq!(
             fs::read(f.library.join(&directory).join("notes.txt")).unwrap(),
             b"user notes"
         );
-        assert!(f.service.catalogue.related("artifact", "alpha").unwrap().is_empty());
-        assert_eq!(f.service.catalogue.related("remote_file", "alpha").unwrap().len(), 2);
-        assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "notDownloaded");
+        assert!(f
+            .service
+            .catalogue
+            .related("artifact", "alpha")
+            .unwrap()
+            .is_empty());
         assert_eq!(
-            f.service.catalogue.get("download_intent", "alpha").unwrap().unwrap()["wantDownload"],
+            f.service
+                .catalogue
+                .related("remote_file", "alpha")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            f.file_status("alpha", "alpha-Body.unitypackage"),
+            "notDownloaded"
+        );
+        assert_eq!(
+            f.service
+                .catalogue
+                .get("download_intent", "alpha")
+                .unwrap()
+                .unwrap()["wantDownload"],
             false
         );
         // The unrelated product stays; download-all queues it but not the removed one.
-        assert_eq!(f.service.catalogue.related("artifact", "beta").unwrap().len(), 1);
+        assert_eq!(
+            f.service
+                .catalogue
+                .related("artifact", "beta")
+                .unwrap()
+                .len(),
+            1
+        );
         f.service
             .catalogue
             .command("preferences", json!({"patch":{"autoDownloadAll":true}}))
@@ -525,9 +606,17 @@ mod tests {
             .unwrap();
         assert!(f.library.join(shared.as_str().unwrap()).is_file());
         assert!(own.is_file(), "an unrecorded file is never removed");
-        assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "notDownloaded");
+        assert_eq!(
+            f.file_status("alpha", "alpha-Body.unitypackage"),
+            "notDownloaded"
+        );
         assert_eq!(f.file_status("alpha", "alpha-Copy.unitypackage"), "ready");
-        assert!(f.service.catalogue.get("download_intent", "alpha").unwrap().is_none());
+        assert!(f
+            .service
+            .catalogue
+            .get("download_intent", "alpha")
+            .unwrap()
+            .is_none());
         // Removing the last record also removes the shared bytes and empty folders.
         f.service
             .delete_downloads(&json!({"fileId":"alpha-Copy.unitypackage"}))
@@ -547,8 +636,14 @@ mod tests {
             .join(&directory)
             .join("Body.unitypackage--dir/Body.unitypackage");
         for (id, job) in [
-            ("download", json!({"id":"download","type":"download","productId":"alpha","state":"running"})),
-            ("unity", json!({"id":"unity","type":"unity:import","productIds":["alpha"],"state":"queued"})),
+            (
+                "download",
+                json!({"id":"download","type":"download","productId":"alpha","state":"running"}),
+            ),
+            (
+                "unity",
+                json!({"id":"unity","type":"unity:import","productIds":["alpha"],"state":"queued"}),
+            ),
         ] {
             f.service.catalogue.put("job", id, job).unwrap();
             assert_eq!(
@@ -563,7 +658,11 @@ mod tests {
         }
         f.service
             .catalogue
-            .put("product", "local", json!({"id":"local","provider":"local","title":"Authored local"}))
+            .put(
+                "product",
+                "local",
+                json!({"id":"local","provider":"local","title":"Authored local"}),
+            )
             .unwrap();
         for (args, code) in [
             (json!({"productIds":["local"]}), "invalid_arguments"),
@@ -573,7 +672,11 @@ mod tests {
             (json!({"fileId":"missing"}), "file_missing"),
         ] {
             assert_eq!(
-                f.service.delete_downloads(&args).await.unwrap_err().to_string(),
+                f.service
+                    .delete_downloads(&args)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
                 code
             );
         }
@@ -623,14 +726,20 @@ mod tests {
         );
         assert!(held.is_file());
         assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "missing");
-        assert_eq!(f.file_status("alpha", "alpha-Hair.unitypackage"), "notDownloaded");
+        assert_eq!(
+            f.file_status("alpha", "alpha-Hair.unitypackage"),
+            "notDownloaded"
+        );
         drop(handle);
         f.service
             .delete_downloads(&json!({"fileId":"alpha-Body.unitypackage"}))
             .await
             .unwrap();
         assert!(!held.exists());
-        assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "notDownloaded");
+        assert_eq!(
+            f.file_status("alpha", "alpha-Body.unitypackage"),
+            "notDownloaded"
+        );
         f.finish();
     }
 }

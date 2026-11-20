@@ -7,10 +7,26 @@ fn unsupported_schema_is_rejected_before_persistent_journal_changes() {
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA user_version=99; CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved');").unwrap();
     drop(conn);
-    assert!(Catalogue::from_connection(Connection::open(&path).unwrap(), &fixture.0, &fixture.0, Some(fixture.0.clone()), None).is_err());
+    assert!(Catalogue::from_connection(
+        Connection::open(&path).unwrap(),
+        &fixture.0,
+        &fixture.0,
+        Some(fixture.0.clone()),
+        None
+    )
+    .is_err());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(conn.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "wal");
-    assert_eq!(conn.query_row("SELECT value FROM future_data", [], |r| r.get::<_, String>(0)).unwrap(), "preserved");
+    assert_eq!(
+        conn.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "wal"
+    );
+    assert_eq!(
+        conn.query_row("SELECT value FROM future_data", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "preserved"
+    );
 }
 
 #[test]
@@ -19,11 +35,27 @@ fn shared_catalogue_checks_delete_journal_and_setup_accepts_memory_mode() {
     let path = fixture.0.join("shared.sqlite3");
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-    let c = Catalogue::from_connection(conn, &fixture.0, &fixture.0, Some(fixture.0.clone()), None).unwrap();
-    assert_eq!(c.inner.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "delete");
+    let c = Catalogue::from_connection(conn, &fixture.0, &fixture.0, Some(fixture.0.clone()), None)
+        .unwrap();
+    assert_eq!(
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
     drop(c);
     let setup = Catalogue::open_setup(&fixture.0).unwrap();
-    assert_eq!(setup.inner.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "memory");
+    assert_eq!(
+        setup
+            .inner
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "memory"
+    );
 }
 
 #[test]
@@ -32,11 +64,14 @@ fn all_summary_queries_include_results_after_10000_without_unbounding_file_paylo
     let c = fixture.open();
     c.inner.lock().unwrap().execute_batch("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10001) INSERT INTO products(id,body,category,status,sensitive,downloaded,title,search,in_all,summary) SELECT CAST(value AS TEXT),json_object('id',CAST(value AS TEXT),'files',json_array('AUTHORED_DETAIL')),'Tool','notDownloaded',0,0,printf('%05d',value),'authored',1,json_object('id',CAST(value AS TEXT),'filesLoaded',0) FROM n").unwrap();
     let query = |args| c.command("query", args).unwrap();
-    let all = query(json!({"allSummaries":true,"includeFiles":false,"presentation":"list","sort":"title"}));
+    let all = query(
+        json!({"allSummaries":true,"includeFiles":false,"presentation":"list","sort":"title"}),
+    );
     assert_eq!(all["matched"], 10001);
     assert_eq!(all["products"].as_array().unwrap().len(), 10001);
     assert_eq!(all["products"][10000]["id"], "10001");
-    let details = query(json!({"allSummaries":true,"includeFiles":true,"presentation":"list","limit":20000}));
+    let details =
+        query(json!({"allSummaries":true,"includeFiles":true,"presentation":"list","limit":20000}));
     assert_eq!(details["products"].as_array().unwrap().len(), 10000);
 }
 
@@ -48,7 +83,11 @@ fn status_filter_survives_every_sort_order() {
     product(&c, "other");
     c.put("job", "authored-failure", json!({"id":"authored-failure","productId":"wanted","type":"download","state":"failed","errorCode":"network_failed"})).unwrap();
     for sort in ["title", "acquired", "price", "status"] {
-        assert_eq!(c.command("query", json!({"status":"attention","sort":sort})).unwrap()["matchedIds"], json!(["wanted"]));
+        assert_eq!(
+            c.command("query", json!({"status":"attention","sort":sort}))
+                .unwrap()["matchedIds"],
+            json!(["wanted"])
+        );
     }
 }
 
@@ -58,28 +97,66 @@ fn undo_history_is_bounded_and_noop_edits_do_not_write_records_or_revisions() {
     let c = fixture.open();
     product(&c, "authored-undo");
     c.inner.lock().unwrap().execute_batch("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<100) INSERT INTO undo(token,body) SELECT CAST(value AS TEXT),'[]' FROM n").unwrap();
-    let changed = c.command("overlay", json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}})).unwrap();
+    let changed = c
+        .command(
+            "overlay",
+            json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}}),
+        )
+        .unwrap();
     assert_eq!(changed["changed"], 1);
     let revision = c.revision().unwrap();
-    let unchanged = c.command("overlay", json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}})).unwrap();
+    let unchanged = c
+        .command(
+            "overlay",
+            json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}}),
+        )
+        .unwrap();
     assert_eq!(unchanged["changed"], 0);
     assert!(unchanged.get("undoToken").is_none());
     assert_eq!(c.revision().unwrap(), revision);
-    assert_eq!(c.inner.lock().unwrap().query_row("SELECT COUNT(*) FROM undo", [], |row| row.get::<_, u64>(0)).unwrap(), 100);
-    assert!(c.inner.lock().unwrap().query_row("SELECT COUNT(*) FROM undo WHERE token='1'", [], |row| row.get::<_, u64>(0)).unwrap() == 0);
-    c.command("undo", json!({"token":changed["undoToken"]})).unwrap();
+    assert_eq!(
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM undo", [], |row| row.get::<_, u64>(0))
+            .unwrap(),
+        100
+    );
+    assert!(
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM undo WHERE token='1'", [], |row| row
+                .get::<_, u64>(
+                0
+            ))
+            .unwrap()
+            == 0
+    );
+    c.command("undo", json!({"token":changed["undoToken"]}))
+        .unwrap();
 }
 
 #[test]
 fn batch_import_status_snapshot_preserves_completed_members_and_updates_after_job_changes() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    let mut records = (0..10000).map(|n| {
-        let id = format!("authored-history-{n}");
-        ("job".into(), id.clone(), json!({"id":id,"type":"download","state":"completed"}))
-    }).collect::<Vec<_>>();
+    let mut records = (0..10000)
+        .map(|n| {
+            let id = format!("authored-history-{n}");
+            (
+                "job".into(),
+                id.clone(),
+                json!({"id":id,"type":"download","state":"completed"}),
+            )
+        })
+        .collect::<Vec<_>>();
     for id in ["one", "two"] {
-        records.push(("product".into(), id.into(), json!({"id":id,"title":"Authored import","sourceCategory":{"name":"Tool"}})));
+        records.push((
+            "product".into(),
+            id.into(),
+            json!({"id":id,"title":"Authored import","sourceCategory":{"name":"Tool"}}),
+        ));
     }
     let mut job = json!({"id":"authored-import","type":"storage:import_local","state":"running","productIds":["one","two"],"completedProductIds":["one"]});
     records.push(("job".into(), "authored-import".into(), job.clone()));
@@ -98,21 +175,55 @@ fn tag_edits_reject_only_visible_tags_and_preserve_new_hidden_source_compatibili
     let fixture = Fixture::new();
     let c = fixture.open();
     let mut source = json!({"id":"authored-tag-edit","title":"Authored clothes","sourceCategory":{"name":"Clothes"},"sourceTags":["Cute"]});
-    c.put("product", "authored-tag-edit", source.clone()).unwrap();
-    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine"]}})).unwrap();
+    c.put("product", "authored-tag-edit", source.clone())
+        .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine"]}}),
+    )
+    .unwrap();
     source["sourceTags"] = json!(["Cute", "Mafuyu"]);
     c.put("product", "authored-tag-edit", source).unwrap();
-    let details = || c.command("product_details", json!({"id":"authored-tag-edit"})).unwrap();
+    let details = || {
+        c.command("product_details", json!({"id":"authored-tag-edit"}))
+            .unwrap()
+    };
     assert_eq!(details()["tags"], json!(["Cute", "Mine"]));
-    assert!(details()["ownedAvatarEvidence"].as_array().unwrap().iter().any(|entry| entry["avatarId"] == "booth:5007531"));
-    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine","Fav"]}})).unwrap();
-    assert!(!strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"]).contains(&"Mafuyu".into()));
-    assert_eq!(c.command("query", json!({"avatar":"booth:5007531"})).unwrap()["matchedIds"], json!(["authored-tag-edit"]));
-    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{},"clearFields":["tags"]})).unwrap();
+    assert!(details()["ownedAvatarEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["avatarId"] == "booth:5007531"));
+    c.command(
+        "overlay",
+        json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine","Fav"]}}),
+    )
+    .unwrap();
+    assert!(
+        !strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"])
+            .contains(&"Mafuyu".into())
+    );
+    assert_eq!(
+        c.command("query", json!({"avatar":"booth:5007531"}))
+            .unwrap()["matchedIds"],
+        json!(["authored-tag-edit"])
+    );
+    c.command(
+        "overlay",
+        json!({"ids":["authored-tag-edit"],"patch":{},"clearFields":["tags"]}),
+    )
+    .unwrap();
     assert!(strings(&details()["tags"]).contains(&"Mafuyu".into()));
     // A tag actually removed from the displayed list still remains rejected.
-    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute"]}})).unwrap();
-    assert!(strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"]).contains(&"Mafuyu".into()));
+    c.command(
+        "overlay",
+        json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute"]}}),
+    )
+    .unwrap();
+    assert!(
+        strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"])
+            .contains(&"Mafuyu".into())
+    );
 }
 
 #[test]
@@ -129,17 +240,29 @@ fn job_diagnostics_is_read_only_private_and_does_not_mix_later_account_snapshots
     c.put("source_coverage", "PRIVATE_ACCOUNT:purchase", json!({"id":"PRIVATE_ACCOUNT:purchase","accountId":"PRIVATE_ACCOUNT","source":"purchase","pages":999,"status":"complete"})).unwrap();
     c.put("checkpoint", "PRIVATE_CHECKPOINT", json!({"id":"PRIVATE_CHECKPOINT","accountId":"PRIVATE_ACCOUNT","source":"purchase","pages":998,"routes":["PRIVATE_ROUTE"]})).unwrap();
     let before = c.change_domains().unwrap();
-    let report = c.command("job_diagnostics", json!({"jobId":"PRIVATE_JOB"})).unwrap();
+    let report = c
+        .command("job_diagnostics", json!({"jobId":"PRIVATE_JOB"}))
+        .unwrap();
     let text = report.as_str().unwrap();
-    let value:Value = serde_json::from_str(text).unwrap();
+    let value: Value = serde_json::from_str(text).unwrap();
     assert_eq!(value["captureAvailable"], true);
-    assert_eq!(value["supportDiagnostics"]["http"]["receipt"]["lastStatus"],502);
+    assert_eq!(
+        value["supportDiagnostics"]["http"]["receipt"]["lastStatus"],
+        502
+    );
     assert!(value.get("sourceCoverage").is_none());
     assert!(value.get("checkpoints").is_none());
-    for secret in ["PRIVATE", "999", "998", "https://", "accountId", "cookie"] { assert!(!text.contains(secret), "{secret}"); }
-    assert_eq!(c.change_domains().unwrap(),before);
-    assert_eq!(c.get("job", "PRIVATE_JOB").unwrap(),Some(job));
-    assert_eq!(c.command("job_diagnostics",json!({"jobId":"MISSING_PRIVATE_ID"})).unwrap_err().to_string(),"JOB_UNAVAILABLE");
+    for secret in ["PRIVATE", "999", "998", "https://", "accountId", "cookie"] {
+        assert!(!text.contains(secret), "{secret}");
+    }
+    assert_eq!(c.change_domains().unwrap(), before);
+    assert_eq!(c.get("job", "PRIVATE_JOB").unwrap(), Some(job));
+    assert_eq!(
+        c.command("job_diagnostics", json!({"jobId":"MISSING_PRIVATE_ID"}))
+            .unwrap_err()
+            .to_string(),
+        "JOB_UNAVAILABLE"
+    );
 }
 
 #[test]
@@ -147,22 +270,34 @@ fn restore_waits_for_live_and_queued_catalogue_work() {
     let fixture = Fixture::new();
     let c = fixture.open();
     let live = c.begin_catalogue_work().unwrap();
-    c.put("job", "pending", json!({"id":"pending","type":"download","state":"cancelled"}))
-        .unwrap();
+    c.put(
+        "job",
+        "pending",
+        json!({"id":"pending","type":"download","state":"cancelled"}),
+    )
+    .unwrap();
     assert_eq!(
         c.begin_restore_work().err().unwrap().to_string(),
         "storage_busy"
     );
     drop(live);
 
-    c.put("job", "pending", json!({"id":"pending","type":"download","state":"queued"}))
-        .unwrap();
+    c.put(
+        "job",
+        "pending",
+        json!({"id":"pending","type":"download","state":"queued"}),
+    )
+    .unwrap();
     assert_eq!(
         c.begin_restore_work().err().unwrap().to_string(),
         "storage_busy"
     );
-    c.put("job", "pending", json!({"id":"pending","type":"download","state":"cancelled"}))
-        .unwrap();
+    c.put(
+        "job",
+        "pending",
+        json!({"id":"pending","type":"download","state":"cancelled"}),
+    )
+    .unwrap();
 
     let restore = c.begin_restore_work().unwrap();
     assert_eq!(
@@ -701,18 +836,24 @@ fn long_history_is_compacted_once_without_changing_the_document() {
     let c = f.open();
     product(&c, "1");
     for n in 0..=COMPACT_HISTORY_AFTER {
-        c.command("overlay", json!({"ids":["1"],"patch":{"note":format!("note {n}")}}))
-            .unwrap();
+        c.command(
+            "overlay",
+            json!({"ids":["1"],"patch":{"note":format!("note {n}")}}),
+        )
+        .unwrap();
         c.flush_sync_outbox().unwrap();
     }
     let deltas = |c: &Catalogue| {
         c.inner
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM am_changes", [], |row| row.get::<_, usize>(0))
+            .query_row("SELECT COUNT(*) FROM am_changes", [], |row| {
+                row.get::<_, usize>(0)
+            })
             .unwrap()
     };
-    let document = |c: &Catalogue| sync::entities(c.document_cache.lock().unwrap().as_ref().unwrap()).unwrap();
+    let document =
+        |c: &Catalogue| sync::entities(c.document_cache.lock().unwrap().as_ref().unwrap()).unwrap();
     assert!(deltas(&c) > COMPACT_HISTORY_AFTER);
     let expected = document(&c);
     drop(c);
@@ -720,8 +861,11 @@ fn long_history_is_compacted_once_without_changing_the_document() {
     c.flush_sync_outbox().unwrap();
     assert_eq!(deltas(&c), 0);
     assert_eq!(document(&c), expected);
-    c.command("overlay", json!({"ids":["1"],"patch":{"note":"after compaction"}}))
-        .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["1"],"patch":{"note":"after compaction"}}),
+    )
+    .unwrap();
     c.flush_sync_outbox().unwrap();
     let expected = document(&c);
     drop(c);
@@ -1879,11 +2023,23 @@ fn a_category_rule_reaches_a_stored_product_only_through_its_own_records() {
     let c = f.open();
     let source = |id: &str, tags: Value| json!({"id":id,"sourceTitle":"オリジナル3Dモデル「ソラネコ」","sourceCategory":{"name":"3Dキャラクター"},"sourceTags":tags});
     let category = |c: &Catalogue, id: &str| -> String {
-        c.inner.lock().unwrap().query_row("SELECT category FROM products WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("SELECT category FROM products WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
     };
-    c.put("product", "stored", source("stored", json!(["髪型"]))).unwrap();
-    c.put("product", "manual", source("manual", json!(["髪型"]))).unwrap();
-    c.command("overlay", json!({"ids":["manual"],"patch":{"category":"Tool"}})).unwrap();
+    c.put("product", "stored", source("stored", json!(["髪型"])))
+        .unwrap();
+    c.put("product", "manual", source("manual", json!(["髪型"])))
+        .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual"],"patch":{"category":"Tool"}}),
+    )
+    .unwrap();
     assert_eq!(category(&c, "stored"), "Base");
     assert_eq!(category(&c, "manual"), "Tool");
     // A library written by an older build holds that build's category.
@@ -1893,8 +2049,18 @@ fn a_category_rule_reaches_a_stored_product_only_through_its_own_records() {
     assert_eq!(category(&c, "stored"), "Hair");
     assert_eq!(category(&c, "manual"), "Tool");
     // A new observation applies the current rules, and a manual category stays.
-    c.put("product", "stored", source("stored", json!(["髪型", "VRChat"]))).unwrap();
-    c.put("product", "manual", source("manual", json!(["髪型", "VRChat"]))).unwrap();
+    c.put(
+        "product",
+        "stored",
+        source("stored", json!(["髪型", "VRChat"])),
+    )
+    .unwrap();
+    c.put(
+        "product",
+        "manual",
+        source("manual", json!(["髪型", "VRChat"])),
+    )
+    .unwrap();
     assert_eq!(category(&c, "stored"), "Base");
     assert_eq!(category(&c, "manual"), "Tool");
 }
@@ -1905,20 +2071,40 @@ fn a_manual_category_outlasts_the_store_category_rule() {
     let c = f.open();
     let source = |tags: Value| json!({"id":"room","store":"BOOTH","sourceTitle":"【販売ワールド】Authored Room","sourceCategory":{"name":"3D環境・ワールド","parentName":"3Dモデル"},"sourceTags":tags});
     let category = |c: &Catalogue| -> String {
-        c.inner.lock().unwrap().query_row("SELECT category FROM products WHERE id='room'", [], |r| r.get(0)).unwrap()
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("SELECT category FROM products WHERE id='room'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
     };
-    c.put("product", "room", source(json!(["VRChat", "Udon"]))).unwrap();
+    c.put("product", "room", source(json!(["VRChat", "Udon"])))
+        .unwrap();
     assert_eq!(category(&c), "World");
-    c.command("overlay", json!({"ids":["room"],"patch":{"category":"Udon"}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["room"],"patch":{"category":"Udon"}}),
+    )
+    .unwrap();
     assert_eq!(category(&c), "Udon");
     // A new observation runs the rule again and the user's choice stays.
-    c.put("product", "room", source(json!(["VRChat", "Udon", "UdonSharp"]))).unwrap();
+    c.put(
+        "product",
+        "room",
+        source(json!(["VRChat", "Udon", "UdonSharp"])),
+    )
+    .unwrap();
     assert_eq!(category(&c), "Udon");
     drop(c);
     let c = f.open();
     assert_eq!(category(&c), "Udon");
     // Clearing it hands the product back to the rule.
-    c.command("overlay", json!({"ids":["room"],"patch":{},"clearFields":["category"]})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["room"],"patch":{},"clearFields":["category"]}),
+    )
+    .unwrap();
     assert_eq!(category(&c), "World");
 }
 
@@ -1927,27 +2113,52 @@ fn avatar_snapshot_is_pure_and_manual_base_visibility_does_not_change_defaults()
     let f = Fixture::new();
     let c = f.open();
     c.put("product", "manual-base", json!({"id":"manual-base","sourceTitle":"VRChat / 3D Avatar","sourceCategory":{"name":"Clothes"}})).unwrap();
-    c.put("job", "running-store", json!({"id":"running-store","type":"boothSync","state":"running"})).unwrap();
-    c.command("overlay", json!({"ids":["manual-base"],"patch":{"category":"Base"}})).unwrap();
+    c.put(
+        "job",
+        "running-store",
+        json!({"id":"running-store","type":"boothSync","state":"running"}),
+    )
+    .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual-base"],"patch":{"category":"Base"}}),
+    )
+    .unwrap();
     let preferences = c.get("preferences", "app").unwrap();
     let revision = c.revision().unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|option| option["id"] == "product:manual-base").unwrap();
+    let option = snapshot["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "product:manual-base")
+        .unwrap();
     assert_eq!(option["nameKind"], "fallback");
     assert_eq!(option["enabled"], false);
     assert_eq!(option["baseProductIds"], json!(["manual-base"]));
     assert_eq!(c.get("preferences", "app").unwrap(), preferences);
     assert_eq!(c.revision().unwrap(), revision);
-    let bootstrap = c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    let bootstrap = c
+        .command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert_eq!(snapshot["avatarOptions"], bootstrap["avatarOptions"]);
     product(&c, "selected-fallback");
-    c.command("overlay", json!({"ids":["selected-fallback"],"patch":{"ownedAvatars":["product:manual-base"]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["selected-fallback"],"patch":{"ownedAvatars":["product:manual-base"]}}),
+    )
+    .unwrap();
     let selected = dynamic_details(&c, "selected-fallback");
-    assert_eq!(selected["ownedAvatarEvidence"], json!([{"avatarId":"product:manual-base","avatar":option["displayName"],"source":"user"}]));
+    assert_eq!(
+        selected["ownedAvatarEvidence"],
+        json!([{"avatarId":"product:manual-base","avatar":option["displayName"],"source":"user"}])
+    );
     c.put("product", "generic-tag", json!({"id":"generic-tag","sourceTitle":"Authored clothing","sourceCategory":{"name":"Clothes"},"sourceTags":["VRChat / 3D Avatar"]})).unwrap();
     assert!(dynamic_tag_ids(&c, "generic-tag").is_empty());
-    assert_eq!(c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"], preferences.unwrap()["avatarAutomaticEnabled"]);
+    assert_eq!(
+        c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"],
+        preferences.unwrap()["avatarAutomaticEnabled"]
+    );
 }
 
 #[test]
@@ -1955,14 +2166,28 @@ fn avatar_presentation_overrides_survive_source_refresh_without_becoming_tag_evi
     let f = Fixture::new();
     let c = f.open();
     c.put("product", "named-base", json!({"id":"named-base","sourceTitle":"シロネコ","shop":"Authored source shop","sourceCategory":{"name":"3Dアバター"}})).unwrap();
-    for (id, tag) in [("source-tag", "Shironeko"), ("presentation-tag", "Custom display")] {
+    for (id, tag) in [
+        ("source-tag", "Shironeko"),
+        ("presentation-tag", "Custom display"),
+    ] {
         c.put("product", id, json!({"id":id,"sourceTitle":"Authored clothing","sourceCategory":{"name":"Clothes"},"sourceTags":[tag]})).unwrap();
     }
     c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":{"displayName":"Custom display","shopName":"Custom group","enabled":false}},"avatarAliases":{"custom display":"product:named-base"}}})).unwrap();
     product(&c, "legacy-display");
-    c.command("overlay", json!({"ids":["legacy-display"],"patch":{"ownedAvatars":["Custom display"]}})).unwrap();
-    let option = |catalogue: &Catalogue| catalogue.command("avatar_options", json!({})).unwrap()["avatarOptions"]
-        .as_array().unwrap().iter().find(|entry| entry["id"] == "product:named-base").unwrap().clone();
+    c.command(
+        "overlay",
+        json!({"ids":["legacy-display"],"patch":{"ownedAvatars":["Custom display"]}}),
+    )
+    .unwrap();
+    let option = |catalogue: &Catalogue| {
+        catalogue.command("avatar_options", json!({})).unwrap()["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "product:named-base")
+            .unwrap()
+            .clone()
+    };
     let first = option(&c);
     assert_eq!(first["displayName"], "Custom display");
     assert_eq!(first["shopName"], "Custom group");
@@ -1970,7 +2195,10 @@ fn avatar_presentation_overrides_survive_source_refresh_without_becoming_tag_evi
     assert_eq!(first["sourceShopName"], "Authored source shop");
     assert_eq!(first["matchingProductCount"], 2);
     assert!(!strings(&first["aliases"]).contains(&"Custom display".into()));
-    assert_eq!(dynamic_tag_ids(&c, "source-tag"), BTreeSet::from(["product:named-base".into()]));
+    assert_eq!(
+        dynamic_tag_ids(&c, "source-tag"),
+        BTreeSet::from(["product:named-base".into()])
+    );
     assert!(dynamic_tag_ids(&c, "presentation-tag").is_empty());
     c.put("product", "named-base", json!({"id":"named-base","sourceTitle":"クロネコ","shop":"Refreshed source shop","sourceCategory":{"name":"3Dアバター"}})).unwrap();
     assert_eq!(option(&c)["displayName"], "Custom display");
@@ -1983,9 +2211,18 @@ fn avatar_presentation_overrides_survive_source_refresh_without_becoming_tag_evi
     c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":{"displayName":"  ","shopName":"","enabled":false}}}})).unwrap();
     assert_eq!(option(&c)["displayName"], "クロネコ / Kuroneko");
     assert_eq!(option(&c)["shopName"], "Refreshed source shop");
-    for invalid in [json!({"displayName":true}), json!({"shopName":[]}), json!({"enabled":"false"})] {
+    for invalid in [
+        json!({"displayName":true}),
+        json!({"shopName":[]}),
+        json!({"enabled":"false"}),
+    ] {
         let before = c.get("preferences", "app").unwrap();
-        assert!(c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":invalid}}})).is_err());
+        assert!(c
+            .command(
+                "preferences",
+                json!({"patch":{"avatarSettings":{"product:named-base":invalid}}})
+            )
+            .is_err());
         assert_eq!(c.get("preferences", "app").unwrap(), before);
     }
 }
@@ -1994,26 +2231,47 @@ fn avatar_presentation_overrides_survive_source_refresh_without_becoming_tag_evi
 fn avatar_delta_uses_current_exact_evidence_preserves_legacy_and_undoes_atomically() {
     let f = Fixture::new();
     let c = f.open();
-    for id in ["base-a", "base-b"] { synthetic_named_base(&c, id, "Sharedcat"); }
+    for id in ["base-a", "base-b"] {
+        synthetic_named_base(&c, id, "Sharedcat");
+    }
     product(&c, "edited");
     // Represents a newer edit committed after the popup captured its draft.
     c.command("overlay", json!({"ids":["edited"],"patch":{"ownedAvatars":["product:base-a","product:base-b","  Legacy label  "]}})).unwrap();
     let before = c.get("overlay", "edited").unwrap();
     let result = c.command("overlay", json!({"changes":[{"id":"edited","patch":{"note":"Changed together"},"ownedAvatarsDelta":{"add":["Mafuyu","booth:5007531"],"remove":["product:base-a"]}}]})).unwrap();
     let overlay = c.get("overlay", "edited").unwrap().unwrap();
-    assert_eq!(strings(&overlay["ownedAvatars"]).into_iter().collect::<BTreeSet<_>>(),
-        BTreeSet::from(["product:base-b".into(), "  Legacy label  ".into(), "Mafuyu".into()]));
-    let evidence: BTreeSet<_> = dynamic_details(&c, "edited")["ownedAvatarEvidence"].as_array().unwrap().iter()
-        .map(|entry| text(entry, "avatarId").to_owned()).collect();
+    assert_eq!(
+        strings(&overlay["ownedAvatars"])
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "product:base-b".into(),
+            "  Legacy label  ".into(),
+            "Mafuyu".into()
+        ])
+    );
+    let evidence: BTreeSet<_> = dynamic_details(&c, "edited")["ownedAvatarEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| text(entry, "avatarId").to_owned())
+        .collect();
     assert!(evidence.contains("product:base-b"));
     assert!(!evidence.contains("product:base-a"));
     assert_eq!(overlay["note"], "Changed together");
-    c.command("undo", json!({"token":result["undoToken"]})).unwrap();
+    c.command("undo", json!({"token":result["undoToken"]}))
+        .unwrap();
     assert_eq!(c.get("overlay", "edited").unwrap(), before);
     c.command("overlay", json!({"ids":["edited"],"patch":{},"ownedAvatarsDelta":{"add":[],"remove":["product:base-a","product:base-b","  Legacy label  "]}})).unwrap();
-    assert_eq!(c.get("overlay", "edited").unwrap().unwrap()["ownedAvatars"], json!([]));
+    assert_eq!(
+        c.get("overlay", "edited").unwrap().unwrap()["ownedAvatars"],
+        json!([])
+    );
     c.put("product", "edited", json!({"id":"edited","sourceTitle":"Refreshed clothing","sourceCategory":{"name":"Clothes"},"sourceTags":["Mafuyu"]})).unwrap();
-    assert_eq!(dynamic_details(&c, "edited")["ownedAvatarEvidence"], json!([]));
+    assert_eq!(
+        dynamic_details(&c, "edited")["ownedAvatarEvidence"],
+        json!([])
+    );
 }
 
 #[test]
@@ -2042,16 +2300,40 @@ fn avatar_delta_rejects_conflicts_and_rolls_back_all_changes_for_missing_identit
 fn avatar_delta_can_add_existing_evidence_only_choice_without_storing_its_derived_id() {
     let f = Fixture::new();
     let c = f.open();
-    for id in ["origin", "target"] { product(&c, id); }
-    c.command("overlay", json!({"ids":["origin"],"patch":{"ownedAvatars":["ソラネコ / Skycat"]}})).unwrap();
+    for id in ["origin", "target"] {
+        product(&c, id);
+    }
+    c.command(
+        "overlay",
+        json!({"ids":["origin"],"patch":{"ownedAvatars":["ソラネコ / Skycat"]}}),
+    )
+    .unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|option| text(option, "id").starts_with("avatar:")).unwrap();
-    c.command("overlay", json!({"ids":["target"],"ownedAvatarsDelta":{"add":[option["id"]],"remove":[]}})).unwrap();
-    assert_eq!(c.get("overlay", "target").unwrap().unwrap()["ownedAvatars"], json!(["ソラネコ / Skycat"]));
+    let option = snapshot["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| text(option, "id").starts_with("avatar:"))
+        .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["target"],"ownedAvatarsDelta":{"add":[option["id"]],"remove":[]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "target").unwrap().unwrap()["ownedAvatars"],
+        json!(["ソラネコ / Skycat"])
+    );
     let after = c.command("avatar_options", json!({})).unwrap();
-    assert_eq!(after["avatarOptions"].as_array().unwrap().iter()
-        .find(|entry| entry["id"] == option["id"]).unwrap()["matchingProductCount"], 2);
+    assert_eq!(
+        after["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == option["id"])
+            .unwrap()["matchingProductCount"],
+        2
+    );
 }
 
 #[test]
@@ -2059,11 +2341,20 @@ fn avatar_delta_preserves_wrapped_derived_identity_before_origin_and_after_origi
     use sha2::{Digest, Sha256};
     let f = Fixture::new();
     let c = f.open();
-    for id in ["a-target", "z-origin"] { product(&c, id); }
+    for id in ["a-target", "z-origin"] {
+        product(&c, id);
+    }
     let label = "【無料】Ren♡Ai";
     let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
-    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
-    c.command("overlay", json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    let id = format!(
+        "avatar:{:x}",
+        Sha256::digest(normalized(&identity_name).as_bytes())
+    );
+    c.command(
+        "overlay",
+        json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}}),
+    )
+    .unwrap();
     c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{"displayName":"Saved Ren name","shopName":"Saved Ren group","enabled":true}}}})).unwrap();
     let read_snapshot = |catalogue: &Catalogue| {
         let preferences = catalogue.get("preferences", "app").unwrap();
@@ -2071,8 +2362,13 @@ fn avatar_delta_preserves_wrapped_derived_identity_before_origin_and_after_origi
         let snapshot = catalogue.command("avatar_options", json!({})).unwrap();
         assert_eq!(catalogue.get("preferences", "app").unwrap(), preferences);
         assert_eq!(catalogue.revision().unwrap(), revision);
-        let derived: Vec<_> = snapshot["avatarOptions"].as_array().unwrap().iter()
-            .filter(|entry| text(entry, "id").starts_with("avatar:")).cloned().collect();
+        let derived: Vec<_> = snapshot["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| text(entry, "id").starts_with("avatar:"))
+            .cloned()
+            .collect();
         assert_eq!(derived.len(), 1);
         assert_eq!(derived[0]["id"], id);
         assert_eq!(derived[0]["officialName"], "Ren♡Ai");
@@ -2083,12 +2379,23 @@ fn avatar_delta_preserves_wrapped_derived_identity_before_origin_and_after_origi
         derived[0].clone()
     };
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
-    c.command("overlay", json!({"ids":["a-target"],"ownedAvatarsDelta":{"add":[id.clone()],"remove":[]}})).unwrap();
-    assert_eq!(c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"], json!([label]));
+    c.command(
+        "overlay",
+        json!({"ids":["a-target"],"ownedAvatarsDelta":{"add":[id.clone()],"remove":[]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"],
+        json!([label])
+    );
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 2);
     c.delete("product", "z-origin").unwrap();
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
-    assert!(c.get("preferences", "app").unwrap().unwrap()["avatarSettings"].get(&id).is_some());
+    assert!(
+        c.get("preferences", "app").unwrap().unwrap()["avatarSettings"]
+            .get(&id)
+            .is_some()
+    );
     drop(c);
     let c = f.open();
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
@@ -2099,22 +2406,40 @@ fn avatar_single_overlay_keeps_raw_derived_identity_after_origin_deletion_and_re
     use sha2::{Digest, Sha256};
     let f = Fixture::new();
     let c = f.open();
-    for id in ["a-target", "z-origin"] { product(&c, id); }
+    for id in ["a-target", "z-origin"] {
+        product(&c, id);
+    }
     let label = "【無料】Ren♡Ai";
     let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
-    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
-    c.command("overlay", json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}})).unwrap();
-    c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{
-        "displayName":"Saved single Ren name","shopName":"Saved single Ren group","enabled":true
-    }}}})).unwrap();
+    let id = format!(
+        "avatar:{:x}",
+        Sha256::digest(normalized(&identity_name).as_bytes())
+    );
+    c.command(
+        "overlay",
+        json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}}),
+    )
+    .unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{(id.clone()):{
+            "displayName":"Saved single Ren name","shopName":"Saved single Ren group","enabled":true
+        }}}}),
+    )
+    .unwrap();
     let read_snapshot = |catalogue: &Catalogue| {
         let preferences = catalogue.get("preferences", "app").unwrap();
         let revision = catalogue.revision().unwrap();
         let snapshot = catalogue.command("avatar_options", json!({})).unwrap();
         assert_eq!(catalogue.get("preferences", "app").unwrap(), preferences);
         assert_eq!(catalogue.revision().unwrap(), revision);
-        let derived: Vec<_> = snapshot["avatarOptions"].as_array().unwrap().iter()
-            .filter(|entry| text(entry, "id").starts_with("avatar:")).cloned().collect();
+        let derived: Vec<_> = snapshot["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| text(entry, "id").starts_with("avatar:"))
+            .cloned()
+            .collect();
         assert_eq!(derived.len(), 1);
         assert_eq!(derived[0]["id"], id);
         assert_eq!(derived[0]["officialName"], "Ren♡Ai");
@@ -2129,14 +2454,25 @@ fn avatar_single_overlay_keeps_raw_derived_identity_after_origin_deletion_and_re
     assert_eq!(origin["matchingProductCount"], 1);
     // Single Edit sends the raw representative from the selected option through
     // the existing exact overlay patch, rather than the runtime hash ID.
-    c.command("overlay", json!({"ids":["a-target"],"patch":{
-        "ownedAvatars":[origin["sourceIdentityValue"]]
-    }})).unwrap();
-    assert_eq!(c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"], json!([label]));
+    c.command(
+        "overlay",
+        json!({"ids":["a-target"],"patch":{
+            "ownedAvatars":[origin["sourceIdentityValue"]]
+        }}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"],
+        json!([label])
+    );
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 2);
     c.delete("product", "z-origin").unwrap();
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
-    assert!(c.get("preferences", "app").unwrap().unwrap()["avatarSettings"].get(&id).is_some());
+    assert!(
+        c.get("preferences", "app").unwrap().unwrap()["avatarSettings"]
+            .get(&id)
+            .is_some()
+    );
     drop(c);
     let c = f.open();
     assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
@@ -2150,12 +2486,23 @@ fn avatar_label_cleanup_keeps_existing_derived_identity_settings() {
     product(&c, "label-owner");
     let label = "【無料】Syntheticcat";
     let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
-    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
-    c.command("overlay", json!({"ids":["label-owner"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    let id = format!(
+        "avatar:{:x}",
+        Sha256::digest(normalized(&identity_name).as_bytes())
+    );
+    c.command(
+        "overlay",
+        json!({"ids":["label-owner"],"patch":{"ownedAvatars":[label]}}),
+    )
+    .unwrap();
     c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{"displayName":"Saved presentation","enabled":false}}}})).unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|option| option["id"] == id).unwrap();
+    let option = snapshot["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == id)
+        .unwrap();
     assert_eq!(option["officialName"], "Syntheticcat");
     assert_eq!(option["sourceDisplayName"], "Syntheticcat");
     assert_eq!(option["displayName"], "Saved presentation");
@@ -2172,24 +2519,51 @@ fn avatar_uncertain_base_ignores_historical_text_aliases_without_erasing_them() 
     for n in 0..6 {
         let id = format!("legacy-member-{n}");
         product(&c, &id);
-        c.command("overlay", json!({"ids":[id],"patch":{"ownedAvatars":["Legacy guessed"]}})).unwrap();
+        c.command(
+            "overlay",
+            json!({"ids":[id],"patch":{"ownedAvatars":["Legacy guessed"]}}),
+        )
+        .unwrap();
     }
     let before = c.get("preferences", "app").unwrap().unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    let uncertain = snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|entry| entry["id"] == "product:uncertain-base").unwrap();
+    let uncertain = snapshot["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "product:uncertain-base")
+        .unwrap();
     assert_eq!(uncertain["matchingProductCount"], 1);
     assert_eq!(uncertain["enabled"], false);
     assert_eq!(c.get("preferences", "app").unwrap().unwrap(), before);
     c.refresh_avatar_defaults().unwrap();
     let preferences = c.get("preferences", "app").unwrap().unwrap();
-    assert_eq!(preferences["avatarAliases"]["legacy guessed"], "product:uncertain-base");
-    assert_eq!(preferences["avatarAliases"]["product:uncertain-base"], "product:uncertain-base");
-    assert!(preferences["avatarAutomaticEnabled"].get("product:uncertain-base").is_none());
-    c.command("overlay", json!({"ids":["legacy-member-0"],"patch":{"ownedAvatars":["product:uncertain-base"]}})).unwrap();
+    assert_eq!(
+        preferences["avatarAliases"]["legacy guessed"],
+        "product:uncertain-base"
+    );
+    assert_eq!(
+        preferences["avatarAliases"]["product:uncertain-base"],
+        "product:uncertain-base"
+    );
+    assert!(preferences["avatarAutomaticEnabled"]
+        .get("product:uncertain-base")
+        .is_none());
+    c.command(
+        "overlay",
+        json!({"ids":["legacy-member-0"],"patch":{"ownedAvatars":["product:uncertain-base"]}}),
+    )
+    .unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    assert_eq!(snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|entry| entry["id"] == "product:uncertain-base").unwrap()["matchingProductCount"], 2);
+    assert_eq!(
+        snapshot["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "product:uncertain-base")
+            .unwrap()["matchingProductCount"],
+        2
+    );
 }
 
 #[test]
@@ -2200,20 +2574,38 @@ fn avatar_legacy_human_name_romanizes_corrected_stem_instead_of_uncertain_source
     product(&c, "legacy-owner");
     let source_label = "【 R18 Edition】苺佳(ichica) and GLC and 蒼葉(aoba)";
     let (identity_name, _) = crate::taxonomy::avatar_label_parts(source_label);
-    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
+    let id = format!(
+        "avatar:{:x}",
+        Sha256::digest(normalized(&identity_name).as_bytes())
+    );
     let source_key = crate::taxonomy::canonical_tag(source_label);
-    c.command("overlay", json!({"ids":["legacy-owner"],"patch":{"ownedAvatars":[source_label]}})).unwrap();
-    c.command("preferences", json!({"patch":{
-        "avatarAliases":{(source_key):id.clone()},
-        "avatarSettings":{(id.clone()):{"originalName":"シロネコ","enabled":false}}
-    }})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["legacy-owner"],"patch":{"ownedAvatars":[source_label]}}),
+    )
+    .unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{
+            "avatarAliases":{(source_key):id.clone()},
+            "avatarSettings":{(id.clone()):{"originalName":"シロネコ","enabled":false}}
+        }}),
+    )
+    .unwrap();
     let snapshot = c.command("avatar_options", json!({})).unwrap();
-    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
-        .find(|option| option["id"] == id).unwrap();
+    let option = snapshot["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == id)
+        .unwrap();
     assert_eq!(option["officialName"], "シロネコ");
     assert_eq!(option["englishName"], "Shironeko");
     assert_eq!(option["nameKind"], "single");
-    assert_eq!(c.get("overlay", "legacy-owner").unwrap().unwrap()["ownedAvatars"], json!([source_label]));
+    assert_eq!(
+        c.get("overlay", "legacy-owner").unwrap().unwrap()["ownedAvatars"],
+        json!([source_label])
+    );
 }
 
 #[test]
@@ -2275,7 +2667,8 @@ fn derived_avatar_options_filter_the_products_they_count() {
     let f = Fixture::new();
     let c = f.open();
     let clothing = |id: &str| json!({"id":id,"store":"BOOTH","sourceTitle":"Authored VRChat clothing","sourceCategory":{"name":"3D衣装"},"sourceTags":["VRChat"]});
-    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"}))
+        .unwrap();
     c.put("product", "early", clothing("early")).unwrap();
     // Unlisted Base names arrive raw from bound variants and manual choices.
     for (id, variant) in [
@@ -2285,7 +2678,8 @@ fn derived_avatar_options_filter_the_products_they_count() {
         ("900104", "シロネコ専用"),
     ] {
         let mut source = clothing(id);
-        source["publicVariants"] = json!([{"id":format!("{id}-v"),"type":"digital","name":variant}]);
+        source["publicVariants"] =
+            json!([{"id":format!("{id}-v"),"type":"digital","name":variant}]);
         c.put_many(vec![
             ("product".into(), id.into(), source),
             ("remote_file".into(), format!("{id}-f"), json!({"id":format!("{id}-f"),"productId":id,"accountId":"a","variantId":format!("{id}-v"),"name":"opaque.zip","revision":"r1"})),
@@ -2293,41 +2687,87 @@ fn derived_avatar_options_filter_the_products_they_count() {
         ]).unwrap();
     }
     c.put("product", "manual", clothing("manual")).unwrap();
-    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO"]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO"]}}),
+    )
+    .unwrap();
     let check = |c: &Catalogue, ren: u64| {
-        let options = c.command("avatar_options", json!({})).unwrap()["avatarOptions"].as_array().unwrap().clone();
-        let mut derived: Vec<_> = options.iter().filter(|o| text(o, "id").starts_with("avatar:")).map(|option| {
-            let matched = c.command("query", json!({"avatar":option["id"]})).unwrap()["matched"].clone();
-            (text(option, "officialName").to_owned(), option["matchingProductCount"].clone(), matched)
-        }).collect();
+        let options = c.command("avatar_options", json!({})).unwrap()["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let mut derived: Vec<_> = options
+            .iter()
+            .filter(|o| text(o, "id").starts_with("avatar:"))
+            .map(|option| {
+                let matched =
+                    c.command("query", json!({"avatar":option["id"]})).unwrap()["matched"].clone();
+                (
+                    text(option, "officialName").to_owned(),
+                    option["matchingProductCount"].clone(),
+                    matched,
+                )
+            })
+            .collect();
         derived.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(derived, [
-            ("Ren♡Ai".to_owned(), json!(ren), json!(ren)),
-            ("SyntheticNeko".to_owned(), json!(3), json!(3)),
-            ("シロネコ".to_owned(), json!(1), json!(1)),
-        ]);
-        let synthetic = options.iter().find(|o| o["officialName"] == "SyntheticNeko").unwrap();
-        let mut scoped = strings(&c.command("query", json!({"avatar":synthetic["id"],"accountIds":["a"],"includeOffline":false})).unwrap()["matchedIds"]);
+        assert_eq!(
+            derived,
+            [
+                ("Ren♡Ai".to_owned(), json!(ren), json!(ren)),
+                ("SyntheticNeko".to_owned(), json!(3), json!(3)),
+                ("シロネコ".to_owned(), json!(1), json!(1)),
+            ]
+        );
+        let synthetic = options
+            .iter()
+            .find(|o| o["officialName"] == "SyntheticNeko")
+            .unwrap();
+        let mut scoped = strings(
+            &c.command(
+                "query",
+                json!({"avatar":synthetic["id"],"accountIds":["a"],"includeOffline":false}),
+            )
+            .unwrap()["matchedIds"],
+        );
         scoped.sort();
         assert_eq!(scoped, ["900101", "900102"]);
     };
     // New names match before bootstrap persists their aliases.
     check(&c, 1);
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     // A later cleaned spelling joins the existing derived identity.
-    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO", "Ren♡Ai"]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO", "Ren♡Ai"]}}),
+    )
+    .unwrap();
     check(&c, 2);
     // A saved alias links an ambiguous label on an earlier product; it counts
     // regardless of whether that product precedes the identity's first name.
     let label = "Ren♡Ai and SyntheticNeko and シロネコ";
-    assert!(!crate::taxonomy::avatar_label_is_unambiguous(label)
-        || crate::taxonomy::parsed_avatar_label(label).name_kind != "single");
+    assert!(
+        !crate::taxonomy::avatar_label_is_unambiguous(label)
+            || crate::taxonomy::parsed_avatar_label(label).name_kind != "single"
+    );
     let options = c.command("avatar_options", json!({})).unwrap()["avatarOptions"].clone();
-    let ren = options.as_array().unwrap().iter().find(|o| o["officialName"] == "Ren♡Ai").unwrap()["id"].clone();
+    let ren = options
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["officialName"] == "Ren♡Ai")
+        .unwrap()["id"]
+        .clone();
     let mut aliases = c.get("preferences", "app").unwrap().unwrap()["avatarAliases"].clone();
     aliases[crate::taxonomy::canonical_tag(label)] = ren;
-    c.command("preferences", json!({"patch":{"avatarAliases":aliases}})).unwrap();
-    c.command("overlay", json!({"ids":["early"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    c.command("preferences", json!({"patch":{"avatarAliases":aliases}}))
+        .unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["early"],"patch":{"ownedAvatars":[label]}}),
+    )
+    .unwrap();
     check(&c, 3);
     drop(c);
     check(&f.open(), 3);
@@ -2344,11 +2784,21 @@ fn owned_variant_product(c: &Catalogue, id: &str, variant: &str, support: Value)
 }
 /// Clothing whose support section links `item`, on an owned full pack.
 fn citing_product(c: &Catalogue, id: &str, item: &str, label: &str) {
-    owned_variant_product(c, id, "全部入りフルパック", json!([{"id":format!("booth:{item}"),"productId":item,"officialName":label,"displayName":label}]));
+    owned_variant_product(
+        c,
+        id,
+        "全部入りフルパック",
+        json!([{"id":format!("booth:{item}"),"productId":item,"officialName":label,"displayName":label}]),
+    );
 }
 fn avatar_rows(c: &Catalogue, kind: &str) -> Vec<Value> {
-    c.command("avatar_options", json!({})).unwrap()["avatarOptions"].as_array().unwrap().iter()
-        .filter(|option| text(option, "id").starts_with(kind)).cloned().collect()
+    c.command("avatar_options", json!({})).unwrap()["avatarOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|option| text(option, "id").starts_with(kind))
+        .cloned()
+        .collect()
 }
 fn avatar_filter(c: &Catalogue, avatar: &Value) -> Vec<String> {
     let mut ids = strings(&c.command("query", json!({"avatar":avatar})).unwrap()["matchedIds"]);
@@ -2360,20 +2810,27 @@ fn avatar_filter(c: &Catalogue, avatar: &Value) -> Vec<String> {
 fn item_links_credit_an_owned_base_without_their_labels_becoming_names() {
     let f = Fixture::new();
     let c = f.open();
-    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"}))
+        .unwrap();
     synthetic_named_base(&c, "900201", "ソラネコ");
     // Sellers label links with a shop or several avatars as well as a name.
     let list = "ソラネコ and ウミネコ and ホシネコ";
-    assert!(!crate::taxonomy::avatar_label_is_unambiguous(list)
-        || crate::taxonomy::parsed_avatar_label(list).name_kind != "single");
+    assert!(
+        !crate::taxonomy::avatar_label_is_unambiguous(list)
+            || crate::taxonomy::parsed_avatar_label(list).name_kind != "single"
+    );
     citing_product(&c, "cites-shop", "900201", "Authored Shop");
     citing_product(&c, "cites-list", "900201", list);
     citing_product(&c, "cites-other", "900202", "ウミネコ");
     // A variant's bare name has no ID either; its raw spelling reaches the filter too.
     owned_variant_product(&c, "names-base", "Soraneko専用", json!([]));
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert_eq!(avatar_rows(&c, "product:")[0]["matchingProductCount"], 4);
-    assert_eq!(avatar_filter(&c, &json!("product:900201")), ["900201", "cites-list", "cites-shop", "names-base"]);
+    assert_eq!(
+        avatar_filter(&c, &json!("product:900201")),
+        ["900201", "cites-list", "cites-shop", "names-base"]
+    );
     // A link to a Base outside this library keeps its derived row.
     let derived = avatar_rows(&c, "avatar:");
     assert_eq!(derived.len(), 1);
@@ -2383,34 +2840,66 @@ fn item_links_credit_an_owned_base_without_their_labels_becoming_names() {
     let aliases = c.get("preferences", "app").unwrap().unwrap()["avatarAliases"].clone();
     assert_eq!(aliases["booth:900202"], derived[0]["id"]);
     assert!(aliases.get("booth:900201").is_none());
-    assert!(aliases.as_object().unwrap().keys().all(|alias| !alias.contains("authored shop") && !alias.contains(" and ")));
+    assert!(aliases
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|alias| !alias.contains("authored shop") && !alias.contains(" and ")));
     // Batch Edit acts on the Base these products count toward.
-    c.command("overlay", json!({"ids":["cites-shop"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}})).unwrap();
-    assert_eq!(c.get("overlay", "cites-shop").unwrap().unwrap()["ownedAvatars"], json!([]));
-    c.command("overlay", json!({"ids":["cites-list"],"ownedAvatarsDelta":{"add":[derived[0]["id"]],"remove":[]}})).unwrap();
-    assert_eq!(c.get("overlay", "cites-list").unwrap().unwrap()["ownedAvatars"], json!(["product:900201", "ウミネコ"]));
-    assert_eq!(avatar_filter(&c, &json!("product:900201")), ["900201", "cites-list", "names-base"]);
+    c.command(
+        "overlay",
+        json!({"ids":["cites-shop"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "cites-shop").unwrap().unwrap()["ownedAvatars"],
+        json!([])
+    );
+    c.command(
+        "overlay",
+        json!({"ids":["cites-list"],"ownedAvatarsDelta":{"add":[derived[0]["id"]],"remove":[]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "cites-list").unwrap().unwrap()["ownedAvatars"],
+        json!(["product:900201", "ウミネコ"])
+    );
+    assert_eq!(
+        avatar_filter(&c, &json!("product:900201")),
+        ["900201", "cites-list", "names-base"]
+    );
 }
 
 #[test]
 fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
     let f = Fixture::new();
     let c = f.open();
-    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"}))
+        .unwrap();
     citing_product(&c, "cites-label", "900201", "✦ソラネコ様");
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     let row = avatar_rows(&c, "avatar:")[0].clone();
     let id = row["id"].clone();
     let key = text(&row, "id").to_owned();
     // Everything a human can have saved against that row.
     product(&c, "manual");
-    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}}),
+    )
+    .unwrap();
     let saved = json!({"enabled":true,"displayName":"Saved name","shopName":"Saved shop"});
-    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{(key.clone()):saved}}}),
+    )
+    .unwrap();
     assert_eq!(avatar_rows(&c, "avatar:")[0]["matchingProductCount"], 2);
 
     synthetic_named_base(&c, "900201", "ソラネコ");
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert!(avatar_rows(&c, "avatar:").is_empty());
     let base = avatar_rows(&c, "product:")[0].clone();
     assert_eq!(base["matchingProductCount"], 3);
@@ -2420,7 +2909,9 @@ fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
     assert_eq!(base["explicitEnabled"], true);
     assert!(strings(&base["aliases"]).contains(&key));
     // Edit and Batch Edit find the manual choice's text through the Base.
-    assert!(strings(&base["aliases"]).iter().any(|alias| alias == text(&row, "sourceIdentityValue")));
+    assert!(strings(&base["aliases"])
+        .iter()
+        .any(|alias| alias == text(&row, "sourceIdentityValue")));
     let members = ["900201", "cites-label", "manual"];
     assert_eq!(avatar_filter(&c, &base["id"]), members);
     // A saved search still holds the row's ID.
@@ -2428,9 +2919,13 @@ fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
     let preferences = c.get("preferences", "app").unwrap().unwrap();
     assert_eq!(preferences["avatarSettings"], json!({(key.clone()):saved}));
     assert_eq!(preferences["avatarAliases"]["booth:900201"], id);
-    assert_eq!(c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"], json!([row["sourceIdentityValue"]]));
+    assert_eq!(
+        c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"],
+        json!([row["sourceIdentityValue"]])
+    );
     let revision = c.revision().unwrap();
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert_eq!(c.revision().unwrap(), revision);
 
     // The Base's own choices win, including a cleared name.
@@ -2443,7 +2938,11 @@ fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
     c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):{"enabled":false}},"avatarAutomaticEnabled":{"product:900201":true}}})).unwrap();
     assert_eq!(avatar_rows(&c, "product:")[0]["enabled"], true);
 
-    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved},"avatarAutomaticEnabled":{}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{(key.clone()):saved},"avatarAutomaticEnabled":{}}}),
+    )
+    .unwrap();
     c.delete("product", "900201").unwrap();
     let row = avatar_rows(&c, "avatar:")[0].clone();
     assert_eq!(row["id"], id);
@@ -2457,12 +2956,18 @@ fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
 fn a_label_shared_with_another_link_keeps_its_derived_row_apart_from_the_base() {
     let f = Fixture::new();
     let c = f.open();
-    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"}))
+        .unwrap();
     citing_product(&c, "cites-owned", "900201", "✦ソラネコ様");
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     let id = avatar_rows(&c, "avatar:")[0]["id"].clone();
     let key = text(&avatar_rows(&c, "avatar:")[0], "id").to_owned();
-    c.command("preferences", json!({"patch":{"avatarSettings":{(key):{"displayName":"Saved name"}}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{(key):{"displayName":"Saved name"}}}}),
+    )
+    .unwrap();
     synthetic_named_base(&c, "900201", "ソラネコ");
     citing_product(&c, "cites-other", "900203", "✦ソラネコ様");
     let check = |c: &Catalogue| {
@@ -2471,11 +2976,15 @@ fn a_label_shared_with_another_link_keeps_its_derived_row_apart_from_the_base() 
         assert_eq!(derived[0]["id"], id);
         assert_eq!(derived[0]["matchingProductCount"], 1);
         assert_eq!(derived[0]["displayName"], "Saved name");
-        assert_eq!(avatar_filter(c, &json!("product:900201")), ["900201", "cites-owned"]);
+        assert_eq!(
+            avatar_filter(c, &json!("product:900201")),
+            ["900201", "cites-owned"]
+        );
     };
     check(&c);
     // Its filter joins the row once bootstrap has recorded the second link.
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     check(&c);
     assert_eq!(avatar_filter(&c, &id), ["cites-other"]);
 }
@@ -2484,24 +2993,35 @@ fn a_label_shared_with_another_link_keeps_its_derived_row_apart_from_the_base() 
 fn a_bare_variant_name_counts_toward_the_one_identity_with_that_name() {
     let f = Fixture::new();
     let c = f.open();
-    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"}))
+        .unwrap();
     owned_variant_product(&c, "names-base", "ソラネコ専用", json!([]));
     owned_variant_product(&c, "untick", "ソラネコ専用", json!([]));
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     let row = avatar_rows(&c, "avatar:")[0].clone();
     let id = row["id"].clone();
     let key = text(&row, "id").to_owned();
     // The label's spelling is our romanization, not one the Base's source uses.
     assert_eq!(row["displayName"], "ソラネコ / Soraneko");
     let saved = json!({"enabled":true,"displayName":"Saved name"});
-    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{(key.clone()):saved}}}),
+    )
+    .unwrap();
     product(&c, "manual");
-    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}}),
+    )
+    .unwrap();
     assert_eq!(avatar_rows(&c, "avatar:")[0]["matchingProductCount"], 3);
 
     synthetic_named_base(&c, "900201", "オリジナル3Dモデル「ソラネコ -Starcat-」");
     let before = c.get("preferences", "app").unwrap().unwrap();
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert!(avatar_rows(&c, "avatar:").is_empty());
     let base = avatar_rows(&c, "product:")[0].clone();
     assert_eq!(base["sourceDisplayName"], "ソラネコ / Starcat");
@@ -2509,7 +3029,9 @@ fn a_bare_variant_name_counts_toward_the_one_identity_with_that_name() {
     assert_eq!(base["enabled"], true);
     assert_eq!(base["matchingProductCount"], 4);
     assert!(strings(&base["aliases"]).contains(&key));
-    assert!(strings(&base["aliases"]).iter().any(|alias| alias == "ソラネコ / Soraneko"));
+    assert!(strings(&base["aliases"])
+        .iter()
+        .any(|alias| alias == "ソラネコ / Soraneko"));
     let members = ["900201", "manual", "names-base", "untick"];
     assert_eq!(avatar_filter(&c, &base["id"]), members);
     // A saved search still holds the row's ID.
@@ -2518,18 +3040,33 @@ fn a_bare_variant_name_counts_toward_the_one_identity_with_that_name() {
     let preferences = c.get("preferences", "app").unwrap().unwrap();
     assert_eq!(preferences["avatarSettings"], before["avatarSettings"]);
     assert_eq!(preferences["avatarAliases"]["ソラネコ / soraneko"], id);
-    assert_eq!(c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"], json!([row["sourceIdentityValue"]]));
+    assert_eq!(
+        c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"],
+        json!([row["sourceIdentityValue"]])
+    );
     let revision = c.revision().unwrap();
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     assert_eq!(c.revision().unwrap(), revision);
     // Batch Edit reaches the label through the Base it counts toward.
-    c.command("overlay", json!({"ids":["untick"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}})).unwrap();
-    assert_eq!(c.get("overlay", "untick").unwrap().unwrap()["ownedAvatars"], json!([]));
+    c.command(
+        "overlay",
+        json!({"ids":["untick"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.get("overlay", "untick").unwrap().unwrap()["ownedAvatars"],
+        json!([])
+    );
     let members = ["900201", "manual", "names-base"];
     assert_eq!(avatar_filter(&c, &base["id"]), members);
 
     // A special edition leaves the plain product's name its own.
-    synthetic_named_base(&c, "900202", "オリジナル3Dモデル「ソラネコ -Starcat-」Gen3.0");
+    synthetic_named_base(
+        &c,
+        "900202",
+        "オリジナル3Dモデル「ソラネコ -Starcat-」Gen3.0",
+    );
     assert!(avatar_rows(&c, "avatar:").is_empty());
     assert_eq!(avatar_filter(&c, &base["id"]), members);
     c.delete("product", "900202").unwrap();
@@ -2550,7 +3087,8 @@ fn a_bare_variant_name_counts_toward_the_one_identity_with_that_name() {
     assert!(avatar_rows(&c, "avatar:").is_empty());
     // So does a link to another product under that name.
     citing_product(&c, "cites-other", "900204", "ソラネコ");
-    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    c.command("bootstrap", json!({"includeProducts":false}))
+        .unwrap();
     check_apart(&c, &["cites-other"]);
     assert_eq!(avatar_filter(&c, &base["id"]), ["900201"]);
     c.delete("remote_file", "cites-other-f").unwrap();
@@ -2950,15 +3488,34 @@ fn avatar_base_pins_respect_r18_hide_only_and_hidden_boundaries() {
     let f = Fixture::new();
     let c = f.open();
     c.put("product", "5007531", json!({"id":"5007531","provider":"booth","sourceTitle":"真冬","sourceCategory":{"name":"3Dアバター"},"sensitive":true})).unwrap();
-    let query = |mode| c.command("query", json!({"avatar":"booth:5007531","sensitive":mode})).unwrap()["matchedIds"].clone();
+    let query = |mode| {
+        c.command("query", json!({"avatar":"booth:5007531","sensitive":mode}))
+            .unwrap()["matchedIds"]
+            .clone()
+    };
     assert_eq!(query("hide"), json!([]));
     assert_eq!(query("only"), json!(["5007531"]));
-    c.command("overlay", json!({"ids":["5007531"],"patch":{"sensitive":false}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["5007531"],"patch":{"sensitive":false}}),
+    )
+    .unwrap();
     assert_eq!(query("only"), json!([]));
     assert_eq!(query("hide"), json!(["5007531"]));
-    c.command("overlay", json!({"ids":["5007531"],"patch":{"hidden":true}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["5007531"],"patch":{"hidden":true}}),
+    )
+    .unwrap();
     assert_eq!(query("show"), json!([]));
-    assert_eq!(c.command("query", json!({"avatar":"booth:5007531","sensitive":"hide","hiddenOnly":true})).unwrap()["matchedIds"], json!(["5007531"]));
+    assert_eq!(
+        c.command(
+            "query",
+            json!({"avatar":"booth:5007531","sensitive":"hide","hiddenOnly":true})
+        )
+        .unwrap()["matchedIds"],
+        json!(["5007531"])
+    );
 }
 
 #[test]
@@ -3023,7 +3580,11 @@ fn avatar_default_threshold_and_unknown_base_identity_are_independent() {
         json!({"id":"3390957","sourceTitle":"舞夜","sourceCategory":{"name":"3Dアバター"}}),
     )
     .unwrap();
-    assert_eq!(maya(&c)["enabled"], false, "Ingestion does not toggle the avatar mid-sync");
+    assert_eq!(
+        maya(&c)["enabled"],
+        false,
+        "Ingestion does not toggle the avatar mid-sync"
+    );
     c.refresh_avatar_defaults().unwrap();
     assert_eq!(maya(&c)["enabled"], true);
     c.command(
@@ -3062,74 +3623,194 @@ fn avatar_automatic_defaults_change_only_at_sync_closure_and_survive_reopen() {
     let fixture = Fixture::new();
     let c = fixture.open();
     let enabled = |catalogue: &Catalogue| {
-        catalogue.command("bootstrap", json!({"includeProducts":false})).unwrap()["avatarOptions"]
-            .as_array().unwrap().iter().find(|entry| entry["id"] == "booth:3390957").unwrap()["enabled"].clone()
+        catalogue
+            .command("bootstrap", json!({"includeProducts":false}))
+            .unwrap()["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "booth:3390957")
+            .unwrap()["enabled"]
+            .clone()
     };
     product(&c, "first-clothes");
-    c.command("overlay", json!({"ids":["first-clothes"],"patch":{"ownedAvatars":["Maya"]}})).unwrap();
+    c.command(
+        "overlay",
+        json!({"ids":["first-clothes"],"patch":{"ownedAvatars":["Maya"]}}),
+    )
+    .unwrap();
     c.refresh_avatar_defaults().unwrap();
     assert_eq!(enabled(&c), false);
-    c.put("job", "sync", json!({"id":"sync","type":"boothSync","mode":"incremental","state":"running"})).unwrap();
+    c.put(
+        "job",
+        "sync",
+        json!({"id":"sync","type":"boothSync","mode":"incremental","state":"running"}),
+    )
+    .unwrap();
     for n in 0..6 {
         let id = format!("later-clothes-{n}");
         product(&c, &id);
-        c.command("overlay", json!({"ids":[id],"patch":{"ownedAvatars":["Maya"]}})).unwrap();
-        assert_eq!(enabled(&c), false, "A bootstrap during sync only reads the previous default");
+        c.command(
+            "overlay",
+            json!({"ids":[id],"patch":{"ownedAvatars":["Maya"]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            enabled(&c),
+            false,
+            "A bootstrap during sync only reads the previous default"
+        );
     }
-    c.put("product", "3390957", json!({"id":"3390957","sourceTitle":"舞夜","sourceCategory":{"name":"3Dアバター"}})).unwrap();
-    assert_eq!(enabled(&c), false, "A late Base does not change the default during sync");
+    c.put(
+        "product",
+        "3390957",
+        json!({"id":"3390957","sourceTitle":"舞夜","sourceCategory":{"name":"3Dアバター"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        enabled(&c),
+        false,
+        "A late Base does not change the default during sync"
+    );
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(enabled(&c), false, "An active sync prevents automatic analysis");
-    c.put("job", "sync-other-store", json!({"id":"sync-other-store","type":"gumroadSync","state":"queued"})).unwrap();
-    c.put("job", "sync", json!({"id":"sync","type":"boothSync","mode":"incremental","state":"completed"})).unwrap();
+    assert_eq!(
+        enabled(&c),
+        false,
+        "An active sync prevents automatic analysis"
+    );
+    c.put(
+        "job",
+        "sync-other-store",
+        json!({"id":"sync-other-store","type":"gumroadSync","state":"queued"}),
+    )
+    .unwrap();
+    c.put(
+        "job",
+        "sync",
+        json!({"id":"sync","type":"boothSync","mode":"incremental","state":"completed"}),
+    )
+    .unwrap();
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(enabled(&c), false, "Another provider's queued sync retains defaults");
-    c.put("job", "sync-other-store", json!({"id":"sync-other-store","type":"gumroadSync","state":"cancelled"})).unwrap();
+    assert_eq!(
+        enabled(&c),
+        false,
+        "Another provider's queued sync retains defaults"
+    );
+    c.put(
+        "job",
+        "sync-other-store",
+        json!({"id":"sync-other-store","type":"gumroadSync","state":"cancelled"}),
+    )
+    .unwrap();
     c.refresh_avatar_defaults().unwrap();
     assert_eq!(enabled(&c), true);
-    assert_eq!(c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"]["booth:3390957"], true);
+    assert_eq!(
+        c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"]["booth:3390957"],
+        true
+    );
     drop(c);
     let c = fixture.open();
-    assert_eq!(enabled(&c), true, "Saved automatic defaults survive restart");
-    c.put("job", "sync-full", json!({"id":"sync-full","type":"boothSync","mode":"forced","state":"running"})).unwrap();
+    assert_eq!(
+        enabled(&c),
+        true,
+        "Saved automatic defaults survive restart"
+    );
+    c.put(
+        "job",
+        "sync-full",
+        json!({"id":"sync-full","type":"boothSync","mode":"forced","state":"running"}),
+    )
+    .unwrap();
     c.delete("product", "3390957").unwrap();
-    assert_eq!(enabled(&c), true, "A full refresh retains the prior default until closure");
-    c.put("job", "sync-full", json!({"id":"sync-full","type":"boothSync","mode":"forced","state":"failed"})).unwrap();
+    assert_eq!(
+        enabled(&c),
+        true,
+        "A full refresh retains the prior default until closure"
+    );
+    c.put(
+        "job",
+        "sync-full",
+        json!({"id":"sync-full","type":"boothSync","mode":"forced","state":"failed"}),
+    )
+    .unwrap();
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(enabled(&c), false, "Terminal partial failures recompute from currently available records");
+    assert_eq!(
+        enabled(&c),
+        false,
+        "Terminal partial failures recompute from currently available records"
+    );
     let revision = c.revision().unwrap();
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(revision, c.revision().unwrap(), "Unchanged recomputation is idempotent");
+    assert_eq!(
+        revision,
+        c.revision().unwrap(),
+        "Unchanged recomputation is idempotent"
+    );
 }
 
 #[test]
 fn avatar_user_overrides_remain_separate_from_recomputed_defaults() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("product", "3390957", json!({"id":"3390957","sourceTitle":"舞夜","sourceCategory":{"name":"3Dアバター"}})).unwrap();
+    c.put(
+        "product",
+        "3390957",
+        json!({"id":"3390957","sourceTitle":"舞夜","sourceCategory":{"name":"3Dアバター"}}),
+    )
+    .unwrap();
     for n in 0..6 {
         let id = format!("compatible-{n}");
         product(&c, &id);
-        c.command("overlay", json!({"ids":[id],"patch":{"ownedAvatars":["Maya"]}})).unwrap();
+        c.command(
+            "overlay",
+            json!({"ids":[id],"patch":{"ownedAvatars":["Maya"]}}),
+        )
+        .unwrap();
     }
     let enabled = |catalogue: &Catalogue| {
-        catalogue.command("bootstrap", json!({"includeProducts":false})).unwrap()["avatarOptions"]
-            .as_array().unwrap().iter().find(|entry| entry["id"] == "booth:3390957").unwrap()["enabled"].clone()
+        catalogue
+            .command("bootstrap", json!({"includeProducts":false}))
+            .unwrap()["avatarOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "booth:3390957")
+            .unwrap()["enabled"]
+            .clone()
     };
-    c.command("preferences", json!({"patch":{"avatarSettings":{"booth:3390957":{"enabled":false}}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{"booth:3390957":{"enabled":false}}}}),
+    )
+    .unwrap();
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(enabled(&c), false, "Manual off wins over the automatic enabled snapshot");
+    assert_eq!(
+        enabled(&c),
+        false,
+        "Manual off wins over the automatic enabled snapshot"
+    );
     let prefs = c.get("preferences", "app").unwrap().unwrap();
     assert_eq!(prefs["avatarSettings"]["booth:3390957"]["enabled"], false);
     assert_eq!(prefs["avatarAutomaticEnabled"]["booth:3390957"], true);
-    c.command("preferences", json!({"patch":{"avatarSettings":{"booth:3390957":{"enabled":true}}}})).unwrap();
+    c.command(
+        "preferences",
+        json!({"patch":{"avatarSettings":{"booth:3390957":{"enabled":true}}}}),
+    )
+    .unwrap();
     c.delete("product", "3390957").unwrap();
     c.refresh_avatar_defaults().unwrap();
-    assert_eq!(enabled(&c), true, "Manual on survives an automatic off result");
+    assert_eq!(
+        enabled(&c),
+        true,
+        "Manual on survives an automatic off result"
+    );
     drop(c);
     let c = fixture.open();
     assert_eq!(enabled(&c), true, "Manual on survives restart");
-    assert_eq!(c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"]["booth:3390957"], Value::Null);
+    assert_eq!(
+        c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"]["booth:3390957"],
+        Value::Null
+    );
 }
 
 #[test]
@@ -3231,22 +3912,47 @@ fn projection(c: &Catalogue, id: &str) -> Value {
 fn reopen_corrects_stale_partial_badge_without_store_sync() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("product", "p", json!({"id":"p","sourceTitle":"Authored product"})).unwrap();
-    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["f"],"manifestComplete":false})).unwrap();
-    c.put("remote_file", "f", json!({"id":"f","productId":"p","name":"authored.unitypackage","revision":"r1"})).unwrap();
-    c.put("artifact", "a", json!({"id":"a","productId":"p","fileId":"f","revision":"r1","status":"ready"})).unwrap();
-    assert_eq!(projection(&c,"p")["status"], "ready");
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","sourceTitle":"Authored product"}),
+    )
+    .unwrap();
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["f"],"manifestComplete":false}),
+    )
+    .unwrap();
+    c.put(
+        "remote_file",
+        "f",
+        json!({"id":"f","productId":"p","name":"authored.unitypackage","revision":"r1"}),
+    )
+    .unwrap();
+    c.put(
+        "artifact",
+        "a",
+        json!({"id":"a","productId":"p","fileId":"f","revision":"r1","status":"ready"}),
+    )
+    .unwrap();
+    assert_eq!(projection(&c, "p")["status"], "ready");
     {
         let conn = c.inner.lock().unwrap();
         conn.execute("UPDATE products SET status='partial',downloaded=0,body=json_set(body,'$.status','partial','$.fullyDownloaded',json('false')),summary=json_set(summary,'$.status','partial','$.fullyDownloaded',json('false')) WHERE id='p'", []).unwrap();
     }
     drop(c);
     let reopened = fixture.open();
-    let product = projection(&reopened,"p");
+    let product = projection(&reopened, "p");
     assert_eq!(product["manifestComplete"], false);
     assert_eq!(product["status"], "ready");
     assert_eq!(product["fullyDownloaded"], true);
-    assert_eq!(reopened.command("query", json!({"quick":"downloaded","limit":10})).unwrap()["allDownloaded"], true);
+    assert_eq!(
+        reopened
+            .command("query", json!({"quick":"downloaded","limit":10}))
+            .unwrap()["allDownloaded"],
+        true
+    );
 }
 #[test]
 fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
@@ -3257,8 +3963,17 @@ fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
     // The store replaced old.zip, already downloaded but its extraction failed,
     // with new.zip, and dropped never.zip, which was never downloaded. A later
     // Full sync had flagged old.zip for content verification before it went.
-    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["acct:700001:800001"],"manifestComplete":true})).unwrap();
-    for (id, source_file, name) in [("acct:700001:800001", "700001", "new.zip"), ("acct:700000:800001", "700000", "old.zip"), ("acct:700002:800001", "700002", "never.zip")] {
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["acct:700001:800001"],"manifestComplete":true}),
+    )
+    .unwrap();
+    for (id, source_file, name) in [
+        ("acct:700001:800001", "700001", "new.zip"),
+        ("acct:700000:800001", "700000", "old.zip"),
+        ("acct:700002:800001", "700002", "never.zip"),
+    ] {
         c.put("remote_file", id, json!({"id":id,"productId":"p","accountId":"acct","sourceFileId":source_file,"name":name,"revision":"r1","requiresContentVerification":source_file == "700000"})).unwrap();
     }
     c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"acct:700000:800001","revision":"r1","status":"extractionFailed","errorCode":"archive_password_required","originalAvailable":true})).unwrap();
@@ -3270,15 +3985,45 @@ fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
     let product = projection(&c, "p");
     let files = product["files"].as_array().unwrap();
     let ids: Vec<_> = files.iter().map(|f| text(f, "id")).collect();
-    assert_eq!(ids, ["acct:700001:800001", "acct:700000:800001", "local-file:added"]);
+    assert_eq!(
+        ids,
+        [
+            "acct:700001:800001",
+            "acct:700000:800001",
+            "local-file:added"
+        ]
+    );
     assert_eq!(files[0]["status"], "notDownloaded");
     assert!(files[0].get("kept").is_none());
     // No store revision remains to verify or retry: the copy stays usable, not Attention.
-    assert_eq!((files[1]["kept"].clone(), files[1]["status"].clone()), (json!(true), json!("downloaded")));
+    assert_eq!(
+        (files[1]["kept"].clone(), files[1]["status"].clone()),
+        (json!(true), json!("downloaded"))
+    );
     assert!(files[1].get("userAdded").is_none() && files[1].get("errorCode").is_none());
-    assert_eq!((files[2]["kept"].clone(), files[2]["userAdded"].clone(), files[2]["status"].clone()), (json!(true), json!(true), json!("ready")));
-    assert_eq!((product["total"].clone(), product["downloaded"].clone(), product["keptFiles"].clone()), (json!(3), json!(2), json!(2)));
-    assert_eq!((product["status"].clone(), product["manifestComplete"].clone()), (json!("partial"), json!(true)));
+    assert_eq!(
+        (
+            files[2]["kept"].clone(),
+            files[2]["userAdded"].clone(),
+            files[2]["status"].clone()
+        ),
+        (json!(true), json!(true), json!("ready"))
+    );
+    assert_eq!(
+        (
+            product["total"].clone(),
+            product["downloaded"].clone(),
+            product["keptFiles"].clone()
+        ),
+        (json!(3), json!(2), json!(2))
+    );
+    assert_eq!(
+        (
+            product["status"].clone(),
+            product["manifestComplete"].clone()
+        ),
+        (json!("partial"), json!(true))
+    );
     // A partly deleted kept file stays listed so its own delete can finish; it
     // is Attention and no longer counts as downloaded.
     let mut partial = c.get("artifact", "a-old").unwrap().unwrap();
@@ -3287,35 +4032,89 @@ fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
     c.put("artifact", "a-old", partial).unwrap();
     let product = projection(&c, "p");
     assert_eq!(product["files"][1]["status"], "missing");
-    assert_eq!((product["downloaded"].clone(), product["keptFiles"].clone(), product["status"].clone()), (json!(1), json!(1), json!("attention")));
+    assert_eq!(
+        (
+            product["downloaded"].clone(),
+            product["keptFiles"].clone(),
+            product["status"].clone()
+        ),
+        (json!(1), json!(1), json!("attention"))
+    );
     // Deleting a kept file's record removes its row and its search terms.
     let search = |term: &str| {
         let category = text(&projection(&c, "p"), "category").to_owned();
-        c.command("query", json!({"search":term,"category":category,"includeFiles":false})).unwrap()["matched"].clone()
+        c.command(
+            "query",
+            json!({"search":term,"category":category,"includeFiles":false}),
+        )
+        .unwrap()["matched"]
+            .clone()
     };
     assert_eq!(search("old.zip"), 1);
     c.delete("artifact", "a-old").unwrap();
     let product = projection(&c, "p");
-    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["acct:700001:800001", "local-file:added"]);
-    assert_eq!((product["total"].clone(), product["knownFileCount"].clone(), product["keptFiles"].clone()), (json!(2), json!(2), json!(1)));
+    assert_eq!(
+        product["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| text(f, "id"))
+            .collect::<Vec<_>>(),
+        ["acct:700001:800001", "local-file:added"]
+    );
+    assert_eq!(
+        (
+            product["total"].clone(),
+            product["knownFileCount"].clone(),
+            product["keptFiles"].clone()
+        ),
+        (json!(2), json!(2), json!(1))
+    );
     assert_eq!(search("old.zip"), 0);
     c.put("product", "p", source).unwrap();
     let rebuilt = projection(&c, "p");
-    assert_eq!((rebuilt["total"].clone(), rebuilt["keptFiles"].clone()), (json!(2), json!(1)));
+    assert_eq!(
+        (rebuilt["total"].clone(), rebuilt["keptFiles"].clone()),
+        (json!(2), json!(1))
+    );
     // Without any grant, an added file still never joins the store manifest.
     c.delete("entitlement", "e").unwrap();
     let ungranted = projection(&c, "p");
-    let added = ungranted["files"].as_array().unwrap().iter().find(|f| f["id"] == "local-file:added").unwrap().clone();
-    assert_eq!((added["kept"].clone(), added["userAdded"].clone()), (json!(true), json!(true)));
+    let added = ungranted["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "local-file:added")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (added["kept"].clone(), added["userAdded"].clone()),
+        (json!(true), json!(true))
+    );
 }
 #[test]
 fn reopen_lists_downloads_dropped_before_kept_files_existed() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("product", "p", json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"})).unwrap();
-    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["new"],"manifestComplete":true})).unwrap();
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"}),
+    )
+    .unwrap();
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["new"],"manifestComplete":true}),
+    )
+    .unwrap();
     for id in ["new", "old"] {
-        c.put("remote_file", id, json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"})).unwrap();
+        c.put(
+            "remote_file",
+            id,
+            json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"}),
+        )
+        .unwrap();
     }
     c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"old","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
     {
@@ -3327,7 +4126,13 @@ fn reopen_lists_downloads_dropped_before_kept_files_existed() {
     drop(c);
     let reopened = fixture.open();
     let product = projection(&reopened, "p");
-    assert_eq!((product["keptFiles"].clone(), product["files"][1]["id"].clone()), (json!(1), json!("old")));
+    assert_eq!(
+        (
+            product["keptFiles"].clone(),
+            product["files"][1]["id"].clone()
+        ),
+        (json!(1), json!("old"))
+    );
     // Later opens find nothing left to list.
     let revisions = reopened.change_domains().unwrap();
     drop(reopened);
@@ -3337,23 +4142,54 @@ fn reopen_lists_downloads_dropped_before_kept_files_existed() {
 fn a_refused_file_leaves_the_list_and_search_and_reopen_drops_one_listed_before() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("product", "p", json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"})).unwrap();
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"}),
+    )
+    .unwrap();
     // A grant still names the file its store now refuses, as an update can leave it.
-    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["kept","gone"],"manifestComplete":true})).unwrap();
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["kept","gone"],"manifestComplete":true}),
+    )
+    .unwrap();
     for id in ["kept", "gone"] {
-        c.put("remote_file", id, json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"})).unwrap();
+        c.put(
+            "remote_file",
+            id,
+            json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"}),
+        )
+        .unwrap();
     }
     c.put("artifact", "a-kept", json!({"id":"a-kept","productId":"p","fileId":"kept","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
     let category = text(&projection(&c, "p"), "category").to_owned();
     let found = |c: &Catalogue, term: &str| {
-        c.command("query", json!({"search":term,"category":category,"includeFiles":false})).unwrap()["matched"].clone()
+        c.command(
+            "query",
+            json!({"search":term,"category":category,"includeFiles":false}),
+        )
+        .unwrap()["matched"]
+            .clone()
     };
     assert_eq!(found(&c, "gone.zip"), 1);
     c.put("job", "refused", json!({"id":"refused","productId":"p","type":"download","state":"needsAction","updatedAt":"2026-01-02T00:00:00Z","errorCode":"store_file_unavailable","failures":{"gone":{"fileId":"gone","errorCode":"store_file_unavailable"}}})).unwrap();
     c.put("artifact", "pending-gone", json!({"id":"pending-gone","productId":"p","fileId":"gone","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
     let product = projection(&c, "p");
-    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["kept"]);
-    assert_eq!((product["total"].clone(), product["status"].clone()), (json!(1), json!("ready")));
+    assert_eq!(
+        product["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| text(f, "id"))
+            .collect::<Vec<_>>(),
+        ["kept"]
+    );
+    assert_eq!(
+        (product["total"].clone(), product["status"].clone()),
+        (json!(1), json!("ready"))
+    );
     assert_eq!(found(&c, "gone.zip"), 0);
     {
         // The projection an earlier version stored: the refused file still listed.
@@ -3364,7 +4200,13 @@ fn a_refused_file_leaves_the_list_and_search_and_reopen_drops_one_listed_before(
     drop(c);
     let reopened = fixture.open();
     let product = projection(&reopened, "p");
-    assert_eq!((product["files"].as_array().unwrap().len(), product["status"].clone()), (1, json!("ready")));
+    assert_eq!(
+        (
+            product["files"].as_array().unwrap().len(),
+            product["status"].clone()
+        ),
+        (1, json!("ready"))
+    );
     // Later opens find nothing left to drop.
     let revisions = reopened.change_domains().unwrap();
     drop(reopened);
@@ -3425,7 +4267,12 @@ fn gumroad_scope_rule_applies_to_new_source_sync_without_reclassifying_on_open()
     reopened.put("product", id, source).unwrap();
     assert_eq!(projection(&reopened, id)["category"], "NonVRChat");
     assert_eq!(reopened.command("query", json!({})).unwrap()["matched"], 0);
-    assert_eq!(reopened.command("query", json!({"category":"NonVRChat"})).unwrap()["matchedIds"], json!([id]));
+    assert_eq!(
+        reopened
+            .command("query", json!({"category":"NonVRChat"}))
+            .unwrap()["matchedIds"],
+        json!([id])
+    );
 }
 #[test]
 fn atomic_batch_and_collections() {
@@ -4338,9 +5185,13 @@ fn local_manifest_and_batch_jobs_preserve_required_files_without_accounts() {
     assert_eq!(dynamic_details(&c, "local:one")["status"], "ready");
     assert_eq!(dynamic_details(&c, "local:two")["status"], "attention");
     // One import holds both products: dismissing one leaves the job's own facts alone.
-    c.command("dismiss_attention", json!({"productIds":["local:two"]})).unwrap();
+    c.command("dismiss_attention", json!({"productIds":["local:two"]}))
+        .unwrap();
     assert_eq!(dynamic_details(&c, "local:two")["status"], "notDownloaded");
-    assert_eq!(c.get("job", "local-import:synthetic").unwrap().unwrap()["state"], "failed");
+    assert_eq!(
+        c.get("job", "local-import:synthetic").unwrap().unwrap()["state"],
+        "failed"
+    );
     assert_eq!(
         c.command("query", json!({"accountIds":["unrelated"]}))
             .unwrap()["matched"],
@@ -4420,11 +5271,30 @@ fn acquisition_filter_reads_each_accounts_own_route_before_paging() {
     ] {
         let id = format!("{product}:{account}:{source}");
         let mut row = json!({"id":id,"productId":product,"accountId":account,"source":source});
-        row.as_object_mut().unwrap().extend(facts.as_object().unwrap().clone());
+        row.as_object_mut()
+            .unwrap()
+            .extend(facts.as_object().unwrap().clone());
         c.put("acquisition", &id, row).unwrap();
     }
-    for id in ["bought", "zero-order", "free-history", "gifted", "library-only", "two-routes", "gift-and-free", "gift-and-order", "order-and-free", "unproven-order-and-free", "no-record"] {
-        c.put("product",id,json!({"id":id,"provider":"booth","title":id,"sourceCategory":{"name":"Hair"}})).unwrap();
+    for id in [
+        "bought",
+        "zero-order",
+        "free-history",
+        "gifted",
+        "library-only",
+        "two-routes",
+        "gift-and-free",
+        "gift-and-order",
+        "order-and-free",
+        "unproven-order-and-free",
+        "no-record",
+    ] {
+        c.put(
+            "product",
+            id,
+            json!({"id":id,"provider":"booth","title":id,"sourceCategory":{"name":"Hair"}}),
+        )
+        .unwrap();
     }
     c.put("product","local:file",json!({"id":"local:file","provider":"local","store":"Local Files","custom":true,"title":"local:file","sourceCategory":{"name":"Hair"}})).unwrap();
     let matched = |args: Value| {
@@ -4436,33 +5306,85 @@ fn acquisition_filter_reads_each_accounts_own_route_before_paging() {
     assert_eq!(matched(json!({})).len(), 12);
     assert_eq!(matched(json!({"acquisition":null})).len(), 12);
     assert_eq!(matched(json!({"acquisition":[]})), Vec::<String>::new());
-    assert_eq!(matched(json!({"acquisition":["free"]})), ["free-history", "zero-order"]);
-    assert_eq!(matched(json!({"acquisition":["gift"]})), ["gift-and-free", "gift-and-order", "gifted", "two-routes"]);
-    assert_eq!(matched(json!({"acquisition":["paid"]})), ["bought", "library-only", "no-record", "order-and-free", "two-routes", "unproven-order-and-free"]);
-    assert_eq!(matched(json!({"acquisition":["free","gift"]})), ["free-history", "gift-and-free", "gift-and-order", "gifted", "two-routes", "zero-order"]);
+    assert_eq!(
+        matched(json!({"acquisition":["free"]})),
+        ["free-history", "zero-order"]
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["gift"]})),
+        ["gift-and-free", "gift-and-order", "gifted", "two-routes"]
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["paid"]})),
+        [
+            "bought",
+            "library-only",
+            "no-record",
+            "order-and-free",
+            "two-routes",
+            "unproven-order-and-free"
+        ]
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["free","gift"]})),
+        [
+            "free-history",
+            "gift-and-free",
+            "gift-and-order",
+            "gifted",
+            "two-routes",
+            "zero-order"
+        ]
+    );
     // Only the selected account's own route counts; another account's gift does not.
-    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["a"]})), Vec::<String>::new());
-    assert_eq!(matched(json!({"acquisition":["paid"],"accountIds":["b"]})), Vec::<String>::new());
-    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["b"]})), ["gift-and-free", "gift-and-order", "gifted", "two-routes"]);
-    assert_eq!(matched(json!({"acquisition":["free"],"accountIds":[]})), Vec::<String>::new());
+    assert_eq!(
+        matched(json!({"acquisition":["gift"],"accountIds":["a"]})),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["paid"],"accountIds":["b"]})),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["gift"],"accountIds":["b"]})),
+        ["gift-and-free", "gift-and-order", "gifted", "two-routes"]
+    );
+    assert_eq!(
+        matched(json!({"acquisition":["free"],"accountIds":[]})),
+        Vec::<String>::new()
+    );
     // An unproven row follows the price it can still show.
-    let mut row = c.get("acquisition", "library-only:a:library").unwrap().unwrap();
+    let mut row = c
+        .get("acquisition", "library-only:a:library")
+        .unwrap()
+        .unwrap();
     row["variantIds"] = json!(["800001"]);
     c.put("acquisition", "library-only:a:library", row).unwrap();
     let mut listing = c.get("product", "library-only").unwrap().unwrap();
     listing["publicVariants"] = json!([{"id":"800001","name":"","price":0,"currency":"JPY"}]);
     c.put("product", "library-only", listing).unwrap();
-    assert_eq!(matched(json!({"acquisition":["free"]})), ["free-history", "library-only", "zero-order"]);
+    assert_eq!(
+        matched(json!({"acquisition":["free"]})),
+        ["free-history", "library-only", "zero-order"]
+    );
     // Two accounts holding different variants: each row follows its own account's price.
     for (account, variant) in [("a", "800002"), ("b", "800003")] {
         let id = format!("split:{account}:library");
         c.put("acquisition",&id,json!({"id":id,"productId":"split","accountId":account,"source":"library","variantIds":[variant]})).unwrap();
     }
     c.put("product","split",json!({"id":"split","provider":"booth","title":"split","sourceCategory":{"name":"Hair"},"publicVariants":[{"id":"800002","name":"Free","price":0,"currency":"JPY"},{"id":"800003","name":"Paid","price":500,"currency":"JPY"}]})).unwrap();
-    assert!(matched(json!({"acquisition":["free"],"accountIds":["a"]})).contains(&"split".to_owned()));
-    assert!(!matched(json!({"acquisition":["paid"],"accountIds":["a"]})).contains(&"split".to_owned()));
-    assert!(matched(json!({"acquisition":["paid"],"accountIds":["b"]})).contains(&"split".to_owned()));
-    assert!(!matched(json!({"acquisition":["free"],"accountIds":["b"]})).contains(&"split".to_owned()));
+    assert!(
+        matched(json!({"acquisition":["free"],"accountIds":["a"]})).contains(&"split".to_owned())
+    );
+    assert!(
+        !matched(json!({"acquisition":["paid"],"accountIds":["a"]})).contains(&"split".to_owned())
+    );
+    assert!(
+        matched(json!({"acquisition":["paid"],"accountIds":["b"]})).contains(&"split".to_owned())
+    );
+    assert!(
+        !matched(json!({"acquisition":["free"],"accountIds":["b"]})).contains(&"split".to_owned())
+    );
 }
 
 #[test]
@@ -4480,68 +5402,169 @@ fn offline_product_scope_preserves_accounts_paging_and_local_metadata() {
     for (id, account) in [("owned-a", "a"), ("owned-b", "b"), ("edited-store", "a")] {
         c.put("acquisition",id,json!({"id":id,"productId":id,"accountId":account,"source":"purchase","acquiredDateText":if id=="owned-a"{"2026/10/1"}else{""}})).unwrap();
     }
-    for (id, title) in [("local:blank", "E local blank"), ("local:dated", "F local dated")] {
+    for (id, title) in [
+        ("local:blank", "E local blank"),
+        ("local:dated", "F local dated"),
+    ] {
         c.put("product",id,json!({"id":id,"provider":"local","store":"Local Files","custom":true,"title":title,"sourceTags":["Mafuyu"],"sourceCategory":{"name":"Hair"},"importedAt":"2026-10-10T00:00:00Z"})).unwrap();
     }
     // Authored observed acquisition metadata must remain independent of store scope.
     c.put("acquisition","local-observation",json!({"id":"local-observation","productId":"local:dated","provider":"local","source":"local","observationKind":"localImport","importedAt":"2026-10-10T00:00:00Z","acquiredDateText":"2026/1/15"})).unwrap();
     c.command("overlay",json!({"ids":["local:dated"],"patch":{"note":"Human local note","tags":["Human local tag"],"ownedAvatars":["Mafuyu"]}})).unwrap();
 
-    let all = json!(["owned-a", "owned-b", "edited-store", "unassigned-store", "local:blank", "local:dated"]);
+    let all = json!([
+        "owned-a",
+        "owned-b",
+        "edited-store",
+        "unassigned-store",
+        "local:blank",
+        "local:dated"
+    ]);
     for (scope, expected) in [
         (json!({}), all.clone()),
         (json!({"accountIds":null}), all.clone()),
-        (json!({"accountIds":null,"includeOffline":true}), all.clone()),
-        (json!({"includeOffline":false}), json!(["owned-a", "owned-b", "edited-store", "unassigned-store"])),
-        (json!({"accountIds":null,"includeOffline":false}), json!(["owned-a", "owned-b", "edited-store", "unassigned-store"])),
-        (json!({"accountIds":["a"]}), json!(["owned-a", "edited-store"])),
-        (json!({"accountIds":["a"],"includeOffline":false}), json!(["owned-a", "edited-store"])),
-        (json!({"accountIds":["a"],"includeOffline":true}), json!(["owned-a", "edited-store", "local:blank", "local:dated"])),
-        (json!({"accountIds":["b"],"includeOffline":true}), json!(["owned-b", "local:blank", "local:dated"])),
-        (json!({"accountIds":["a","b"],"includeOffline":true}), json!(["owned-a", "owned-b", "edited-store", "local:blank", "local:dated"])),
+        (
+            json!({"accountIds":null,"includeOffline":true}),
+            all.clone(),
+        ),
+        (
+            json!({"includeOffline":false}),
+            json!(["owned-a", "owned-b", "edited-store", "unassigned-store"]),
+        ),
+        (
+            json!({"accountIds":null,"includeOffline":false}),
+            json!(["owned-a", "owned-b", "edited-store", "unassigned-store"]),
+        ),
+        (
+            json!({"accountIds":["a"]}),
+            json!(["owned-a", "edited-store"]),
+        ),
+        (
+            json!({"accountIds":["a"],"includeOffline":false}),
+            json!(["owned-a", "edited-store"]),
+        ),
+        (
+            json!({"accountIds":["a"],"includeOffline":true}),
+            json!(["owned-a", "edited-store", "local:blank", "local:dated"]),
+        ),
+        (
+            json!({"accountIds":["b"],"includeOffline":true}),
+            json!(["owned-b", "local:blank", "local:dated"]),
+        ),
+        (
+            json!({"accountIds":["a","b"],"includeOffline":true}),
+            json!([
+                "owned-a",
+                "owned-b",
+                "edited-store",
+                "local:blank",
+                "local:dated"
+            ]),
+        ),
         (json!({"accountIds":[]}), json!([])),
         (json!({"accountIds":[],"includeOffline":false}), json!([])),
-        (json!({"accountIds":[],"includeOffline":true}), json!(["local:blank", "local:dated"])),
+        (
+            json!({"accountIds":[],"includeOffline":true}),
+            json!(["local:blank", "local:dated"]),
+        ),
     ] {
         let mut args = scope.clone();
         args["sort"] = json!("title");
         args["direction"] = json!("asc");
         let result = c.command("query", args).unwrap();
         assert_eq!(result["matchedIds"], expected, "{scope}");
-        assert_eq!(result["matched"], expected.as_array().unwrap().len(), "{scope}");
+        assert_eq!(
+            result["matched"],
+            expected.as_array().unwrap().len(),
+            "{scope}"
+        );
         assert_eq!(result["total"], 6, "{scope}");
     }
     let paged=c.command("query",json!({"accountIds":["a"],"includeOffline":true,"sort":"title","direction":"asc","limit":1,"offset":1,"includeFiles":false,"presentation":"list"})).unwrap();
-    assert_eq!(paged["matchedIds"], json!(["owned-a", "edited-store", "local:blank", "local:dated"]));
+    assert_eq!(
+        paged["matchedIds"],
+        json!(["owned-a", "edited-store", "local:blank", "local:dated"])
+    );
     assert_eq!(paged["products"].as_array().unwrap().len(), 1);
     assert_eq!(paged["products"][0]["id"], "edited-store");
     assert_eq!(paged["allDownloaded"], false);
-    let searched=c.command("query",json!({"accountIds":["a"],"includeOffline":true,"search":"local","sort":"title"})).unwrap();
-    assert_eq!(searched["matchedIds"], json!(["local:blank", "local:dated"]));
-    let acquired=c.command("query",json!({"accountIds":["a"],"includeOffline":true,"sort":"acquired","direction":"asc"})).unwrap();
-    assert_eq!(acquired["matchedIds"], json!(["local:dated", "owned-a", "edited-store", "local:blank"]));
+    let searched = c
+        .command(
+            "query",
+            json!({"accountIds":["a"],"includeOffline":true,"search":"local","sort":"title"}),
+        )
+        .unwrap();
+    assert_eq!(
+        searched["matchedIds"],
+        json!(["local:blank", "local:dated"])
+    );
+    let acquired = c
+        .command(
+            "query",
+            json!({"accountIds":["a"],"includeOffline":true,"sort":"acquired","direction":"asc"}),
+        )
+        .unwrap();
+    assert_eq!(
+        acquired["matchedIds"],
+        json!(["local:dated", "owned-a", "edited-store", "local:blank"])
+    );
 
     let avatar=c.command("query",json!({"accountIds":[],"includeOffline":true,"avatar":"Mafuyu","sort":"title","includeFiles":false,"presentation":"list"})).unwrap();
     assert_eq!(avatar["matchedIds"], json!(["local:blank", "local:dated"]));
-    let excluded_avatar=c.command("query",json!({"accountIds":[],"includeOffline":false,"avatar":"Mafuyu"})).unwrap();
+    let excluded_avatar = c
+        .command(
+            "query",
+            json!({"accountIds":[],"includeOffline":false,"avatar":"Mafuyu"}),
+        )
+        .unwrap();
     assert_eq!(excluded_avatar["matchedIds"], json!([]));
     for id in ["local:blank", "local:dated"] {
         let unscoped = dynamic_details(&c, id);
         for accounts in [json!([]), json!(["a"])] {
-            let details=c.command("product_details",json!({"id":id,"accountIds":accounts})).unwrap();
-            for field in ["title", "note", "tags", "ownedAvatars", "ownedAvatarEvidence", "acquired", "acquiredSortKey", "price", "priceCurrency", "currentPriceText", "paidPrice", "paidCurrency", "provenance"] {
+            let details = c
+                .command("product_details", json!({"id":id,"accountIds":accounts}))
+                .unwrap();
+            for field in [
+                "title",
+                "note",
+                "tags",
+                "ownedAvatars",
+                "ownedAvatarEvidence",
+                "acquired",
+                "acquiredSortKey",
+                "price",
+                "priceCurrency",
+                "currentPriceText",
+                "paidPrice",
+                "paidCurrency",
+                "provenance",
+            ] {
                 assert_eq!(details[field], unscoped[field], "{id}: {field}");
             }
         }
-        let summary=avatar["products"].as_array().unwrap().iter().find(|p|p["id"]==id).unwrap();
-        for field in ["acquired", "acquiredSortKey", "price", "priceCurrency", "currentPriceText", "paidPrice", "paidCurrency", "ownedAvatars"] {
+        let summary = avatar["products"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap();
+        for field in [
+            "acquired",
+            "acquiredSortKey",
+            "price",
+            "priceCurrency",
+            "currentPriceText",
+            "paidPrice",
+            "paidCurrency",
+            "ownedAvatars",
+        ] {
             assert_eq!(summary[field], unscoped[field], "{id}: {field}");
         }
         assert!(unscoped["price"].is_null());
         assert!(unscoped["paidPrice"].is_null());
     }
-    assert_eq!(dynamic_details(&c,"local:blank")["acquired"], "");
-    assert_eq!(dynamic_details(&c,"local:dated")["acquired"], "2026/1/15");
+    assert_eq!(dynamic_details(&c, "local:blank")["acquired"], "");
+    assert_eq!(dynamic_details(&c, "local:dated")["acquired"], "2026/1/15");
 }
 
 #[test]
@@ -6073,15 +7096,25 @@ fn warm_list_actions_skip_stored_rows_and_edits_reread_only_their_row() {
         let conn = c.inner.lock().unwrap();
         conn.execute_batch("PRAGMA main.cache_size=8; PRAGMA temp.cache_size=-65536;")
             .unwrap();
-        conn.query_row("SELECT COUNT(*) FROM dbstat WHERE name='products'", [], |r| r.get(0))
-            .unwrap()
+        conn.query_row(
+            "SELECT COUNT(*) FROM dbstat WHERE name='products'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
     };
     let list = |patch: Value, known: &Value| {
         let misses = || {
             let conn = c.inner.lock().unwrap();
             let (mut current, mut high) = (0, 0);
             unsafe {
-                rusqlite::ffi::sqlite3_db_status(conn.handle(), rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS, &mut current, &mut high, 0)
+                rusqlite::ffi::sqlite3_db_status(
+                    conn.handle(),
+                    rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS,
+                    &mut current,
+                    &mut high,
+                    0,
+                )
             };
             i64::from(current)
         };
@@ -6104,15 +7137,29 @@ fn warm_list_actions_skip_stored_rows_and_edits_reread_only_their_row() {
     ] {
         let (result, read) = list(patch.clone(), &known);
         assert!(result["matched"].as_u64().unwrap() > 0, "{patch}");
-        assert!(read * 10 < stored, "{patch} read {read} of {stored} product pages");
+        assert!(
+            read * 10 < stored,
+            "{patch} read {read} of {stored} product pages"
+        );
     }
-    c.command("overlay", json!({"changes":[{"id":"920000007","patch":{"title":"Edited authored outfit"}}]}))
-        .unwrap();
+    c.command(
+        "overlay",
+        json!({"changes":[{"id":"920000007","patch":{"title":"Edited authored outfit"}}]}),
+    )
+    .unwrap();
     let (result, read) = list(json!({}), &known);
-    let sent: Vec<_> = result["products"].as_array().unwrap().iter().map(|p| text(p, "id")).collect();
+    let sent: Vec<_> = result["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| text(p, "id"))
+        .collect();
     assert_eq!(sent, ["920000007"]);
     assert_eq!(result["products"][0]["title"], "Edited authored outfit");
-    assert!(read * 10 < stored, "an edit reread {read} of {stored} product pages");
+    assert!(
+        read * 10 < stored,
+        "an edit reread {read} of {stored} product pages"
+    );
 }
 
 #[test]
@@ -6121,42 +7168,110 @@ fn custom_categories_stay_manual_and_deleting_one_restores_automatic_classificat
     let c = fixture.open();
     // Backups made before custom categories have no record list for them.
     let mut old = c.manifest().unwrap();
-    old["records"].as_object_mut().unwrap().remove("custom_category");
+    old["records"]
+        .as_object_mut()
+        .unwrap()
+        .remove("custom_category");
     let restored = Fixture::new();
     restored.open().restore_manifest(old).unwrap();
     product(&c, "hair");
-    c.put("product", "plain", json!({"id":"plain","title":"Authored unrelated print"})).unwrap();
+    c.put(
+        "product",
+        "plain",
+        json!({"id":"plain","title":"Authored unrelated print"}),
+    )
+    .unwrap();
     let create = |name: &str| c.command("custom_category", json!({"op":"create","name":name}));
     let props = text(&create("Props").unwrap()["customCategories"][0], "id").to_owned();
     assert!(props.starts_with("custom:"));
     assert!(create(" ｐｒｏｐｓ ").is_err());
-    for missing in [format!("custom:{}", Uuid::new_v4()), "custom:authored".into()] {
-        assert!(c.command("overlay", json!({"ids":["hair"],"patch":{"category":missing}})).is_err());
+    for missing in [
+        format!("custom:{}", Uuid::new_v4()),
+        "custom:authored".into(),
+    ] {
+        assert!(c
+            .command(
+                "overlay",
+                json!({"ids":["hair"],"patch":{"category":missing}})
+            )
+            .is_err());
     }
     let category = |id| projection(&c, id)["category"].clone();
-    let in_all = |id| c.command("query", json!({})).unwrap()["matchedIds"].as_array().unwrap().contains(&json!(id));
+    let in_all = |id| {
+        c.command("query", json!({})).unwrap()["matchedIds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(id))
+    };
     assert!(!in_all("plain"));
-    c.command("overlay", json!({"ids":["hair","plain"],"patch":{"category":props}})).unwrap();
-    assert_eq!(c.command("query", json!({"category":props})).unwrap()["matchedIds"].as_array().unwrap().len(), 2);
+    c.command(
+        "overlay",
+        json!({"ids":["hair","plain"],"patch":{"category":props}}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.command("query", json!({"category":props})).unwrap()["matchedIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert!(in_all("plain"));
     // A new source observation cannot reclassify a manually chosen custom category.
-    c.put("product", "hair", json!({"id":"hair","title":"Authored shader","sourceCategory":{"name":"Shader"}})).unwrap();
+    c.put(
+        "product",
+        "hair",
+        json!({"id":"hair","title":"Authored shader","sourceCategory":{"name":"Shader"}}),
+    )
+    .unwrap();
     assert_eq!(category("hair"), props);
-    c.command("custom_category", json!({"op":"update","id":props,"name":"Small props"})).unwrap();
+    c.command(
+        "custom_category",
+        json!({"op":"update","id":props,"name":"Small props"}),
+    )
+    .unwrap();
     create("Kept").unwrap();
-    let away = c.command("overlay", json!({"ids":["hair"],"patch":{"category":"Tool"}})).unwrap();
+    let away = c
+        .command(
+            "overlay",
+            json!({"ids":["hair"],"patch":{"category":"Tool"}}),
+        )
+        .unwrap();
     let copy = Fixture::new();
     let peer = copy.open();
     peer.restore_manifest(c.manifest().unwrap()).unwrap();
     assert_eq!(projection(&peer, "plain")["category"], props);
-    assert_eq!(peer.command("bootstrap", json!({})).unwrap()["customCategories"].as_array().unwrap().len(), 2);
-    let remaining = c.command("custom_category", json!({"op":"delete","id":props})).unwrap();
-    assert_eq!(remaining["customCategories"].as_array().unwrap().iter().map(|row| text(row, "name")).collect::<Vec<_>>(), ["Kept"]);
-    assert!(c.get("overlay", "plain").unwrap().unwrap().get("category").is_none());
+    assert_eq!(
+        peer.command("bootstrap", json!({})).unwrap()["customCategories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let remaining = c
+        .command("custom_category", json!({"op":"delete","id":props}))
+        .unwrap();
+    assert_eq!(
+        remaining["customCategories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| text(row, "name"))
+            .collect::<Vec<_>>(),
+        ["Kept"]
+    );
+    assert!(c
+        .get("overlay", "plain")
+        .unwrap()
+        .unwrap()
+        .get("category")
+        .is_none());
     assert_eq!(category("plain"), "NonVRChat");
     assert!(!in_all("plain"));
     // Tool is still current, yet undoing the move must not bring back the deleted category.
-    let undone = c.command("undo", json!({"token":away["undoToken"]})).unwrap();
+    let undone = c
+        .command("undo", json!({"token":away["undoToken"]}))
+        .unwrap();
     assert_eq!(undone["conflicts"], json!(["hair"]));
     assert_eq!(category("hair"), "Tool");
 }

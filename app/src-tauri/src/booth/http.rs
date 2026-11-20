@@ -133,8 +133,13 @@ impl MetadataHttp {
                 Ok(r) => r,
                 Err(error) => {
                     let code = transport_code(&error);
-                    crate::support_trace::transport(&url, crate::support_trace::network_cause(&error));
-                    if code == "UNSAFE_REDIRECT" { crate::support_trace::redirect_rejected(&url); }
+                    crate::support_trace::transport(
+                        &url,
+                        crate::support_trace::network_cause(&error),
+                    );
+                    if code == "UNSAFE_REDIRECT" {
+                        crate::support_trace::redirect_rejected(&url);
+                    }
                     if code == "NETWORK_UNAVAILABLE" && attempt + 1 < ATTEMPTS {
                         let wait = Duration::from_secs(2u64.pow(attempt + 1));
                         crate::support_trace::backoff(&url, wait);
@@ -208,7 +213,10 @@ impl MetadataHttp {
                     }
                     Ok(None) => break false,
                     Err(error) => {
-                        crate::support_trace::transport(&url, crate::support_trace::network_cause(&error));
+                        crate::support_trace::transport(
+                            &url,
+                            crate::support_trace::network_cause(&error),
+                        );
                         break true;
                     }
                 }
@@ -539,7 +547,10 @@ mod tests {
         let now = std::time::UNIX_EPOCH + Duration::from_secs(1000);
         assert_eq!(retry_after(Some("90"), now), Duration::from_secs(90));
         assert_eq!(retry_after(Some("600"), now), Duration::from_secs(600));
-        assert_eq!(retry_after(Some("18446744073709551615"), now), Duration::from_secs(5));
+        assert_eq!(
+            retry_after(Some("18446744073709551615"), now),
+            Duration::from_secs(5)
+        );
         let date = "Thu, 01 Jan 1970 00:17:10 GMT";
         assert_eq!(retry_after(Some(date), now), Duration::from_secs(30));
         assert!(retry_after(Some("999999"), now) > Duration::from_secs(120));

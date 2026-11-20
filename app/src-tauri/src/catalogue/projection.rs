@@ -352,7 +352,10 @@ fn kept_status(user_added: bool, status: &str) -> Option<&str> {
 }
 /// The account and source downloadable a store descriptor names.
 fn source_key(file: &Value) -> (String, String) {
-    (text(file, "accountId").to_owned(), text(file, "sourceFileId").to_owned())
+    (
+        text(file, "accountId").to_owned(),
+        text(file, "sourceFileId").to_owned(),
+    )
 }
 /// Source downloadables the given descriptors offer; local files offer none.
 fn offered_sources(
@@ -465,16 +468,18 @@ fn latest_file_job(jobs: &[Value]) -> Option<&Value> {
 fn job_needs_attention(job: &Value, product: &str) -> bool {
     matches!(text(job, "state"), "failed" | "needsAction")
         && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
-        && !strings(&job["attentionDismissed"]).iter().any(|id| id == product)
+        && !strings(&job["attentionDismissed"])
+            .iter()
+            .any(|id| id == product)
         && !only_refused(job)
 }
 
 /// A download that failed only on files its store no longer offers leaves nothing
 /// to retry: a product download never asks for them again.
 fn only_refused(job: &Value) -> bool {
-    job["failures"].as_object().is_some_and(|failures| {
-        !failures.is_empty() && failures.values().all(refused_download)
-    })
+    job["failures"]
+        .as_object()
+        .is_some_and(|failures| !failures.is_empty() && failures.values().all(refused_download))
 }
 
 /// Records to rewrite so one product's current failures stop raising Attention. No
@@ -494,7 +499,11 @@ pub(super) fn dismissed_attention(
     let jobs = product_jobs(conn, id, local_import_jobs)?;
     let failed = latest_file_job(&jobs).filter(|job| job_needs_attention(job, id));
     // Local import summaries are partial, and one import can hold several products.
-    if let Some(mut job) = failed.map(|job| raw(conn, "job", text(job, "id"))).transpose()?.flatten() {
+    if let Some(mut job) = failed
+        .map(|job| raw(conn, "job", text(job, "id")))
+        .transpose()?
+        .flatten()
+    {
         let mut products = strings(&job["attentionDismissed"]);
         products.push(id.to_owned());
         job["attentionDismissed"] = json!(products);
@@ -579,11 +588,12 @@ fn refresh_local(
                 .flatten()
                 .map(|file| text(file, "id"))
                 .collect();
-            rows.into_iter().flatten().any(|file| {
-                file["kept"] == true && changed_files.contains(text(file, "id"))
-            }) || artifacts.iter().any(|artifact| {
-                !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
-            })
+            rows.into_iter()
+                .flatten()
+                .any(|file| file["kept"] == true && changed_files.contains(text(file, "id")))
+                || artifacts.iter().any(|artifact| {
+                    !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
+                })
         };
         if kept_or_unlisted {
             return Ok(false);

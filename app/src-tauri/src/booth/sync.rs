@@ -119,7 +119,14 @@ impl PublicRetry {
         result: Result<Value, String>,
     ) -> Vec<(String, Result<Value, String>)> {
         let code = match result {
-            Err(code) if matches!(code.as_str(), "NETWORK_UNAVAILABLE" | "PUBLIC_METADATA_FAILED") => code,
+            Err(code)
+                if matches!(
+                    code.as_str(),
+                    "NETWORK_UNAVAILABLE" | "PUBLIC_METADATA_FAILED"
+                ) =>
+            {
+                code
+            }
             result => return vec![(request.product, result)],
         };
         if !self.retrying {
@@ -128,7 +135,11 @@ impl PublicRetry {
         }
         // Still failing after the pause: settle the rest without more requests.
         std::iter::once((request.product, Err(code)))
-            .chain(self.deferred.drain(..).map(|(request, code)| (request.product, Err(code))))
+            .chain(
+                self.deferred
+                    .drain(..)
+                    .map(|(request, code)| (request.product, Err(code))),
+            )
             .collect()
     }
     fn next(&mut self) -> Option<PublicRequest> {
@@ -264,24 +275,44 @@ fn source_incomplete_product_count(
     checkpoint: &Checkpoint,
     scopes: &BTreeSet<(String, String, String)>,
 ) -> u64 {
-    scopes.iter().filter(|(account, source, _)| {
-        account == &checkpoint.account_id && source == &checkpoint.source
-    }).count() as u64
+    scopes
+        .iter()
+        .filter(|(account, source, _)| {
+            account == &checkpoint.account_id && source == &checkpoint.source
+        })
+        .count() as u64
 }
 fn trace_source_closure(checkpoint: &Checkpoint, publications: &Publications) {
-    let Some(&(unbound, head_stable)) = publications.source_closures
-        .get(&(checkpoint.account_id.clone(), checkpoint.source.clone())) else { return };
+    let Some(&(unbound, head_stable)) = publications
+        .source_closures
+        .get(&(checkpoint.account_id.clone(), checkpoint.source.clone()))
+    else {
+        return;
+    };
     crate::support_trace::source_closure(
-        &checkpoint.source, checkpoint.terminal, checkpoint.pending.len() as u64,
-        checkpoint.unresolved as u64, checkpoint.enrichment_pending.len() as u64,
+        &checkpoint.source,
+        checkpoint.terminal,
+        checkpoint.pending.len() as u64,
+        checkpoint.unresolved as u64,
+        checkpoint.enrichment_pending.len() as u64,
         source_incomplete_product_count(checkpoint, &publications.incomplete_scopes),
-        unbound, head_stable,
+        unbound,
+        head_stable,
     );
 }
-fn trace_source_assembly(checkpoint: &Checkpoint, publications: &Publications, terminal_unproven_observed: bool) {
-    let incomplete_products = source_incomplete_product_count(checkpoint, &publications.incomplete_scopes);
+fn trace_source_assembly(
+    checkpoint: &Checkpoint,
+    publications: &Publications,
+    terminal_unproven_observed: bool,
+) {
+    let incomplete_products =
+        source_incomplete_product_count(checkpoint, &publications.incomplete_scopes);
     if incomplete_products != 0 {
-        crate::support_trace::source_reason(&checkpoint.source, "SOURCE_MANIFEST_INCOMPLETE", incomplete_products);
+        crate::support_trace::source_reason(
+            &checkpoint.source,
+            "SOURCE_MANIFEST_INCOMPLETE",
+            incomplete_products,
+        );
     }
     if !checkpoint.terminal && !terminal_unproven_observed {
         crate::support_trace::source_reason(&checkpoint.source, "SOURCE_TERMINAL_UNPROVEN", 1);
@@ -291,8 +322,15 @@ fn trace_source_assembly(checkpoint: &Checkpoint, publications: &Publications, t
 fn trace_checked_journal(page: &parser::Page, unbound: bool) -> bool {
     // Journal observations can repeat within an attempt; these are neither
     // unique orders nor committed catalogue counts. Only closed codes escape.
-    for code in page.rows.iter().filter_map(|row| row.error_code.as_deref())
-        .chain(page.free_item.as_ref().and_then(|e| e.error_code.as_deref()))
+    for code in page
+        .rows
+        .iter()
+        .filter_map(|row| row.error_code.as_deref())
+        .chain(
+            page.free_item
+                .as_ref()
+                .and_then(|e| e.error_code.as_deref()),
+        )
     {
         crate::support_trace::source_reason(&page.source, crate::support::safe_code(code), 1);
     }
@@ -312,9 +350,17 @@ fn record_source_head(checkpoint: &mut Checkpoint, final_head: &parser::Page) {
     }
 }
 fn source_local_failure(code: &str) -> bool {
-    matches!(code, "COLLECTOR_UNSUPPORTED" | "SOURCE_UNSUPPORTED" | "CHECKPOINT_INVALID"
-        | "NO_RECOGNIZED_ROWS" | "SOURCE_MARKER_UNKNOWN" | "DIGITAL_PROOF_UNPROVEN"
-        | "SOURCE_TRAVERSAL_LIMIT" | "METADATA_TOO_LARGE")
+    matches!(
+        code,
+        "COLLECTOR_UNSUPPORTED"
+            | "SOURCE_UNSUPPORTED"
+            | "CHECKPOINT_INVALID"
+            | "NO_RECOGNIZED_ROWS"
+            | "SOURCE_MARKER_UNKNOWN"
+            | "DIGITAL_PROOF_UNPROVEN"
+            | "SOURCE_TRAVERSAL_LIMIT"
+            | "METADATA_TOO_LARGE"
+    )
 }
 /// The store answered definitively about one asset: it refused or moved its page, or sent
 /// one that cannot be read. That asset stays as it was and the job goes on. An outage, a
@@ -711,13 +757,19 @@ impl Checkpoint {
             && self.enrichment_pending.is_empty()
     }
 }
-fn resumable_checkpoint(saved: Option<Value>, mode: &str, selected: bool) -> Result<Option<Checkpoint>> {
+fn resumable_checkpoint(
+    saved: Option<Value>,
+    mode: &str,
+    selected: bool,
+) -> Result<Option<Checkpoint>> {
     // A forced traversal or selected-product refresh never resumes this source
     // checkpoint. Do not let an unrelated malformed saved run block that intent.
     if mode == "forced" || selected {
         return Ok(None);
     }
-    saved.map(serde_json::from_value).transpose()
+    saved
+        .map(serde_json::from_value)
+        .transpose()
         .map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))
 }
 #[cfg(test)]
@@ -1060,10 +1112,17 @@ impl BoothService {
                             return Err(error);
                         }
                         incomplete = true;
-                        publications.unbound_sources.insert((account.into(), source.into()));
-                        let mut early = early.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+                        publications
+                            .unbound_sources
+                            .insert((account.into(), source.into()));
+                        let mut early = early
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
                         early.remaining_sources.remove(source);
-                        early.publications.unbound_sources.insert((account.into(), source.into()));
+                        early
+                            .publications
+                            .unbound_sources
+                            .insert((account.into(), source.into()));
                     }
                 }
                 for (product, entries) in collected.products {
@@ -1081,7 +1140,9 @@ impl BoothService {
                         .extend(entries);
                 }
                 publications.checkpoints.extend(collected.checkpoints);
-                publications.source_closures.extend(collected.source_closures);
+                publications
+                    .source_closures
+                    .extend(collected.source_closures);
                 publications.final_records.extend(collected.final_records);
                 publications
                     .incomplete_scopes
@@ -1162,8 +1223,12 @@ impl BoothService {
         let accounts: BTreeSet<String> = owned_sources
             .iter()
             .filter(|e| e["productId"].as_str().is_some_and(|p| ids.contains(p)))
-            .filter(|e| job["args"]["publicOnly"] != true
-                && job["accountId"].as_str().is_none_or(|account| e["accountId"] == account))
+            .filter(|e| {
+                job["args"]["publicOnly"] != true
+                    && job["accountId"]
+                        .as_str()
+                        .is_none_or(|account| e["accountId"] == account)
+            })
             .filter_map(|e| e["accountId"].as_str().map(str::to_owned))
             .collect();
         let owned_accounts_present = !accounts.is_empty();
@@ -1333,7 +1398,8 @@ impl BoothService {
                 // was, and stops the job if the account must sign in again.
                 Err(error) if product_local_failure(&super::code(&error)) => {
                     if !session_proven {
-                        self.read_page(client, "purchase", "/orders?page=1", None).await?;
+                        self.read_page(client, "purchase", "/orders?page=1", None)
+                            .await?;
                         session_proven = true;
                     }
                     unreadable_page("purchase", &route, &super::code(&error))?
@@ -1387,8 +1453,20 @@ impl BoothService {
         }
         collected.retain(|row| row.product_id.as_ref().is_some_and(|id| !left.contains(id)));
         kept.extend(left);
-        self.stage_selected(app, job, account, "purchase", checkpoint, collected, row_routes, public, enriched, publications, refused)
-            .await
+        self.stage_selected(
+            app,
+            job,
+            account,
+            "purchase",
+            checkpoint,
+            collected,
+            row_routes,
+            public,
+            enriched,
+            publications,
+            refused,
+        )
+        .await
     }
     /// A free item's own page lists everything it offers now, and the download history a
     /// sync recorded proves the account has it, so its update reads that page and not the
@@ -1446,9 +1524,21 @@ impl BoothService {
             job["progress"] = json!({"stage":"collecting","source":"free","detailsCompleted":checkpoint.details_completed,"mode":"selected"});
             self.progress(app, job)?;
         }
-        self.stage_selected(app, job, account, "free", checkpoint, rows, row_routes, public, enriched, publications, refused)
-            .await
-            .map(Some)
+        self.stage_selected(
+            app,
+            job,
+            account,
+            "free",
+            checkpoint,
+            rows,
+            row_routes,
+            public,
+            enriched,
+            publications,
+            refused,
+        )
+        .await
+        .map(Some)
     }
     /// Prepares the products a selected refresh settled for publication, with fresh public
     /// metadata, and returns them.
@@ -1467,7 +1557,10 @@ impl BoothService {
         refused: &mut BTreeSet<String>,
     ) -> Result<BTreeSet<String>> {
         let key = format!("booth-selected:{}:{account}:{source}", field(job, "id")?);
-        let products: BTreeSet<String> = rows.iter().filter_map(|row| row.product_id.clone()).collect();
+        let products: BTreeSet<String> = rows
+            .iter()
+            .filter_map(|row| row.product_id.clone())
+            .collect();
         for product in &products {
             let product_rows: Vec<_> = rows
                 .iter()
@@ -1717,8 +1810,21 @@ impl BoothService {
         prefetch: Option<&PublicPrefetch>,
     ) -> Result<SourceScan> {
         crate::support_trace::source_start(source);
-        let result = self.scan_source_inner(app, job, account, source, mode, client, selected,
-            public, enriched, publications, prefetch).await;
+        let result = self
+            .scan_source_inner(
+                app,
+                job,
+                account,
+                source,
+                mode,
+                client,
+                selected,
+                public,
+                enriched,
+                publications,
+                prefetch,
+            )
+            .await;
         let error = result.as_ref().err().map(super::code);
         crate::support_trace::source_done(
             source,
@@ -1757,7 +1863,9 @@ impl BoothService {
             .map(|b| b.known_receipts(account, source))
             .unwrap_or_default();
         let previous = resumable_checkpoint(
-            self.inner.catalogue.get("checkpoint", &key)?, mode, selected.is_some(),
+            self.inner.catalogue.get("checkpoint", &key)?,
+            mode,
+            selected.is_some(),
         )?;
         let mut checkpoint = if let Some(previous) = previous.filter(|p| {
             !p.finished
@@ -1830,15 +1938,17 @@ impl BoothService {
                 bail!("FREE_ITEM_HISTORY_UNPROVEN");
             }
             if safety::updated_order(&page.route) {
-                if let Some(updated) = updated_tracker.as_mut().filter(|_| recovered_overlap.is_some()) {
+                if let Some(updated) = updated_tracker
+                    .as_mut()
+                    .filter(|_| recovered_overlap.is_some())
+                {
                     updated.observe(&page);
                 }
             } else if let Some(tracker) = tracker.as_mut().filter(|_| recovered_overlap.is_none()) {
                 let proof = tracker.observe(&page);
                 if checkpoint.overlap_end.is_some() && proof == checkpoint.overlap_end {
                     recovered_overlap = proof;
-                    updated_tracker =
-                        baseline.map(|base| tracker.updated(&base.updated_head));
+                    updated_tracker = baseline.map(|base| tracker.updated(&base.updated_head));
                 }
             }
         }
@@ -1859,7 +1969,9 @@ impl BoothService {
         }
         reuse_known_receipts(&mut checkpoint, &known_receipts);
         self.save_checkpoint(&key, &checkpoint)?;
-        self.inner.catalogue.prune_store_checkpoints("BOOTH", account)?;
+        self.inner
+            .catalogue
+            .prune_store_checkpoints("BOOTH", account)?;
         let coverage_id = format!("{account}:{source}");
         if let Some((kind, id, value)) = source_coverage_record(
             selected,
@@ -1932,7 +2044,9 @@ impl BoothService {
                 // In updated order only what changed counts as read; the rest is the last pass's.
                 let unchanged_here = |row: &parser::Row| {
                     safety::updated_order(&page.route)
-                        && !updated_tracker.as_ref().is_some_and(|updated| updated.changes(row))
+                        && !updated_tracker
+                            .as_ref()
+                            .is_some_and(|updated| updated.changes(row))
                 };
                 for row in page.rows.iter().filter(|row| !unchanged_here(row)) {
                     if let Some(id) = &row.product_id {
@@ -1962,7 +2076,10 @@ impl BoothService {
                 checkpoint.journal_ids.push(journal_id.clone());
                 let updated_page = safety::updated_order(&page.route);
                 if updated_page {
-                    match updated_tracker.as_mut().map(|updated| updated.observe(&page)) {
+                    match updated_tracker
+                        .as_mut()
+                        .map(|updated| updated.observe(&page))
+                    {
                         Some(UpdatedRead::Settled) => checkpoint.pending.clear(),
                         Some(UpdatedRead::Reading) => {}
                         Some(UpdatedRead::Broken) | None => {
@@ -1995,7 +2112,9 @@ impl BoothService {
                         // A file's page stays one the list always has.
                         discovered.route = format!("{}?page=1", safety::source_path(source)?);
                         discovered.rows.retain(|row| {
-                            updated_tracker.as_ref().is_some_and(|updated| updated.changes(row))
+                            updated_tracker
+                                .as_ref()
+                                .is_some_and(|updated| updated.changes(row))
                         });
                     }
                     if let Some(evidence) = &page.free_item {
@@ -2212,7 +2331,8 @@ impl BoothService {
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             all_rows.extend(rows.iter().cloned());
         }
-        let retained_observations = checkpoint.overlap_end.is_some() || !checkpoint.reused.is_empty();
+        let retained_observations =
+            checkpoint.overlap_end.is_some() || !checkpoint.reused.is_empty();
         // A verified incremental tail retains its original order identity; its
         // receipt route can be reconstructed without a page-number guess.
         for row in &all_rows {
@@ -2558,7 +2678,9 @@ impl BoothService {
                 details,
                 updated_head: super::incremental::next_head(
                     &updated_rows,
-                    previous_baseline.as_ref().map_or(&[], |base| &base.updated_head),
+                    previous_baseline
+                        .as_ref()
+                        .map_or(&[], |base| &base.updated_head),
                 ),
             };
             let mut value = serde_json::to_value(base)?;
@@ -2594,7 +2716,10 @@ impl BoothService {
         publications.checkpoints.insert(key, checkpoint.clone());
         publications.source_closures.insert(
             (account.into(), source.into()),
-            (unbound_membership, !checkpoint.head.is_empty() && checkpoint.head == final_head.fingerprint),
+            (
+                unbound_membership,
+                !checkpoint.head.is_empty() && checkpoint.head == final_head.fingerprint,
+            ),
         );
         trace_source_assembly(&checkpoint, publications, terminal_unproven_observed);
         publications.final_records.extend(records);
@@ -2665,25 +2790,36 @@ impl BoothService {
             let id = request.product.clone();
             let draft_id = request.draft_id();
             let mut draft = request.draft.clone();
-            let saved = self.inner.catalogue.get("checkpoint", &draft_id)?
+            let saved = self
+                .inner
+                .catalogue
+                .get("checkpoint", &draft_id)?
                 .and_then(|saved| request.saved_product(&saved));
             let outcome = if let Some(saved) = saved {
                 draft = saved;
                 Ok(())
             } else {
-                self.enrich_into(client, &id, &mut draft, Some(support_pages)).await
+                self.enrich_into(client, &id, &mut draft, Some(support_pages))
+                    .await
             };
-            let result = outcome.map(|_| public_patch(&request.draft, &draft))
+            let result = outcome
+                .map(|_| public_patch(&request.draft, &draft))
                 .map_err(|error| super::code(&error));
             // Current-run parsed product draft only; never publish it here.
             // Completed public requests survive cancellation/restart.
-            self.save_product_draft(&draft_id,
+            self.save_product_draft(
+                &draft_id,
                 json!({"id":draft_id,"accountId":request.account,"source":request.source,
                     "runId":request.run_id,"productId":id,"product":draft,
-                    "enriched":result.is_ok(),"errorCode":result.as_ref().err()}))?;
+                    "enriched":result.is_ok(),"errorCode":result.as_ref().err()}),
+            )?;
             // Exhausted server throttling stops the whole pipeline;
             // do not advance immediately to another product request.
-            if result.as_ref().err().is_some_and(|code| code == "RATE_LIMITED") {
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|code| code == "RATE_LIMITED")
+            {
                 bail!("RATE_LIMITED");
             }
             Ok::<_, anyhow::Error>((request, result))
@@ -3159,7 +3295,12 @@ impl BoothService {
             }
         }
         if !authoritative.is_empty()
-            && self.commit_product_group(job, product, &authoritative, &mut publications.checkpoints)?
+            && self.commit_product_group(
+                job,
+                product,
+                &authoritative,
+                &mut publications.checkpoints,
+            )?
         {
             source_changed(app, std::iter::once(product.into()));
         }
@@ -3366,8 +3507,18 @@ impl BoothService {
                 }
                 if job["type"] == "boothUpdate" {
                     ensure!(job["args"]["publicOnly"] != true, "ACCOUNT_UNAVAILABLE");
-                    ensure!(job["accountId"].as_str().is_none_or(|account| account == entry.account), "ACCOUNT_UNAVAILABLE");
-                    ensure!(batch.get("account", &entry.account)?.is_some_and(|account| account["store"] == "BOOTH"), "ACCOUNT_UNAVAILABLE");
+                    ensure!(
+                        job["accountId"]
+                            .as_str()
+                            .is_none_or(|account| account == entry.account),
+                        "ACCOUNT_UNAVAILABLE"
+                    );
+                    ensure!(
+                        batch
+                            .get("account", &entry.account)?
+                            .is_some_and(|account| account["store"] == "BOOTH"),
+                        "ACCOUNT_UNAVAILABLE"
+                    );
                 }
                 if authoritative && entry.needs_enrichment {
                     bail!("PUBLIC_METADATA_FAILED");
@@ -4155,7 +4306,10 @@ fn saved_free_history(acquisitions: &[Value], account: &str, product: &str) -> V
         })
         .filter_map(|a| {
             Some(parser::Row {
-                source_record_id: a["sourceRecordId"].as_str().filter(|id| !id.is_empty())?.into(),
+                source_record_id: a["sourceRecordId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())?
+                    .into(),
                 product_id: Some(product.into()),
                 acquired_date_text: a["acquiredDateText"].as_str().map(str::to_owned),
                 variant_name: a["variantName"].as_str().map(str::to_owned),
@@ -4545,9 +4699,11 @@ fn reuse_known_receipts(checkpoint: &mut Checkpoint, known: &BTreeMap<String, Ve
         !reuse
     });
     for route in reused {
-        checkpoint
-            .product_ids
-            .extend(known[&route].iter().filter_map(|row| row.product_id.clone()));
+        checkpoint.product_ids.extend(
+            known[&route]
+                .iter()
+                .filter_map(|row| row.product_id.clone()),
+        );
         checkpoint.reused.insert(route);
     }
 }
@@ -4770,11 +4926,18 @@ mod tests {
             free_item: None,
         };
         let mut checkpoint = Checkpoint::fresh("synthetic", "purchase", "incremental").unwrap();
-        let first = listing("/orders?page=1", &["/orders/910001", "/orders/910002", "/orders/910009"], &["/orders?page=2"]);
+        let first = listing(
+            "/orders?page=1",
+            &["/orders/910001", "/orders/910002", "/orders/910009"],
+            &["/orders?page=2"],
+        );
         record_source_page(&mut checkpoint, "purchase", "/orders?page=1", &first, None).unwrap();
         reuse_known_receipts(&mut checkpoint, &known);
         assert_eq!(checkpoint.pending, ["/orders?page=2", "/orders/910009"]);
-        assert_eq!(checkpoint.reused, BTreeSet::from(["/orders/910001".into(), "/orders/910002".into()]));
+        assert_eq!(
+            checkpoint.reused,
+            BTreeSet::from(["/orders/910001".into(), "/orders/910002".into()])
+        );
         assert!(checkpoint.product_ids.contains("900001"));
         // An order shifted onto the next page is neither queued nor reused twice.
         let second = listing("/orders?page=2", &["/orders/910002"], &[]);
@@ -4783,13 +4946,21 @@ mod tests {
         assert_eq!(checkpoint.pending, ["/orders/910009"]);
         assert_eq!(checkpoint.reused.len(), 2);
         // Checkpoints saved before reuse existed still resume.
-        let mut saved = serde_json::to_value(Checkpoint::fresh("synthetic", "purchase", "incremental").unwrap()).unwrap();
+        let mut saved = serde_json::to_value(
+            Checkpoint::fresh("synthetic", "purchase", "incremental").unwrap(),
+        )
+        .unwrap();
         saved.as_object_mut().unwrap().remove("reused");
-        assert!(resumable_checkpoint(Some(saved), "incremental", false).unwrap().unwrap().reused.is_empty());
+        assert!(resumable_checkpoint(Some(saved), "incremental", false)
+            .unwrap()
+            .unwrap()
+            .reused
+            .is_empty());
     }
     #[test]
     fn unchanged_reobservation_rewrites_no_catalogue_record() {
-        let path = std::env::temp_dir().join(format!("nna-booth-unchanged-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("nna-booth-unchanged-{}", uuid::Uuid::new_v4()));
         let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
         let service = BoothService::new(catalogue.clone()).unwrap();
         let account = "synthetic-account";
@@ -4825,7 +4996,19 @@ mod tests {
             let mut checkpoint = Checkpoint::fresh(account, source, "incremental").unwrap();
             let routes = BTreeMap::from([(row.source_record_id.clone(), route.to_owned())]);
             service
-                .publish_product(&job, account, source, "900001", &[row], &routes, &draft, &files, &key, &mut checkpoint, false)
+                .publish_product(
+                    &job,
+                    account,
+                    source,
+                    "900001",
+                    &[row],
+                    &routes,
+                    &draft,
+                    &files,
+                    &key,
+                    &mut checkpoint,
+                    false,
+                )
                 .unwrap();
         };
         let facts = || -> Vec<Value> {
@@ -4837,7 +5020,10 @@ mod tests {
         publish("purchase", "/orders/910001", &receipt);
         publish("library", "/library?page=1", &library);
         let first = facts();
-        let file = catalogue.get("remote_file", "synthetic-account:700001:800001").unwrap().unwrap();
+        let file = catalogue
+            .get("remote_file", "synthetic-account:700001:800001")
+            .unwrap()
+            .unwrap();
         assert_eq!(file["resolverPage"], "/orders/910001");
         std::thread::sleep(std::time::Duration::from_millis(5));
         // Later passes observe the same facts at a later time, from both listings.
@@ -4862,7 +5048,13 @@ mod tests {
         )]);
         // An additive pass over a certified unchanged grant keeps its basis.
         assert!(!service
-            .commit_product_group_mode(&job, "900001", &[entry("purchase", &receipt, "/orders/910001")], &mut checkpoints, false)
+            .commit_product_group_mode(
+                &job,
+                "900001",
+                &[entry("purchase", &receipt, "/orders/910001")],
+                &mut checkpoints,
+                false
+            )
             .unwrap());
         assert_eq!(facts(), first);
         drop(service);
@@ -4873,21 +5065,50 @@ mod tests {
     fn explicit_fresh_traversal_ignores_an_unusable_previous_checkpoint() {
         let malformed = json!({"mode":"incremental","pending":"unusable"});
         assert!(resumable_checkpoint(Some(malformed.clone()), "incremental", false).is_err());
-        assert!(resumable_checkpoint(Some(malformed.clone()), "forced", false).unwrap().is_none());
-        assert!(resumable_checkpoint(Some(malformed), "incremental", true).unwrap().is_none());
+        assert!(
+            resumable_checkpoint(Some(malformed.clone()), "forced", false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(resumable_checkpoint(Some(malformed), "incremental", true)
+            .unwrap()
+            .is_none());
         let saved = Checkpoint::fresh("authored-account", "library", "incremental").unwrap();
-        assert!(resumable_checkpoint(Some(serde_json::to_value(saved).unwrap()), "incremental", false).unwrap().is_some());
+        assert!(resumable_checkpoint(
+            Some(serde_json::to_value(saved).unwrap()),
+            "incremental",
+            false
+        )
+        .unwrap()
+        .is_some());
     }
     #[test]
     fn only_source_local_failures_allow_other_source_scans_to_continue() {
-        for code in ["COLLECTOR_UNSUPPORTED", "SOURCE_UNSUPPORTED", "CHECKPOINT_INVALID",
-            "NO_RECOGNIZED_ROWS", "SOURCE_MARKER_UNKNOWN", "DIGITAL_PROOF_UNPROVEN",
-            "SOURCE_TRAVERSAL_LIMIT", "METADATA_TOO_LARGE"] {
+        for code in [
+            "COLLECTOR_UNSUPPORTED",
+            "SOURCE_UNSUPPORTED",
+            "CHECKPOINT_INVALID",
+            "NO_RECOGNIZED_ROWS",
+            "SOURCE_MARKER_UNKNOWN",
+            "DIGITAL_PROOF_UNPROVEN",
+            "SOURCE_TRAVERSAL_LIMIT",
+            "METADATA_TOO_LARGE",
+        ] {
             assert!(source_local_failure(code));
         }
-        for code in ["AUTH_REQUIRED", "AUTH_CHALLENGE", "PERMISSION_DENIED", "RATE_LIMITED",
-            "NETWORK_UNAVAILABLE", "NETWORK_TIMEOUT", "SOURCE_HTTP_FAILED", "CANCELLED",
-            "ACCOUNT_UNAVAILABLE", "CONCURRENT_UPDATE", "catalogue.lock"] {
+        for code in [
+            "AUTH_REQUIRED",
+            "AUTH_CHALLENGE",
+            "PERMISSION_DENIED",
+            "RATE_LIMITED",
+            "NETWORK_UNAVAILABLE",
+            "NETWORK_TIMEOUT",
+            "SOURCE_HTTP_FAILED",
+            "CANCELLED",
+            "ACCOUNT_UNAVAILABLE",
+            "CONCURRENT_UPDATE",
+            "catalogue.lock",
+        ] {
             assert!(!source_local_failure(code));
         }
     }
@@ -4949,7 +5170,8 @@ mod tests {
         assert!(retry.settle(request("900002"), failed).is_empty());
     }
     #[test]
-    fn a_moved_listing_or_asset_gaps_complete_the_job_but_an_unproven_or_unbound_listing_does_not() {
+    fn a_moved_listing_or_asset_gaps_complete_the_job_but_an_unproven_or_unbound_listing_does_not()
+    {
         let mut checkpoint = Checkpoint::fresh("authored", "library", "full").unwrap();
         checkpoint.terminal = true;
         checkpoint.pending.clear();
@@ -5058,20 +5280,40 @@ mod tests {
     }
     #[test]
     fn selected_update_cannot_recreate_a_removed_accounts_grants() {
-        let path = std::env::temp_dir().join(format!("nna-booth-removed-account-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "nna-booth-removed-account-{}",
+            uuid::Uuid::new_v4()
+        ));
         let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
         let service = BoothService::new(catalogue.clone()).unwrap();
         let account = "10000000-0000-4000-8000-000000000001";
         let job = json!({"id":"authored-update","type":"boothUpdate","accountId":account,"state":"running","args":{"accountId":account,"productIds":["900001"]}});
-        catalogue.put("job", "authored-update", job.clone()).unwrap();
+        catalogue
+            .put("job", "authored-update", job.clone())
+            .unwrap();
         let entry = ProductPublication {
-            account:account.into(), source:"library".into(), product:"900001".into(),
-            rows:vec![], routes:BTreeMap::new(), draft:json!({"id":"900001"}),
-            files:BTreeSet::new(), checkpoint_key:"authored-source".into(),
-            force_verify:true, needs_enrichment:false,
+            account: account.into(),
+            source: "library".into(),
+            product: "900001".into(),
+            rows: vec![],
+            routes: BTreeMap::new(),
+            draft: json!({"id":"900001"}),
+            files: BTreeSet::new(),
+            checkpoint_key: "authored-source".into(),
+            force_verify: true,
+            needs_enrichment: false,
         };
-        let mut checkpoints = BTreeMap::from([("authored-source".to_owned(), Checkpoint::fresh(account, "library", "full").unwrap())]);
-        assert_eq!(service.commit_product_group_mode(&job, "900001", &[entry], &mut checkpoints, true).unwrap_err().to_string(), "ACCOUNT_UNAVAILABLE");
+        let mut checkpoints = BTreeMap::from([(
+            "authored-source".to_owned(),
+            Checkpoint::fresh(account, "library", "full").unwrap(),
+        )]);
+        assert_eq!(
+            service
+                .commit_product_group_mode(&job, "900001", &[entry], &mut checkpoints, true)
+                .unwrap_err()
+                .to_string(),
+            "ACCOUNT_UNAVAILABLE"
+        );
         for kind in ["product", "acquisition", "entitlement", "remote_file"] {
             assert!(catalogue.list(kind).unwrap().is_empty());
         }
@@ -5083,7 +5325,8 @@ mod tests {
     #[tokio::test]
     async fn source_diagnostics_keep_checked_journal_reasons_and_changed_head() {
         let page = parser::Page {
-            source: "purchase".into(), route: "/orders/910001".into(),
+            source: "purchase".into(),
+            route: "/orders/910001".into(),
             rows: vec![parser::Row {
                 source_record_id: "AUTHORED_SOURCE_MARKER".into(),
                 product_id: Some("900001".into()),
@@ -5091,11 +5334,17 @@ mod tests {
                 error_code: Some("DIGITAL_CONTROLS_UNRESOLVED".into()),
                 ..Default::default()
             }],
-            next: vec![], details: vec![], terminal: false, unresolved: 1,
-            fingerprint: "AUTHORED_CHANGED_HEAD".into(), is_detail: true,
-            ordering: parser::Ordering::Unknown, free_item: None,
+            next: vec![],
+            details: vec![],
+            terminal: false,
+            unresolved: 1,
+            fingerprint: "AUTHORED_CHANGED_HEAD".into(),
+            is_detail: true,
+            ordering: parser::Ordering::Unknown,
+            free_item: None,
         };
-        let mut checkpoint = Checkpoint::fresh("AUTHORED_ACCOUNT_MARKER", "purchase", "forced").unwrap();
+        let mut checkpoint =
+            Checkpoint::fresh("AUTHORED_ACCOUNT_MARKER", "purchase", "forced").unwrap();
         checkpoint.head = "AUTHORED_ORIGINAL_HEAD".into();
         let (_, trace) = crate::support_trace::capture(async {
             assert!(!trace_checked_journal(&page, false));
@@ -5109,17 +5358,39 @@ mod tests {
             missing_terminal.rows.clear();
             missing_terminal.unresolved = 0;
             assert!(trace_checked_journal(&missing_terminal, true));
-            let free = free_item::Evidence::unknown("900002", "FREE_FILE_CONTROLS_UNAVAILABLE", false)
-                .page().unwrap();
+            let free =
+                free_item::Evidence::unknown("900002", "FREE_FILE_CONTROLS_UNAVAILABLE", false)
+                    .page()
+                    .unwrap();
             trace_checked_journal(&free, false);
-        }).await;
+        })
+        .await;
         assert_eq!(checkpoint.unresolved, 1);
-        assert_eq!(trace["sources"]["purchase"]["reasons"]["DIGITAL_CONTROLS_UNRESOLVED"], 2);
-        assert_eq!(trace["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"], 1);
-        assert_eq!(trace["sources"]["library"]["reasons"]["SOURCE_TERMINAL_UNPROVEN"], 1);
-        assert_eq!(trace["sources"]["library"]["reasons"]["SOURCE_MEMBERSHIP_UNBOUND"], 1);
-        assert_eq!(trace["sources"]["free"]["reasons"]["FREE_FILE_CONTROLS_UNAVAILABLE"], 1);
-        let text = crate::support::report(&json!({"type":"boothSync","supportDiagnostics":trace}), &[], &[]);
+        assert_eq!(
+            trace["sources"]["purchase"]["reasons"]["DIGITAL_CONTROLS_UNRESOLVED"],
+            2
+        );
+        assert_eq!(
+            trace["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"],
+            1
+        );
+        assert_eq!(
+            trace["sources"]["library"]["reasons"]["SOURCE_TERMINAL_UNPROVEN"],
+            1
+        );
+        assert_eq!(
+            trace["sources"]["library"]["reasons"]["SOURCE_MEMBERSHIP_UNBOUND"],
+            1
+        );
+        assert_eq!(
+            trace["sources"]["free"]["reasons"]["FREE_FILE_CONTROLS_UNAVAILABLE"],
+            1
+        );
+        let text = crate::support::report(
+            &json!({"type":"boothSync","supportDiagnostics":trace}),
+            &[],
+            &[],
+        );
         assert!(text.contains("checkedJournalAndAssemblyObservationsThisAttempt"));
         for marker in ["AUTHORED_", "/orders/", "900001", "900002", "910001"] {
             assert!(!text.contains(marker));
@@ -5130,14 +5401,22 @@ mod tests {
         let account = "AUTHORED_ACCOUNT_MARKER";
         let mut checkpoint = Checkpoint::fresh(account, "purchase", "forced").unwrap();
         checkpoint.unresolved = 3;
-        checkpoint.enrichment_pending.extend(["900001".into(), "900002".into()]);
+        checkpoint
+            .enrichment_pending
+            .extend(["900001".into(), "900002".into()]);
         let mut publications = Publications::default();
-        publications.source_closures.insert((account.into(), "purchase".into()), (true, false));
+        publications
+            .source_closures
+            .insert((account.into(), "purchase".into()), (true, false));
         publications.incomplete_scopes.extend([
             (account.into(), "purchase".into(), "900001".into()),
             (account.into(), "purchase".into(), "900002".into()),
             (account.into(), "gift".into(), "900003".into()),
-            ("AUTHORED_OTHER_ACCOUNT".into(), "purchase".into(), "900004".into()),
+            (
+                "AUTHORED_OTHER_ACCOUNT".into(),
+                "purchase".into(),
+                "900004".into(),
+            ),
         ]);
         let before = serde_json::to_value(&checkpoint).unwrap();
         let (_, trace) = crate::support_trace::capture(async {
@@ -5145,15 +5424,19 @@ mod tests {
             assert_eq!(serde_json::to_value(&checkpoint).unwrap(), before);
             checkpoint.enrichment_pending.clear();
             trace_source_closure(&checkpoint, &publications);
-        }).await;
+        })
+        .await;
         let source = &trace["sources"]["purchase"];
         assert_eq!(source["reasons"]["SOURCE_MANIFEST_INCOMPLETE"], 2);
         assert_eq!(source["reasons"]["SOURCE_TERMINAL_UNPROVEN"], 1);
-        assert_eq!(source["lastClosure"], json!({
-            "scope":"latestObservedSourceClosure", "terminalSeen":false,
-            "pendingRequests":1,"unresolvedRows":3,"enrichmentPending":0,
-            "incompleteProducts":2,"membershipUnbound":true,"headStable":false
-        }));
+        assert_eq!(
+            source["lastClosure"],
+            json!({
+                "scope":"latestObservedSourceClosure", "terminalSeen":false,
+                "pendingRequests":1,"unresolvedRows":3,"enrichmentPending":0,
+                "incompleteProducts":2,"membershipUnbound":true,"headStable":false
+            })
+        );
         assert!(source.get("state").is_none());
         let text = serde_json::to_string(&trace).unwrap();
         for marker in ["AUTHORED_", "900001", "900002", "900003", "900004"] {
@@ -5817,16 +6100,35 @@ mod tests {
             "900002".into(),
             vec![entry("900002", "library"), entry("900002", "purchase")],
         );
-        early.observations.insert("900002".into(), Err("PUBLIC_METADATA_FAILED".into()));
-        assert_eq!(service
-            .publish_early_records(&job, &mut early, None)
-            .unwrap(), vec!["900002"]); // complete observed grants do not wait for public metadata
-        assert_ne!(catalogue.get("product", "900002").unwrap().unwrap()["publicMetadataState"], "complete");
-        assert_eq!(catalogue.get("entitlement", "authored-account:purchase:900002").unwrap().unwrap()["manifestComplete"], false);
-        assert!(early.publications.products["900002"].iter().all(|entry| entry.needs_enrichment));
+        early
+            .observations
+            .insert("900002".into(), Err("PUBLIC_METADATA_FAILED".into()));
+        assert_eq!(
+            service
+                .publish_early_records(&job, &mut early, None)
+                .unwrap(),
+            vec!["900002"]
+        ); // complete observed grants do not wait for public metadata
+        assert_ne!(
+            catalogue.get("product", "900002").unwrap().unwrap()["publicMetadataState"],
+            "complete"
+        );
+        assert_eq!(
+            catalogue
+                .get("entitlement", "authored-account:purchase:900002")
+                .unwrap()
+                .unwrap()["manifestComplete"],
+            false
+        );
+        assert!(early.publications.products["900002"]
+            .iter()
+            .all(|entry| entry.needs_enrichment));
         let mut closed = Publications {
             checkpoints: early.publications.checkpoints.clone(),
-            products: BTreeMap::from([("900002".into(), early.publications.products["900002"].clone())]),
+            products: BTreeMap::from([(
+                "900002".into(),
+                early.publications.products["900002"].clone(),
+            )]),
             ..Default::default()
         };
         for checkpoint in closed.checkpoints.values_mut() {
@@ -5842,8 +6144,14 @@ mod tests {
         }
         let mut incomplete = entry("900003", "purchase");
         incomplete.rows[0].manifest_complete = false;
-        early.publications.products.insert("900003".into(), vec![incomplete]);
-        assert!(service.publish_early_records(&job, &mut early, None).unwrap().is_empty());
+        early
+            .publications
+            .products
+            .insert("900003".into(), vec![incomplete]);
+        assert!(service
+            .publish_early_records(&job, &mut early, None)
+            .unwrap()
+            .is_empty());
         assert!(catalogue.get("product", "900003").unwrap().is_none());
         early.observations.insert(
             "900002".into(),
@@ -6736,7 +7044,8 @@ mod tests {
         // Work for a product no list shows now cannot finish, so it does not hold the source open.
         c.pending.clear();
         c.terminal = true;
-        c.enrichment_pending.extend(["900001".to_owned(), "900002".to_owned()]);
+        c.enrichment_pending
+            .extend(["900001".to_owned(), "900002".to_owned()]);
         c.forget_unlisted(|id| id == "900001");
         assert!(c.enrichment_pending.contains("900001") && !c.complete());
         c.forget_unlisted(|_| false);
@@ -7010,9 +7319,19 @@ mod tests {
             json!({"accountId":"a","source":"free","sourceRecordId":"free:7","productId":"900002"}),
         ];
         let rows = saved_free_history(&acquisitions, "a", "900001");
-        assert_eq!(rows.iter().map(|row| row.source_record_id.as_str()).collect::<Vec<_>>(), ["free:1", "free:2"]);
-        assert!(rows.iter().all(|row| row.product_id.as_deref() == Some("900001")
-            && row.files.is_empty() && !row.manifest_complete && !row.unavailable && row.error_code.is_none()));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.source_record_id.as_str())
+                .collect::<Vec<_>>(),
+            ["free:1", "free:2"]
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row.product_id.as_deref() == Some("900001")
+                && row.files.is_empty()
+                && !row.manifest_complete
+                && !row.unavailable
+                && row.error_code.is_none()));
         assert_eq!(rows[0].acquired_date_text.as_deref(), Some("2026/10/01"));
         assert!(saved_free_history(&acquisitions, "a", "900003").is_empty());
     }
@@ -8330,10 +8649,33 @@ mod tests {
         assert!(authoritative.is_empty());
         assert_eq!(additive.len(), 1);
         assert!(additive[0].needs_enrichment);
-        service.commit_product_group_mode(&job, "900002", &additive, &mut publications.checkpoints, false).unwrap();
-        assert_eq!(catalogue.get("acquisition", "authored-account:purchase:910002").unwrap().unwrap()["paidPrice"], 900);
-        assert_eq!(catalogue.get("entitlement", "authored-account:purchase:900002").unwrap().unwrap()["manifestComplete"], false);
-        assert!(catalogue.get("remote_file", "authored-account:700001:800001").unwrap().is_none());
+        service
+            .commit_product_group_mode(
+                &job,
+                "900002",
+                &additive,
+                &mut publications.checkpoints,
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            catalogue
+                .get("acquisition", "authored-account:purchase:910002")
+                .unwrap()
+                .unwrap()["paidPrice"],
+            900
+        );
+        assert_eq!(
+            catalogue
+                .get("entitlement", "authored-account:purchase:900002")
+                .unwrap()
+                .unwrap()["manifestComplete"],
+            false
+        );
+        assert!(catalogue
+            .get("remote_file", "authored-account:700001:800001")
+            .unwrap()
+            .is_none());
         assert!(publications.checkpoints[&key].published_products.is_empty());
         publications.products.get_mut("900002").unwrap()[0].draft["publicMetadataState"] =
             json!("complete");
@@ -8538,7 +8880,12 @@ mod tests {
         };
         let failed = |code: &str| Err::<Value, String>(code.into());
         let mut retry = PublicRetry::default();
-        assert_eq!(retry.settle(request("900001"), Ok(json!({"title":"Authored"}))).len(), 1);
+        assert_eq!(
+            retry
+                .settle(request("900001"), Ok(json!({"title":"Authored"})))
+                .len(),
+            1
+        );
         assert_eq!(
             retry.settle(request("900002"), failed("PUBLIC_METADATA_INVALID")),
             vec![("900002".into(), failed("PUBLIC_METADATA_INVALID"))]
@@ -8552,7 +8899,10 @@ mod tests {
         }
         let next = retry.next().unwrap();
         assert_eq!(next.product, "900003");
-        assert_eq!(retry.settle(next, Ok(json!({"title":"Recovered"}))).len(), 1);
+        assert_eq!(
+            retry.settle(next, Ok(json!({"title":"Recovered"}))).len(),
+            1
+        );
         // A repeated failure settles the rest without another request.
         let next = retry.next().unwrap();
         assert_eq!(next.product, "900004");
@@ -8571,10 +8921,22 @@ mod tests {
         for (product, needed) in [
             (json!({"id":"900001"}), true),
             (json!({"publicPageAvailability":"unknown"}), true),
-            (json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"complete"}), false),
-            (json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"incomplete"}), true),
-            (json!({"publicPageAvailability":"unavailable","publicMetadataErrorCode":"PUBLIC_METADATA_UNAVAILABLE"}), false),
-            (json!({"publicPageAvailability":"unavailable","publicMetadataState":"incomplete"}), true),
+            (
+                json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"complete"}),
+                false,
+            ),
+            (
+                json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"incomplete"}),
+                true,
+            ),
+            (
+                json!({"publicPageAvailability":"unavailable","publicMetadataErrorCode":"PUBLIC_METADATA_UNAVAILABLE"}),
+                false,
+            ),
+            (
+                json!({"publicPageAvailability":"unavailable","publicMetadataState":"incomplete"}),
+                true,
+            ),
         ] {
             assert_eq!(public_refresh_needed(Some(&product)), needed, "{product}");
         }
@@ -8642,7 +9004,14 @@ mod tests {
         for number in 1..=2 {
             let route = format!("/library?page={number}");
             let next = vec![format!("/library?page={}", number + 1)];
-            record_source_page(&mut c, "library", &route, &page(route.clone(), acquired, next), None).unwrap();
+            record_source_page(
+                &mut c,
+                "library",
+                &route,
+                &page(route.clone(), acquired, next),
+                None,
+            )
+            .unwrap();
         }
         let head = c.head.clone();
         // The overlap held: the plain pages stop and the updated order starts.
@@ -8651,7 +9020,11 @@ mod tests {
         let first = parser::Page {
             fingerprint: "sorted".into(),
             unresolved: 1,
-            ..page(safety::updated_route(1), updated, vec![safety::updated_route(2), safety::updated_route(9)])
+            ..page(
+                safety::updated_route(1),
+                updated,
+                vec![safety::updated_route(2), safety::updated_route(9)],
+            )
         };
         record_source_page(&mut c, "library", &safety::updated_route(1), &first, None).unwrap();
         assert_eq!(c.ordering, acquired);
@@ -8660,12 +9033,31 @@ mod tests {
         assert_eq!(c.unresolved, 0);
         assert_eq!(next_routes(&c.pending).unwrap(), [safety::updated_route(2)]);
         // Only what is about this order gives up on it, and only on this order.
-        for code in ["SOURCE_HTTP_FAILED", "RESPONSE_ROUTE_CHANGED", "NO_RECOGNIZED_ROWS"] {
-            assert!(refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")), "{code}");
-            assert!(!refused_updated_order("/library?page=3", &anyhow::anyhow!("{code}")), "{code}");
+        for code in [
+            "SOURCE_HTTP_FAILED",
+            "RESPONSE_ROUTE_CHANGED",
+            "NO_RECOGNIZED_ROWS",
+        ] {
+            assert!(
+                refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")),
+                "{code}"
+            );
+            assert!(
+                !refused_updated_order("/library?page=3", &anyhow::anyhow!("{code}")),
+                "{code}"
+            );
         }
-        for code in ["AUTH_REQUIRED", "AUTH_CHALLENGE", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CANCELLED"] {
-            assert!(!refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")), "{code}");
+        for code in [
+            "AUTH_REQUIRED",
+            "AUTH_CHALLENGE",
+            "RATE_LIMITED",
+            "NETWORK_UNAVAILABLE",
+            "CANCELLED",
+        ] {
+            assert!(
+                !refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")),
+                "{code}"
+            );
         }
         // Something did not fit: the plain pages go on from where they stopped, and stay on.
         read_every_page(&mut c);
@@ -8673,12 +9065,22 @@ mod tests {
         assert_eq!(c.pending, ["/library?page=3"]);
         let saved = serde_json::to_value(&c).unwrap();
         assert_eq!(saved["readEveryPage"], true);
-        assert!(serde_json::from_value::<Checkpoint>(saved).unwrap().read_every_page);
+        assert!(
+            serde_json::from_value::<Checkpoint>(saved)
+                .unwrap()
+                .read_every_page
+        );
         // A checkpoint saved before this field existed still loads.
-        let mut older = serde_json::to_value(Checkpoint::fresh("synthetic", "library", "incremental").unwrap()).unwrap();
+        let mut older =
+            serde_json::to_value(Checkpoint::fresh("synthetic", "library", "incremental").unwrap())
+                .unwrap();
         assert!(older.get("readEveryPage").is_none());
         older["ordering"] = serde_json::json!("unknown");
-        assert!(!serde_json::from_value::<Checkpoint>(older).unwrap().read_every_page);
+        assert!(
+            !serde_json::from_value::<Checkpoint>(older)
+                .unwrap()
+                .read_every_page
+        );
     }
     #[test]
     fn revision_is_content_evidence_not_signed_url_or_clock() {

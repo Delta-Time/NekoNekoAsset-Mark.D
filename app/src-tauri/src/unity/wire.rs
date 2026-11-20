@@ -457,7 +457,11 @@ pub async fn hello(registry: &Registry) -> Result<LiveEditor> {
 pub async fn native_import(registry: &Registry, path: &str) -> Result<BridgeResponse> {
     let mut command = command(registry, "nativeImport", None, None)?;
     command.path = Some(path);
-    Ok(exchange_within(NATIVE_IMPORT_TIMEOUT, registry, &command, None).await?.1)
+    Ok(
+        exchange_within(NATIVE_IMPORT_TIMEOUT, registry, &command, None)
+            .await?
+            .1,
+    )
 }
 
 pub async fn status(registry: &Registry, request: &RequestIdentity) -> Result<BridgeResponse> {
@@ -767,12 +771,20 @@ mod tests {
         receipt.preparation_total_bytes = Some(100);
         assert!(validate_transfer_response(&preparing, &registry, &request).is_ok());
         preparing.receipt.as_mut().unwrap().preparation_phase = None;
-        preparing.receipt.as_mut().unwrap().preparation_waiting_for_editor = true;
+        preparing
+            .receipt
+            .as_mut()
+            .unwrap()
+            .preparation_waiting_for_editor = true;
         assert!(validate_transfer_response(&preparing, &registry, &request).is_ok());
         preparing.receipt.as_mut().unwrap().preparation_phase = Some("inventedPhase".into());
         assert!(validate_transfer_response(&preparing, &registry, &request).is_err());
         preparing.receipt.as_mut().unwrap().preparation_phase = Some("readPackage".into());
-        preparing.receipt.as_mut().unwrap().preparation_waiting_for_editor = false;
+        preparing
+            .receipt
+            .as_mut()
+            .unwrap()
+            .preparation_waiting_for_editor = false;
         preparing.receipt.as_mut().unwrap().preparation_bytes = Some(101);
         assert!(validate_transfer_response(&preparing, &registry, &request).is_err());
     }

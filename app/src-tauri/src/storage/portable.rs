@@ -359,10 +359,18 @@ pub(super) fn copy_into_locked_root(
         for (input, entry) in payload.iter().zip(&inventory) {
             cancelled(cancel)?;
             let target = destination.join(&entry.relative_path);
-            let mut directory = if entry.is_directory { Some(target.as_path()) } else { target.parent() };
+            let mut directory = if entry.is_directory {
+                Some(target.as_path())
+            } else {
+                target.parent()
+            };
             while let Some(path) = directory {
-                if path == destination { break; }
-                if !path.exists() { created_directories.push(path.to_path_buf()); }
+                if path == destination {
+                    break;
+                }
+                if !path.exists() {
+                    created_directories.push(path.to_path_buf());
+                }
                 directory = path.parent();
             }
             if entry.is_directory {

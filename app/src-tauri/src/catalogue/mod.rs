@@ -1278,7 +1278,12 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
                 ensure!(enabled.is_boolean(), "catalogue.invalid_preferences");
             }
             if let Some(aliases) = setting.get("aliases") {
-                ensure!(aliases.as_array().is_some_and(|values| values.iter().all(Value::is_string)), "catalogue.invalid_preferences");
+                ensure!(
+                    aliases
+                        .as_array()
+                        .is_some_and(|values| values.iter().all(Value::is_string)),
+                    "catalogue.invalid_preferences"
+                );
             }
         }
     }
@@ -1439,7 +1444,11 @@ pub(super) fn rows(conn: &Connection, kind: &str) -> Result<Vec<Value>> {
         .map(|s| serde_json::from_str(&s).map_err(Into::into))
         .collect()
 }
-fn queued_jobs(conn: &Connection, job_type: Option<&str>, store: Option<&str>) -> Result<Vec<Value>> {
+fn queued_jobs(
+    conn: &Connection,
+    job_type: Option<&str>,
+    store: Option<&str>,
+) -> Result<Vec<Value>> {
     // Keep terminal history out of worker polling results and Rust JSON decoding.
     // This deliberately reuses the existing schema; SQLite still filters job rows.
     let mut stmt = conn.prepare("SELECT body FROM entities WHERE kind='job' AND json_extract(body,'$.state')='queued' AND (?1 IS NULL OR json_extract(body,'$.type')=?1) AND (?2 IS NULL OR json_extract(body,'$.store')=?2) ORDER BY id")?;
@@ -1610,7 +1619,10 @@ fn validate_patch(patch: &Value) -> Result<()> {
 }
 /// What a price read from a link belongs to: the listing, not what a browser added to its address.
 pub(crate) fn listing_link(url: &str) -> &str {
-    url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/')
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/')
 }
 pub(super) fn validate_source_url(value: &str) -> Result<()> {
     if !value.is_empty() {
@@ -1660,16 +1672,23 @@ impl Catalogue {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         ensure!(matches!(version, 0 | 1), "catalogue.newer_schema");
         // Refuse unsupported formats before changing their persistent journal mode.
-        let mode: String = conn.query_row(if library_root.is_some() {
-            "PRAGMA journal_mode=DELETE"
-        } else {
-            "PRAGMA journal_mode=WAL"
-        }, [], |row| row.get(0))?;
-        ensure!(if library_root.is_some() {
-            mode.eq_ignore_ascii_case("delete")
-        } else {
-            mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory")
-        }, "catalogue.journal_mode_unavailable");
+        let mode: String = conn.query_row(
+            if library_root.is_some() {
+                "PRAGMA journal_mode=DELETE"
+            } else {
+                "PRAGMA journal_mode=WAL"
+            },
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            if library_root.is_some() {
+                mode.eq_ignore_ascii_case("delete")
+            } else {
+                mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory")
+            },
+            "catalogue.journal_mode_unavailable"
+        );
         conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
         if version == 0 {
             let tx = conn.transaction()?;
@@ -1915,7 +1934,9 @@ impl Catalogue {
             .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
         let mut statement = conn.prepare("SELECT id,json_object('provider',json_extract(summary,'$.provider'),'availability',json_extract(summary,'$.publicPageAvailability'),'sourceUrl',json_extract(summary,'$.sourceUrl'),'provenance',json(COALESCE(json_extract(summary,'$.provenance'),'[]'))) FROM products ORDER BY id")?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows
             .into_iter()
@@ -2843,7 +2864,12 @@ impl Catalogue {
         changes: &mut projection::ProjectionChanges,
         affected: &mut BTreeSet<String>,
     ) -> Result<()> {
-        if kind == "job" && before.into_iter().chain(after).any(|job| job["type"] == "storage:import_local") {
+        if kind == "job"
+            && before
+                .into_iter()
+                .chain(after)
+                .any(|job| job["type"] == "storage:import_local")
+        {
             changes.local_import_jobs = None;
         }
         if kind == "job" && projection::job_changes_product(before, after) {
@@ -3095,13 +3121,18 @@ impl Catalogue {
                 Ok(result)
             }
             "avatar_options" => {
-                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
             }
             "job_diagnostics" => {
-                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                let job = raw(&conn, "job", text(&args, "jobId"))?
-                    .context("JOB_UNAVAILABLE")?;
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let job = raw(&conn, "job", text(&args, "jobId"))?.context("JOB_UNAVAILABLE")?;
                 // A later account checkpoint can belong to a different attempt.
                 // Export only facts retained by this job; never recollect sources.
                 Ok(json!(crate::support::report(&job, &[], &[])))
@@ -3215,19 +3246,34 @@ impl Catalogue {
             );
             validate_patch(change.get("patch").unwrap_or(&json!({})))?;
             if let Some(delta) = change.get("ownedAvatarsDelta") {
-                ensure!(delta.is_object() && delta.as_object().unwrap().len() == 2,
-                    "catalogue.invalid_avatar_delta");
+                ensure!(
+                    delta.is_object() && delta.as_object().unwrap().len() == 2,
+                    "catalogue.invalid_avatar_delta"
+                );
                 for field in ["add", "remove"] {
-                    ensure!(delta[field].as_array().is_some_and(|values| values.iter()
-                        .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))),
-                        "catalogue.invalid_avatar_delta");
+                    ensure!(
+                        delta[field]
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(|value| value
+                                .as_str()
+                                .is_some_and(|value| !value.trim().is_empty()))),
+                        "catalogue.invalid_avatar_delta"
+                    );
                 }
                 let add: BTreeSet<_> = strings(&delta["add"]).into_iter().collect();
-                ensure!(!strings(&delta["remove"]).iter().any(|value| add.contains(value)),
-                    "catalogue.invalid_avatar_delta");
-                ensure!(change["patch"].get("ownedAvatars").is_none()
-                    && !strings(&change["clearFields"]).iter().any(|field| field == "ownedAvatars"),
-                    "catalogue.invalid_avatar_delta");
+                ensure!(
+                    !strings(&delta["remove"])
+                        .iter()
+                        .any(|value| add.contains(value)),
+                    "catalogue.invalid_avatar_delta"
+                );
+                ensure!(
+                    change["patch"].get("ownedAvatars").is_none()
+                        && !strings(&change["clearFields"])
+                            .iter()
+                            .any(|field| field == "ownedAvatars"),
+                    "catalogue.invalid_avatar_delta"
+                );
             }
             ensure!(
                 strings(&change["clearFields"])

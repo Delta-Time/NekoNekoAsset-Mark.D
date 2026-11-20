@@ -1473,7 +1473,10 @@ impl StorageService {
             .extract_one(seven_zip, root, artifact, files, cancel)
             .await;
         if let Err(error) = &result {
-            artifact.as_object_mut().unwrap().remove("attentionDismissed");
+            artifact
+                .as_object_mut()
+                .unwrap()
+                .remove("attentionDismissed");
             artifact["status"] = json!("extractionFailed");
             artifact["errorCode"] = json!(io::stable_error(error));
             self.catalogue.put(

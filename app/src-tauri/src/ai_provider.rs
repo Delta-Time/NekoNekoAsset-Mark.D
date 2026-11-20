@@ -597,9 +597,16 @@ mod tests {
         };
         let schema = crate::ai_analysis::structured_output_schema();
         let payload = request_payload(&config, json!({"messages":[{"role":"user","content":"synthetic"}],"max_completion_tokens":4096,"response_format":{"type":"json_schema","json_schema":schema.clone()}})).unwrap();
-        assert_eq!(payload["generationConfig"]["responseFormat"], json!({"text":{"mimeType":"APPLICATION_JSON","schema":schema["schema"]}}));
-        assert!(payload["generationConfig"].get("responseMimeType").is_none());
-        assert!(payload["generationConfig"].get("responseJsonSchema").is_none());
+        assert_eq!(
+            payload["generationConfig"]["responseFormat"],
+            json!({"text":{"mimeType":"APPLICATION_JSON","schema":schema["schema"]}})
+        );
+        assert!(payload["generationConfig"]
+            .get("responseMimeType")
+            .is_none());
+        assert!(payload["generationConfig"]
+            .get("responseJsonSchema")
+            .is_none());
         assert_eq!(payload["generationConfig"]["maxOutputTokens"], 4096);
     }
     #[test]

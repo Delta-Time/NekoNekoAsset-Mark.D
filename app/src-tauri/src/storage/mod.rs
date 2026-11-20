@@ -300,11 +300,17 @@ impl StorageService {
     }
     fn cancel_job(&self, id: &str) -> Result<Value> {
         loop {
-            let before = self.catalogue.get("job", id)?
+            let before = self
+                .catalogue
+                .get("job", id)?
                 .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
-            ensure!(before["type"] == "download"
-                || before["type"].as_str().is_some_and(|t| t.starts_with("storage:")),
-                "invalid_job");
+            ensure!(
+                before["type"] == "download"
+                    || before["type"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("storage:")),
+                "invalid_job"
+            );
             if !matches!(before["state"].as_str(), Some("queued" | "running")) {
                 return Ok(json!({"cancelRequested":false}));
             }
@@ -338,9 +344,9 @@ impl StorageService {
                     job["type"] == "download"
                         && job["cancelRequested"] != true
                         && matches!(job["state"].as_str(), Some("queued" | "running"))
-                        && products.as_ref().is_none_or(|ids| {
-                            ids.iter().any(|id| job["productId"] == id.as_str())
-                        })
+                        && products
+                            .as_ref()
+                            .is_none_or(|ids| ids.iter().any(|id| job["productId"] == id.as_str()))
                 })
                 .collect();
             let mut records = Vec::new();
@@ -410,11 +416,17 @@ impl StorageService {
                 .filter_map(|f| f["id"].as_str().map(str::to_owned))
                 .collect();
             let source = |f: &Value| {
-                (f["accountId"].as_str().map(str::to_owned), f["sourceFileId"].as_str().map(str::to_owned))
+                (
+                    f["accountId"].as_str().map(str::to_owned),
+                    f["sourceFileId"].as_str().map(str::to_owned),
+                )
             };
             let offered: HashSet<_> = files
                 .iter()
-                .filter(|f| f["originKind"] != "local" && f["sourceFileId"].as_str().is_some_and(|id| !id.is_empty()))
+                .filter(|f| {
+                    f["originKind"] != "local"
+                        && f["sourceFileId"].as_str().is_some_and(|id| !id.is_empty())
+                })
                 .map(source)
                 .collect();
             files.extend(
@@ -496,7 +508,10 @@ impl StorageService {
         state: &str,
         error: Option<&str>,
     ) -> Result<bool> {
-        ensure!(before["type"] == "download" && before["state"] == "queued", "invalid_job");
+        ensure!(
+            before["type"] == "download" && before["state"] == "queued",
+            "invalid_job"
+        );
         let id = io::required_string(before, "id")?;
         job["state"] = json!(state);
         job["updatedAt"] = json!(now());
@@ -518,7 +533,12 @@ impl StorageService {
             if !self.download_has_local_session(&job, &accounts)? {
                 if job["stage"] != "authRequired" || job["errorCode"] != "auth_required" {
                     job["stage"] = json!("authRequired");
-                    changed |= self.put_queued_download(&before, &mut job, "queued", Some("auth_required"))?;
+                    changed |= self.put_queued_download(
+                        &before,
+                        &mut job,
+                        "queued",
+                        Some("auth_required"),
+                    )?;
                 }
                 continue;
             }
@@ -621,7 +641,10 @@ impl StorageService {
                     if job["cancelRequested"] == true {
                         cancel.store(true, Ordering::Release);
                     }
-                    if service.put_queued_download(&before, &mut job, "running", None).unwrap_or(false) {
+                    if service
+                        .put_queued_download(&before, &mut job, "running", None)
+                        .unwrap_or(false)
+                    {
                         service.changed(&app, Some(&id));
                         let result = service.run_download(&app, &mut job, &cancel).await;
                         let (state, error) = match &result {
@@ -806,7 +829,8 @@ impl StorageService {
         let active: Vec<_> = jobs
             .iter()
             .filter(|j| {
-                j["type"] == "download" && j["cancelRequested"] != true
+                j["type"] == "download"
+                    && j["cancelRequested"] != true
                     && matches!(j["state"].as_str(), Some("queued" | "running"))
             })
             .collect();

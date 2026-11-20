@@ -132,7 +132,11 @@ impl Catalogue {
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-        Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sync_outbox)", [], |row| row.get(0))?)
+        Ok(
+            conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sync_outbox)", [], |row| {
+                row.get(0)
+            })?,
+        )
     }
 
     /// Replay immutable before/after intent in order, outside the SQLite mutex.

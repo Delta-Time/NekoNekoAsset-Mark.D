@@ -605,7 +605,11 @@ async fn catalogue_action(
     let mut args = args;
     if action == "query" {
         // The license database answers which products a license filter keeps.
-        if let Some(ids) = services.licenses.matching(&args["license"]).map_err(UiError::from_error)? {
+        if let Some(ids) = services
+            .licenses
+            .matching(&args["license"])
+            .map_err(UiError::from_error)?
+        {
             args["licenseIds"] = json!(ids);
         }
     }
@@ -620,7 +624,10 @@ async fn catalogue_action(
             result["accounts"] = json!(services.stores.account_views(accounts.clone()));
         }
     }
-    if let Some(links) = result.as_object_mut().and_then(|result| result.remove("changedLinks")) {
+    if let Some(links) = result
+        .as_object_mut()
+        .and_then(|result| result.remove("changedLinks"))
+    {
         let links: Vec<String> = serde_json::from_value(links).unwrap_or_default();
         if !links.is_empty() {
             services.storage.read_changed_link_prices(&app, links);
@@ -709,12 +716,19 @@ async fn booth_action(
         }
         if matches!(action.as_str(), "account_login" | "login" | "retry_sync") {
             let account_id = if action == "retry_sync" {
-                setup.catalogue.get("job", args["jobId"].as_str().unwrap_or(""))
+                setup
+                    .catalogue
+                    .get("job", args["jobId"].as_str().unwrap_or(""))
                     .map_err(UiError::from_error)?
                     .and_then(|job| job["accountId"].as_str().map(str::to_owned))
-            } else { args["accountId"].as_str().map(str::to_owned) };
+            } else {
+                args["accountId"].as_str().map(str::to_owned)
+            };
             if let Some(account_id) = account_id {
-                let provider = setup.stores.provider_for_account(&account_id).map_err(UiError::from_error)?;
+                let provider = setup
+                    .stores
+                    .provider_for_account(&account_id)
+                    .map_err(UiError::from_error)?;
                 if let Err(error) = setup.sessions.arm(provider, &account_id) {
                     // No native login/profile write has begun. Discard only the
                     // unused memory account; an existing unmarked profile stays.
@@ -999,7 +1013,10 @@ async fn preview_cache(
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
-    let _work = services.catalogue.begin_catalogue_work().map_err(UiError::from_error)?;
+    let _work = services
+        .catalogue
+        .begin_catalogue_work()
+        .map_err(UiError::from_error)?;
     let path = services
         .previews
         .get(url)
@@ -1009,13 +1026,14 @@ async fn preview_cache(
 }
 
 #[tauri::command]
-async fn library_status(
-    window: tauri::WebviewWindow,
-) -> Result<LibraryStatus, UiError> {
+async fn library_status(window: tauri::WebviewWindow) -> Result<LibraryStatus, UiError> {
     let _operation = trusted(&window)?;
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || active_library_status(&app.state::<LibraryHost>()))
-        .await.map_err(|_| UiError { code: "worker_failed".into() })?
+        .await
+        .map_err(|_| UiError {
+            code: "worker_failed".into(),
+        })?
 }
 
 fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
@@ -1221,13 +1239,22 @@ fn materialize_setup(
 }
 
 fn rearm_unpublished_setup_sessions(setup: &SetupState, target: &Catalogue, accounts: &[Value]) {
-    let unpublished: Vec<_> = accounts.iter().filter(|account| {
-        let Some(id) = account["id"].as_str() else { return false };
-        // Any uncertainty retains the released marker. In particular, an SQL
-        // commit error is never authority to delete a possibly committed login.
-        matches!(target.get("account", id), Ok(None))
-            && setup.catalogue.get("account", id).is_ok_and(|current| current.as_ref() == Some(*account))
-    }).cloned().collect();
+    let unpublished: Vec<_> = accounts
+        .iter()
+        .filter(|account| {
+            let Some(id) = account["id"].as_str() else {
+                return false;
+            };
+            // Any uncertainty retains the released marker. In particular, an SQL
+            // commit error is never authority to delete a possibly committed login.
+            matches!(target.get("account", id), Ok(None))
+                && setup
+                    .catalogue
+                    .get("account", id)
+                    .is_ok_and(|current| current.as_ref() == Some(*account))
+        })
+        .cloned()
+        .collect();
     let _ = setup.sessions.rearm(&unpublished);
 }
 
@@ -1381,7 +1408,9 @@ async fn library_open(
                     code: "worker_failed".into(),
                 })?
                 .map_err(UiError::from_error)?;
-            let mut reset_status = host.status.lock().map_err(|_| UiError { code: "library_unavailable".into() })?;
+            let mut reset_status = host.status.lock().map_err(|_| UiError {
+                code: "library_unavailable".into(),
+            })?;
             reset_status.state = "unconfigured".into();
             reset_status.path = None;
             reset_status.error_code = None;
@@ -1564,7 +1593,10 @@ fn update_ready(host: &LibraryHost) -> Result<Services, UiError> {
     if services.setup_only {
         return Err(busy("updates_busy_library"));
     }
-    let jobs = services.catalogue.list("job").map_err(UiError::from_error)?;
+    let jobs = services
+        .catalogue
+        .list("job")
+        .map_err(UiError::from_error)?;
     match jobs.iter().find_map(updates::blocking_job) {
         Some(code) => Err(busy(code)),
         None => Ok(services),
@@ -1740,7 +1772,9 @@ pub fn run() {
                         catalogue.clone(),
                         LibraryStatus {
                             state: if error.is_some() {
-                                if default_path.as_ref().is_some_and(|path| path.join(".nna/data/catalogue.sqlite3").is_file()) {
+                                if default_path.as_ref().is_some_and(|path| {
+                                    path.join(".nna/data/catalogue.sqlite3").is_file()
+                                }) {
                                     "blocked"
                                 } else {
                                     "unconfigured"

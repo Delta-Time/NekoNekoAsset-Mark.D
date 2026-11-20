@@ -102,7 +102,10 @@ pub(super) fn jinxxy_description(raw: &str) -> String {
         for child in node["children"].as_array().into_iter().flatten() {
             append(child, output);
         }
-        if matches!(node["type"].as_str(), Some("paragraph" | "heading" | "listitem")) {
+        if matches!(
+            node["type"].as_str(),
+            Some("paragraph" | "heading" | "listitem")
+        ) {
             output.push('\n');
         }
     }
@@ -147,21 +150,34 @@ fn jinxxy_flight(document: &Html) -> Result<BTreeMap<String, Value>> {
         // Flight's declared UTF-8 byte lengths. Read the text nodes verbatim.
         let content = script.text().collect::<String>();
         let mut remaining = content.trim();
-        if let Some(value) = remaining.strip_prefix("(self.__next_f=self.__next_f||[]).push([0]);") {
+        if let Some(value) = remaining.strip_prefix("(self.__next_f=self.__next_f||[]).push([0]);")
+        {
             remaining = value.trim_start();
         }
         while let Some(literal) = remaining.strip_prefix(PUSH) {
             let mut decoder = serde_json::Deserializer::from_str(literal).into_iter::<Value>();
-            let value = decoder.next().transpose()
+            let value = decoder
+                .next()
+                .transpose()
                 .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?
                 .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
-            remaining = literal[decoder.byte_offset()..].trim_start().strip_prefix(')')
-                .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?.trim_start();
-            remaining = remaining.strip_prefix(';').unwrap_or(remaining).trim_start();
+            remaining = literal[decoder.byte_offset()..]
+                .trim_start()
+                .strip_prefix(')')
+                .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?
+                .trim_start();
+            remaining = remaining
+                .strip_prefix(';')
+                .unwrap_or(remaining)
+                .trim_start();
             if value[0] == 1 {
-                let chunk = value[1].as_str()
+                let chunk = value[1]
+                    .as_str()
                     .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
-                ensure!(stream.len() + chunk.len() <= LIMIT, "PUBLIC_METADATA_INVALID");
+                ensure!(
+                    stream.len() + chunk.len() <= LIMIT,
+                    "PUBLIC_METADATA_INVALID"
+                );
                 stream.push_str(chunk);
             }
         }
@@ -169,7 +185,9 @@ fn jinxxy_flight(document: &Html) -> Result<BTreeMap<String, Value>> {
     let mut records = BTreeMap::new();
     let mut remaining = stream.as_str();
     while !remaining.is_empty() {
-        let Some((id, body)) = remaining.split_once(':') else { break; };
+        let Some((id, body)) = remaining.split_once(':') else {
+            break;
+        };
         // Next's public stream includes ID-less CSS/font preload hints. They
         // carry no model data and must not prevent reading the product records.
         if id.is_empty() && body.starts_with("HL[") {
@@ -180,11 +198,15 @@ fn jinxxy_flight(document: &Html) -> Result<BTreeMap<String, Value>> {
             bail!("PUBLIC_METADATA_INVALID");
         }
         if let Some(length) = body.strip_prefix('T') {
-            let (length, payload) = length.split_once(',')
+            let (length, payload) = length
+                .split_once(',')
                 .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
             let length = usize::from_str_radix(length, 16)
                 .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
-            ensure!(length <= payload.len() && payload.is_char_boundary(length), "PUBLIC_METADATA_INVALID");
+            ensure!(
+                length <= payload.len() && payload.is_char_boundary(length),
+                "PUBLIC_METADATA_INVALID"
+            );
             records.insert(id.to_owned(), Value::String(payload[..length].to_owned()));
             remaining = payload[length..].trim_start_matches('\n');
         } else {
@@ -198,16 +220,26 @@ fn jinxxy_flight(document: &Html) -> Result<BTreeMap<String, Value>> {
     Ok(records)
 }
 
-fn jinxxy_presentation(source: &Url, document: &Html, expected_id: Option<&str>) -> Result<Option<Value>> {
+fn jinxxy_presentation(
+    source: &Url,
+    document: &Html,
+    expected_id: Option<&str>,
+) -> Result<Option<Value>> {
     fn products<'a>(value: &'a Value, result: &mut Vec<&'a Value>) {
         match value {
             Value::Object(object) => {
                 if value["__typename"] == "PublicProduct" {
                     result.push(value);
                 }
-                for child in object.values() { products(child, result); }
+                for child in object.values() {
+                    products(child, result);
+                }
             }
-            Value::Array(values) => for child in values { products(child, result); },
+            Value::Array(values) => {
+                for child in values {
+                    products(child, result);
+                }
+            }
             _ => {}
         }
     }
@@ -217,7 +249,9 @@ fn jinxxy_presentation(source: &Url, document: &Html, expected_id: Option<&str>)
     let parts: Vec<_> = validated.path().split('/').collect();
     let records = jinxxy_flight(document)?;
     let mut candidates = Vec::new();
-    for record in records.values() { products(record, &mut candidates); }
+    for record in records.values() {
+        products(record, &mut candidates);
+    }
     let Some(product) = candidates.iter().copied().find(|product| {
         product["user"]["username"].as_str() == Some(parts[1])
             && product["url"].as_str() == Some(parts[2])
@@ -225,24 +259,49 @@ fn jinxxy_presentation(source: &Url, document: &Html, expected_id: Option<&str>)
         ensure!(candidates.is_empty(), "PUBLIC_SOURCE_HOST_MISMATCH");
         return Ok(None);
     };
-    let id = product["id"].as_str().filter(|id| !id.is_empty() && id.len() <= 20
-        && id.bytes().all(|byte| byte.is_ascii_digit()) && id.parse::<u64>().is_ok_and(|id| id > 0))
+    let id = product["id"]
+        .as_str()
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 20
+                && id.bytes().all(|byte| byte.is_ascii_digit())
+                && id.parse::<u64>().is_ok_and(|id| id > 0)
+        })
         .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
-    ensure!(expected_id.is_none_or(|expected| expected == id), "PUBLIC_SOURCE_HOST_MISMATCH");
+    ensure!(
+        expected_id.is_none_or(|expected| expected == id),
+        "PUBLIC_SOURCE_HOST_MISMATCH"
+    );
     let resolve = |value: &Value| -> Option<String> {
         let raw = value.as_str()?;
-        if let Some(id) = raw.strip_prefix('$').filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        if let Some(id) = raw
+            .strip_prefix('$')
+            .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
             records.get(id)?.as_str().map(str::to_owned)
         } else if raw == "$undefined" {
             None
-        } else { Some(raw.to_owned()) }
+        } else {
+            Some(raw.to_owned())
+        }
     };
     let labels = |value: &Value| -> Option<Vec<String>> {
-        Some(value.as_array()?.iter().filter_map(Value::as_str).take(100)
-            .map(|value| text(value,256)).filter(|value| !value.is_empty()).collect())
+        Some(
+            value
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_str)
+                .take(100)
+                .map(|value| text(value, 256))
+                .filter(|value| !value.is_empty())
+                .collect(),
+        )
     };
     let mut result = json!({"publicProductId":id,"sourceUrl":source.as_str()});
-    if let Some(title) = resolve(&product["name"]).map(|title| text(&title,4096)).filter(|title| !title.is_empty()) {
+    if let Some(title) = resolve(&product["name"])
+        .map(|title| text(&title, 4096))
+        .filter(|title| !title.is_empty())
+    {
         result["sourceTitle"] = json!(title);
     }
     if let Some(description) = resolve(&product["description"])
@@ -251,16 +310,24 @@ fn jinxxy_presentation(source: &Url, document: &Html, expected_id: Option<&str>)
     {
         result["sourceDescription"] = json!(description);
     }
-    let category = resolve(&product["category"]).map(|category| text(&category,256));
+    let category = resolve(&product["category"]).map(|category| text(&category, 256));
     let types = labels(&product["type"]);
     if category.is_some() || types.is_some() {
-        result["sourceCategory"] = json!({"name":category.unwrap_or_default(),"types":types.unwrap_or_default()});
+        result["sourceCategory"] =
+            json!({"name":category.unwrap_or_default(),"types":types.unwrap_or_default()});
     }
-    if let Some(tags) = labels(&product["tags"]) { result["sourceTags"] = json!(tags); }
-    if let Some(url) = product["cover"]["url"].as_str().and_then(|raw| crate::preview::parse_public_url(raw).ok()) {
+    if let Some(tags) = labels(&product["tags"]) {
+        result["sourceTags"] = json!(tags);
+    }
+    if let Some(url) = product["cover"]["url"]
+        .as_str()
+        .and_then(|raw| crate::preview::parse_public_url(raw).ok())
+    {
         result["previewUrl"] = json!(url.as_str());
     }
-    if let Some(price) = super::jinxxy::usd_minor_amount(&product["base_price"], &product["currency_code"]) {
+    if let Some(price) =
+        super::jinxxy::usd_minor_amount(&product["base_price"], &product["currency_code"])
+    {
         result["listingPrice"] = json!({"price":price,"priceCurrency":"USD"});
     }
     Ok(Some(result))
@@ -292,8 +359,12 @@ fn suggestions(
     };
     let mut product =
         json!({"sourceTitle":title,"sourceDescription":description,"sourceTags":tags});
-    if let Some(provider) = provider { product["provider"] = json!(provider.key()); }
-    if let Some(category) = source_category { product["sourceCategory"] = category.clone(); }
+    if let Some(provider) = provider {
+        product["provider"] = json!(provider.key());
+    }
+    if let Some(category) = source_category {
+        product["sourceCategory"] = category.clone();
+    }
     let category = crate::taxonomy::infer_product_category(&product)["category"].clone();
     let thumbnail = thumbnail
         .and_then(|raw| crate::preview::parse_public_url(raw).ok())
@@ -374,15 +445,26 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
         );
     }
     if let Some(product) = jinxxy_presentation(url, &document, None)? {
-        let title = product["sourceTitle"].as_str().map(str::to_owned)
-            .or_else(|| meta("og:title")).unwrap_or_default();
-        let thumbnail = product["previewUrl"].as_str().map(str::to_owned)
+        let title = product["sourceTitle"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| meta("og:title"))
+            .unwrap_or_default();
+        let thumbnail = product["previewUrl"]
+            .as_str()
+            .map(str::to_owned)
             .or_else(|| meta("og:image"));
         let mut result = suggestions(
             url,
             &title,
             product["sourceDescription"].as_str().unwrap_or(""),
-            product["sourceTags"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect(),
+            product["sourceTags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
             thumbnail.as_deref(),
             Some(StoreProvider::Jinxxy),
             product.get("sourceCategory"),
@@ -401,7 +483,15 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
         .split(',')
         .map(str::to_owned)
         .collect();
-    suggestions(url, &title, &description, tags, meta("og:image").as_deref(), Some(StoreProvider::Jinxxy), None)
+    suggestions(
+        url,
+        &title,
+        &description,
+        tags,
+        meta("og:image").as_deref(),
+        Some(StoreProvider::Jinxxy),
+        None,
+    )
 }
 
 async fn fetch_body(
@@ -433,9 +523,12 @@ pub(super) async fn fetch_jinxxy_presentation(
         .filter(|(provider, _)| *provider == StoreProvider::Jinxxy)
         .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_URL"))?;
     let body = fetch_body(transport, StoreProvider::Jinxxy, source.clone()).await?;
-    let mut presentation =
-        jinxxy_presentation(&source, &Html::parse_document(&body), Some(expected_product_id))?
-            .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
+    let mut presentation = jinxxy_presentation(
+        &source,
+        &Html::parse_document(&body),
+        Some(expected_product_id),
+    )?
+    .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
     // Buyer sync merges this into the product and has its own quote.
     if let Some(fields) = presentation.as_object_mut() {
         fields.remove("listingPrice");
@@ -480,18 +573,36 @@ mod tests {
         let mut product = json!({"api_version":1,"id":"authored-product",
             "short_permalink":"shader","name":"Authored Shader",
             "tags":["Shader","VRChat"],"description":"Blender shader"});
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "NonVRChat"
+        );
         product["description"] = json!("<p>Shader for VR<strong>Chat</strong></p>");
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "Shader"
+        );
         product["description"] = json!("<a href='https://example.invalid/VRChat' title='VRChat'>Read manual</a><img alt='VRC'><script>VRChat</script><style>VRC</style><nav>VRChat</nav>");
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "NonVRChat"
+        );
         product["name"] = json!("Authored VRC Shader");
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "Shader"
+        );
         product["name"] = json!("Authored Shader");
         product["description"] = json!("Shader for &lt;VRChat&gt;");
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "Shader"
+        );
         product["description"] = Value::Null;
-        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
+        assert_eq!(
+            gumroad_values(&source, &product).unwrap()["category"],
+            "NonVRChat"
+        );
     }
 
     fn authored_flight(product: Value, description: Option<&str>) -> String {
@@ -499,8 +610,11 @@ mod tests {
         if let Some(description) = description {
             stream.push_str(&format!("a:T{:x},{description}\n", description.len()));
         }
-        let split = stream.char_indices().map(|(offset, _)| offset)
-            .find(|offset| *offset >= stream.len() / 2).unwrap_or(stream.len());
+        let split = stream
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .find(|offset| *offset >= stream.len() / 2)
+            .unwrap_or(stream.len());
         format!(
             "<script>(self.__next_f=self.__next_f||[]).push([0]);self.__next_f.push({});</script><script>self.__next_f.push({})</script>",
             json!([1,&stream[..split]]), json!([1,&stream[split..]])
@@ -522,13 +636,20 @@ mod tests {
         let source = Url::parse("https://jinxxy.com/authored/product").unwrap();
         let html = authored_flight(authored_product(), Some(&description));
         let presentation = jinxxy_presentation(&source, &Html::parse_document(&html), Some("42"))
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(presentation["publicProductId"], "42");
         assert_eq!(presentation["sourceUrl"], source.as_str());
         assert_eq!(presentation["sourceTitle"], "Authored Coat");
-        assert_eq!(presentation["sourceDescription"], "Authored coat For VRChat. Read manual 対応衣装");
-        assert_eq!(presentation["sourceCategory"], json!({"name":"avatar-clothing","types":["clothing"]}));
-        assert_eq!(presentation["sourceTags"], json!(["coat","cloth"]));
+        assert_eq!(
+            presentation["sourceDescription"],
+            "Authored coat For VRChat. Read manual 対応衣装"
+        );
+        assert_eq!(
+            presentation["sourceCategory"],
+            json!({"name":"avatar-clothing","types":["clothing"]})
+        );
+        assert_eq!(presentation["sourceTags"], json!(["coat", "cloth"]));
         assert_eq!(presentation.as_object().unwrap().len(), 7);
         assert!(!presentation.to_string().contains("NOT_PRESENTATION"));
         assert!(!presentation.to_string().contains("NON_TEXT"));
@@ -539,7 +660,7 @@ mod tests {
         assert!(jinxxy_presentation(&other, &Html::parse_document(&html), Some("42")).is_err());
         let editor = html_values(&source, &html).unwrap();
         assert_eq!(editor["title"], "Authored Coat");
-        assert_eq!(editor["tags"], json!(["cloth","coat"]));
+        assert_eq!(editor["tags"], json!(["cloth", "coat"]));
         assert_eq!(editor.as_object().unwrap().len(), 5);
     }
 
@@ -550,7 +671,10 @@ mod tests {
         product["base_price"] = json!(5000);
         product["currency_code"] = json!("USD");
         let editor = html_values(&source, &authored_flight(product.clone(), None)).unwrap();
-        assert_eq!(editor["listingPrice"], json!({"price":50.0,"priceCurrency":"USD"}));
+        assert_eq!(
+            editor["listingPrice"],
+            json!({"price":50.0,"priceCurrency":"USD"})
+        );
         product["currency_code"] = json!("EUR");
         let editor = html_values(&source, &authored_flight(product, None)).unwrap();
         assert!(editor.get("listingPrice").is_none());
@@ -559,29 +683,45 @@ mod tests {
         let public = |extra: Value| {
             let mut value = json!({"api_version":1,"id":"authored-id","short_permalink":"shader",
                 "name":"Authored Shader","is_pay_what_you_want":false,"is_recurring_billing":false});
-            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
             gumroad_values(&source, &value).unwrap()
         };
         assert_eq!(
-            public(json!({"price_cents":2000,"currency_code":"usd","price_formatted":"$20"}))["listingPrice"],
+            public(json!({"price_cents":2000,"currency_code":"usd","price_formatted":"$20"}))
+                ["listingPrice"],
             json!({"price":20.0,"priceCurrency":"USD","priceFormatted":"$20","priceSourceCurrency":"USD"})
         );
         assert_eq!(
-            public(json!({"price_cents":1000,"currency_code":"jpy","price_formatted":"¥1,000"}))["listingPrice"],
+            public(json!({"price_cents":1000,"currency_code":"jpy","price_formatted":"¥1,000"}))
+                ["listingPrice"],
             json!({"price":null,"priceCurrency":null,"priceFormatted":"¥1,000","priceSourceCurrency":"JPY"})
         );
         assert!(public(json!({})).get("listingPrice").is_none());
 
         for (raw, bare) in [
-            ("https://author.gumroad.com/l/shader?layout=profile", "https://author.gumroad.com/l/shader"),
-            ("https://booth.pm/zh-tw/items/900001/#top", "https://booth.pm/zh-tw/items/900001"),
-            (" https://jinxxy.com/authored/product/?ref=1 ", "https://jinxxy.com/authored/product"),
+            (
+                "https://author.gumroad.com/l/shader?layout=profile",
+                "https://author.gumroad.com/l/shader",
+            ),
+            (
+                "https://booth.pm/zh-tw/items/900001/#top",
+                "https://booth.pm/zh-tw/items/900001",
+            ),
+            (
+                " https://jinxxy.com/authored/product/?ref=1 ",
+                "https://jinxxy.com/authored/product",
+            ),
         ] {
             assert_eq!(bare_url(raw).unwrap(), bare);
         }
         // Only the three stores are ever read.
         assert_eq!(
-            product_url(&bare_url("https://example.com/l/shader").unwrap()).unwrap_err().to_string(),
+            product_url(&bare_url("https://example.com/l/shader").unwrap())
+                .unwrap_err()
+                .to_string(),
             "UNSUPPORTED_PROVIDER"
         );
     }
@@ -592,15 +732,24 @@ mod tests {
         let product = json!({"__typename":"PublicProduct","id":"42","url":"product","user":{"username":"authored"}});
         let html = authored_flight(product, None);
         let presentation = jinxxy_presentation(&source, &Html::parse_document(&html), Some("42"))
-            .unwrap().unwrap();
-        assert_eq!(presentation, json!({"publicProductId":"42","sourceUrl":source.as_str()}));
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            presentation,
+            json!({"publicProductId":"42","sourceUrl":source.as_str()})
+        );
         let html = format!("<meta property=\"og:title\" content=\"Authored title\">{html}");
         let editor = html_values(&source, &html).unwrap();
         assert_eq!(editor["title"], "Authored title");
         assert_eq!(editor["tags"], json!([]));
         assert_eq!(editor.as_object().unwrap().len(), 5);
-        assert!(jinxxy_presentation(&source, &Html::parse_document("<p>No product data</p>"), Some("42"))
-            .unwrap().is_none());
+        assert!(jinxxy_presentation(
+            &source,
+            &Html::parse_document("<p>No product data</p>"),
+            Some("42")
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
@@ -608,13 +757,23 @@ mod tests {
         let source = Url::parse("https://jinxxy.com/authored/product").unwrap();
         let html = authored_flight(authored_product(), Some("衣装\nsecond line"));
         let presentation = jinxxy_presentation(&source, &Html::parse_document(&html), Some("42"))
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(presentation["sourceDescription"], "衣装 second line");
-        let invalid = format!("<script>self.__next_f.push({})</script>", json!([1,"a:T1,衣"]));
+        let invalid = format!(
+            "<script>self.__next_f.push({})</script>",
+            json!([1, "a:T1,衣"])
+        );
         assert!(jinxxy_flight(&Html::parse_document(&invalid)).is_err());
-        let invalid = format!("<script>self.__next_f.push({})</script>", json!([1,"a:Tff,short"]));
+        let invalid = format!(
+            "<script>self.__next_f.push({})</script>",
+            json!([1, "a:Tff,short"])
+        );
         assert!(jinxxy_flight(&Html::parse_document(&invalid)).is_err());
-        assert!(jinxxy_flight(&Html::parse_document("<script>self.__next_f.push(runCode())</script>")).is_err());
+        assert!(jinxxy_flight(&Html::parse_document(
+            "<script>self.__next_f.push(runCode())</script>"
+        ))
+        .is_err());
     }
 
     #[test]
@@ -624,15 +783,27 @@ mod tests {
         ]}}).to_string();
         let html = authored_flight(authored_product(), Some(&description));
         let document = Html::parse_document(&html);
-        assert!(document.select(&Selector::parse("script").unwrap()).any(|script| {
-            script.inner_html() != script.text().collect::<String>()
-        }));
+        assert!(document
+            .select(&Selector::parse("script").unwrap())
+            .any(|script| { script.inner_html() != script.text().collect::<String>() }));
         let records = jinxxy_flight(&document).unwrap();
         assert_eq!(records["a"], description);
         let source = Url::parse("https://jinxxy.com/authored/product").unwrap();
-        let presentation = jinxxy_presentation(&source, &document, Some("42")).unwrap().unwrap();
-        assert_eq!(presentation["sourceDescription"], "Raw <angle> & nonbreaking space");
-        assert_eq!(html_values(&source, &html).unwrap().as_object().unwrap().len(), 5);
+        let presentation = jinxxy_presentation(&source, &document, Some("42"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            presentation["sourceDescription"],
+            "Raw <angle> & nonbreaking space"
+        );
+        assert_eq!(
+            html_values(&source, &html)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            5
+        );
     }
 
     #[test]
@@ -642,14 +813,19 @@ mod tests {
         let records = jinxxy_flight(&Html::parse_document(&html)).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records["1"]["name"], "Authored model");
-        let invalid = format!("<script>self.__next_f.push({})</script>",
-            json!([1,":{\"name\":\"Missing model ID\"}\n"]));
+        let invalid = format!(
+            "<script>self.__next_f.push({})</script>",
+            json!([1, ":{\"name\":\"Missing model ID\"}\n"])
+        );
         assert!(jinxxy_flight(&Html::parse_document(&invalid)).is_err());
     }
 
     #[test]
     fn jinxxy_description_ignores_unrecognized_json_fields() {
-        assert_eq!(jinxxy_description(r#"{"root":{"children":[],"secret":"IGNORE"}}"#), "");
+        assert_eq!(
+            jinxxy_description(r#"{"root":{"children":[],"secret":"IGNORE"}}"#),
+            ""
+        );
         assert_eq!(jinxxy_description(r#"{"root":{"secret":"IGNORE"}}"#), "");
         assert_eq!(jinxxy_description("<p>Authored coat</p>"), "Authored coat");
     }

@@ -137,9 +137,9 @@ fn alternate(node: ElementRef<'_>, file: &str, variant: &str, name: &str) -> boo
                 && match k.as_ref() {
                     "variation_id" => v.as_ref() == variant,
                     "client" => matches!(v.as_ref(), "booth-library-manager" | "vroid"),
-                    "type" => name
-                        .rsplit_once('.')
-                        .is_some_and(|(_, ext)| !ext.is_empty() && ext.eq_ignore_ascii_case(v.as_ref())),
+                    "type" => name.rsplit_once('.').is_some_and(|(_, ext)| {
+                        !ext.is_empty() && ext.eq_ignore_ascii_case(v.as_ref())
+                    }),
                     _ => false,
                 }
         }) && keys.contains("variation_id")
@@ -855,7 +855,9 @@ mod tests {
         assert_eq!(counts["unrecognizedRoleRows"], 0);
         assert!(!counts.to_string().contains("PRIVATE_ROLE_SENTINEL"));
         // BOOTH's other languages write the same closed rows' prices in JPY.
-        let elsewhere = closed.replace("¥ 500", "500 JPY").replace("¥ 700", "700 JPY");
+        let elsewhere = closed
+            .replace("¥ 500", "500 JPY")
+            .replace("¥ 700", "700 JPY");
         let evidence = parse(&elsewhere, "900001").unwrap();
         assert!(evidence.error_code.is_none() && evidence.manifest_complete);
         let free = elsewhere.replace("500 JPY", "0 JPY");
@@ -1563,10 +1565,16 @@ mod tests {
     }
     #[test]
     fn vroid_methods_type_only_their_own_file() {
-        let menu = |file: &str, kind: &str| format!(r#"<div class='js-download-free-button' data-test='other-downloads-button' data-dropdown-items='[{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=booth-library-manager&variation_id=800001"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=vroid&type={kind}&variation_id=800001"}}]'></div>"#);
+        let menu = |file: &str, kind: &str| {
+            format!(
+                r#"<div class='js-download-free-button' data-test='other-downloads-button' data-dropdown-items='[{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=booth-library-manager&variation_id=800001"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=vroid&type={kind}&variation_id=800001"}}]'></div>"#
+            )
+        };
         let with = |name: &str, kind: &str| {
-            HTML.replace("authored.zip", name)
-                .replace(&format!("{name}</div>"), &format!("{name}</div>{}", menu("700001", kind)))
+            HTML.replace("authored.zip", name).replace(
+                &format!("{name}</div>"),
+                &format!("{name}</div>{}", menu("700001", kind)),
+            )
         };
         for (name, kind) in [
             ("authored.vroidcustomitem", "vroidcustomitem"),
@@ -1577,7 +1585,8 @@ mod tests {
             assert!(evidence.manifest_complete && evidence.error_code.is_none());
             assert_eq!(evidence.files.len(), 1);
             assert_eq!(evidence.files[0].name.as_deref(), Some(name));
-            let counts = serde_json::to_value(diagnose_entry(&with(name, kind), "900001").unwrap()).unwrap();
+            let counts =
+                serde_json::to_value(diagnose_entry(&with(name, kind), "900001").unwrap()).unwrap();
             assert_eq!(counts["knownAlternateMethods"], 1);
             assert_eq!(counts["unknownDropdowns"], 0);
         }
@@ -1589,13 +1598,32 @@ mod tests {
             ("authored.", ""),
         ] {
             let evidence = parse(&with(name, kind), "900001").unwrap();
-            assert_eq!(evidence.error_code.as_deref(), Some("FREE_ITEM_UNKNOWN_DROPDOWN"), "{name} {kind}");
+            assert_eq!(
+                evidence.error_code.as_deref(),
+                Some("FREE_ITEM_UNKNOWN_DROPDOWN"),
+                "{name} {kind}"
+            );
             assert!(evidence.files.is_empty());
         }
         // In a shared wrap the type follows the menu's own file, not a neighbour.
-        let shared = shared_wrap_html_with_files(2).replace("authored-2.zip", "authored-2.vroidcustomitem");
-        let typed = |kind: &str| shared.replace("variation_id=800002\"}]", &format!(r#"variation_id=800002"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/700002/deeplink?client=vroid&type={kind}&variation_id=800002"}}]"#));
-        assert_eq!(parse(&typed("vroidcustomitem"), "900001").unwrap().files.len(), 2);
-        assert_eq!(parse(&typed("zip"), "900001").unwrap().error_code.as_deref(), Some("FREE_ITEM_UNKNOWN_DROPDOWN"));
+        let shared =
+            shared_wrap_html_with_files(2).replace("authored-2.zip", "authored-2.vroidcustomitem");
+        let typed = |kind: &str| {
+            shared.replace("variation_id=800002\"}]", &format!(r#"variation_id=800002"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/700002/deeplink?client=vroid&type={kind}&variation_id=800002"}}]"#))
+        };
+        assert_eq!(
+            parse(&typed("vroidcustomitem"), "900001")
+                .unwrap()
+                .files
+                .len(),
+            2
+        );
+        assert_eq!(
+            parse(&typed("zip"), "900001")
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some("FREE_ITEM_UNKNOWN_DROPDOWN")
+        );
     }
 }

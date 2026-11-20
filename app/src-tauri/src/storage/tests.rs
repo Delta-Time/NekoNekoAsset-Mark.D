@@ -4,14 +4,23 @@ use super::*;
 fn download_scheduler_cas_does_not_revive_cancelled_queue_snapshots() {
     let f = Fixture::new();
     for action in ["require-auth", "clear-auth", "claim"] {
-        let mut queued = json!({"id":"authored-scheduler","type":"download","state":"queued","fileIds":[]});
+        let mut queued =
+            json!({"id":"authored-scheduler","type":"download","state":"queued","fileIds":[]});
         if action == "clear-auth" {
             queued["stage"] = json!("authRequired");
             queued["errorCode"] = json!("auth_required");
         }
-        f.service.catalogue.put("job", "authored-scheduler", queued.clone()).unwrap();
+        f.service
+            .catalogue
+            .put("job", "authored-scheduler", queued.clone())
+            .unwrap();
         f.service.cancel_job("authored-scheduler").unwrap();
-        let cancelled = f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap();
+        let cancelled = f
+            .service
+            .catalogue
+            .get("job", "authored-scheduler")
+            .unwrap()
+            .unwrap();
         assert_eq!(cancelled["state"], "cancelled");
         let mut stale = queued.clone();
         let (state, error) = match action {
@@ -25,8 +34,21 @@ fn download_scheduler_cas_does_not_revive_cancelled_queue_snapshots() {
             }
             _ => ("running", None),
         };
-        assert!(!f.service.put_queued_download(&queued, &mut stale, state, error).unwrap(), "{action}");
-        assert_eq!(f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap(), cancelled, "{action}");
+        assert!(
+            !f.service
+                .put_queued_download(&queued, &mut stale, state, error)
+                .unwrap(),
+            "{action}"
+        );
+        assert_eq!(
+            f.service
+                .catalogue
+                .get("job", "authored-scheduler")
+                .unwrap()
+                .unwrap(),
+            cancelled,
+            "{action}"
+        );
     }
 }
 
@@ -34,19 +56,43 @@ fn download_scheduler_cas_does_not_revive_cancelled_queue_snapshots() {
 fn download_scheduler_cas_claim_keeps_late_cancellation_and_queue_flags() {
     let f = Fixture::new();
     let queued = json!({"id":"authored-scheduler","type":"download","state":"queued","fileIds":[],"cancelRequested":true});
-    f.service.catalogue.put("job", "authored-scheduler", queued.clone()).unwrap();
+    f.service
+        .catalogue
+        .put("job", "authored-scheduler", queued.clone())
+        .unwrap();
     let mut running = queued.clone();
     let token = f.service.cancellation("authored-scheduler");
-    assert!(f.service.put_queued_download(&queued, &mut running, "running", None).unwrap());
+    assert!(f
+        .service
+        .put_queued_download(&queued, &mut running, "running", None)
+        .unwrap());
     assert_eq!(running["cancelRequested"], true);
-    assert_eq!(f.service.cancel_job("authored-scheduler").unwrap()["cancelRequested"], true);
+    assert_eq!(
+        f.service.cancel_job("authored-scheduler").unwrap()["cancelRequested"],
+        true
+    );
     assert!(token.load(Ordering::Acquire));
-    let cancelled_running = f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap();
+    let cancelled_running = f
+        .service
+        .catalogue
+        .get("job", "authored-scheduler")
+        .unwrap()
+        .unwrap();
     assert_eq!(cancelled_running["state"], "running");
     assert_eq!(cancelled_running["cancelRequested"], true);
     let mut stale = queued.clone();
-    assert!(!f.service.put_queued_download(&queued, &mut stale, "running", None).unwrap());
-    assert_eq!(f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap(), cancelled_running);
+    assert!(!f
+        .service
+        .put_queued_download(&queued, &mut stale, "running", None)
+        .unwrap());
+    assert_eq!(
+        f.service
+            .catalogue
+            .get("job", "authored-scheduler")
+            .unwrap()
+            .unwrap(),
+        cancelled_running
+    );
 }
 
 #[test]
@@ -55,13 +101,28 @@ fn cancellation_during_restore_and_after_completion_preserves_terminal_facts() {
     let running = json!({"id":"restore","type":"storage:restore_backup","state":"running"});
     let permit = f.service.catalogue.begin_restore_work().unwrap();
     f.service.catalogue.put("job", "restore", running).unwrap();
-    assert_eq!(f.service.cancel_job("restore").unwrap()["cancelRequested"], true);
+    assert_eq!(
+        f.service.cancel_job("restore").unwrap()["cancelRequested"],
+        true
+    );
     assert!(f.service.cancellation("restore").load(Ordering::Acquire));
-    assert_eq!(f.service.catalogue.get("job", "restore").unwrap().unwrap()["state"], "running");
+    assert_eq!(
+        f.service.catalogue.get("job", "restore").unwrap().unwrap()["state"],
+        "running"
+    );
     let completed = json!({"id":"restore","type":"storage:restore_backup","state":"completed","result":{"restoredFiles":3}});
-    f.service.catalogue.put("job", "restore", completed.clone()).unwrap();
-    assert_eq!(f.service.cancel_job("restore").unwrap()["cancelRequested"], false);
-    assert_eq!(f.service.catalogue.get("job", "restore").unwrap().unwrap(), completed);
+    f.service
+        .catalogue
+        .put("job", "restore", completed.clone())
+        .unwrap();
+    assert_eq!(
+        f.service.cancel_job("restore").unwrap()["cancelRequested"],
+        false
+    );
+    assert_eq!(
+        f.service.catalogue.get("job", "restore").unwrap().unwrap(),
+        completed
+    );
     drop(permit);
 }
 
@@ -74,11 +135,24 @@ async fn cancel_downloads_stops_only_the_requested_products_active_jobs() {
         ("queued-b", "b", "queued"),
         ("done-a", "a", "completed"),
     ] {
-        f.service.catalogue.put("job", id, json!({"id":id,"type":"download","productId":product,"state":state,"fileIds":[]})).unwrap();
+        f.service
+            .catalogue
+            .put(
+                "job",
+                id,
+                json!({"id":id,"type":"download","productId":product,"state":state,"fileIds":[]}),
+            )
+            .unwrap();
     }
     let running = f.service.cancellation("running-a");
     let job = |id: &str| f.service.catalogue.get("job", id).unwrap().unwrap();
-    assert_eq!(f.service.cancel_downloads(&json!({"productIds":["a"]})).await.unwrap()["cancelled"], 2);
+    assert_eq!(
+        f.service
+            .cancel_downloads(&json!({"productIds":["a"]}))
+            .await
+            .unwrap()["cancelled"],
+        2
+    );
     assert_eq!(job("queued-a")["state"], "cancelled");
     assert_eq!(job("running-a")["state"], "running");
     assert_eq!(job("running-a")["cancelRequested"], true);
@@ -86,37 +160,79 @@ async fn cancel_downloads_stops_only_the_requested_products_active_jobs() {
     assert_eq!(job("queued-b")["state"], "queued");
     assert_eq!(job("done-a")["state"], "completed");
     // Without products every remaining active download stops; a repeat changes nothing.
-    assert_eq!(f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"], 1);
+    assert_eq!(
+        f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"],
+        1
+    );
     assert_eq!(job("queued-b")["state"], "cancelled");
-    assert_eq!(f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"], 0);
+    assert_eq!(
+        f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"],
+        0
+    );
 }
 
 #[tokio::test]
 async fn bulk_download_skips_products_without_files_and_one_explicit_product_reports_it() {
     let f = Fixture::new();
     f.seed(1, true);
-    f.service.catalogue.put("product", "43", json!({"id":"43","provider":"booth","title":"Authored empty"})).unwrap();
+    f.service
+        .catalogue
+        .put(
+            "product",
+            "43",
+            json!({"id":"43","provider":"booth","title":"Authored empty"}),
+        )
+        .unwrap();
     f.service.catalogue.put("entitlement", "empty", json!({"id":"empty","productId":"43","accountId":"test-account","fileIds":[],"manifestComplete":true})).unwrap();
-    let bulk = f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    let bulk = f
+        .service
+        .enqueue(&json!({"productIds":["42","43"]}))
+        .await
+        .unwrap();
     assert_eq!(bulk["jobIds"].as_array().unwrap().len(), 1);
     assert!(f.service.catalogue.related("job", "43").unwrap().is_empty());
-    assert!(f.service.catalogue.get("download_intent", "43").unwrap().is_none());
-    let single = f.service.enqueue(&json!({"productIds":["43"]})).await.unwrap();
-    let job = f.service.catalogue.get("job", single["jobIds"][0].as_str().unwrap()).unwrap().unwrap();
-    assert_eq!((job["state"].as_str(), job["errorCode"].as_str()), (Some("needsAction"), Some("manifest_incomplete")));
+    assert!(f
+        .service
+        .catalogue
+        .get("download_intent", "43")
+        .unwrap()
+        .is_none());
+    let single = f
+        .service
+        .enqueue(&json!({"productIds":["43"]}))
+        .await
+        .unwrap();
+    let job = f
+        .service
+        .catalogue
+        .get("job", single["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (job["state"].as_str(), job["errorCode"].as_str()),
+        (Some("needsAction"), Some("manifest_incomplete"))
+    );
 }
 
 #[tokio::test]
 async fn a_cancelling_download_does_not_absorb_an_explicit_new_request() {
     let f = Fixture::new();
     f.seed(1, true);
-    let first = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    let first = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
     let first_id = first["jobIds"][0].as_str().unwrap();
     let mut running = f.service.catalogue.get("job", first_id).unwrap().unwrap();
     running["state"] = json!("running");
     f.service.catalogue.put("job", first_id, running).unwrap();
     f.service.cancel_job(first_id).unwrap();
-    let next = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    let next = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
     assert_ne!(next["jobIds"][0], first["jobIds"][0]);
     assert_eq!(f.service.catalogue.list("job").unwrap().len(), 2);
 }
@@ -844,8 +960,17 @@ fn local_import_batch_failure_does_not_block_later_groups_or_recheck_completed_m
         std::fs::write(folder.join("model.unitypackage"), bytes).unwrap();
     }
     let mut job = local_job(&f, &[archive, folder_b, folder_c], "batch");
-    let run = |job: &mut Value| f.service.run_local_import(job, Path::new("missing-synthetic-sevenzip"), &AtomicBool::new(false));
-    assert_eq!(io::stable_error(&run(&mut job).unwrap_err()), "archive_tool_unavailable");
+    let run = |job: &mut Value| {
+        f.service.run_local_import(
+            job,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+    };
+    assert_eq!(
+        io::stable_error(&run(&mut job).unwrap_err()),
+        "archive_tool_unavailable"
+    );
     assert_eq!(job["completedGroupIndexes"], json!([1, 2]));
     assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 2);
     assert_eq!(job["result"]["failedGroups"].as_array().unwrap().len(), 1);
@@ -853,10 +978,19 @@ fn local_import_batch_failure_does_not_block_later_groups_or_recheck_completed_m
         let id = job["productIds"][index].as_str().unwrap();
         let mut product = f.service.catalogue.get("product", id).unwrap().unwrap();
         product["localManifest"]["lastMutationId"] = json!("later-user-membership-change");
-        f.service.catalogue.put("product", id, product.clone()).unwrap();
-        assert_eq!(f.service.catalogue.related("artifact", id).unwrap()[0]["status"], "ready");
+        f.service
+            .catalogue
+            .put("product", id, product.clone())
+            .unwrap();
+        assert_eq!(
+            f.service.catalogue.related("artifact", id).unwrap()[0]["status"],
+            "ready"
+        );
     }
-    assert_eq!(io::stable_error(&run(&mut job).unwrap_err()), "archive_tool_unavailable");
+    assert_eq!(
+        io::stable_error(&run(&mut job).unwrap_err()),
+        "archive_tool_unavailable"
+    );
     assert_eq!(job["result"]["failedGroups"].as_array().unwrap().len(), 1);
     assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 2);
 }
@@ -866,16 +1000,39 @@ fn local_import_batch_failure_does_not_block_later_groups_or_recheck_completed_m
 fn local_import_preserves_leading_space_names_in_an_archive_with_trailing_data() {
     let f = Fixture::new();
     let source = f.path.join("authored-leading-space.zip");
-    let mut bytes = authored_zip(&[(" leading.txt", b"literal space"), ("nested/ inner.txt", b"nested space")]);
+    let mut bytes = authored_zip(&[
+        (" leading.txt", b"literal space"),
+        ("nested/ inner.txt", b"nested space"),
+    ]);
     bytes.extend_from_slice(b"authored harmless trailing data");
     std::fs::write(&source, &bytes).unwrap();
     let mut job = local_job(&f, &[source.clone()], "single");
-    f.service.run_local_import(&mut job, &native_seven_zip_test_tool(), &AtomicBool::new(false)).unwrap();
-    let artifact = &f.service.catalogue.related("artifact", job["productIds"][0].as_str().unwrap()).unwrap()[0];
+    f.service
+        .run_local_import(
+            &mut job,
+            &native_seven_zip_test_tool(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let artifact = &f
+        .service
+        .catalogue
+        .related("artifact", job["productIds"][0].as_str().unwrap())
+        .unwrap()[0];
     assert_eq!(artifact["status"], "ready");
-    let extracted = io::safe_join(&f.path.join("library"), artifact["extractedPath"].as_str().unwrap()).unwrap();
-    assert_eq!(std::fs::read(extracted.join(" leading.txt")).unwrap(), b"literal space");
-    assert_eq!(std::fs::read(extracted.join("nested/ inner.txt")).unwrap(), b"nested space");
+    let extracted = io::safe_join(
+        &f.path.join("library"),
+        artifact["extractedPath"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(extracted.join(" leading.txt")).unwrap(),
+        b"literal space"
+    );
+    assert_eq!(
+        std::fs::read(extracted.join("nested/ inner.txt")).unwrap(),
+        b"nested space"
+    );
     assert_eq!(std::fs::read(source).unwrap(), bytes);
 }
 
@@ -2851,7 +3008,12 @@ async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_fo
     let f = Fixture::new();
     f.seed(2, true);
     let c = &f.service.catalogue;
-    c.put("product","43",json!({"id":"43","title":"Other synthetic product"})).unwrap();
+    c.put(
+        "product",
+        "43",
+        json!({"id":"43","title":"Other synthetic product"}),
+    )
+    .unwrap();
     c.put("remote_file","other-file",json!({"id":"other-file","productId":"43","accountId":"test-account","name":"other.psd","revision":"r1"})).unwrap();
     c.put("entitlement","other-entitlement",json!({"id":"other-entitlement","productId":"43","accountId":"test-account","fileIds":["other-file"],"manifestComplete":true})).unwrap();
     let end = |file: &str| {
@@ -2874,7 +3036,10 @@ async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_fo
 
     // One ended file: the rest of the product still goes, and the job remembers why.
     end("test-file-0");
-    f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    f.service
+        .enqueue(&json!({"productIds":["42","43"]}))
+        .await
+        .unwrap();
     let job = jobs_of("42").remove(0);
     assert_eq!(job["fileIds"], json!(["test-file-1"]));
     assert_eq!(job["skipEndedOffers"], true);
@@ -2883,26 +3048,45 @@ async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_fo
     settle();
 
     // The job that found the offer closed held the whole list, and nothing more queues for it.
-    c.command("preferences", json!({"patch":{"autoDownloadAll":true}})).unwrap();
+    c.command("preferences", json!({"patch":{"autoDownloadAll":true}}))
+        .unwrap();
     let (whole, _) = f.service.remote_files("42").unwrap();
     let mut failed = c.related("job", "42").unwrap().remove(0);
     failed["manifestFingerprint"] = json!(fingerprint(&whole));
-    f.service.put_job(&mut failed, "needsAction", Some("free_offer_unavailable")).unwrap();
-    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    f.service
+        .put_job(&mut failed, "needsAction", Some("free_offer_unavailable"))
+        .unwrap();
+    f.service
+        .source_products_changed(&["42".into()])
+        .await
+        .unwrap();
     assert!(jobs_of("42").is_empty());
     // Every file ended: no job, whether in a batch, automatic or after a source change.
     end("test-file-1");
-    f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    f.service
+        .enqueue(&json!({"productIds":["42","43"]}))
+        .await
+        .unwrap();
     assert!(jobs_of("42").is_empty());
     assert_eq!(jobs_of("43").len(), 1);
     settle();
-    let automatic = f.service.enqueue(&json!({"productIds":["42"],"automatic":true})).await.unwrap();
+    let automatic = f
+        .service
+        .enqueue(&json!({"productIds":["42"],"automatic":true}))
+        .await
+        .unwrap();
     assert_eq!(automatic["jobIds"], json!([]));
-    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    f.service
+        .source_products_changed(&["42".into()])
+        .await
+        .unwrap();
     assert!(jobs_of("42").is_empty());
 
     // Asking for this product alone tries every file again.
-    f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    f.service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
     let job = jobs_of("42").remove(0);
     assert_eq!(job["fileIds"], json!(["test-file-0", "test-file-1"]));
     assert_eq!(job["skipEndedOffers"], false);
@@ -2932,7 +3116,10 @@ async fn product_downloads_never_ask_again_for_a_file_its_store_refused() {
     let (whole, _) = f.service.remote_files("42").unwrap();
     refuse("test-file-0");
     // Alone or automatically, a product download asks only for the rest.
-    for args in [json!({"productIds":["42"]}), json!({"productIds":["42"],"automatic":true})] {
+    for args in [
+        json!({"productIds":["42"]}),
+        json!({"productIds":["42"],"automatic":true}),
+    ] {
         f.service.enqueue(&args).await.unwrap();
         let job = queued().remove(0);
         assert_eq!(job["fileIds"], json!(["test-file-1"]));
@@ -2940,7 +3127,10 @@ async fn product_downloads_never_ask_again_for_a_file_its_store_refused() {
         settle();
     }
     // That one file can still be asked for by itself.
-    f.service.enqueue(&json!({"productIds":["42"],"selectedFileIds":["test-file-0"]})).await.unwrap();
+    f.service
+        .enqueue(&json!({"productIds":["42"],"selectedFileIds":["test-file-0"]}))
+        .await
+        .unwrap();
     assert_eq!(queued().remove(0)["fileIds"], json!(["test-file-0"]));
     settle();
     // The job that was refused held the whole list, so no automatic job follows it.
@@ -2948,12 +3138,20 @@ async fn product_downloads_never_ask_again_for_a_file_its_store_refused() {
         c.delete("job", job["id"].as_str().unwrap()).unwrap();
     }
     c.put("job","refused",json!({"id":"refused","type":"download","productId":"42","state":"needsAction","errorCode":"store_file_unavailable","selectedFileIds":null,"manifestFingerprint":fingerprint(&whole)})).unwrap();
-    c.command("preferences", json!({"patch":{"autoDownloadAll":true}})).unwrap();
-    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    c.command("preferences", json!({"patch":{"autoDownloadAll":true}}))
+        .unwrap();
+    f.service
+        .source_products_changed(&["42".into()])
+        .await
+        .unwrap();
     assert!(queued().is_empty());
     // With every file refused there is nothing to ask for, and no job says the list is unknown.
     refuse("test-file-1");
-    let alone = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    let alone = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
     assert_eq!(alone["jobIds"], json!([]));
     assert!(queued().is_empty());
 }
@@ -3261,14 +3459,23 @@ fn observed_ready_files_export_before_source_scan_closes() {
     f.seed(1, false);
     f.artifact(0);
     let destination = f.path.join("observed-ready.zip");
-    let result = f.service.disk_operation(
-        "export_zip",
-        &json!({"productIds":["42"],"path":destination}),
-        &AtomicBool::new(false),
-    ).unwrap();
+    let result = f
+        .service
+        .disk_operation(
+            "export_zip",
+            &json!({"productIds":["42"],"path":destination}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
     assert_eq!(result["fileCount"], 1);
     assert!(destination.exists());
-    assert_eq!(f.service.catalogue.command("product_details", json!({"id":"42"})).unwrap()["manifestComplete"], false);
+    assert_eq!(
+        f.service
+            .catalogue
+            .command("product_details", json!({"id":"42"}))
+            .unwrap()["manifestComplete"],
+        false
+    );
 }
 
 #[test]
@@ -3283,33 +3490,42 @@ fn kept_file_whose_extraction_failed_still_exports_its_original() {
     kept["errorCode"] = json!("archive_corrupt");
     let id = kept["id"].as_str().unwrap().to_owned();
     f.service.catalogue.put("artifact", &id, kept).unwrap();
-    let result = f.service.disk_operation(
-        "export_zip",
-        &json!({"productIds":["42"],"path":f.path.join("kept.zip")}),
-        &AtomicBool::new(false),
-    ).unwrap();
+    let result = f
+        .service
+        .disk_operation(
+            "export_zip",
+            &json!({"productIds":["42"],"path":f.path.join("kept.zip")}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
     assert_eq!(result["fileCount"], 2);
     // A file its store refused counts the same while a grant still names it.
     f.service.catalogue.put("entitlement","test-entitlement",json!({"id":"test-entitlement","productId":"42","accountId":"test-account","fileIds":["test-file-0","test-file-1"],"manifestComplete":true})).unwrap();
     // The record a refused download leaves, as the transfer writes it.
     let pending = format!("pending-{}", io::key("test-file-1"));
     f.service.catalogue.put("artifact",&pending,json!({"id":pending,"productId":"42","fileId":"test-file-1","rootId":"test-root","relativePath":"assets/refused/fixture-1.unitypackage","productDirectory":"assets/refused","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
-    let result = f.service.disk_operation(
-        "export_zip",
-        &json!({"productIds":["42"],"path":f.path.join("refused.zip")}),
-        &AtomicBool::new(false),
-    ).unwrap();
+    let result = f
+        .service
+        .disk_operation(
+            "export_zip",
+            &json!({"productIds":["42"],"path":f.path.join("refused.zip")}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
     assert_eq!(result["fileCount"], 2);
     // The store's own files must still be ready.
     let mut failed = current;
     failed["status"] = json!("extractionFailed");
     let id = failed["id"].as_str().unwrap().to_owned();
     f.service.catalogue.put("artifact", &id, failed).unwrap();
-    assert!(f.service.disk_operation(
-        "export_zip",
-        &json!({"productIds":["42"],"path":f.path.join("current.zip")}),
-        &AtomicBool::new(false),
-    ).is_err());
+    assert!(f
+        .service
+        .disk_operation(
+            "export_zip",
+            &json!({"productIds":["42"],"path":f.path.join("current.zip")}),
+            &AtomicBool::new(false),
+        )
+        .is_err());
 }
 
 #[tokio::test]
@@ -3614,13 +3830,30 @@ fn backup_export_refuses_missing_current_or_conflict_thumbnail_payloads() {
     let f = Fixture::new();
     f.seed(1, true);
     f.artifact(0);
-    f.service.catalogue.put("overlay", "42", json!({"id":"42","thumbnailPath":"media/missing.png"})).unwrap();
+    f.service
+        .catalogue
+        .put(
+            "overlay",
+            "42",
+            json!({"id":"42","thumbnailPath":"media/missing.png"}),
+        )
+        .unwrap();
     let backup = f.path.join("missing-media.zip");
-    let error = f.service.disk_operation("export_backup", &json!({"path":backup}), &AtomicBool::new(false)).unwrap_err();
+    let error = f
+        .service
+        .disk_operation(
+            "export_backup",
+            &json!({"path":backup}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
     assert!(error.to_string().contains("backup_payload_missing"));
     assert!(!backup.exists());
     let mut manifest = f.service.catalogue.manifest().unwrap();
-    manifest["records"]["overlay"][0].as_object_mut().unwrap().remove("thumbnailPath");
+    manifest["records"]["overlay"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("thumbnailPath");
     manifest["media"] = json!(["media/retained-conflict.png"]);
     assert!(f.service.backup_payload(&manifest).is_err());
 }
@@ -3631,12 +3864,20 @@ fn backup_export_uses_captured_artifacts_after_the_live_records_change() {
     f.seed(1, true);
     let artifact = f.artifact(0);
     let manifest = f.service.catalogue.manifest().unwrap();
-    f.service.catalogue.delete("artifact", artifact["id"].as_str().unwrap()).unwrap();
+    f.service
+        .catalogue
+        .delete("artifact", artifact["id"].as_str().unwrap())
+        .unwrap();
     let payload = f.service.backup_payload(&manifest).unwrap();
     assert_eq!(payload.len(), 1);
     let backup = f.path.join("captured-backup.zip");
     portable::create_backup(&backup, manifest, &payload, &AtomicBool::new(false)).unwrap();
-    let restored = portable::restore_backup(&backup, &f.path.join("captured-restore"), &AtomicBool::new(false)).unwrap();
+    let restored = portable::restore_backup(
+        &backup,
+        &f.path.join("captured-restore"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(restored.payload.len(), 1);
     assert_eq!(restored.catalogue["records"]["artifact"][0], artifact);
 }

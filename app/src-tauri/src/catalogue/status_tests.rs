@@ -112,14 +112,28 @@ fn dismissing_attention_keeps_file_facts_and_the_next_failure_raises_it_again() 
         }
     }
     let conn = fixture(1, true);
-    artifact(&conn, 0, "extractionFailed", Some("archive_password_required"));
-    job(&conn, "first", "needsAction", "2026-01-01T00:00:00Z", Some("store_access_denied"));
+    artifact(
+        &conn,
+        0,
+        "extractionFailed",
+        Some("archive_password_required"),
+    );
+    job(
+        &conn,
+        "first",
+        "needsAction",
+        "2026-01-01T00:00:00Z",
+        Some("store_access_denied"),
+    );
     assert_eq!(projected(&conn)["status"], "attention");
     dismiss(&conn);
     let product = projected(&conn);
     assert_eq!(product["status"], "partial");
     assert_eq!(product["files"][0]["status"], "extractionFailed");
-    assert_eq!(product["files"][0]["errorCode"], "archive_password_required");
+    assert_eq!(
+        product["files"][0]["errorCode"],
+        "archive_password_required"
+    );
     // Clearing Attention keeps the failure itself, even on a file sync asks to verify.
     let mut file = raw(&conn, "remote_file", "f0").unwrap().unwrap();
     file["requiresContentVerification"] = json!(true);
@@ -128,7 +142,13 @@ fn dismissing_attention_keeps_file_facts_and_the_next_failure_raises_it_again() 
     file["requiresContentVerification"] = json!(false);
     set_raw(&conn, "remote_file", "f0", &file).unwrap();
     // A new attempt that fails is a new job, whatever the earlier one said.
-    job(&conn, "second", "failed", "2026-01-02T00:00:00Z", Some("network_failed"));
+    job(
+        &conn,
+        "second",
+        "failed",
+        "2026-01-02T00:00:00Z",
+        Some("network_failed"),
+    );
     assert_eq!(projected(&conn)["status"], "attention");
     dismiss(&conn);
     assert_eq!(projected(&conn)["status"], "partial");
@@ -220,7 +240,13 @@ fn seven_ready_files_are_downloaded_during_sync_then_new_file_is_partial() {
     for index in 0..7 {
         artifact(&conn, index, "ready", None);
     }
-    set_raw(&conn, "job", "source-sync", &json!({"id":"source-sync","productId":"p","type":"boothSync","state":"running"})).unwrap();
+    set_raw(
+        &conn,
+        "job",
+        "source-sync",
+        &json!({"id":"source-sync","productId":"p","type":"boothSync","state":"running"}),
+    )
+    .unwrap();
     let product = projected(&conn);
     assert_eq!(product["manifestComplete"], false);
     assert_eq!(product["downloaded"], 7);
@@ -228,7 +254,13 @@ fn seven_ready_files_are_downloaded_during_sync_then_new_file_is_partial() {
     assert_eq!(product["fullyDownloaded"], true);
 
     manifest(&conn, 8, false);
-    set_raw(&conn, "remote_file", "f7", &json!({"id":"f7","productId":"p","name":"later-file.unitypackage","revision":"r1"})).unwrap();
+    set_raw(
+        &conn,
+        "remote_file",
+        "f7",
+        &json!({"id":"f7","productId":"p","name":"later-file.unitypackage","revision":"r1"}),
+    )
+    .unwrap();
     let product = projected(&conn);
     assert_eq!(product["downloaded"], 7);
     assert_eq!(product["total"], 8);
@@ -332,13 +364,20 @@ fn a_file_its_store_refused_counts_as_dropped_and_raises_no_attention() {
     let product = projected(&conn);
     assert_eq!(listed(&product), ["f0", "f2"]);
     assert_eq!(
-        (product["total"].clone(), product["knownFileCount"].clone(), product["downloaded"].clone()),
+        (
+            product["total"].clone(),
+            product["knownFileCount"].clone(),
+            product["downloaded"].clone()
+        ),
         (json!(2), json!(2), json!(1))
     );
     assert_eq!(product["manifestComplete"], true);
     assert_eq!(product["status"], "partial");
     // Any other failure in the same download is still Attention.
-    failed(&conn, json!({"f1":refusal,"f2":{"fileId":"f2","errorCode":"network_failed"}}));
+    failed(
+        &conn,
+        json!({"f1":refusal,"f2":{"fileId":"f2","errorCode":"network_failed"}}),
+    );
     assert_eq!(projected(&conn)["status"], "attention");
     failed(&conn, json!({"f1":refusal}));
     artifact(&conn, 2, "ready", None);
@@ -352,7 +391,11 @@ fn a_file_its_store_refused_counts_as_dropped_and_raises_no_attention() {
     let product = projected(&conn);
     assert_eq!(listed(&product), ["f0", "f1", "f2"]);
     assert_eq!(
-        (product["files"][1]["kept"].clone(), product["files"][1]["status"].clone(), product["keptFiles"].clone()),
+        (
+            product["files"][1]["kept"].clone(),
+            product["files"][1]["status"].clone(),
+            product["keptFiles"].clone()
+        ),
         (json!(true), json!("ready"), json!(1))
     );
     assert_eq!(product["status"], "ready");

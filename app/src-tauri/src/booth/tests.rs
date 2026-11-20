@@ -15,7 +15,10 @@ fn startup_recovery_isolates_orphan_jobs_and_keeps_later_jobs_resumable() {
     let orphan = catalogue.get("job", "authored-orphan").unwrap().unwrap();
     assert_eq!(orphan["state"], "needsAction");
     assert_eq!(orphan["errorCode"], "ACCOUNT_UNAVAILABLE");
-    assert_eq!(catalogue.get("job", "authored-healthy").unwrap().unwrap()["state"], "running");
+    assert_eq!(
+        catalogue.get("job", "authored-healthy").unwrap().unwrap()["state"],
+        "running"
+    );
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();
@@ -26,14 +29,24 @@ fn stale_retry_cannot_overwrite_the_first_retry_attempt() {
     let fixture = Fixture::new();
     let catalogue = &fixture.service.inner.catalogue;
     let previous = json!({"id":"authored-retry","type":"boothLogin","accountId":A,"state":"needsAction","errorCode":"RETRY_REQUIRED"});
-    catalogue.put("job", "authored-retry", previous.clone()).unwrap();
+    catalogue
+        .put("job", "authored-retry", previous.clone())
+        .unwrap();
     let mut running = fixture.service.requeue_job(&previous).unwrap();
     assert_eq!(running["state"], "queued");
     running["state"] = json!("running");
     running["progress"] = json!({"pages":5});
-    catalogue.put("job", "authored-retry", running.clone()).unwrap();
-    assert_eq!(code(&fixture.service.requeue_job(&previous).unwrap_err()), "JOB_BUSY");
-    assert_eq!(catalogue.get("job", "authored-retry").unwrap().unwrap(), running);
+    catalogue
+        .put("job", "authored-retry", running.clone())
+        .unwrap();
+    assert_eq!(
+        code(&fixture.service.requeue_job(&previous).unwrap_err()),
+        "JOB_BUSY"
+    );
+    assert_eq!(
+        catalogue.get("job", "authored-retry").unwrap().unwrap(),
+        running
+    );
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();
@@ -45,11 +58,22 @@ fn successful_sync_clears_previous_action_state_without_replacing_identity() {
     let catalogue = &fixture.service.inner.catalogue;
     let account = json!({"id":A,"store":"BOOTH","status":"needsAction","state":"needsAction","identityVerified":true,"identityHash":"authored-identity","authenticatedAt":"2026-01-01T00:00:00Z"});
     catalogue.put("account", A, account.clone()).unwrap();
-    let job = json!({"id":"authored-recovered-sync","type":"boothSync","accountId":A,"state":"running"});
-    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
-    fixture.service.finish_job(&job, Some("PUBLIC_METADATA_FAILED")).unwrap();
-    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["state"], "needsAction");
-    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    let job =
+        json!({"id":"authored-recovered-sync","type":"boothSync","accountId":A,"state":"running"});
+    catalogue
+        .put("job", "authored-recovered-sync", job.clone())
+        .unwrap();
+    fixture
+        .service
+        .finish_job(&job, Some("PUBLIC_METADATA_FAILED"))
+        .unwrap();
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["state"],
+        "needsAction"
+    );
+    catalogue
+        .put("job", "authored-recovered-sync", job.clone())
+        .unwrap();
     fixture.service.finish_job(&job, None).unwrap();
     let recovered = catalogue.get("account", A).unwrap().unwrap();
     assert_eq!(recovered["state"], "connected");
@@ -61,15 +85,25 @@ fn successful_sync_clears_previous_action_state_without_replacing_identity() {
     // BOOTH sign-in records only authenticatedAt; such an account recovers the same way.
     let signed_in = json!({"id":A,"store":"BOOTH","status":"needsAction","state":"needsAction","identityVerified":false,"authenticatedAt":"2026-01-01T00:00:00Z"});
     catalogue.put("account", A, signed_in).unwrap();
-    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    catalogue
+        .put("job", "authored-recovered-sync", job.clone())
+        .unwrap();
     fixture.service.finish_job(&job, None).unwrap();
-    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["status"], "connected");
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["status"],
+        "connected"
+    );
     // A draft that never signed in is not promoted by a finished job.
     let draft = json!({"id":A,"store":"BOOTH","status":"disconnected","state":"needsAction","identityVerified":false});
     catalogue.put("account", A, draft).unwrap();
-    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    catalogue
+        .put("job", "authored-recovered-sync", job.clone())
+        .unwrap();
     fixture.service.finish_job(&job, None).unwrap();
-    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["status"], "disconnected");
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["status"],
+        "disconnected"
+    );
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();
@@ -82,7 +116,9 @@ async fn completed_incomplete_attempt_retains_execution_and_source_diagnostics_i
     let mut job = json!({"id":"authored-capture-lifecycle","type":"boothSync","accountId":A,
         "state":"queued","progress":{"stage":"collecting","pages":0}});
     crate::support::begin_attempt(&mut job);
-    catalogue.put("job", "authored-capture-lifecycle", job.clone()).unwrap();
+    catalogue
+        .put("job", "authored-capture-lifecycle", job.clone())
+        .unwrap();
     let (_, trace) = crate::support_trace::capture(async {
         crate::support_trace::source_start("purchase");
         crate::support_trace::source_reason("purchase", "SOURCE_HEAD_CHANGED", 1);
@@ -90,20 +126,38 @@ async fn completed_incomplete_attempt_retains_execution_and_source_diagnostics_i
         crate::support_trace::source_done("purchase", Some(false), None);
         let mut durable = job.clone();
         durable["progress"] = json!({"stage":"finalizing","pages":9,"detailsCompleted":4});
-        catalogue.put("job", "authored-capture-lifecycle", durable).unwrap();
-    }).await;
+        catalogue
+            .put("job", "authored-capture-lifecycle", durable)
+            .unwrap();
+    })
+    .await;
     job["supportDiagnostics"] = trace;
     crate::support::end_attempt(&mut job);
-    fixture.service.finish_job(&job, Some("SYNC_INCOMPLETE")).unwrap();
-    let stored = catalogue.get("job", "authored-capture-lifecycle").unwrap().unwrap();
+    fixture
+        .service
+        .finish_job(&job, Some("SYNC_INCOMPLETE"))
+        .unwrap();
+    let stored = catalogue
+        .get("job", "authored-capture-lifecycle")
+        .unwrap()
+        .unwrap();
     assert_eq!(stored["state"], "needsAction");
     assert_eq!(stored["progress"]["pages"], 9);
     let report: Value = serde_json::from_str(&crate::support::report(&stored, &[], &[])).unwrap();
     assert_eq!(report["captureAvailable"], true);
     assert_eq!(report["capture"]["attemptState"], "finished");
-    assert_eq!(report["capture"]["executionAppVersion"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(report["supportDiagnostics"]["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"], 1);
-    assert_eq!(report["supportDiagnostics"]["sources"]["purchase"]["lastClosure"]["headStable"], false);
+    assert_eq!(
+        report["capture"]["executionAppVersion"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        report["supportDiagnostics"]["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"],
+        1
+    );
+    assert_eq!(
+        report["supportDiagnostics"]["sources"]["purchase"]["lastClosure"]["headStable"],
+        false
+    );
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();
@@ -175,12 +229,20 @@ fn terminal_sync_persists_cancel_error_and_success_with_account_attempt_end() {
     catalogue
         .put("job", "synthetic-terminal", job.clone())
         .unwrap();
-    catalogue.command("preferences", json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}})).unwrap();
+    catalogue
+        .command(
+            "preferences",
+            json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}}),
+        )
+        .unwrap();
     fixture
         .service
         .finish_job(&job, Some("PUBLIC_METADATA_FAILED"))
         .unwrap();
-    assert_eq!(catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"], json!({}));
+    assert_eq!(
+        catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"],
+        json!({})
+    );
     let failed = catalogue.get("job", "synthetic-terminal").unwrap().unwrap();
     assert_eq!(failed["state"], "needsAction");
     assert_eq!(failed["errorCode"], "PUBLIC_METADATA_FAILED");
@@ -199,9 +261,17 @@ fn terminal_sync_persists_cancel_error_and_success_with_account_attempt_end() {
     let mut stale = job.clone();
     stale["state"] = json!("running");
     stale["progress"] = json!({"stage":"collecting","pages":0,"products":0});
-    catalogue.command("preferences", json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}})).unwrap();
+    catalogue
+        .command(
+            "preferences",
+            json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}}),
+        )
+        .unwrap();
     fixture.service.finish_job(&stale, None).unwrap();
-    assert_eq!(catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"], json!({}));
+    assert_eq!(
+        catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"],
+        json!({})
+    );
     let cancelled = catalogue.get("job", "synthetic-terminal").unwrap().unwrap();
     assert_eq!(cancelled["progress"]["pages"], 91);
     assert_eq!(cancelled["progress"]["detailsCompleted"], 533);
@@ -213,9 +283,17 @@ fn terminal_sync_persists_cancel_error_and_success_with_account_attempt_end() {
     catalogue
         .put("job", "synthetic-terminal", stale.clone())
         .unwrap();
-    catalogue.command("preferences", json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}})).unwrap();
+    catalogue
+        .command(
+            "preferences",
+            json!({"patch":{"avatarAutomaticEnabled":{"booth:3390957":true}}}),
+        )
+        .unwrap();
     fixture.service.finish_job(&stale, None).unwrap();
-    assert_eq!(catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"], json!({}));
+    assert_eq!(
+        catalogue.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"],
+        json!({})
+    );
     let complete = catalogue.get("job", "synthetic-terminal").unwrap().unwrap();
     assert_eq!(complete["state"], "completed");
     assert!(complete["errorCode"].is_null());
@@ -371,23 +449,65 @@ fn selected_update_scopes_bind_accounts_and_keep_public_reads_independent() {
     account(catalogue, A, false);
     account(catalogue, B, false);
     for (key, owner, product) in [("one", A, "900001"), ("two", B, "900002")] {
-        catalogue.put("entitlement", key, json!({"id":key,"accountId":owner,"productId":product,"source":"library"})).unwrap();
+        catalogue
+            .put(
+                "entitlement",
+                key,
+                json!({"id":key,"accountId":owner,"productId":product,"source":"library"}),
+            )
+            .unwrap();
     }
-    catalogue.put("acquisition", "free", json!({"id":"free","accountId":B,"productId":"900001","source":"free"})).unwrap();
-    let scopes = fixture.service.update_scopes(&BTreeSet::from(["900001".into(), "900002".into(), "900003".into()])).unwrap();
-    assert_eq!(scopes, vec![
-        json!({"accountId":A,"productIds":["900001"]}),
-        json!({"accountId":B,"productIds":["900001","900002"]}),
-        json!({"productIds":["900003"],"publicOnly":true}),
-    ]);
+    catalogue
+        .put(
+            "acquisition",
+            "free",
+            json!({"id":"free","accountId":B,"productId":"900001","source":"free"}),
+        )
+        .unwrap();
+    let scopes = fixture
+        .service
+        .update_scopes(&BTreeSet::from([
+            "900001".into(),
+            "900002".into(),
+            "900003".into(),
+        ]))
+        .unwrap();
+    assert_eq!(
+        scopes,
+        vec![
+            json!({"accountId":A,"productIds":["900001"]}),
+            json!({"accountId":B,"productIds":["900001","900002"]}),
+            json!({"productIds":["900003"],"publicOnly":true}),
+        ]
+    );
     for scope in scopes {
         let job = fixture.service.make_job("boothUpdate", scope).unwrap();
         if let Some(owner) = job["accountId"].as_str() {
-            assert_eq!(catalogue.require_account_idle(owner).unwrap_err().to_string(), "ACCOUNT_BUSY");
-            assert_eq!(catalogue.remove_account(owner, true).unwrap_err().to_string(), "ACCOUNT_BUSY");
-            catalogue.delete("job", job["id"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                catalogue
+                    .require_account_idle(owner)
+                    .unwrap_err()
+                    .to_string(),
+                "ACCOUNT_BUSY"
+            );
+            assert_eq!(
+                catalogue
+                    .remove_account(owner, true)
+                    .unwrap_err()
+                    .to_string(),
+                "ACCOUNT_BUSY"
+            );
+            catalogue
+                .delete("job", job["id"].as_str().unwrap())
+                .unwrap();
         } else {
-            catalogue.put("entitlement", "later", json!({"id":"later","accountId":B,"productId":"900003","source":"library"})).unwrap();
+            catalogue
+                .put(
+                    "entitlement",
+                    "later",
+                    json!({"id":"later","accountId":B,"productId":"900003","source":"library"}),
+                )
+                .unwrap();
             catalogue.require_account_idle(A).unwrap();
             catalogue.require_account_idle(B).unwrap();
         }
@@ -403,9 +523,18 @@ fn legacy_selected_update_keeps_its_owning_account_busy() {
     let catalogue = &fixture.service.inner.catalogue;
     account(catalogue, A, false);
     account(catalogue, B, false);
-    catalogue.put("entitlement", "owned", json!({"id":"owned","accountId":A,"productId":"900001"})).unwrap();
+    catalogue
+        .put(
+            "entitlement",
+            "owned",
+            json!({"id":"owned","accountId":A,"productId":"900001"}),
+        )
+        .unwrap();
     catalogue.put("job", "legacy-update", json!({"id":"legacy-update","type":"boothUpdate","state":"running","args":{"productIds":["900001"]}})).unwrap();
-    assert_eq!(catalogue.remove_account(A, true).unwrap_err().to_string(), "ACCOUNT_BUSY");
+    assert_eq!(
+        catalogue.remove_account(A, true).unwrap_err().to_string(),
+        "ACCOUNT_BUSY"
+    );
     catalogue.require_account_idle(B).unwrap();
     let path = fixture.path.clone();
     drop(fixture);
@@ -432,19 +561,43 @@ fn store_journal_pruning_retains_current_sources_and_running_gumroad_runs() {
         json!({"id":"local-import:keep","accountId":A,"runId":"obsolete"}),
     ];
     for checkpoint in checkpoints {
-        catalogue.put("checkpoint", checkpoint["id"].as_str().unwrap(), checkpoint.clone()).unwrap();
+        catalogue
+            .put(
+                "checkpoint",
+                checkpoint["id"].as_str().unwrap(),
+                checkpoint.clone(),
+            )
+            .unwrap();
     }
     catalogue.put("job", "active", json!({"id":"active","type":"gumroadSync","store":"Gumroad","accountId":A,"state":"running"})).unwrap();
     assert_eq!(catalogue.prune_store_checkpoints("BOOTH", A).unwrap(), 2);
     assert_eq!(catalogue.prune_store_checkpoints("Gumroad", A).unwrap(), 2);
     assert_eq!(catalogue.prune_store_checkpoints("BOOTH", A).unwrap(), 0);
     assert_eq!(catalogue.prune_store_checkpoints("Gumroad", A).unwrap(), 0);
-    assert!(catalogue.get("checkpoint", "booth-page:current-library:1").unwrap().is_some());
-    assert!(catalogue.get("checkpoint", "booth-product:current-purchase:1").unwrap().is_some());
-    assert!(catalogue.get("checkpoint", "booth-page:other:1").unwrap().is_some());
-    assert!(catalogue.get("checkpoint", &format!("gumroad:{A}:latest:0:1")).unwrap().is_some());
-    assert!(catalogue.get("checkpoint", &format!("gumroad:{A}:active:0:1")).unwrap().is_some());
-    assert!(catalogue.get("checkpoint", "local-import:keep").unwrap().is_some());
+    assert!(catalogue
+        .get("checkpoint", "booth-page:current-library:1")
+        .unwrap()
+        .is_some());
+    assert!(catalogue
+        .get("checkpoint", "booth-product:current-purchase:1")
+        .unwrap()
+        .is_some());
+    assert!(catalogue
+        .get("checkpoint", "booth-page:other:1")
+        .unwrap()
+        .is_some());
+    assert!(catalogue
+        .get("checkpoint", &format!("gumroad:{A}:latest:0:1"))
+        .unwrap()
+        .is_some());
+    assert!(catalogue
+        .get("checkpoint", &format!("gumroad:{A}:active:0:1"))
+        .unwrap()
+        .is_some());
+    assert!(catalogue
+        .get("checkpoint", "local-import:keep")
+        .unwrap()
+        .is_some());
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();
@@ -463,12 +616,20 @@ async fn library_and_purchase_publish_and_queue_ten_files_in_either_arrival_orde
     }
     let product = "<a href='https://invented.booth.pm/items/900001'>Authored product</a>";
     let library = parser::parse(&format!("<main><h1>Library</h1><article data-test='library-item'>{product}<div data-test='downloadable-list'>{controls}</div></article></main>"), "library", "/library?page=1").unwrap();
-    let purchase = parser::parse(&format!("<main><div class='sheet'>{product}{controls}</div></main>"), "purchase", "/orders/910001").unwrap();
+    let purchase = parser::parse(
+        &format!("<main><div class='sheet'>{product}{controls}</div></main>"),
+        "purchase",
+        "/orders/910001",
+    )
+    .unwrap();
     for page in [&library, &purchase] {
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].files.len(), 10);
         assert!(page.rows[0].manifest_complete);
-        assert!(page.rows[0].files.iter().all(|file| file.variant_id.as_deref() == Some("800001")));
+        assert!(page.rows[0]
+            .files
+            .iter()
+            .all(|file| file.variant_id.as_deref() == Some("800001")));
     }
     for pages in [[&library, &purchase], [&purchase, &library]] {
         let fixture = Fixture::new();
@@ -476,48 +637,104 @@ async fn library_and_purchase_publish_and_queue_ten_files_in_either_arrival_orde
         account(catalogue, A, false);
         let root = fixture.path.join("library");
         std::fs::create_dir_all(&root).unwrap();
-        catalogue.put("root", "authored-root", json!({"id":"authored-root","path":root,"status":"online"})).unwrap();
-        let expected: BTreeSet<_> = (0..10).map(|offset| format!("{A}:{}:800001", 700001 + offset)).collect();
+        catalogue
+            .put(
+                "root",
+                "authored-root",
+                json!({"id":"authored-root","path":root,"status":"online"}),
+            )
+            .unwrap();
+        let expected: BTreeSet<_> = (0..10)
+            .map(|offset| format!("{A}:{}:800001", 700001 + offset))
+            .collect();
         for (index, page) in pages.into_iter().enumerate() {
-            fixture.service.record_row(A, &page.source, &page.rows[0], &page.route, false).unwrap();
+            fixture
+                .service
+                .record_row(A, &page.source, &page.rows[0], &page.route, false)
+                .unwrap();
             let remote = catalogue.related("remote_file", "900001").unwrap();
             assert_eq!(remote.len(), 10);
-            assert_eq!(remote.iter().map(|file| file["id"].as_str().unwrap().to_owned()).collect::<BTreeSet<_>>(), expected);
-            let details = catalogue.command("product_details", json!({"id":"900001"})).unwrap();
+            assert_eq!(
+                remote
+                    .iter()
+                    .map(|file| file["id"].as_str().unwrap().to_owned())
+                    .collect::<BTreeSet<_>>(),
+                expected
+            );
+            let details = catalogue
+                .command("product_details", json!({"id":"900001"}))
+                .unwrap();
             assert_eq!(details["files"].as_array().unwrap().len(), 10);
             assert_eq!(details["total"], 10);
-            let required: BTreeSet<_> = catalogue.effective_entitlements("900001").unwrap().into_iter()
-                .flat_map(|entitlement| entitlement["fileIds"].as_array().unwrap().iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+            let required: BTreeSet<_> = catalogue
+                .effective_entitlements("900001")
+                .unwrap()
+                .into_iter()
+                .flat_map(|entitlement| {
+                    entitlement["fileIds"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
                 .collect();
             assert_eq!(required, expected);
             if index == 0 {
                 for file in &remote {
                     let id = file["id"].as_str().unwrap();
-                    let relative = format!("authored/{}.zip", file["sourceFileId"].as_str().unwrap());
+                    let relative =
+                        format!("authored/{}.zip", file["sourceFileId"].as_str().unwrap());
                     let path = root.join(&relative);
                     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                     std::fs::write(path, b"independently authored bytes").unwrap();
                     catalogue.put("artifact", id, json!({"id":id,"fileId":id,"productId":"900001","rootId":"authored-root","relativePath":relative,"revision":file["revision"],"status":"ready","originalAvailable":true})).unwrap();
                 }
             }
-            let details = catalogue.command("product_details", json!({"id":"900001"})).unwrap();
+            let details = catalogue
+                .command("product_details", json!({"id":"900001"}))
+                .unwrap();
             assert_eq!(details["status"], "ready");
             assert_eq!(details["downloaded"], 10);
         }
-        let stores = Arc::new(crate::stores::StoreService::new(catalogue.clone(), Arc::new(fixture.service.clone())).unwrap());
-        let storage = crate::storage::StorageService::new(catalogue.clone(), stores.clone()).unwrap();
-        let result = storage.enqueue_for_test(&json!({"productIds":["900001"]})).await.unwrap();
+        let stores = Arc::new(
+            crate::stores::StoreService::new(catalogue.clone(), Arc::new(fixture.service.clone()))
+                .unwrap(),
+        );
+        let storage =
+            crate::storage::StorageService::new(catalogue.clone(), stores.clone()).unwrap();
+        let result = storage
+            .enqueue_for_test(&json!({"productIds":["900001"]}))
+            .await
+            .unwrap();
         let job_id = result["jobIds"][0].as_str().unwrap();
         let job = catalogue.get("job", job_id).unwrap().unwrap();
         assert_eq!(job["state"], "queued");
         assert_eq!(job["fileIds"].as_array().unwrap().len(), 10);
-        assert_eq!(job["fileIds"].as_array().unwrap().iter().map(|id| id.as_str().unwrap().to_owned()).collect::<BTreeSet<_>>(), expected);
+        assert_eq!(
+            job["fileIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
         drop(storage);
         drop(stores);
         let path = fixture.path.clone();
         drop(fixture);
         let reopened = Catalogue::open(&path).unwrap();
-        assert_eq!(reopened.command("product_details", json!({"id":"900001"})).unwrap()["files"].as_array().unwrap().len(), 10);
+        assert_eq!(
+            reopened
+                .command("product_details", json!({"id":"900001"}))
+                .unwrap()["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
+        );
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -966,10 +1183,22 @@ fn one_process_owns_a_dataset() {
 fn download_route_adds_only_the_bound_variant_and_track_mp3_rendition() {
     let file = |variant: Value, format: Value| json!({"sourceFileId":"700001","sourceUrl":"https://booth.pm/downloadables/700001","variantId":variant,"downloadFormat":format});
     let route = |variant, format| download_route(&file(variant, format));
-    assert_eq!(route(Value::Null, Value::Null).unwrap(), "https://booth.pm/downloadables/700001");
-    assert_eq!(route(json!("800001"), Value::Null).unwrap(), "https://booth.pm/downloadables/700001?variation_id=800001");
-    assert_eq!(route(json!("800001"), json!("mp3")).unwrap(), "https://booth.pm/downloadables/700001?variation_id=800001&type=mp3");
-    assert_eq!(route(Value::Null, json!("mp3")).unwrap(), "https://booth.pm/downloadables/700001?type=mp3");
+    assert_eq!(
+        route(Value::Null, Value::Null).unwrap(),
+        "https://booth.pm/downloadables/700001"
+    );
+    assert_eq!(
+        route(json!("800001"), Value::Null).unwrap(),
+        "https://booth.pm/downloadables/700001?variation_id=800001"
+    );
+    assert_eq!(
+        route(json!("800001"), json!("mp3")).unwrap(),
+        "https://booth.pm/downloadables/700001?variation_id=800001&type=mp3"
+    );
+    assert_eq!(
+        route(Value::Null, json!("mp3")).unwrap(),
+        "https://booth.pm/downloadables/700001?type=mp3"
+    );
     assert!(route(json!("800001"), json!("flac")).is_err());
 }
 #[cfg(windows)]

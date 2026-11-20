@@ -358,7 +358,10 @@ impl GumroadService {
         Self::with_process_lock(catalogue, Arc::new(process_lock))
     }
     pub(crate) fn rebind_catalogue(&self, catalogue: Catalogue) -> Result<Self> {
-        ensure!(catalogue.device_dir() == self.inner.catalogue.device_dir(), "GUMROAD_DEVICE_MISMATCH");
+        ensure!(
+            catalogue.device_dir() == self.inner.catalogue.device_dir(),
+            "GUMROAD_DEVICE_MISMATCH"
+        );
         Self::with_process_lock(catalogue, self.inner._process_lock.clone())
     }
     fn with_process_lock(catalogue: Catalogue, process_lock: Arc<std::fs::File>) -> Result<Self> {
@@ -397,10 +400,18 @@ impl GumroadService {
             *recovering = true;
         }
         for job in self.inner.catalogue.list("job")? {
-            if job["store"] != "Gumroad" || !matches!(job["state"].as_str(), Some("running" | "queued")) { continue; }
-            let Some(job) = self.prepare_recovered_job(job)? else { continue };
+            if job["store"] != "Gumroad"
+                || !matches!(job["state"].as_str(), Some("running" | "queued"))
+            {
+                continue;
+            }
+            let Some(job) = self.prepare_recovered_job(job)? else {
+                continue;
+            };
             if let Err(error) = self.spawn(app.clone(), job) {
-                if safe_code(&error) != "ACCOUNT_BUSY" { return Err(error); }
+                if safe_code(&error) != "ACCOUNT_BUSY" {
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -412,7 +423,8 @@ impl GumroadService {
             let account = self.account(account_id)?;
             if self.inner.catalogue.library_root().is_some()
                 && (job["originDeviceId"] != self.inner.catalogue.device_id()
-                    || (job["type"] != "gumroadLogin" && !super::has_local_session(&self.inner.catalogue, &account)))
+                    || (job["type"] != "gumroadLogin"
+                        && !super::has_local_session(&self.inner.catalogue, &account)))
             {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
@@ -424,7 +436,11 @@ impl GumroadService {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
                 self.inner.catalogue.put("job", &id, job.clone())?;
-                session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Gumroad, field(&job, "accountId")?)?;
+                session::discard_unverified_account(
+                    &self.inner.catalogue,
+                    StoreProvider::Gumroad,
+                    field(&job, "accountId")?,
+                )?;
                 return Ok(None);
             }
             Ok(Some(job))
@@ -432,7 +448,10 @@ impl GumroadService {
         match result {
             Ok(job) => Ok(job),
             Err(error) => {
-                if let Some(before) = self.inner.catalogue.get("job", &id)?
+                if let Some(before) = self
+                    .inner
+                    .catalogue
+                    .get("job", &id)?
                     .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
                 {
                     let mut failed = before.clone();
@@ -475,7 +494,11 @@ impl GumroadService {
                 )
                 .await;
                 if let Err(error) = opening {
-                    session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Gumroad, account)?;
+                    session::discard_unverified_account(
+                        &self.inner.catalogue,
+                        StoreProvider::Gumroad,
+                        account,
+                    )?;
                     return Err(error);
                 }
                 if let Some(job) = active {
@@ -647,15 +670,21 @@ impl GumroadService {
                 if action == "cancel_sync" {
                     for attempt in 0..4 {
                         let mut batch = RecordBatch::new(&self.inner.catalogue);
-                        let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                        let mut latest = batch
+                            .get("job", id)?
+                            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                            break;
+                        }
                         latest["state"] = json!("cancelled");
                         latest["errorCode"] = json!("CANCELLED");
                         latest["completedAt"] = json!(now());
                         latest["progress"]["stage"] = json!("cancelled");
                         latest["updatedAt"] = json!(now());
                         batch.stage("job", id, latest)?;
-                        if batch.try_commit()?.is_some() { break; }
+                        if batch.try_commit()?.is_some() {
+                            break;
+                        }
                         ensure!(attempt < 3, "CONCURRENT_UPDATE");
                     }
                 } else {
@@ -770,7 +799,11 @@ impl GumroadService {
         let service = self.clone();
         tauri::async_runtime::spawn(async move {
             let _work = work;
-            let _execution = if job["type"] == "gumroadLogin" { None } else { Some(service.inner.execution.lock().await) };
+            let _execution = if job["type"] == "gumroadLogin" {
+                None
+            } else {
+                Some(service.inner.execution.lock().await)
+            };
             let result = service.execute(&app, &mut job).await;
             let error = result.as_ref().err().map(safe_code);
             if let Err(error) = service.finish_job(&job, error.as_deref()) {
@@ -795,14 +828,21 @@ impl GumroadService {
                 {
                     eprintln!("Gumroad login window close failed: {}", safe_code(&error));
                 }
-                if let Err(error) = session::discard_unverified_account(&service.inner.catalogue, StoreProvider::Gumroad, &account) {
+                if let Err(error) = session::discard_unverified_account(
+                    &service.inner.catalogue,
+                    StoreProvider::Gumroad,
+                    &account,
+                ) {
                     eprintln!("Gumroad login cleanup failed: {}", safe_code(&error));
                 }
-                let _ = app.emit("nna:changed", if verified {
-                    json!({"scope":"booth","sessionChanged":true})
-                } else {
-                    json!({"scope":"booth"})
-                });
+                let _ = app.emit(
+                    "nna:changed",
+                    if verified {
+                        json!({"scope":"booth","sessionChanged":true})
+                    } else {
+                        json!({"scope":"booth"})
+                    },
+                );
             }
             if let Ok(mut running) = service.inner.running.lock() {
                 running.remove(&account);
@@ -818,7 +858,13 @@ impl GumroadService {
     }
     fn requeue_job(&self, previous: &Value) -> Result<Value> {
         let id = field(previous, "id")?;
-        ensure!(matches!(previous["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_BUSY");
+        ensure!(
+            matches!(
+                previous["state"].as_str(),
+                Some("failed" | "needsAction" | "cancelled")
+            ),
+            "JOB_BUSY"
+        );
         let mut job = previous.clone();
         crate::support::reset_attempt(&mut job);
         job["state"] = json!("queued");
@@ -826,10 +872,13 @@ impl GumroadService {
         job["completedAt"] = Value::Null;
         job["updatedAt"] = json!(now());
         job["originDeviceId"] = json!(self.inner.catalogue.device_id());
-        ensure!(self.inner.catalogue.put_many_if_unchanged(
-            vec![("job".into(), id.into(), job.clone())],
-            vec![("job".into(), id.into(), Some(previous.clone()))],
-        )?, "JOB_BUSY");
+        ensure!(
+            self.inner.catalogue.put_many_if_unchanged(
+                vec![("job".into(), id.into(), job.clone())],
+                vec![("job".into(), id.into(), Some(previous.clone()))],
+            )?,
+            "JOB_BUSY"
+        );
         Ok(job)
     }
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
@@ -854,7 +903,9 @@ impl GumroadService {
                 error
             };
             let mut terminal = job.clone();
-            terminal["supportLastStage"] = json!(crate::support::operation_stage(job["progress"]["stage"].as_str().unwrap_or("")));
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(
+                job["progress"]["stage"].as_str().unwrap_or("")
+            ));
             terminal["state"] = json!(match error {
                 None => "completed",
                 Some("CANCELLED") => "cancelled",
@@ -1143,7 +1194,10 @@ impl GumroadService {
         let (status, html) = self.inner.http.get(client, url.clone()).await?;
         ensure!(status.is_success(), "GUMROAD_LIBRARY_UNAVAILABLE");
         let page_data = gumroad::inertia_page(&html)?;
-        ensure!(page_data["component"] == "Library/Index", "SOURCE_UNSUPPORTED");
+        ensure!(
+            page_data["component"] == "Library/Index",
+            "SOURCE_UNSUPPORTED"
+        );
         gumroad::parse_library_scope(&page_data["props"], &url, page, archived, bundle)
     }
     async fn content(
@@ -1259,9 +1313,21 @@ impl GumroadService {
         if login_job.is_some() {
             let window = session::existing_window(app, StoreProvider::Gumroad, account)?
                 .ok_or_else(|| anyhow::anyhow!("CANCELLED"))?;
-            session::remember(window, &self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account).await?;
+            session::remember(
+                window,
+                &self.inner.catalogue.device_dir(),
+                StoreProvider::Gumroad,
+                account,
+            )
+            .await?;
             if session::existing_window(app, StoreProvider::Gumroad, account)?.is_none() {
-                if unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account)?; }
+                if unverified {
+                    session::forget(
+                        &self.inner.catalogue.device_dir(),
+                        StoreProvider::Gumroad,
+                        account,
+                    )?;
+                }
                 bail!("CANCELLED");
             }
         }
@@ -1276,7 +1342,13 @@ impl GumroadService {
         match batch.try_commit() {
             Ok(Some(_)) => {}
             result => {
-                if login_job.is_some() && unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account)?; }
+                if login_job.is_some() && unverified {
+                    session::forget(
+                        &self.inner.catalogue.device_dir(),
+                        StoreProvider::Gumroad,
+                        account,
+                    )?;
+                }
                 result?;
                 bail!("CONCURRENT_UPDATE");
             }
@@ -1520,7 +1592,9 @@ impl GumroadService {
         let saved = self.inner.catalogue.get("checkpoint", &checkpoint_id)?;
         let mut checkpoint = saved.filter(|row| selected.is_none() && row["publicationVersion"] == 1 && row["jobId"] == job["id"] && row["headSignatures"] == json!(signatures) && row["unresolvedRows"].as_u64() == Some(0))
             .unwrap_or_else(|| json!({"id":checkpoint_id,"publicationVersion":1,"journalIds":[],"publishedProducts":[],"store":"Gumroad","accountId":account,"jobId":job["id"],"headSignatures":signatures,"nextPages":[1,1],"seenPurchaseIds":[],"productIds":[],"unresolvedRows":0,"pages":0,"complete":false}));
-        self.inner.catalogue.prune_store_checkpoints("Gumroad", account)?;
+        self.inner
+            .catalogue
+            .prune_store_checkpoints("Gumroad", account)?;
         let mut seen: BTreeSet<String> = checkpoint["seenPurchaseIds"]
             .as_array()
             .into_iter()
@@ -1690,9 +1764,9 @@ impl GumroadService {
                         self.cancelled(content_job)?;
                         let content = self.expanded_content(client, &row, None).await;
                         let public = if let Ok(observation) = &content {
-                            if selected.as_ref().is_none_or(|ids| {
-                                ids.contains(&observation.catalogue_product_id())
-                            })
+                            if selected
+                                .as_ref()
+                                .is_none_or(|ids| ids.contains(&observation.catalogue_product_id()))
                             {
                                 if let Some(url) = &observation.public_product_url {
                                     let future = shared_public_read(
@@ -2918,14 +2992,22 @@ mod tests {
         let service = GumroadService::new(catalogue.clone()).unwrap();
         let missing = "d0140000-0000-4000-8000-000000000001";
         let healthy = "d0140000-0000-4000-8000-000000000002";
-        catalogue.put("account", healthy, json!({"id":healthy,"store":"Gumroad"})).unwrap();
-        for (id, owner) in [("authored-orphan-job", missing), ("authored-healthy-job", healthy)] {
+        catalogue
+            .put("account", healthy, json!({"id":healthy,"store":"Gumroad"}))
+            .unwrap();
+        for (id, owner) in [
+            ("authored-orphan-job", missing),
+            ("authored-healthy-job", healthy),
+        ] {
             let job = json!({"id":id,"type":"gumroadSync","store":"Gumroad","accountId":owner,"state":"running"});
             catalogue.put("job", id, job.clone()).unwrap();
             let recovered = service.prepare_recovered_job(job).unwrap();
             assert_eq!(recovered.is_some(), owner == healthy);
         }
-        let orphan = catalogue.get("job", "authored-orphan-job").unwrap().unwrap();
+        let orphan = catalogue
+            .get("job", "authored-orphan-job")
+            .unwrap()
+            .unwrap();
         assert_eq!(orphan["state"], "needsAction");
         assert_eq!(orphan["errorCode"], "ACCOUNT_UNAVAILABLE");
         drop(service);
@@ -2939,14 +3021,24 @@ mod tests {
         let catalogue = Catalogue::open(&path).unwrap();
         let service = GumroadService::new(catalogue.clone()).unwrap();
         let previous = json!({"id":"authored-retry","type":"gumroadLogin","store":"Gumroad","accountId":"authored-account","state":"needsAction","errorCode":"RETRY_REQUIRED"});
-        catalogue.put("job", "authored-retry", previous.clone()).unwrap();
+        catalogue
+            .put("job", "authored-retry", previous.clone())
+            .unwrap();
         let mut running = service.requeue_job(&previous).unwrap();
         assert_eq!(running["state"], "queued");
         running["state"] = json!("running");
         running["progress"] = json!({"pages":5});
-        catalogue.put("job", "authored-retry", running.clone()).unwrap();
-        assert_eq!(safe_code(&service.requeue_job(&previous).unwrap_err()), "JOB_BUSY");
-        assert_eq!(catalogue.get("job", "authored-retry").unwrap().unwrap(), running);
+        catalogue
+            .put("job", "authored-retry", running.clone())
+            .unwrap();
+        assert_eq!(
+            safe_code(&service.requeue_job(&previous).unwrap_err()),
+            "JOB_BUSY"
+        );
+        assert_eq!(
+            catalogue.get("job", "authored-retry").unwrap().unwrap(),
+            running
+        );
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
@@ -3231,40 +3323,62 @@ mod tests {
 
     #[test]
     fn public_body_enriches_owned_option_without_promoting_listing_price_or_unknown_body() {
-        let path = std::env::temp_dir().join(format!(
-            "nna-gumroad-public-body-{}", uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("nna-gumroad-public-body-{}", uuid::Uuid::new_v4()));
         let catalogue = Catalogue::open(&path).unwrap();
         let account = "authored-account";
         let product = "gumroad:authored-product";
         let acquisition_id = format!(
-            "gumroad:{account}:{}", fingerprint(&json!("authored-purchase"))
+            "gumroad:{account}:{}",
+            fingerprint(&json!("authored-purchase"))
         );
-        catalogue.put("product", product, json!({
-            "id":product, "store":"Gumroad", "provider":"gumroad",
-            "sourceDescription":"Previously observed VRChat body", "sourcePriceCents":1250,
-            "price":12.5, "priceCurrency":"USD", "priceBasis":"gumroadPublicPriceCents",
-            "isPayWhatYouWant":false, "isRecurringBilling":false
-        })).unwrap();
-        catalogue.put("acquisition", &acquisition_id, json!({
-            "id":acquisition_id, "accountId":account, "productId":product,
-            "paidPrice":7.5, "paidCurrency":"USD", "paidPriceBasis":"productLineTotal"
-        })).unwrap();
+        catalogue
+            .put(
+                "product",
+                product,
+                json!({
+                    "id":product, "store":"Gumroad", "provider":"gumroad",
+                    "sourceDescription":"Previously observed VRChat body", "sourcePriceCents":1250,
+                    "price":12.5, "priceCurrency":"USD", "priceBasis":"gumroadPublicPriceCents",
+                    "isPayWhatYouWant":false, "isRecurringBilling":false
+                }),
+            )
+            .unwrap();
+        catalogue
+            .put(
+                "acquisition",
+                &acquisition_id,
+                json!({
+                    "id":acquisition_id, "accountId":account, "productId":product,
+                    "paidPrice":7.5, "paidCurrency":"USD", "paidPriceBasis":"productLineTotal"
+                }),
+            )
+            .unwrap();
         let card = LibraryPurchase {
-            purchase_id: "authored-purchase".into(), title: Some("Authored hair".into()),
-            author: None, thumbnail_url: None, native_type: Some("digital".into()),
-            variant_name: Some("Owned option".into()), archived: false, content_route: None,
+            purchase_id: "authored-purchase".into(),
+            title: Some("Authored hair".into()),
+            author: None,
+            thumbnail_url: None,
+            native_type: Some("digital".into()),
+            variant_name: Some("Owned option".into()),
+            archived: false,
+            content_route: None,
         };
         let mut observation = content(
-            "authored-product", "authored-purchase", "authored-file", "AUTHORED_CAPABILITY"
+            "authored-product",
+            "authored-purchase",
+            "authored-file",
+            "AUTHORED_CAPABILITY",
         );
         observation.variant_id = Some("authored-option".into());
-        observation.public_product_url = Some(
-            Url::parse("https://authored.gumroad.com/l/product").unwrap()
-        );
+        observation.public_product_url =
+            Some(Url::parse("https://authored.gumroad.com/l/product").unwrap());
         assert!(!needs_public_quote(&observation));
         for (body, expected) in [
-            (Some(json!("<p>Hair &amp; accessories for VRChat</p>")), "Hair & accessories for VRChat"),
+            (
+                Some(json!("<p>Hair &amp; accessories for VRChat</p>")),
+                "Hair & accessories for VRChat",
+            ),
             (None, "Hair & accessories for VRChat"),
             (Some(Value::Null), "Hair & accessories for VRChat"),
             (Some(json!("")), ""),
@@ -3272,7 +3386,9 @@ mod tests {
             let mut value = json!({"api_version":1,"id":"authored-product",
                 "price_cents":9999,"currency_code":"usd","price_formatted":"$99.99",
                 "is_pay_what_you_want":true,"is_recurring_billing":true});
-            if let Some(body) = body { value["description"] = body; }
+            if let Some(body) = body {
+                value["description"] = body;
+            }
             let public = gumroad::parse_public_product(&value, Some("authored-product")).unwrap();
             let mut batch = RecordBatch::new(&catalogue);
             project(&mut batch, account, &card, &observation).unwrap();
@@ -3287,7 +3403,13 @@ mod tests {
             assert_eq!(stored["isPayWhatYouWant"], false);
             assert_eq!(stored["isRecurringBilling"], false);
             assert_eq!(stored["priceRefreshState"], "unavailable");
-            assert_eq!(catalogue.get("acquisition", &acquisition_id).unwrap().unwrap()["paidPrice"], 7.5);
+            assert_eq!(
+                catalogue
+                    .get("acquisition", &acquisition_id)
+                    .unwrap()
+                    .unwrap()["paidPrice"],
+                7.5
+            );
             assert_eq!(catalogue.related("remote_file", product).unwrap().len(), 1);
         }
     }
@@ -4356,19 +4478,34 @@ mod tests {
             // The shared record stays as it was for other devices. This device keeps the
             // snapshot for the next sign-in and shows the account signed out until then.
             let stored = catalogue.get("account", &account_id).unwrap().unwrap();
-            for field in ["state", "status", "identityVerified", "identityHash", "disconnected"] {
+            for field in [
+                "state",
+                "status",
+                "identityVerified",
+                "identityHash",
+                "disconnected",
+            ] {
                 assert_eq!(stored[field], account[field]);
             }
-            assert!(!super::super::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
-                .unwrap()
-                .is_empty());
+            assert!(!super::super::session_cache::load(
+                &profile,
+                StoreProvider::Gumroad,
+                &account_id
+            )
+            .unwrap()
+            .is_empty());
             assert!(!super::super::has_local_session(&catalogue, &stored));
             // A sign-in saves the session again and this device is ready.
             let cookies =
                 super::super::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
                     .unwrap();
-            super::super::session_cache::save(&profile, StoreProvider::Gumroad, &account_id, cookies)
-                .unwrap();
+            super::super::session_cache::save(
+                &profile,
+                StoreProvider::Gumroad,
+                &account_id,
+                cookies,
+            )
+            .unwrap();
             assert!(super::super::has_local_session(&catalogue, &stored));
         }
         drop(service);

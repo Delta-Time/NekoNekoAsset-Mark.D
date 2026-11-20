@@ -91,11 +91,16 @@ fn resolver_login_redirect(provider: StoreProvider, response: &Response) -> bool
     if provider != StoreProvider::Gumroad || !response.status().is_redirection() {
         return false;
     }
-    response.headers().get(reqwest::header::LOCATION)
+    response
+        .headers()
+        .get(reqwest::header::LOCATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| response.url().join(value).ok())
-        .is_some_and(|url| metadata_destination(provider, &url)
-            && url.host_str() == Some("gumroad.com") && login_path(&url))
+        .is_some_and(|url| {
+            metadata_destination(provider, &url)
+                && url.host_str() == Some("gumroad.com")
+                && login_path(&url)
+        })
 }
 
 pub fn build_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> Result<Client> {
@@ -103,7 +108,10 @@ pub fn build_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> 
 }
 
 /// Large payloads have an inactivity bound, never a whole-transfer deadline.
-pub fn build_download_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> Result<Client> {
+pub fn build_download_client(
+    provider: StoreProvider,
+    jar: Arc<reqwest::cookie::Jar>,
+) -> Result<Client> {
     build_provider_client(provider, jar, false, true)
 }
 
@@ -148,8 +156,13 @@ fn build_provider_client(
             })
         })
         .connect_timeout(Duration::from_secs(20));
-    let builder = if download { builder.read_timeout(Duration::from_secs(60)) } else { builder.timeout(Duration::from_secs(45)) };
-    builder.user_agent(concat!(
+    let builder = if download {
+        builder.read_timeout(Duration::from_secs(60))
+    } else {
+        builder.timeout(Duration::from_secs(45))
+    };
+    builder
+        .user_agent(concat!(
             "NekoNekoAsset/",
             env!("CARGO_PKG_VERSION"),
             " (private asset manager)"
@@ -556,7 +569,10 @@ impl MetadataHttp {
 
     /// Header-only capability resolution uses the same provider request-start spacing.
     pub async fn resolve_head(&self, client: &Client, url: Url) -> Result<Response> {
-        ensure!(metadata_destination(self.provider, &url), "INVALID_METADATA_URL");
+        ensure!(
+            metadata_destination(self.provider, &url),
+            "INVALID_METADATA_URL"
+        );
         let _permit = self
             .metadata
             .acquire()
@@ -595,28 +611,77 @@ mod tests {
     async fn resolver_denial_does_not_claim_account_expiry_without_login_evidence() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         for (status, location, resolver, expected) in [
-            ("401 Unauthorized", None, true, Some("DOWNLOAD_RESOLVER_FAILED")),
+            (
+                "401 Unauthorized",
+                None,
+                true,
+                Some("DOWNLOAD_RESOLVER_FAILED"),
+            ),
             ("401 Unauthorized", None, false, Some("AUTH_REQUIRED")),
-            ("302 Found", Some("https://gumroad.com/login?next=%2Flibrary"), true, Some("AUTH_REQUIRED")),
-            ("302 Found", Some("https://gumroad.com/two-factor"), true, Some("AUTH_REQUIRED")),
-            ("302 Found", Some("https://gumroad.com.evil.invalid/login"), true, None),
+            (
+                "302 Found",
+                Some("https://gumroad.com/login?next=%2Flibrary"),
+                true,
+                Some("AUTH_REQUIRED"),
+            ),
+            (
+                "302 Found",
+                Some("https://gumroad.com/two-factor"),
+                true,
+                Some("AUTH_REQUIRED"),
+            ),
+            (
+                "302 Found",
+                Some("https://gumroad.com.evil.invalid/login"),
+                true,
+                None,
+            ),
             ("302 Found", Some("http://gumroad.com/login"), true, None),
-            ("302 Found", Some("https://files.gumroad.com/login"), true, None),
-            ("302 Found", Some("https://gumroad.com/r/authored/product_files"), true, None),
+            (
+                "302 Found",
+                Some("https://files.gumroad.com/login"),
+                true,
+                None,
+            ),
+            (
+                "302 Found",
+                Some("https://gumroad.com/r/authored/product_files"),
+                true,
+                None,
+            ),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-            let response = format!("HTTP/1.1 {status}\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", location.map(|value| format!("Location: {value}\r\n")).unwrap_or_default());
+            let origin =
+                Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let response = format!(
+                "HTTP/1.1 {status}\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n",
+                location
+                    .map(|value| format!("Location: {value}\r\n"))
+                    .unwrap_or_default()
+            );
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 4096];
                 socket.read(&mut bytes).await.unwrap();
                 socket.write_all(response.as_bytes()).await.unwrap();
             });
-            let client = Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+            let client = Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
             let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
             transport.authored_origin = Some(origin.clone());
-            let result = transport.request(&client, origin, resolver, if resolver { Method::HEAD } else { Method::GET }, None, None).await;
+            let result = transport
+                .request(
+                    &client,
+                    origin,
+                    resolver,
+                    if resolver { Method::HEAD } else { Method::GET },
+                    None,
+                    None,
+                )
+                .await;
             match expected {
                 Some(code) => assert_eq!(result.unwrap_err().to_string(), code),
                 None => assert_eq!(result.unwrap().status(), StatusCode::FOUND),
@@ -656,7 +721,10 @@ mod tests {
     }
     #[test]
     fn retry_after_rejects_unrepresentable_delays() {
-        assert_eq!(retry_after(Some("18446744073709551615")), Duration::from_secs(5));
+        assert_eq!(
+            retry_after(Some("18446744073709551615")),
+            Duration::from_secs(5)
+        );
         assert_eq!(retry_after(Some("600")), Duration::from_secs(600));
         assert_eq!(retry_after(Some("bad")), Duration::from_secs(5));
         assert_eq!(retry_after(None), Duration::from_secs(5));
@@ -675,10 +743,20 @@ mod tests {
         let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
         transport.authored_origin = Some(origin.clone());
         let began = Instant::now();
-        let error = transport.get(&Client::builder().no_proxy().build().unwrap(), origin).await.unwrap_err();
+        let error = transport
+            .get(&Client::builder().no_proxy().build().unwrap(), origin)
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "RATE_LIMITED");
         assert!(began.elapsed() < Duration::from_secs(5));
-        assert!(transport.pace.lock().await.saturating_duration_since(Instant::now()) >= Duration::from_secs(599));
+        assert!(
+            transport
+                .pace
+                .lock()
+                .await
+                .saturating_duration_since(Instant::now())
+                >= Duration::from_secs(599)
+        );
         server.await.unwrap();
     }
 
@@ -907,15 +985,23 @@ mod tests {
         ] {
             assert!(!public_https(&url(value)), "{value}");
             assert!(!gumroad_file_destination(&url(value)), "{value}");
-            assert!(!download_destination(StoreProvider::Jinxxy, &url(value)), "{value}");
+            assert!(
+                !download_destination(StoreProvider::Jinxxy, &url(value)),
+                "{value}"
+            );
         }
         // A redirect may pass through any public page, but a file is never the store's sign-in.
         assert!(public_https(&url("https://gumroad.com/login")));
-        assert!(!gumroad_file_destination(&url("https://gumroad.com/login?next=%2Flibrary")));
+        assert!(!gumroad_file_destination(&url(
+            "https://gumroad.com/login?next=%2Flibrary"
+        )));
         assert!(!download_destination(
             StoreProvider::Jinxxy,
             &url("https://jinxxy.com/login?redirect=%2Fmy%2Finventory")
         ));
-        assert!(!download_destination(StoreProvider::Jinxxy, &url("https://zh.jinxxy.com/sign_in")));
+        assert!(!download_destination(
+            StoreProvider::Jinxxy,
+            &url("https://zh.jinxxy.com/sign_in")
+        ));
     }
 }

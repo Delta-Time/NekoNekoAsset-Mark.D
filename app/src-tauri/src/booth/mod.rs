@@ -99,7 +99,11 @@ fn download_route(file: &Value) -> Result<String> {
         .collect();
     Ok(format!(
         "https://booth.pm/downloadables/{id}{}",
-        if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) }
+        if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", query.join("&"))
+        }
     ))
 }
 #[derive(Clone)]
@@ -223,7 +227,10 @@ impl BoothService {
         Self::with_process_lock(catalogue, Arc::new(process_lock))
     }
     pub(crate) fn rebind_catalogue(&self, catalogue: Catalogue) -> Result<Self> {
-        ensure!(catalogue.device_dir() == self.inner.catalogue.device_dir(), "BOOTH_DEVICE_MISMATCH");
+        ensure!(
+            catalogue.device_dir() == self.inner.catalogue.device_dir(),
+            "BOOTH_DEVICE_MISMATCH"
+        );
         Self::with_process_lock(catalogue, self.inner._process_lock.clone())
     }
     fn with_process_lock(catalogue: Catalogue, process_lock: Arc<std::fs::File>) -> Result<Self> {
@@ -279,9 +286,13 @@ impl BoothService {
             {
                 continue;
             }
-            let Some(job) = self.prepare_recovered_job(job)? else { continue };
+            let Some(job) = self.prepare_recovered_job(job)? else {
+                continue;
+            };
             if let Err(error) = self.spawn_job(app.clone(), job) {
-                if code(&error) != "ACCOUNT_BUSY" { return Err(error); }
+                if code(&error) != "ACCOUNT_BUSY" {
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -304,7 +315,11 @@ impl BoothService {
                 job["updatedAt"] = json!(now());
                 self.inner.catalogue.put("job", &id, job.clone())?;
                 if let Some(account) = job["accountId"].as_str() {
-                    crate::stores::session::discard_unverified_account(&self.inner.catalogue, crate::stores::StoreProvider::Booth, account)?;
+                    crate::stores::session::discard_unverified_account(
+                        &self.inner.catalogue,
+                        crate::stores::StoreProvider::Booth,
+                        account,
+                    )?;
                 }
                 return Ok(None);
             }
@@ -323,7 +338,10 @@ impl BoothService {
         match result {
             Ok(job) => Ok(job),
             Err(error) => {
-                if let Some(before) = self.inner.catalogue.get("job", &id)?
+                if let Some(before) = self
+                    .inner
+                    .catalogue
+                    .get("job", &id)?
                     .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
                 {
                     let mut failed = before.clone();
@@ -554,13 +572,19 @@ impl BoothService {
                 }
                 for attempt in 0..4 {
                     let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
-                    let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                    if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                    let mut latest = batch
+                        .get("job", id)?
+                        .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                    if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                        break;
+                    }
                     latest["state"] = json!("cancelled");
                     latest["updatedAt"] = json!(now());
                     latest["completedAt"] = json!(now());
                     batch.stage("job", id, latest)?;
-                    if batch.try_commit()?.is_some() { break; }
+                    if batch.try_commit()?.is_some() {
+                        break;
+                    }
                     ensure!(attempt < 3, "CONCURRENT_UPDATE");
                 }
                 self.changed(app, Some(id));
@@ -588,7 +612,13 @@ impl BoothService {
                 let key = job["accountId"]
                     .as_str()
                     .map(|id| format!("account:{id}"))
-                    .unwrap_or_else(|| if job["args"]["publicOnly"] == true { format!("booth-public:{id}") } else { "booth-global".into() });
+                    .unwrap_or_else(|| {
+                        if job["args"]["publicOnly"] == true {
+                            format!("booth-public:{id}")
+                        } else {
+                            "booth-global".into()
+                        }
+                    });
                 // A retried update waits for the account like a new one.
                 if job["type"] != "boothUpdate"
                     && self
@@ -614,10 +644,16 @@ impl BoothService {
                     .as_array()
                     .or_else(|| args["ids"].as_array())
                     .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
-                let ids: BTreeSet<String> = ids.iter().map(|value| {
-                    value.as_str().filter(|id| safety::numeric(id)).map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
-                }).collect::<Result<_>>()?;
+                let ids: BTreeSet<String> = ids
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .filter(|id| safety::numeric(id))
+                            .map(str::to_owned)
+                            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
+                    })
+                    .collect::<Result<_>>()?;
                 ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
                 let mut jobs = Vec::new();
                 for scope in self.update_scopes(&ids)? {
@@ -644,19 +680,33 @@ impl BoothService {
     }
     fn update_scopes(&self, ids: &BTreeSet<String>) -> Result<Vec<Value>> {
         let mut sources = self.inner.catalogue.list("entitlement")?;
-        sources.extend(self.inner.catalogue.list("acquisition")?.into_iter()
-            .filter(|row| row["source"] == "free"));
+        sources.extend(
+            self.inner
+                .catalogue
+                .list("acquisition")?
+                .into_iter()
+                .filter(|row| row["source"] == "free"),
+        );
         let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut owned = BTreeSet::new();
         for source in sources {
-            let (Some(product), Some(account)) = (source["productId"].as_str(), source["accountId"].as_str()) else { continue };
+            let (Some(product), Some(account)) =
+                (source["productId"].as_str(), source["accountId"].as_str())
+            else {
+                continue;
+            };
             if ids.contains(product) && self.known_account(account).is_ok() {
-                accounts.entry(account.into()).or_default().insert(product.into());
+                accounts
+                    .entry(account.into())
+                    .or_default()
+                    .insert(product.into());
                 owned.insert(product.to_owned());
             }
         }
-        let mut scopes: Vec<_> = accounts.into_iter()
-            .map(|(account, products)| json!({"accountId":account,"productIds":products})).collect();
+        let mut scopes: Vec<_> = accounts
+            .into_iter()
+            .map(|(account, products)| json!({"accountId":account,"productIds":products}))
+            .collect();
         let public: Vec<_> = ids.difference(&owned).cloned().collect();
         if !public.is_empty() {
             scopes.push(json!({"productIds":public,"publicOnly":true}));
@@ -680,7 +730,13 @@ impl BoothService {
         let key = job["accountId"]
             .as_str()
             .map(|a| format!("account:{a}"))
-            .unwrap_or_else(|| if job["args"]["publicOnly"] == true { format!("booth-public:{id}") } else { "booth-global".into() });
+            .unwrap_or_else(|| {
+                if job["args"]["publicOnly"] == true {
+                    format!("booth-public:{id}")
+                } else {
+                    "booth-global".into()
+                }
+            });
         {
             let mut running = self
                 .inner
@@ -733,12 +789,17 @@ impl BoothService {
             let _work = work;
             // Accounts of this store share one execution queue. Other providers
             // own independent gates and continue concurrently.
-            let _execution = if job["type"] == "boothLogin" { None } else { Some(service.inner.execution.lock().await) };
+            let _execution = if job["type"] == "boothLogin" {
+                None
+            } else {
+                Some(service.inner.execution.lock().await)
+            };
             crate::support::begin_attempt(&mut job);
             let (result, diagnostics) = crate::support_trace::capture(async {
                 crate::support_trace::job_stage(&job);
                 service.execute(&app, &mut job).await
-            }).await;
+            })
+            .await;
             job["supportDiagnostics"] = diagnostics;
             crate::support::end_attempt(&mut job);
             let mut error_code = result.as_ref().err().map(code);
@@ -773,12 +834,24 @@ impl BoothService {
             }
             if job["type"] == "boothLogin" {
                 if let Some(account) = job["accountId"].as_str() {
-                    let _ = crate::stores::session::discard_unverified_account(&service.inner.catalogue, crate::stores::StoreProvider::Booth, account);
+                    let _ = crate::stores::session::discard_unverified_account(
+                        &service.inner.catalogue,
+                        crate::stores::StoreProvider::Booth,
+                        account,
+                    );
                 }
-                if service.inner.catalogue.get("job", &id).ok().flatten()
+                if service
+                    .inner
+                    .catalogue
+                    .get("job", &id)
+                    .ok()
+                    .flatten()
                     .is_some_and(|terminal| terminal["state"] == "completed")
                 {
-                    let _ = app.emit("nna:changed", json!({"scope":"booth","sessionChanged":true}));
+                    let _ = app.emit(
+                        "nna:changed",
+                        json!({"scope":"booth","sessionChanged":true}),
+                    );
                 }
             }
             service.changed(&app, Some(&id));
@@ -787,7 +860,13 @@ impl BoothService {
     }
     fn requeue_job(&self, previous: &Value) -> Result<Value> {
         let id = field(previous, "id")?;
-        ensure!(matches!(previous["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_BUSY");
+        ensure!(
+            matches!(
+                previous["state"].as_str(),
+                Some("failed" | "needsAction" | "cancelled")
+            ),
+            "JOB_BUSY"
+        );
         let mut job = previous.clone();
         crate::support::reset_attempt(&mut job);
         job["state"] = json!("queued");
@@ -797,10 +876,13 @@ impl BoothService {
         job["originDeviceId"] = json!(self.inner.catalogue.device_id());
         // Login may await a native window. A second Retry must not overwrite
         // the attempt another caller has queued or started in the meantime.
-        ensure!(self.inner.catalogue.put_many_if_unchanged(
-            vec![("job".into(), id.into(), job.clone())],
-            vec![("job".into(), id.into(), Some(previous.clone()))],
-        )?, "JOB_BUSY");
+        ensure!(
+            self.inner.catalogue.put_many_if_unchanged(
+                vec![("job".into(), id.into(), job.clone())],
+                vec![("job".into(), id.into(), Some(previous.clone()))],
+            )?,
+            "JOB_BUSY"
+        );
         Ok(job)
     }
     /// A sign-in signal keeps the protected session: only logout, deletion, a failed first
@@ -839,7 +921,9 @@ impl BoothService {
                     }
                 }
             }
-            terminal["supportLastStage"] = json!(crate::support::operation_stage(terminal["progress"]["stage"].as_str().unwrap_or("")));
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(
+                terminal["progress"]["stage"].as_str().unwrap_or("")
+            ));
             let error = if current["state"] == "cancelled" {
                 Some("CANCELLED")
             } else {
@@ -1106,14 +1190,27 @@ impl BoothService {
                                         .get("account", &id)?
                                         .ok_or_else(|| anyhow::anyhow!("ACCOUNT_UNAVAILABLE"))?;
                                     let unverified = account["identityVerified"] != true
-                                        && account["authenticatedAt"].as_str().is_none_or(str::is_empty)
-                                        && account["identityHash"].as_str().is_none_or(str::is_empty);
+                                        && account["authenticatedAt"]
+                                            .as_str()
+                                            .is_none_or(str::is_empty)
+                                        && account["identityHash"]
+                                            .as_str()
+                                            .is_none_or(str::is_empty);
                                     crate::stores::session::remember(
-                                        window.clone(), &self.inner.catalogue.device_dir(),
-                                        crate::stores::StoreProvider::Booth, &id,
-                                    ).await?;
+                                        window.clone(),
+                                        &self.inner.catalogue.device_dir(),
+                                        crate::stores::StoreProvider::Booth,
+                                        &id,
+                                    )
+                                    .await?;
                                     if app.get_webview_window(window.label()).is_none() {
-                                        if unverified { crate::stores::session::forget(&self.inner.catalogue.device_dir(), crate::stores::StoreProvider::Booth, &id)?; }
+                                        if unverified {
+                                            crate::stores::session::forget(
+                                                &self.inner.catalogue.device_dir(),
+                                                crate::stores::StoreProvider::Booth,
+                                                &id,
+                                            )?;
+                                        }
                                         bail!("CANCELLED");
                                     }
                                     account["disconnected"] = json!(false);
@@ -1124,9 +1221,17 @@ impl BoothService {
                                     match batch.try_commit() {
                                         Ok(Some(_)) => {}
                                         result => {
-                                            if unverified { crate::stores::session::forget(&self.inner.catalogue.device_dir(), crate::stores::StoreProvider::Booth, &id)?; }
+                                            if unverified {
+                                                crate::stores::session::forget(
+                                                    &self.inner.catalogue.device_dir(),
+                                                    crate::stores::StoreProvider::Booth,
+                                                    &id,
+                                                )?;
+                                            }
                                             result?;
-                                            if self.cancelled(job)? { bail!("CANCELLED"); }
+                                            if self.cancelled(job)? {
+                                                bail!("CANCELLED");
+                                            }
                                             bail!("CONCURRENT_UPDATE");
                                         }
                                     }
@@ -1202,7 +1307,10 @@ impl BoothService {
     /// Whether a refused file came from a free offer its public page says has ended,
     /// the same reading a sync counts. Any other answer leaves the refusal as it was.
     async fn free_offer_ended(&self, client: &reqwest::Client, file: &Value) -> bool {
-        let Some(route) = file["resolverPage"].as_str().filter(|_| file["source"] == "free") else {
+        let Some(route) = file["resolverPage"]
+            .as_str()
+            .filter(|_| file["source"] == "free")
+        else {
             return false;
         };
         let (Some(id), Ok(url)) = (safety::free_item_id(route), url::Url::parse(route)) else {
@@ -1216,11 +1324,18 @@ impl BoothService {
     /// A cookie-less client for public item pages, past the R-18 confirmation.
     pub fn public_client(&self) -> Result<reqwest::Client> {
         let jar = Arc::new(reqwest::cookie::Jar::default());
-        jar.add_cookie_str("adult=t; Domain=booth.pm; Path=/", &url::Url::parse("https://booth.pm/").unwrap());
+        jar.add_cookie_str(
+            "adult=t; Domain=booth.pm; Path=/",
+            &url::Url::parse("https://booth.pm/").unwrap(),
+        );
         http::build_client(jar, false)
     }
     /// A public item page, paced with the store sync's own requests.
-    pub async fn public_item_page(&self, client: &reqwest::Client, id: &str) -> Result<(u16, String)> {
+    pub async fn public_item_page(
+        &self,
+        client: &reqwest::Client,
+        id: &str,
+    ) -> Result<(u16, String)> {
         ensure!(safety::numeric(id), "INVALID_PRODUCT_ID");
         let url = url::Url::parse(&format!("https://booth.pm/ja/items/{id}"))?;
         let (status, body) = self.inner.http.get(client, url).await?;
@@ -1228,18 +1343,36 @@ impl BoothService {
     }
     /// The bytes of a 0-yen download control from a public item page, read with an account
     /// that holds the product. BOOTH records it in that account's free-download history.
-    pub async fn free_license_file(&self, app: &AppHandle, account: &str, route: &str, limit: u64) -> Result<Vec<u8>> {
-        let (_, variant, route) = safety::resolver(route).ok_or_else(|| anyhow::anyhow!("INVALID_RESOLVER"))?;
+    pub async fn free_license_file(
+        &self,
+        app: &AppHandle,
+        account: &str,
+        route: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>> {
+        let (_, variant, route) =
+            safety::resolver(route).ok_or_else(|| anyhow::anyhow!("INVALID_RESOLVER"))?;
         ensure!(variant.is_some(), "INVALID_RESOLVER");
         let client = self.client(app, account, true).await?;
-        let mut response = self.inner.http.resolve(&client, url::Url::parse(&route)?).await?;
+        let mut response = self
+            .inner
+            .http
+            .resolve(&client, url::Url::parse(&route)?)
+            .await?;
         validate_download_response(&response)?;
         if response.content_length().is_some_and(|n| n > limit) {
             bail!("LICENSE_DOCUMENT_TOO_LARGE");
         }
         let mut body = vec![];
-        while let Some(chunk) = response.chunk().await.map_err(|_| anyhow::anyhow!("NETWORK_UNAVAILABLE"))? {
-            ensure!(body.len() + chunk.len() <= limit as usize, "LICENSE_DOCUMENT_TOO_LARGE");
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| anyhow::anyhow!("NETWORK_UNAVAILABLE"))?
+        {
+            ensure!(
+                body.len() + chunk.len() <= limit as usize,
+                "LICENSE_DOCUMENT_TOO_LARGE"
+            );
             body.extend_from_slice(&chunk);
         }
         Ok(body)
@@ -1262,8 +1395,10 @@ impl BoothService {
             .and_then(|response| validate_download_response(&response).map(|()| response));
         let response = match resolved {
             Err(error)
-                if matches!(code(&error).as_str(), "PERMISSION_DENIED" | "FILE_UNAVAILABLE")
-                    && self.free_offer_ended(&client, &file).await =>
+                if matches!(
+                    code(&error).as_str(),
+                    "PERMISSION_DENIED" | "FILE_UNAVAILABLE"
+                ) && self.free_offer_ended(&client, &file).await =>
             {
                 bail!("FREE_OFFER_UNAVAILABLE")
             }

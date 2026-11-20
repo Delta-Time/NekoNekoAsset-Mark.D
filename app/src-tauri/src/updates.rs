@@ -309,8 +309,13 @@ pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
         return None;
     }
     Some(match kind {
-        "boothSync" | "boothUpdate" | "gumroadSync" | "gumroadUpdate" | "jinxxySync"
-        | "jinxxyUpdate" | crate::licenses::JOB_TYPE => return None,
+        "boothSync"
+        | "boothUpdate"
+        | "gumroadSync"
+        | "gumroadUpdate"
+        | "jinxxySync"
+        | "jinxxyUpdate"
+        | crate::licenses::JOB_TYPE => return None,
         "boothLogin" | "gumroadLogin" | "jinxxyLogin" => "updates_busy_login",
         "storage:migrate_root" => "updates_busy_move",
         "storage:export_backup" => "updates_busy_backup",
@@ -368,16 +373,43 @@ mod tests {
     #[test]
     fn only_active_jobs_that_do_not_resume_block_installation() {
         let job = |kind: &str, state: &str| serde_json::json!({"type":kind,"state":state});
-        for kind in ["boothSync", "boothUpdate", "gumroadSync", "gumroadUpdate", "jinxxySync", "jinxxyUpdate", "download", "storage:import_local"] {
+        for kind in [
+            "boothSync",
+            "boothUpdate",
+            "gumroadSync",
+            "gumroadUpdate",
+            "jinxxySync",
+            "jinxxyUpdate",
+            "download",
+            "storage:import_local",
+        ] {
             assert_eq!(blocking_job(&job(kind, "running")), None);
             assert_eq!(blocking_job(&job(kind, "queued")), None);
         }
-        assert_eq!(blocking_job(&job("storage:export_zip", "queued")), Some("updates_busy_export"));
-        assert_eq!(blocking_job(&job("unity:import", "running")), Some("updates_busy_unity"));
-        assert_eq!(blocking_job(&job("boothLogin", "running")), Some("updates_busy_login"));
-        assert_eq!(blocking_job(&job("storage:restore_backup", "running")), Some("updates_busy_restore"));
-        assert_eq!(blocking_job(&job("ai:classify", "running")), Some("updates_busy_ai"));
-        assert_eq!(blocking_job(&job("storage:future", "running")), Some("updates_busy_job"));
+        assert_eq!(
+            blocking_job(&job("storage:export_zip", "queued")),
+            Some("updates_busy_export")
+        );
+        assert_eq!(
+            blocking_job(&job("unity:import", "running")),
+            Some("updates_busy_unity")
+        );
+        assert_eq!(
+            blocking_job(&job("boothLogin", "running")),
+            Some("updates_busy_login")
+        );
+        assert_eq!(
+            blocking_job(&job("storage:restore_backup", "running")),
+            Some("updates_busy_restore")
+        );
+        assert_eq!(
+            blocking_job(&job("ai:classify", "running")),
+            Some("updates_busy_ai")
+        );
+        assert_eq!(
+            blocking_job(&job("storage:future", "running")),
+            Some("updates_busy_job")
+        );
         for state in ["completed", "failed", "needsAction", "cancelled"] {
             assert_eq!(blocking_job(&job("storage:export_zip", state)), None);
         }

@@ -25,7 +25,9 @@ impl StorageService {
         // copy_into_locked_root rechecks under the destination lock.
         for entry in std::fs::read_dir(&destination).context("storage.destination_unavailable")? {
             ensure!(
-                entry.context("storage.destination_unavailable")?.file_name()
+                entry
+                    .context("storage.destination_unavailable")?
+                    .file_name()
                     == ".nna-library.lock",
                 "storage.destination_not_fresh"
             );
@@ -142,7 +144,9 @@ fn move_transient(relative: &str) -> bool {
             .strip_prefix(".nna/data/")
             .and_then(|name| name.strip_prefix(".nna-move-db-"))
             .and_then(|name| name.strip_suffix(".sqlite3"))
-            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id))
+            .is_some_and(|id| {
+                uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id)
+            })
 }
 
 #[cfg(test)]

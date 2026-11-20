@@ -73,11 +73,23 @@ pub fn profile_path(data_dir: &Path, provider: StoreProvider, account: &str) -> 
 }
 
 /// Build request cookies without widening the native browser's host-only scope.
-pub(crate) fn cookies_for_request(window: &WebviewWindow, url: &Url) -> Result<Vec<tauri::webview::Cookie<'static>>> {
+pub(crate) fn cookies_for_request(
+    window: &WebviewWindow,
+    url: &Url,
+) -> Result<Vec<tauri::webview::Cookie<'static>>> {
     #[cfg(windows)]
-    { Ok(native_cookies::for_url(window, url.as_str())?.into_iter().map(super::session_cache::ScopedCookie::request_cookie).collect()) }
+    {
+        Ok(native_cookies::for_url(window, url.as_str())?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::request_cookie)
+            .collect())
+    }
     #[cfg(not(windows))]
-    { window.cookies_for_url(url.clone()).map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED")) }
+    {
+        window
+            .cookies_for_url(url.clone())
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))
+    }
 }
 
 /// Save only verified first-party cookies, outside catalogue, IPC and backups.
@@ -93,13 +105,18 @@ pub async fn remember(
         #[cfg(windows)]
         let cookies = native_cookies::list(&window)?;
         #[cfg(not(windows))]
-        let cookies = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
-            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
+        let cookies = window
+            .cookies()
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::from)
+            .collect::<Vec<_>>();
         let cookies = cookies
             .into_iter()
             .filter(|scoped| {
                 scoped
-                    .domain.as_deref()
+                    .domain
+                    .as_deref()
                     .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
             })
             .collect();
@@ -119,22 +136,31 @@ pub async fn restore(
     let profile = profile_path(data_dir, provider, account)?;
     let account = account_id(account)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let saved = super::session_cache::load_scoped(&profile, provider, &account).unwrap_or_default();
+        let saved =
+            super::session_cache::load_scoped(&profile, provider, &account).unwrap_or_default();
         #[cfg(windows)]
         let current = native_cookies::list(&window)?;
         #[cfg(not(windows))]
-        let current = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
-            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
-        let missing = saved.into_iter().filter(|scoped| {
-            scoped
-                .domain.as_deref()
-                .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
-                && !current.iter().any(|existing| {
-                    existing.cookie.name() == scoped.cookie.name()
-                        && existing.domain == scoped.domain
-                        && existing.cookie.path() == scoped.cookie.path()
-                })
-        }).collect::<Vec<_>>();
+        let current = window
+            .cookies()
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::from)
+            .collect::<Vec<_>>();
+        let missing = saved
+            .into_iter()
+            .filter(|scoped| {
+                scoped
+                    .domain
+                    .as_deref()
+                    .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
+                    && !current.iter().any(|existing| {
+                        existing.cookie.name() == scoped.cookie.name()
+                            && existing.domain == scoped.domain
+                            && existing.cookie.path() == scoped.cookie.path()
+                    })
+            })
+            .collect::<Vec<_>>();
         #[cfg(windows)]
         native_cookies::set(&window, missing)?;
         #[cfg(not(windows))]
@@ -160,9 +186,15 @@ pub fn mark_signed_out(data_dir: &Path, provider: StoreProvider, account: &str) 
 
 /// Only a confirmed discarded draft loses its account-scoped snapshot. Other
 /// libraries' profiles and established accounts are never inferred as obsolete.
-pub(crate) fn discard_unverified_account(catalogue: &crate::catalogue::Catalogue, provider: StoreProvider, account: &str) -> Result<bool> {
+pub(crate) fn discard_unverified_account(
+    catalogue: &crate::catalogue::Catalogue,
+    provider: StoreProvider,
+    account: &str,
+) -> Result<bool> {
     let discarded = catalogue.discard_unverified_account(account)?;
-    if discarded { forget(&catalogue.device_dir(), provider, account)?; }
+    if discarded {
+        forget(&catalogue.device_dir(), provider, account)?;
+    }
     Ok(discarded)
 }
 
@@ -465,24 +497,48 @@ mod tests {
     use super::*;
     #[test]
     fn discarded_draft_clears_only_its_snapshot_and_retains_established_profiles() {
-        let root = std::env::temp_dir().join(format!("nna-authored-draft-cleanup-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "nna-authored-draft-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
         let catalogue = crate::catalogue::Catalogue::open(&root).unwrap();
         let draft = "10000000-0000-4000-8000-000000000001";
         let established = "10000000-0000-4000-8000-000000000002";
-        catalogue.put("account", draft, serde_json::json!({"id":draft,"store":"BOOTH"})).unwrap();
-        catalogue.put("account", established, serde_json::json!({"id":established,"store":"BOOTH","identityVerified":true})).unwrap();
-        let draft_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, draft).unwrap();
-        let established_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, established).unwrap();
-        let other_provider = profile_path(&catalogue.device_dir(), StoreProvider::Gumroad, draft).unwrap();
+        catalogue
+            .put(
+                "account",
+                draft,
+                serde_json::json!({"id":draft,"store":"BOOTH"}),
+            )
+            .unwrap();
+        catalogue
+            .put(
+                "account",
+                established,
+                serde_json::json!({"id":established,"store":"BOOTH","identityVerified":true}),
+            )
+            .unwrap();
+        let draft_profile =
+            profile_path(&catalogue.device_dir(), StoreProvider::Booth, draft).unwrap();
+        let established_profile =
+            profile_path(&catalogue.device_dir(), StoreProvider::Booth, established).unwrap();
+        let other_provider =
+            profile_path(&catalogue.device_dir(), StoreProvider::Gumroad, draft).unwrap();
         for profile in [&draft_profile, &established_profile, &other_provider] {
             std::fs::create_dir_all(profile).unwrap();
             std::fs::write(profile.join("session.bin"), b"authored snapshot marker").unwrap();
-            std::fs::write(profile.join("browser-profile-marker"), b"preserve profile bytes").unwrap();
+            std::fs::write(
+                profile.join("browser-profile-marker"),
+                b"preserve profile bytes",
+            )
+            .unwrap();
         }
         assert!(discard_unverified_account(&catalogue, StoreProvider::Booth, draft).unwrap());
         assert!(!draft_profile.join("session.bin").exists());
         assert!(draft_profile.join("browser-profile-marker").exists());
-        assert!(!discard_unverified_account(&catalogue, StoreProvider::Booth, established).unwrap());
+        assert!(
+            !discard_unverified_account(&catalogue, StoreProvider::Booth, established).unwrap()
+        );
         assert!(established_profile.join("session.bin").exists());
         assert!(other_provider.join("session.bin").exists());
         drop(catalogue);

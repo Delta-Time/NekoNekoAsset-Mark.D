@@ -84,8 +84,11 @@ impl AvatarTagResolver {
             }
         }
         // A special edition does not make its plain product's name ambiguous.
-        let editions: BTreeSet<_> = options.iter().filter(|entry| super::avatar_edition(entry))
-            .filter_map(|entry| entry["id"].as_str()).collect();
+        let editions: BTreeSet<_> = options
+            .iter()
+            .filter(|entry| super::avatar_edition(entry))
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
         for ids in resolver.keys.values_mut() {
             if ids.iter().any(|id| !editions.contains(id.as_str())) {
                 ids.retain(|id| !editions.contains(id.as_str()));
@@ -182,13 +185,22 @@ mod tests {
         let mut bundle = base("product:authored-bundle", "苺佳 and GLC and 蒼葉", "");
         bundle["nameKind"] = json!("bundle");
         let resolver = AvatarTagResolver::from_options(&[fallback, bundle]);
-        for tag in ["星猫 / 海猫", "Authored alias", "苺佳 and GLC and 蒼葉", "苺佳", "GLC"] {
+        for tag in [
+            "星猫 / 海猫",
+            "Authored alias",
+            "苺佳 and GLC and 蒼葉",
+            "苺佳",
+            "GLC",
+        ] {
             assert!(resolver.resolve_tag(tag).is_none(), "{tag}");
         }
-        assert!(resolver.resolve_manual_avatar("product:authored-fallback").is_some());
-        assert!(resolver.resolve_manual_avatar("product:authored-bundle").is_some());
+        assert!(resolver
+            .resolve_manual_avatar("product:authored-fallback")
+            .is_some());
+        assert!(resolver
+            .resolve_manual_avatar("product:authored-bundle")
+            .is_some());
     }
-
 
     fn base(id: &str, original: &str, english: &str) -> Value {
         json!({"id":id,"officialName":original,"englishName":english,"displayName":format!("{original} / {english}"),"aliases":[format!("product:{id}"),"123456"]})
@@ -330,14 +342,30 @@ mod tests {
         edition["displayName"] = json!("ソラネコ / Soraneko (Gen3.0)");
         let mut other_edition = edition.clone();
         other_edition["id"] = json!("product:other-edition");
-        for options in [[plain.clone(), edition.clone()], [edition.clone(), plain.clone()]] {
+        for options in [
+            [plain.clone(), edition.clone()],
+            [edition.clone(), plain.clone()],
+        ] {
             let resolver = AvatarTagResolver::from_options(&options);
-            assert_eq!(resolver.resolve_tag("ソラネコ").unwrap()["id"], "product:plain");
-            assert_eq!(resolver.resolve_manual_avatar("product:edition").unwrap()["id"], "product:edition");
+            assert_eq!(
+                resolver.resolve_tag("ソラネコ").unwrap()["id"],
+                "product:plain"
+            );
+            assert_eq!(
+                resolver.resolve_manual_avatar("product:edition").unwrap()["id"],
+                "product:edition"
+            );
         }
         // Only an edition of its own name: still that product, or ambiguous among editions.
-        assert_eq!(AvatarTagResolver::from_options(&[edition.clone()]).resolve_tag("ソラネコ").unwrap()["id"], "product:edition");
-        assert!(AvatarTagResolver::from_options(&[edition, other_edition]).resolve_tag("ソラネコ").is_none());
+        assert_eq!(
+            AvatarTagResolver::from_options(&[edition.clone()])
+                .resolve_tag("ソラネコ")
+                .unwrap()["id"],
+            "product:edition"
+        );
+        assert!(AvatarTagResolver::from_options(&[edition, other_edition])
+            .resolve_tag("ソラネコ")
+            .is_none());
     }
 
     #[test]
@@ -348,13 +376,18 @@ mod tests {
             json!({"id":"deluxe","category":"Base","sourceTitle":"[DX版]ソラネコ"}),
         ]);
         let resolver = AvatarTagResolver::from_options(&options);
-        assert_eq!(resolver.resolve_tag("ソラネコ").unwrap()["id"], "product:plain");
+        assert_eq!(
+            resolver.resolve_tag("ソラネコ").unwrap()["id"],
+            "product:plain"
+        );
         // Without a plain listing the name stays ambiguous among the others.
         let options = super::super::owned_base_options(&[
             json!({"id":"free","category":"Base","sourceTitle":"【無料版】オリジナル3Dモデル「ソラネコ」"}),
             json!({"id":"deluxe","category":"Base","sourceTitle":"[DX版]ソラネコ"}),
         ]);
-        assert!(AvatarTagResolver::from_options(&options).resolve_tag("ソラネコ").is_none());
+        assert!(AvatarTagResolver::from_options(&options)
+            .resolve_tag("ソラネコ")
+            .is_none());
     }
 
     #[test]

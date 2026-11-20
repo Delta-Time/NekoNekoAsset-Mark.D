@@ -65,7 +65,10 @@ impl Catalogue {
     /// Remove superseded provider journals, retaining every current source and
     /// in-flight run. Current cancellation/restart evidence remains reachable.
     pub(crate) fn prune_store_checkpoints(&self, provider: &str, account: &str) -> Result<usize> {
-        ensure!(matches!(provider, "BOOTH" | "Gumroad") && !account.is_empty(), "catalogue.invalid_id");
+        ensure!(
+            matches!(provider, "BOOTH" | "Gumroad") && !account.is_empty(),
+            "catalogue.invalid_id"
+        );
         self.mutate(|tx, projections| {
             let mut statement = tx.prepare("SELECT id,body FROM entities WHERE kind='checkpoint' AND json_extract(body,'$.accountId')=?1")?;
             let stored = statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?

@@ -57,26 +57,41 @@ fn links(e: ElementRef<'_>) -> Vec<ElementRef<'_>> {
 fn identity(e: ElementRef<'_>) -> Option<String> {
     safety::item_id(&absolute(e.value().attr("href")?)?)
 }
-fn downloads(e: ElementRef<'_>, receipt: bool) -> Vec<(ElementRef<'_>, String, Option<String>, String)> {
-    let mut found: Vec<_> = e.select(&sel(
-        "[data-test='downloadable'],a[href*='/downloadables/'],[data-href*='/downloadables/']",
-    ))
-    .filter_map(|n| {
-        let value = n
-            .value()
-            .attr("data-href")
-            .or_else(|| n.value().attr("href"))?;
-        let (id, variant, route) = safety::observed_resolver(&absolute(value)?)?;
-        Some((n, id, variant, route))
-    })
-    .collect();
+fn downloads(
+    e: ElementRef<'_>,
+    receipt: bool,
+) -> Vec<(ElementRef<'_>, String, Option<String>, String)> {
+    let mut found: Vec<_> = e
+        .select(&sel(
+            "[data-test='downloadable'],a[href*='/downloadables/'],[data-href*='/downloadables/']",
+        ))
+        .filter_map(|n| {
+            let value = n
+                .value()
+                .attr("data-href")
+                .or_else(|| n.value().attr("href"))?;
+            let (id, variant, route) = safety::observed_resolver(&absolute(value)?)?;
+            Some((n, id, variant, route))
+        })
+        .collect();
     for node in e.select(&sel(dropdown_controls(receipt))) {
-        let Some(items) = dropdown_items(node) else { continue };
+        let Some(items) = dropdown_items(node) else {
+            continue;
+        };
         // A track menu offers one downloadable in several formats (`path?type=`).
         // Every format must resolve, or the menu stays an unresolved control.
-        let key = if is_track(node) { "path" } else { "deeplinkDownloadableUrl" };
-        let resolved: Vec<_> = items.iter().map(|item| item[key].as_str().and_then(safety::observed_resolver)).collect();
-        if is_track(node) && resolved.iter().any(Option::is_none) { continue; }
+        let key = if is_track(node) {
+            "path"
+        } else {
+            "deeplinkDownloadableUrl"
+        };
+        let resolved: Vec<_> = items
+            .iter()
+            .map(|item| item[key].as_str().and_then(safety::observed_resolver))
+            .collect();
+        if is_track(node) && resolved.iter().any(Option::is_none) {
+            continue;
+        }
         let mut seen = BTreeSet::new();
         for (id, variant, route) in resolved.into_iter().flatten() {
             if seen.insert((id.clone(), variant.clone())) {
@@ -90,15 +105,37 @@ fn downloads(e: ElementRef<'_>, receipt: bool) -> Vec<(ElementRef<'_>, String, O
         // methods supply it. Keep each control observation for closure checks,
         // while files() deduplicates their single confirmed file/variant identity.
         for (index, (node, file, variant, _)) in found.iter().enumerate() {
-            if variant.is_some() { continue; }
-            let Some(row) = node.ancestors().filter_map(ElementRef::wrap)
-                .find(|row| row.value().classes().any(|class| class == "legacy-list-item")) else { continue };
-            if row.id() != e.id() && !e.descendants().any(|child| child.id() == row.id()) { continue; }
-            let controls: Vec<_> = found.iter().filter(|(control, _, _, _)|
-                row.descendants().any(|child| child.id() == control.id())).collect();
-            if controls.iter().any(|(_, id, _, _)| id != file) { continue; }
-            let variants: BTreeSet<_> = controls.iter().filter_map(|(control, _, variant, _)|
-                control.value().attr("data-dropdown-items").and(variant.as_ref())).collect();
+            if variant.is_some() {
+                continue;
+            }
+            let Some(row) = node.ancestors().filter_map(ElementRef::wrap).find(|row| {
+                row.value()
+                    .classes()
+                    .any(|class| class == "legacy-list-item")
+            }) else {
+                continue;
+            };
+            if row.id() != e.id() && !e.descendants().any(|child| child.id() == row.id()) {
+                continue;
+            }
+            let controls: Vec<_> = found
+                .iter()
+                .filter(|(control, _, _, _)| {
+                    row.descendants().any(|child| child.id() == control.id())
+                })
+                .collect();
+            if controls.iter().any(|(_, id, _, _)| id != file) {
+                continue;
+            }
+            let variants: BTreeSet<_> = controls
+                .iter()
+                .filter_map(|(control, _, variant, _)| {
+                    control
+                        .value()
+                        .attr("data-dropdown-items")
+                        .and(variant.as_ref())
+                })
+                .collect();
             if variants.len() == 1 {
                 bindings.push((index, (*variants.iter().next().unwrap()).clone()));
             }
@@ -108,37 +145,78 @@ fn downloads(e: ElementRef<'_>, receipt: bool) -> Vec<(ElementRef<'_>, String, O
         // already accessible primary file when its own filename row binds one
         // exact downloadable and one variation.
         for (index, (node, file, variant, _)) in found.iter().enumerate() {
-            if variant.is_some() { continue; }
+            if variant.is_some() {
+                continue;
+            }
             // A track row shows a title rather than a filename; its own format
             // menu already scopes it to one downloadable.
             let track = is_track(*node);
             for row in node.ancestors().filter_map(ElementRef::wrap) {
-                if row.id() == e.id() || !e.descendants().any(|child| child.id() == row.id()) { break; }
-                if found.iter().any(|(control, id, _, _)| id != file && row.descendants().any(|child| child.id() == control.id())) { break; }
+                if row.id() == e.id() || !e.descendants().any(|child| child.id() == row.id()) {
+                    break;
+                }
+                if found.iter().any(|(control, id, _, _)| {
+                    id != file && row.descendants().any(|child| child.id() == control.id())
+                }) {
+                    break;
+                }
                 let names = row.select(&sel("[data-test='filename'],.min-w-0.break-words.whitespace-pre-line .text-14,.legacy-list-item .min-w-0 > b"))
                     .filter(|name| looks_filename(&text(*name))).count();
-                if names > 1 || links(row).into_iter().any(|link| identity(link).is_some()) { break; }
-                if names == 0 && !track { continue; }
-                let alternates: Vec<_> = row.select(&sel("[data-test='other-downloads-button'][data-dropdown-items]")).collect();
+                if names > 1 || links(row).into_iter().any(|link| identity(link).is_some()) {
+                    break;
+                }
+                if names == 0 && !track {
+                    continue;
+                }
+                let alternates: Vec<_> = row
+                    .select(&sel(
+                        "[data-test='other-downloads-button'][data-dropdown-items]",
+                    ))
+                    .collect();
                 if alternates.is_empty() {
-                    if track { continue; }
+                    if track {
+                        continue;
+                    }
                     break;
                 }
                 let mut variants = BTreeSet::new();
                 let valid = alternates.iter().all(|alternate| {
-                    let Some(raw) = alternate.value().attr("data-dropdown-items").filter(|raw| raw.len() <= 262_144) else { return false };
-                    let Ok(items) = serde_json::from_str::<Vec<Value>>(raw) else { return false };
+                    let Some(raw) = alternate
+                        .value()
+                        .attr("data-dropdown-items")
+                        .filter(|raw| raw.len() <= 262_144)
+                    else {
+                        return false;
+                    };
+                    let Ok(items) = serde_json::from_str::<Vec<Value>>(raw) else {
+                        return false;
+                    };
                     items.iter().all(|item| {
-                        let Some(url) = item["deeplinkDownloadableUrl"].as_str() else { return false };
-                        let Some((id, variant, _)) = safety::observed_resolver(url) else { return false };
-                        if &id != file { return false; }
-                        if let Some(variant) = variant { variants.insert(variant); }
+                        let Some(url) = item["deeplinkDownloadableUrl"].as_str() else {
+                            return false;
+                        };
+                        let Some((id, variant, _)) = safety::observed_resolver(url) else {
+                            return false;
+                        };
+                        if &id != file {
+                            return false;
+                        }
+                        if let Some(variant) = variant {
+                            variants.insert(variant);
+                        }
                         true
                     })
                 });
-                let primary_variants_agree = found.iter().filter(|(control, _, _, _)|
-                    row.descendants().any(|child| child.id() == control.id()))
-                    .all(|(_, _, variant, _)| variant.as_ref().is_none_or(|variant| variants.contains(variant)));
+                let primary_variants_agree = found
+                    .iter()
+                    .filter(|(control, _, _, _)| {
+                        row.descendants().any(|child| child.id() == control.id())
+                    })
+                    .all(|(_, _, variant, _)| {
+                        variant
+                            .as_ref()
+                            .is_none_or(|variant| variants.contains(variant))
+                    });
                 if valid && variants.len() == 1 && primary_variants_agree {
                     bindings.push((index, variants.into_iter().next().unwrap()));
                 }
@@ -148,22 +226,39 @@ fn downloads(e: ElementRef<'_>, receipt: bool) -> Vec<(ElementRef<'_>, String, O
     }
     for (index, variant) in bindings {
         found[index].2 = Some(variant.clone());
-        found[index].3 = format!("https://booth.pm/downloadables/{}?variation_id={variant}", found[index].1);
+        found[index].3 = format!(
+            "https://booth.pm/downloadables/{}?variation_id={variant}",
+            found[index].1
+        );
     }
     found
 }
 fn raw_download_controls(e: ElementRef<'_>, receipt: bool) -> usize {
-    let tracks: BTreeSet<_> = downloads(e, receipt).into_iter().filter(|(node, ..)| is_track(*node)).map(|(_, id, ..)| id).collect();
-    e.select(&sel(&format!("[data-test='downloadable'],a[href*='/downloadables/'],[data-href*='/downloadables/'],{}", dropdown_controls(receipt))))
-        .filter(|node| !track_bundle(*node, &tracks))
-        .count()
+    let tracks: BTreeSet<_> = downloads(e, receipt)
+        .into_iter()
+        .filter(|(node, ..)| is_track(*node))
+        .map(|(_, id, ..)| id)
+        .collect();
+    e.select(&sel(&format!(
+        "[data-test='downloadable'],a[href*='/downloadables/'],[data-href*='/downloadables/'],{}",
+        dropdown_controls(receipt)
+    )))
+    .filter(|node| !track_bundle(*node, &tracks))
+    .count()
 }
 /// Library alternate-app menus can clarify a primary file but never add one.
 fn dropdown_controls(receipt: bool) -> &'static str {
-    if receipt { "[data-dropdown-items]" } else { "[data-dropdown-items]:not([data-test='other-downloads-button']):not([data-test='other-multitrack-downloads-button'])" }
+    if receipt {
+        "[data-dropdown-items]"
+    } else {
+        "[data-dropdown-items]:not([data-test='other-downloads-button']):not([data-test='other-multitrack-downloads-button'])"
+    }
 }
 fn dropdown_items(node: ElementRef<'_>) -> Option<Vec<Value>> {
-    let raw = node.value().attr("data-dropdown-items").filter(|raw| raw.len() <= 262_144)?;
+    let raw = node
+        .value()
+        .attr("data-dropdown-items")
+        .filter(|raw| raw.len() <= 262_144)?;
     serde_json::from_str(raw).ok()
 }
 fn is_track(node: ElementRef<'_>) -> bool {
@@ -173,28 +268,48 @@ fn is_track(node: ElementRef<'_>) -> bool {
 /// its own. An entry outside the card's resolved tracks keeps it unresolved.
 fn track_bundle(node: ElementRef<'_>, tracks: &BTreeSet<String>) -> bool {
     node.value().attr("data-test") == Some("zipped-download-button")
-        && dropdown_items(node).is_some_and(|items| !items.is_empty() && items.iter().all(|item| {
-            item["zippedFiles"].as_array().is_some_and(|entries| !entries.is_empty() && entries.iter().all(|entry| {
-                entry["prefetchUrl"].as_str().and_then(prefetch_file).is_some_and(|id| tracks.contains(&id))
-            }))
-        }))
+        && dropdown_items(node).is_some_and(|items| {
+            !items.is_empty()
+                && items.iter().all(|item| {
+                    item["zippedFiles"].as_array().is_some_and(|entries| {
+                        !entries.is_empty()
+                            && entries.iter().all(|entry| {
+                                entry["prefetchUrl"]
+                                    .as_str()
+                                    .and_then(prefetch_file)
+                                    .is_some_and(|id| tracks.contains(&id))
+                            })
+                    })
+                })
+        })
 }
 fn prefetch_file(value: &str) -> Option<String> {
     let url = url::Url::parse(value).ok()?;
-    if url.scheme() != "https" || url.host_str() != Some("booth.pm") { return None; }
+    if url.scheme() != "https" || url.host_str() != Some("booth.pm") {
+        return None;
+    }
     let mut path = url.path_segments()?;
-    let id = (path.next()? == "downloadables").then(|| path.next()).flatten()?;
+    let id = (path.next()? == "downloadables")
+        .then(|| path.next())
+        .flatten()?;
     safety::numeric(id).then(|| id.to_owned())
 }
 /// The track's one MP3 choice names its file; without it the name stays unknown.
 fn track_download(node: ElementRef<'_>) -> Option<String> {
-    let names: Vec<_> = dropdown_items(node)?.iter().filter_map(|item| {
-        let path = url::Url::parse(item["path"].as_str()?).ok()?;
-        let name = item["data"]["filename"].as_str()?;
-        let mp3 = path.query_pairs().any(|(key, value)| key == "type" && value == safety::TRACK_FORMAT)
-            && name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(safety::TRACK_FORMAT));
-        mp3.then(|| name.chars().take(4096).collect::<String>())
-    }).collect();
+    let names: Vec<_> = dropdown_items(node)?
+        .iter()
+        .filter_map(|item| {
+            let path = url::Url::parse(item["path"].as_str()?).ok()?;
+            let name = item["data"]["filename"].as_str()?;
+            let mp3 = path
+                .query_pairs()
+                .any(|(key, value)| key == "type" && value == safety::TRACK_FORMAT)
+                && name
+                    .rsplit_once('.')
+                    .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(safety::TRACK_FORMAT));
+            mp3.then(|| name.chars().take(4096).collect::<String>())
+        })
+        .collect();
     match names.as_slice() {
         [name] => Some(name.clone()),
         _ => None,
@@ -275,7 +390,10 @@ fn ordering(doc: &Html, source: &str, is_detail: bool) -> Ordering {
     else {
         return Ordering::Unknown;
     };
-    if params.keys().any(|key| !matches!(key.as_str(), "page" | "sort")) {
+    if params
+        .keys()
+        .any(|key| !matches!(key.as_str(), "page" | "sort"))
+    {
         return Ordering::Unknown;
     }
     match params.get("sort").map(|sort| sort.as_str()) {
@@ -293,17 +411,27 @@ fn files(card: ElementRef<'_>, receipt: bool) -> Vec<File> {
             continue;
         }
         // A track row's text is a title; only its format menu can name the file.
-        let track = controls.iter().find(|(node, i, v, _)| *i == id && *v == variant && is_track(*node)).map(|(node, ..)| *node);
+        let track = controls
+            .iter()
+            .find(|(node, i, v, _)| *i == id && *v == variant && is_track(*node))
+            .map(|(node, ..)| *node);
         let mut name = track.and_then(track_download);
         let format = name.is_some().then(|| safety::TRACK_FORMAT.to_owned());
         let mut size_bytes = None;
-        for scope in button.ancestors().filter_map(ElementRef::wrap).filter(|_| track.is_none()) {
+        for scope in button
+            .ancestors()
+            .filter_map(ElementRef::wrap)
+            .filter(|_| track.is_none())
+        {
             if !card.descendants().any(|n| n.id() == scope.id()) && scope.id() != card.id() {
                 break;
             }
             let keys: BTreeSet<_> = controls
                 .iter()
-                .filter(|(node, _, _, _)| scope.id() == node.id() || scope.descendants().any(|child| child.id() == node.id()))
+                .filter(|(node, _, _, _)| {
+                    scope.id() == node.id()
+                        || scope.descendants().any(|child| child.id() == node.id())
+                })
                 .map(|(_, i, v, _)| (i, v))
                 .collect();
             if keys.len() != 1 {
@@ -397,12 +525,13 @@ fn looks_filename(value: &str) -> bool {
 /// BOOTH fades a delisted row's thumbnail and stops linking its title. The badge beside it is
 /// translated; the markup is not.
 fn faded_row(card: ElementRef<'_>) -> bool {
-    card.select(&sel("img.l-library-item-thumbnail")).any(|image| {
-        image
-            .value()
-            .classes()
-            .any(|class| class.starts_with("opacity-"))
-    })
+    card.select(&sel("img.l-library-item-thumbnail"))
+        .any(|image| {
+            image
+                .value()
+                .classes()
+                .any(|class| class.starts_with("opacity-"))
+        })
 }
 fn unavailable(card: ElementRef<'_>) -> bool {
     card.select(&sel("[data-test='item-unavailable'],.item-unavailable"))
@@ -680,7 +809,13 @@ fn order_number_label(value: &str) -> bool {
 fn ordered_date_label(value: &str) -> bool {
     matches!(
         template_literal(value),
-        "注文日時" | "ご注文日時" | "注文日" | "ご注文日" | "Ordered at" | "Order date" | "Created At"
+        "注文日時"
+            | "ご注文日時"
+            | "注文日"
+            | "ご注文日"
+            | "Ordered at"
+            | "Order date"
+            | "Created At"
     )
 }
 fn template_label_value<'a>(
@@ -1626,10 +1761,11 @@ fn product_line_proof_document(
         .next()
         .unwrap_or_else(|| doc.root_element());
     // Unknown regions without file controls never enter product-field binding.
-    let cards: Vec<_> = main.select(&sel(".sheet"))
-        .filter(|card| card.select(&sel(".sheet")).next().is_none()
-
-            && raw_download_controls(*card, true) != 0)
+    let cards: Vec<_> = main
+        .select(&sel(".sheet"))
+        .filter(|card| {
+            card.select(&sel(".sheet")).next().is_none() && raw_download_controls(*card, true) != 0
+        })
         .collect();
     let matching: Vec<_> = rows
         .iter()
@@ -2231,7 +2367,8 @@ impl FileStructureDiagnostics {
         let mut evidence = Self::default();
         evidence.record(card, files);
         evidence.valid_controls > 0
-            && evidence.modern_name_controls + evidence.track_name_controls == evidence.valid_controls
+            && evidence.modern_name_controls + evidence.track_name_controls
+                == evidence.valid_controls
             && evidence.test_name_controls == 0
             && evidence.legacy_name_controls == 0
             && evidence.unrecognized_entry_controls == 0
@@ -2272,7 +2409,10 @@ impl FileStructureDiagnostics {
                 if is_track(*button) {
                     if variant.is_some()
                         && track_download(*button).is_some()
-                        && scope.select(&sel("[data-test='other-downloads-button']")).next().is_some()
+                        && scope
+                            .select(&sel("[data-test='other-downloads-button']"))
+                            .next()
+                            .is_some()
                     {
                         found = Some((scope, 3, button.id()));
                         break;
@@ -2370,10 +2510,20 @@ impl FileStructureDiagnostics {
             let sections: Vec<_> = card
                 .children()
                 .filter_map(ElementRef::wrap)
-                .filter(|child| entries.values().any(|entry| child.descendants().any(|d| d.id() == entry.id())))
+                .filter(|child| {
+                    entries
+                        .values()
+                        .any(|entry| child.descendants().any(|d| d.id() == entry.id()))
+                })
                 .collect();
-            sections.iter().all(|section| links(*section).into_iter().all(|a| identity(a).is_none()))
-                && sections.iter().map(|section| downloads(*section, false).len()).sum::<usize>() == controls.len()
+            sections
+                .iter()
+                .all(|section| links(*section).into_iter().all(|a| identity(a).is_none()))
+                && sections
+                    .iter()
+                    .map(|section| downloads(*section, false).len())
+                    .sum::<usize>()
+                    == controls.len()
         };
         self.rows_file_only_container += usize::from(container.is_some() || sections);
         self.rows_card_only += usize::from(all && container.is_none() && !sections);
@@ -2393,11 +2543,18 @@ impl FileStructureDiagnostics {
         );
         self.rows_expand_or_load_more+=usize::from(card.select(&sel("[data-test='load-more'],[data-test='show-more'],[data-test='more-downloadables'],button[aria-expanded='false']:not([data-test='other-downloads-button'])")).next().is_some());
         self.rows_variant_selector+=usize::from(card.select(&sel("[data-test='variation-select'],[data-test='variation-selector'],select[name='variation_id'],select[name='variation']")).next().is_some());
-        let tracks: BTreeSet<_> = controls.iter().filter(|(node, ..)| is_track(*node)).map(|(_, id, ..)| id.clone()).collect();
-        self.rows_unknown_dropdown += usize::from(card.select(&sel(dropdown_controls(false))).any(|node| {
-            !track_bundle(node, &tracks)
-                && !controls.iter().any(|(control, ..)| is_track(*control) && control.id() == node.id())
-        }));
+        let tracks: BTreeSet<_> = controls
+            .iter()
+            .filter(|(node, ..)| is_track(*node))
+            .map(|(_, id, ..)| id.clone())
+            .collect();
+        self.rows_unknown_dropdown +=
+            usize::from(card.select(&sel(dropdown_controls(false))).any(|node| {
+                !track_bundle(node, &tracks)
+                    && !controls
+                        .iter()
+                        .any(|(control, ..)| is_track(*control) && control.id() == node.id())
+            }));
         let mut advertised = vec![];
         for node in std::iter::once(card).chain(card.select(&sel(
             "[data-file-count],[data-downloadable-count],[data-total-count]",
@@ -2880,15 +3037,15 @@ fn parse_internal(
     }
     if source == "purchase" && is_detail {
         if let Some(receipt_id) = url.path().strip_prefix("/orders/") {
-            let (fields, rejected) =
-                match product_line_proof_document(&doc, &page.rows, receipt_id) {
-                    Ok(proof) => {
-                        let fields = serde_json::to_value(&proof.diagnostics).unwrap_or(Value::Null);
-                        apply_product_line_charges(&mut page.rows, proof, receipt_id);
-                        (fields, false)
-                    }
-                    Err(_) => (Value::Null, true),
-                };
+            let (fields, rejected) = match product_line_proof_document(&doc, &page.rows, receipt_id)
+            {
+                Ok(proof) => {
+                    let fields = serde_json::to_value(&proof.diagnostics).unwrap_or(Value::Null);
+                    apply_product_line_charges(&mut page.rows, proof, receipt_id);
+                    (fields, false)
+                }
+                Err(_) => (Value::Null, true),
+            };
             let (rows, paid_rows, dated_rows) = page
                 .rows
                 .iter()
@@ -2909,9 +3066,7 @@ fn parse_internal(
             // This counts parser calls in the current job attempt, not unique
             // receipts. Only fixed counters/booleans and a closed language code
             // leave the parser; receipt identities and source values stay here.
-            crate::support_trace::receipt(
-                &fields, rows, paid_rows, dated_rows, rejected, language,
-            );
+            crate::support_trace::receipt(&fields, rows, paid_rows, dated_rows, rejected, language);
         }
     }
     page.details.sort();
@@ -2939,8 +3094,13 @@ fn empty_list(main: ElementRef<'_>, source: &str) -> bool {
         && panels.next().is_none()
 }
 fn only_page(doc: &Html) -> bool {
-    doc.select(&sel(".pager"))
-        .any(|pager| pager.children().filter_map(ElementRef::wrap).next().is_none())
+    doc.select(&sel(".pager")).any(|pager| {
+        pager
+            .children()
+            .filter_map(ElementRef::wrap)
+            .next()
+            .is_none()
+    })
 }
 fn order_id(e: ElementRef<'_>) -> Option<String> {
     let u = url::Url::parse(&absolute(e.value().attr("href")?)?).ok()?;
@@ -3066,18 +3226,34 @@ mod tests {
                 let error = parse(html, "library", "/library?page=1").unwrap_err();
                 assert_eq!(error.to_string(), expected);
             }
-        }).await;
+        })
+        .await;
         let counts = &trace["sources"]["library"];
         for (key, expected) in [
-            ("parserCalls", 9), ("htmlJa", 1), ("htmlEn", 1),
-            ("htmlKo", 1), ("htmlZhCn", 1), ("htmlZhTw", 2),
-            ("htmlOther", 1), ("htmlUnknown", 2),
+            ("parserCalls", 9),
+            ("htmlJa", 1),
+            ("htmlEn", 1),
+            ("htmlKo", 1),
+            ("htmlZhCn", 1),
+            ("htmlZhTw", 2),
+            ("htmlOther", 1),
+            ("htmlUnknown", 2),
         ] {
             assert_eq!(counts[key], expected, "{key}");
         }
         assert_eq!(counts.as_object().unwrap().len(), 8);
         assert!(trace["financial"].as_object().unwrap().is_empty());
-        for private in ["PRIVATE", "ja-JP", "EN_us", "ko-KR", "zh-Hans", "ZH_tw", "zh-Hant", "Library", "AUTH_REQUIRED"] {
+        for private in [
+            "PRIVATE",
+            "ja-JP",
+            "EN_us",
+            "ko-KR",
+            "zh-Hans",
+            "ZH_tw",
+            "zh-Hant",
+            "Library",
+            "AUTH_REQUIRED",
+        ] {
             assert!(!trace.to_string().contains(private), "{private}");
         }
     }
@@ -3085,10 +3261,22 @@ mod tests {
     async fn receipt_trace_counts_only_current_parser_calls_without_source_values() {
         let item = charge_item("900001", "700001", "¥ 137", None, "0");
         let known = charge_receipt(&item, "¥ 137", "");
-        let expected = serde_json::to_value(parse(&known, "purchase", "/orders/910001").unwrap()).unwrap();
-        for language in ["ja-JP", "en-US", "ko-KR", "zh-Hans", "zh-Hant", "zh-Hant-PRIVATE_LANGUAGE"] {
+        let expected =
+            serde_json::to_value(parse(&known, "purchase", "/orders/910001").unwrap()).unwrap();
+        for language in [
+            "ja-JP",
+            "en-US",
+            "ko-KR",
+            "zh-Hans",
+            "zh-Hant",
+            "zh-Hant-PRIVATE_LANGUAGE",
+        ] {
             let localized = format!("<html lang='{language}'><body>{known}</body></html>");
-            assert_eq!(serde_json::to_value(parse(&localized, "purchase", "/orders/910001").unwrap()).unwrap(), expected);
+            assert_eq!(
+                serde_json::to_value(parse(&localized, "purchase", "/orders/910001").unwrap())
+                    .unwrap(),
+                expected
+            );
         }
         let unknown_price = charge_receipt(
             &charge_item("900001", "700001", "PRIVATE_INVALID_PRICE", None, "0"),
@@ -3098,7 +3286,9 @@ mod tests {
         let cases = [
             format!("<html lang='ja-JP'><body>{known}</body></html>"),
             format!("<html lang='en-US'><body>{unknown_price}</body></html>"),
-            format!("<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main>{item}</main></body></html>"),
+            format!(
+                "<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main>{item}</main></body></html>"
+            ),
             known.clone(),
             format!("<html lang='ja-JP'><body>{known}</body></html>"),
             format!("<html lang='ko-KR'><body>{known}</body></html>"),
@@ -3117,7 +3307,10 @@ mod tests {
         .await;
         for (index, page) in pages.iter().enumerate() {
             assert_eq!(page.rows.len(), 1);
-            assert_eq!(page.rows[0].product_line_total_jpy, (index != 1).then_some(137));
+            assert_eq!(
+                page.rows[0].product_line_total_jpy,
+                (index != 1).then_some(137)
+            );
             assert_eq!(page.rows[0].acquired_date_text.is_some(), index != 2);
         }
         let facts = &trace["financial"];
@@ -3154,8 +3347,17 @@ mod tests {
         }
         let serialized = trace.to_string();
         for private in [
-            "PRIVATE", "900001", "700001", "910001", "https://", "booth.pm",
-            "Authored", "2026/10/10", "¥", "137", "authored-700001.zip",
+            "PRIVATE",
+            "900001",
+            "700001",
+            "910001",
+            "https://",
+            "booth.pm",
+            "Authored",
+            "2026/10/10",
+            "¥",
+            "137",
+            "authored-700001.zip",
         ] {
             assert!(!serialized.contains(private), "source value {private}");
         }
@@ -3787,8 +3989,11 @@ mod tests {
             assert_eq!(counts["productLineProofItems"], 1);
             assert_eq!(counts["ambiguousItems"], 0);
             for key in [
-                "digitalControlBindingUnprovenItems", "metadataShapeUnrecognizedItems",
-                "unitPriceUnrecognizedItems", "quantityUnrecognizedItems", "boostUnrecognizedItems",
+                "digitalControlBindingUnprovenItems",
+                "metadataShapeUnrecognizedItems",
+                "unitPriceUnrecognizedItems",
+                "quantityUnrecognizedItems",
+                "boostUnrecognizedItems",
             ] {
                 assert_eq!(counts[key], 0, "{key}");
             }
@@ -3820,8 +4025,11 @@ mod tests {
     #[test]
     fn five_locale_receipts_bind_english_summary_without_changing_acquisition_identity() {
         let japanese = charge_receipt(
-            &charge_item("900001", "700001", "¥ 137", None, "¥ 30"), "¥ 999999", "",
-        ).replace("2026/10/10 09:30", "2026/10/10 09:30:12");
+            &charge_item("900001", "700001", "¥ 137", None, "¥ 30"),
+            "¥ 999999",
+            "",
+        )
+        .replace("2026/10/10 09:30", "2026/10/10 09:30:12");
         let baseline = parse(&japanese, "purchase", "/orders/910001").unwrap();
         let international = japanese
             .replace("¥ 137", "137 JPY")
@@ -3830,14 +4038,23 @@ mod tests {
             .replace("注文番号", "Order Number")
             .replace("注文日時", "Created At");
         for (language, receipt) in [
-            ("ja", &japanese), ("en", &international), ("ko", &international),
-            ("zh-CN", &international), ("zh-TW", &international),
+            ("ja", &japanese),
+            ("en", &international),
+            ("ko", &international),
+            ("zh-CN", &international),
+            ("zh-TW", &international),
         ] {
             let html = format!("<html lang='{language}'><body>{receipt}</body></html>");
             let page = parse(&html, "purchase", "/orders/910001").unwrap();
             assert_bound_product_price(&page, 167);
-            assert_eq!(page.rows[0].acquired_date_text.as_deref(), Some("2026/10/10 09:30:12"));
-            assert_eq!(serde_json::to_value(page).unwrap(), serde_json::to_value(&baseline).unwrap());
+            assert_eq!(
+                page.rows[0].acquired_date_text.as_deref(),
+                Some("2026/10/10 09:30:12")
+            );
+            assert_eq!(
+                serde_json::to_value(page).unwrap(),
+                serde_json::to_value(&baseline).unwrap()
+            );
         }
         for receipt in [
             international.replace("<span>910001</span>", "<span>910002</span>"),
@@ -3870,7 +4087,10 @@ mod tests {
             let expected = parse(&japanese, "purchase", "/orders/910001").unwrap();
             let parsed = parse(&international, "purchase", "/orders/910001").unwrap();
             assert_bound_product_price(&parsed, amount);
-            assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::to_value(expected).unwrap());
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
         }
         for (unit, boost) in [
             ("137 USD", "30 JPY"),
@@ -3881,12 +4101,17 @@ mod tests {
             ("137 JPY ~ 999 JPY", "30 JPY"),
         ] {
             let html = charge_receipt(
-                &charge_item("900001", "700001", unit, None, boost), "999999 JPY", "",
+                &charge_item("900001", "700001", unit, None, boost),
+                "999999 JPY",
+                "",
             );
             let page = parse(&html, "purchase", "/orders/910001").unwrap();
             assert_eq!(page.rows.len(), 1);
             assert_eq!(page.rows[0].product_line_total_jpy, None);
-            assert_eq!(page.rows[0].acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
+            assert_eq!(
+                page.rows[0].acquired_date_text.as_deref(),
+                Some("2026/10/10 09:30")
+            );
             assert_eq!(page.rows[0].files.len(), 1);
         }
     }
@@ -3896,29 +4121,57 @@ mod tests {
         let html = charge_receipt(&item, "¥ 230", "");
         let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
         let reasons = [
-            "digitalControlBindingUnprovenItems", "metadataShapeUnrecognizedItems",
-            "unitPriceUnrecognizedItems", "quantityUnrecognizedItems", "boostUnrecognizedItems",
+            "digitalControlBindingUnprovenItems",
+            "metadataShapeUnrecognizedItems",
+            "unitPriceUnrecognizedItems",
+            "quantityUnrecognizedItems",
+            "boostUnrecognizedItems",
         ];
         for (changed, expected_reason) in [
             (html.replace("700001", "700002"), reasons[0]),
-            (html.replace("<div>¥ 100</div>", "<div>¥ 100</div><div>PRIVATE_EXTRA_FIELD</div>"), reasons[1]),
-            (html.replace("<div>¥ 100</div>", "<div>PRIVATE_UNIT_VALUE</div>"), reasons[2]),
-            (html.replace("Quantity: 2", "PRIVATE_QUANTITY_VALUE"), reasons[3]),
-            (html.replace("<span>30</span>", "<span>PRIVATE_BOOST_VALUE</span>"), reasons[4]),
+            (
+                html.replace(
+                    "<div>¥ 100</div>",
+                    "<div>¥ 100</div><div>PRIVATE_EXTRA_FIELD</div>",
+                ),
+                reasons[1],
+            ),
+            (
+                html.replace("<div>¥ 100</div>", "<div>PRIVATE_UNIT_VALUE</div>"),
+                reasons[2],
+            ),
+            (
+                html.replace("Quantity: 2", "PRIVATE_QUANTITY_VALUE"),
+                reasons[3],
+            ),
+            (
+                html.replace("<span>30</span>", "<span>PRIVATE_BOOST_VALUE</span>"),
+                reasons[4],
+            ),
         ] {
             let proof = product_line_proof(&changed, &saved, "910001").unwrap();
             assert!(proof.charges.is_empty());
             assert_eq!(proof.diagnostics.ambiguous_items, 1);
             let counts = serde_json::to_value(&proof.diagnostics).unwrap();
             for reason in reasons {
-                assert_eq!(counts[reason], usize::from(reason == expected_reason), "{reason}");
+                assert_eq!(
+                    counts[reason],
+                    usize::from(reason == expected_reason),
+                    "{reason}"
+                );
             }
-            for private in ["PRIVATE", "900001", "700001", "700002", "910001", "https://", "Authored", "¥"] {
+            for private in [
+                "PRIVATE", "900001", "700001", "700002", "910001", "https://", "Authored", "¥",
+            ] {
                 assert!(!counts.to_string().contains(private), "{private}");
             }
         }
         let mut unavailable = saved;
-        unavailable.iter_mut().find(|row| row.product_id.is_some()).unwrap().unavailable = true;
+        unavailable
+            .iter_mut()
+            .find(|row| row.product_id.is_some())
+            .unwrap()
+            .unavailable = true;
         let proof = product_line_proof(&html, &unavailable, "910001").unwrap();
         assert!(proof.charges.is_empty());
         assert_eq!(proof.diagnostics.digital_control_binding_unproven_items, 1);
@@ -4258,16 +4511,23 @@ mod tests {
             let with_notice = html.replace("</main>", &format!("{notice}</main>"));
             let parsed = parse(&with_notice, "purchase", "/orders/910001").unwrap();
             assert_bound_product_price(&parsed, 100);
-            assert_eq!(parsed.rows[0].acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
+            assert_eq!(
+                parsed.rows[0].acquired_date_text.as_deref(),
+                Some("2026/10/10 09:30")
+            );
             let diagnostic = serde_json::to_value(
                 diagnose_receipt_notice_envelope(&with_notice, &saved, "910001").unwrap(),
-            ).unwrap();
+            )
+            .unwrap();
             assert_eq!(diagnostic["closedNotices"], 1);
             assert!(!diagnostic.to_string().contains("PRIVATE"));
             assert!(!serde_json::to_string(&parsed).unwrap().contains("PRIVATE"));
             let without_summary = format!("<main>{item}{notice}</main>");
             let undated = parse(&without_summary, "purchase", "/orders/910001").unwrap();
-            assert!(undated.rows.iter().all(|row| row.acquired_date_text.is_none()));
+            assert!(undated
+                .rows
+                .iter()
+                .all(|row| row.acquired_date_text.is_none()));
             assert_bound_product_price(&undated, 100);
         }
     }
@@ -4286,7 +4546,10 @@ mod tests {
         assert_eq!(page.rows[0].files[0].id, "700001");
         assert_eq!(page.rows[0].files[0].variant_id.as_deref(), Some("800001"));
         assert_eq!(page.rows[0].files[0].name.as_deref(), Some("authored.zip"));
-        assert_eq!(page.rows[0].files[0].source_url, "https://booth.pm/downloadables/700001?variation_id=800001");
+        assert_eq!(
+            page.rows[0].files[0].source_url,
+            "https://booth.pm/downloadables/700001?variation_id=800001"
+        );
         assert_eq!(page.rows[0].manifest_complete, true);
     }
     #[test]
@@ -4304,8 +4567,13 @@ mod tests {
         let page = parse(&html, "purchase", "/orders/910001").unwrap();
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].files.len(), 7);
-        assert!(page.rows[0].files.iter().all(|file| file.variant_id.as_deref() == Some("800001")));
-        assert!(page.rows[0].files.iter().all(|file| file.name.is_some() && !file.source_url.contains("deeplink") && !file.source_url.contains("client")));
+        assert!(page.rows[0]
+            .files
+            .iter()
+            .all(|file| file.variant_id.as_deref() == Some("800001")));
+        assert!(page.rows[0].files.iter().all(|file| file.name.is_some()
+            && !file.source_url.contains("deeplink")
+            && !file.source_url.contains("client")));
         assert!(page.rows[0].manifest_complete);
         assert_eq!(page.unresolved, 0);
     }
@@ -4317,15 +4585,37 @@ mod tests {
             ])).unwrap();
             format!("<div class='legacy-list-item'><div class='min-w-0'><b>authored-{variant}.zip</b></div><a href='https://booth.pm/downloadables/{primary}'>Download</a><button data-test='other-downloads-button' data-dropdown-items='{items}'></button></div>")
         };
-        let receipt = |rows: String| format!("<main><div class='sheet'><a href='https://invented.booth.pm/items/900001'>Authored product</a>{rows}</div></main>");
-        let page = parse(&receipt(row("700001", "700001", "800001") + &row("700001", "700001", "800002")), "purchase", "/orders/910001").unwrap();
+        let receipt = |rows: String| {
+            format!("<main><div class='sheet'><a href='https://invented.booth.pm/items/900001'>Authored product</a>{rows}</div></main>")
+        };
+        let page = parse(
+            &receipt(row("700001", "700001", "800001") + &row("700001", "700001", "800002")),
+            "purchase",
+            "/orders/910001",
+        )
+        .unwrap();
         assert!(page.rows[0].manifest_complete);
         assert_eq!(page.rows[0].files.len(), 2);
-        assert_eq!(page.rows[0].files.iter().filter_map(|file|file.variant_id.as_deref()).collect::<BTreeSet<_>>(), BTreeSet::from(["800001", "800002"]));
-        let mismatched = parse(&receipt(row("700001", "700002", "800001")), "purchase", "/orders/910001").unwrap();
+        assert_eq!(
+            page.rows[0]
+                .files
+                .iter()
+                .filter_map(|file| file.variant_id.as_deref())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["800001", "800002"])
+        );
+        let mismatched = parse(
+            &receipt(row("700001", "700002", "800001")),
+            "purchase",
+            "/orders/910001",
+        )
+        .unwrap();
         assert!(!mismatched.rows[0].manifest_complete);
         assert_eq!(mismatched.rows[0].files.len(), 2);
-        assert!(mismatched.rows[0].files.iter().any(|file|file.id == "700001" && file.variant_id.is_none()));
+        assert!(mismatched.rows[0]
+            .files
+            .iter()
+            .any(|file| file.id == "700001" && file.variant_id.is_none()));
     }
     #[test]
     fn library_alternates_bind_only_an_observed_primary_within_its_filename_row() {
@@ -4358,27 +4648,76 @@ mod tests {
             let items: Vec<_> = pairs.iter().map(|(file, variant)| serde_json::json!({
                 "deeplinkDownloadableUrl":format!("https://booth.pm/downloadables/{file}/deeplink?variation_id={variant}&client=vroid")
             })).collect();
-            format!("<button data-test='other-downloads-button' data-dropdown-items='{}'></button>", serde_json::to_string(&items).unwrap())
+            format!(
+                "<button data-test='other-downloads-button' data-dropdown-items='{}'></button>",
+                serde_json::to_string(&items).unwrap()
+            )
         };
-        let primary = "<a data-revision='v1' href='https://booth.pm/downloadables/700001'>Download</a>";
-        let file_row = |name: &str, primary: &str, alternate: String| format!("<div class='legacy-list-item'><div class='min-w-0'><b>{name}</b></div>{primary}{alternate}</div>");
-        let library = |rows: String| format!("<main><h1>Library</h1><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Authored product</a><div data-test='downloadable-list'>{rows}</div></article></main>");
-        for pairs in [vec![("700002", "800001")], vec![("700001", "800001"), ("700001", "800002")]] {
-            let page = parse(&library(file_row("authored.zip", primary, alternate(&pairs))), "library", "/library?page=1").unwrap();
+        let primary =
+            "<a data-revision='v1' href='https://booth.pm/downloadables/700001'>Download</a>";
+        let file_row = |name: &str, primary: &str, alternate: String| {
+            format!("<div class='legacy-list-item'><div class='min-w-0'><b>{name}</b></div>{primary}{alternate}</div>")
+        };
+        let library = |rows: String| {
+            format!("<main><h1>Library</h1><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Authored product</a><div data-test='downloadable-list'>{rows}</div></article></main>")
+        };
+        for pairs in [
+            vec![("700002", "800001")],
+            vec![("700001", "800001"), ("700001", "800002")],
+        ] {
+            let page = parse(
+                &library(file_row("authored.zip", primary, alternate(&pairs))),
+                "library",
+                "/library?page=1",
+            )
+            .unwrap();
             assert_eq!(page.rows[0].files.len(), 1);
             assert_eq!(page.rows[0].files[0].id, "700001");
             assert_eq!(page.rows[0].files[0].variant_id, None);
         }
-        let unobserved = parse(&library(file_row("authored.zip", "", alternate(&[("700001", "800001")]))), "library", "/library?page=1").unwrap();
+        let unobserved = parse(
+            &library(file_row(
+                "authored.zip",
+                "",
+                alternate(&[("700001", "800001")]),
+            )),
+            "library",
+            "/library?page=1",
+        )
+        .unwrap();
         assert!(unobserved.rows[0].files.is_empty());
         assert!(!unobserved.rows[0].manifest_complete);
-        let separate = file_row("authored-a.zip", primary, alternate(&[("700001", "800001")]))
-            + &file_row("authored-b.zip", primary, alternate(&[("700001", "800002")]));
+        let separate = file_row(
+            "authored-a.zip",
+            primary,
+            alternate(&[("700001", "800001")]),
+        ) + &file_row(
+            "authored-b.zip",
+            primary,
+            alternate(&[("700001", "800002")]),
+        );
         let page = parse(&library(separate), "library", "/library?page=1").unwrap();
         assert_eq!(page.rows[0].files.len(), 2);
-        assert_eq!(page.rows[0].files.iter().filter_map(|file| file.variant_id.as_deref()).collect::<BTreeSet<_>>(), BTreeSet::from(["800001", "800002"]));
-        let known = "<a href='https://booth.pm/downloadables/700001?variation_id=800002'>Download</a>";
-        let page = parse(&library(file_row("authored.zip", known, alternate(&[("700001", "800001")]))), "library", "/library?page=1").unwrap();
+        assert_eq!(
+            page.rows[0]
+                .files
+                .iter()
+                .filter_map(|file| file.variant_id.as_deref())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["800001", "800002"])
+        );
+        let known =
+            "<a href='https://booth.pm/downloadables/700001?variation_id=800002'>Download</a>";
+        let page = parse(
+            &library(file_row(
+                "authored.zip",
+                known,
+                alternate(&[("700001", "800001")]),
+            )),
+            "library",
+            "/library?page=1",
+        )
+        .unwrap();
         assert_eq!(page.rows[0].files.len(), 1);
         assert_eq!(page.rows[0].files[0].variant_id.as_deref(), Some("800002"));
         let ambiguous_names = "<div class='legacy-list-item'><div class='min-w-0'><b>first.zip</b><b>second.zip</b></div>".to_owned() + primary + &alternate(&[("700001", "800001")]) + "</div>";
@@ -4397,7 +4736,10 @@ mod tests {
     #[test]
     fn multitrack_formats_resolve_one_bound_mp3_file_per_track() {
         let menu = |test: &str, items: Vec<serde_json::Value>| {
-            format!("<div data-test='{test}' data-dropdown-items='{}'></div>", serde_json::to_string(&items).unwrap())
+            format!(
+                "<div data-test='{test}' data-dropdown-items='{}'></div>",
+                serde_json::to_string(&items).unwrap()
+            )
         };
         let track = |formats: &[&str], file: &str, path: &str| {
             let download = menu("track-download-button", formats.iter().map(|kind| serde_json::json!(
@@ -4427,12 +4769,22 @@ mod tests {
             ]
         };
         let formats = ["flac", "m4a", "mp3"];
-        let tracks = ["https://booth.pm/downloadables/700001", "https://booth.pm/downloadables/700002"];
+        let tracks = [
+            "https://booth.pm/downloadables/700001",
+            "https://booth.pm/downloadables/700002",
+        ];
         for page in pages(&formats, tracks, &["700001", "700002"]) {
             assert_eq!(page.unresolved, 0);
             assert_eq!(page.rows[0].error_code, None);
-            let files: Vec<_> = page.rows[0].files.iter().map(|file| (file.id.as_str(), file.variant_id.as_deref())).collect();
-            assert_eq!(files, [("700001", Some("800001")), ("700002", Some("800001"))]);
+            let files: Vec<_> = page.rows[0]
+                .files
+                .iter()
+                .map(|file| (file.id.as_str(), file.variant_id.as_deref()))
+                .collect();
+            assert_eq!(
+                files,
+                [("700001", Some("800001")), ("700002", Some("800001"))]
+            );
             for file in &page.rows[0].files {
                 assert_eq!(file.name, Some(format!("track-{}.mp3", file.id)));
                 assert_eq!(file.format.as_deref(), Some("mp3"));
@@ -4444,13 +4796,23 @@ mod tests {
         for page in pages(&["flac", "m4a"], tracks, &["700001", "700002"]) {
             assert_eq!(page.rows[0].error_code, None);
             assert_eq!(page.rows[0].files.len(), 2);
-            assert!(page.rows[0].files.iter().all(|file| file.name.is_none() && file.format.is_none()));
+            assert!(page.rows[0]
+                .files
+                .iter()
+                .all(|file| file.name.is_none() && file.format.is_none()));
             assert!(!page.rows[0].manifest_complete);
         }
         let outside_zip = pages(&formats, tracks, &["700001", "700009"]);
-        let unknown_format = pages(&formats, [tracks[0], "https://example.invalid/downloadables/700002"], &["700001", "700002"]);
+        let unknown_format = pages(
+            &formats,
+            [tracks[0], "https://example.invalid/downloadables/700002"],
+            &["700001", "700002"],
+        );
         for page in outside_zip.into_iter().chain(unknown_format) {
-            assert_eq!(page.rows[0].error_code.as_deref(), Some("DIGITAL_CONTROLS_UNRESOLVED"));
+            assert_eq!(
+                page.rows[0].error_code.as_deref(),
+                Some("DIGITAL_CONTROLS_UNRESOLVED")
+            );
         }
     }
     #[test]
@@ -4693,8 +5055,14 @@ mod tests {
         let read = |html: &str| parse(html, "library", "/library?page=1").unwrap().ordering;
         for (params, expected) in [
             (r#"{"page":1}"#, Ordering::AcquiredNewestFirst),
-            (r#"{"sort":"library_added_at_desc","page":1}"#, Ordering::AcquiredNewestFirst),
-            (r#"{"sort":"file_updated_at_desc","page":1}"#, Ordering::FileUpdatedNewestFirst),
+            (
+                r#"{"sort":"library_added_at_desc","page":1}"#,
+                Ordering::AcquiredNewestFirst,
+            ),
+            (
+                r#"{"sort":"file_updated_at_desc","page":1}"#,
+                Ordering::FileUpdatedNewestFirst,
+            ),
             (r#"{"sort":"authored_other","page":1}"#, Ordering::Unknown),
             (r#"{"sort":1,"page":1}"#, Ordering::Unknown),
             (r#"{"q":"authored","page":1}"#, Ordering::Unknown),
@@ -4705,10 +5073,20 @@ mod tests {
         }
         // The words on the page have no say, and neither do other lists.
         let words = "<select><option selected>入手が新しい順</option></select>";
-        assert_eq!(read(&HTML.replace("<main>", &format!("<main>{words}"))), Ordering::Unknown);
-        for (source, route) in [("gift", "/library/gifts?page=1"), ("free", "/library/free_downloads?page=1")] {
+        assert_eq!(
+            read(&HTML.replace("<main>", &format!("<main>{words}"))),
+            Ordering::Unknown
+        );
+        for (source, route) in [
+            ("gift", "/library/gifts?page=1"),
+            ("free", "/library/free_downloads?page=1"),
+        ] {
             let html = stated(r#"{"page":1}"#).replace("/library?page=1", route);
-            assert_eq!(parse(&html, source, route).unwrap().ordering, Ordering::Unknown, "{source}");
+            assert_eq!(
+                parse(&html, source, route).unwrap().ordering,
+                Ordering::Unknown,
+                "{source}"
+            );
         }
     }
     #[test]
@@ -4857,7 +5235,11 @@ mod tests {
     /// The shapes real account pages use, with every word replaced by a language's wording.
     fn library_page(current: &str, body: &str) -> String {
         let tab = |path: &str| {
-            let class = if path == current { "nav-item current" } else { "nav-item" };
+            let class = if path == current {
+                "nav-item current"
+            } else {
+                "nav-item"
+            };
             format!("<li><a class='{class}' href='https://accounts.booth.pm{path}?page=1'>Authored tab</a></li>")
         };
         format!("<html lang='zh-TW'><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><div class='text-center'><h1 class='typography-16'>Authored heading</h1></div><nav class='ui-segmented-tablet-nav centered'><ul>{}{}{}</ul></nav><div class='flex gap-40'><div class='w-full flex flex-col gap-16'><div class='h-32'></div>{body}</div></div></main></body></html>",
@@ -4865,15 +5247,29 @@ mod tests {
     }
     #[test]
     fn empty_lists_are_told_by_layout_in_every_language() {
-        for sentence in ["受け取ったギフトはありません", "No gifts received", "받은 선물이 없습니다", "没有收到的礼物", "沒有收到的禮物"] {
+        for sentence in [
+            "受け取ったギフトはありません",
+            "No gifts received",
+            "받은 선물이 없습니다",
+            "没有收到的礼物",
+            "沒有收到的禮物",
+        ] {
             let panel = format!("<div class='bg-white text-center text-16 font-bold text-text-gray600 py-64 desktop:rounded-8'>{sentence}</div>");
             for (source, path) in [
                 ("library", "/library"),
                 ("gift", "/library/gifts"),
                 ("free", "/library/free_downloads"),
             ] {
-                let page = parse(&library_page(path, &panel), source, &format!("{path}?page=1")).unwrap();
-                assert!(page.terminal && page.rows.is_empty() && page.unresolved == 0, "{source}");
+                let page = parse(
+                    &library_page(path, &panel),
+                    source,
+                    &format!("{path}?page=1"),
+                )
+                .unwrap();
+                assert!(
+                    page.terminal && page.rows.is_empty() && page.unresolved == 0,
+                    "{source}"
+                );
                 assert!(page.next.is_empty());
             }
             let orders = format!("<html><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><div class='manage-page-head'><h1 class='manage-page-head-title'>Authored heading</h1><div><a href='https://accounts.booth.pm/library'><span>Authored link</span></a></div></div><div class='manage-page-body'><div class='container border-b'></div><div class='container static-3of4 l-orders-index'><div class='u-mt-500 text-center'>{sentence}</div></div></div></main></body></html>");
@@ -4918,7 +5314,12 @@ mod tests {
     fn a_list_of_one_page_ends_at_its_empty_pager() {
         let row = "<div class='bg-white p-16 desktop:rounded-8'><b><a class='nav' href='https://authored.booth.pm/items/900001'>Authored title</a></b><div data-test='downloadable-list'><b data-test='filename'>authored.zip</b><a href='https://booth.pm/downloadables/700001'>Download</a></div></div>";
         let html = |pager: &str| library_page("/library/gifts", &format!("{row}{pager}"));
-        let page = parse(&html("<div class='pager border-0'></div>"), "gift", "/library/gifts?page=1").unwrap();
+        let page = parse(
+            &html("<div class='pager border-0'></div>"),
+            "gift",
+            "/library/gifts?page=1",
+        )
+        .unwrap();
         assert!(page.terminal && page.next.is_empty() && page.unresolved == 0);
         assert_eq!(page.rows[0].product_id.as_deref(), Some("900001"));
         let orders = "<main role='main'><div class='container l-orders-index'><a href='https://accounts.booth.pm/orders/910001'><div class='sheet'>Authored order</div></a><div class='pager'></div></div></main>";
@@ -4926,11 +5327,20 @@ mod tests {
         assert!(page.terminal && page.next.is_empty());
         assert_eq!(page.details, ["/orders/910001"]);
         // Anything else stays unproven: no pager at all, one holding something, or a later page.
-        for pager in ["", "<div class='pager border-0'><nav></nav></div>", "<div class='other-pager'></div>"] {
+        for pager in [
+            "",
+            "<div class='pager border-0'><nav></nav></div>",
+            "<div class='other-pager'></div>",
+        ] {
             let page = parse(&html(pager), "gift", "/library/gifts?page=1").unwrap();
             assert!(!page.terminal, "{pager}");
         }
-        let page = parse(&html("<div class='pager border-0'></div>"), "gift", "/library/gifts?page=2").unwrap();
+        let page = parse(
+            &html("<div class='pager border-0'></div>"),
+            "gift",
+            "/library/gifts?page=2",
+        )
+        .unwrap();
         assert!(!page.terminal);
     }
     #[test]
@@ -4947,20 +5357,45 @@ mod tests {
         };
         let route = "/library/free_downloads?page=1";
         for badge in ["非公開", "Private", "비공개", "未公开", "未公開"] {
-            let page = parse(&html(row("l-library-item-thumbnail opacity-[0.32]", badge, plain)), "free", route).unwrap();
+            let page = parse(
+                &html(row("l-library-item-thumbnail opacity-[0.32]", badge, plain)),
+                "free",
+                route,
+            )
+            .unwrap();
             assert_eq!(page.unresolved, 0, "{badge}");
             assert!(page.terminal);
             assert!(page.rows[0].unavailable && page.rows[0].product_id.is_none());
-            assert_eq!(page.rows[0].error_code.as_deref(), Some("BOOTH_WITHHELD_PRODUCT_ID"));
+            assert_eq!(
+                page.rows[0].error_code.as_deref(),
+                Some("BOOTH_WITHHELD_PRODUCT_ID")
+            );
         }
         // A row that merely lost its link, unfaded and with unknown wording, is still unread.
-        let page = parse(&html(row("l-library-item-thumbnail", "Private", plain)), "free", route).unwrap();
+        let page = parse(
+            &html(row("l-library-item-thumbnail", "Private", plain)),
+            "free",
+            route,
+        )
+        .unwrap();
         assert_eq!(page.unresolved, 1);
-        assert_eq!(page.rows[0].error_code.as_deref(), Some("PRODUCT_ID_UNRESOLVED"));
+        assert_eq!(
+            page.rows[0].error_code.as_deref(),
+            Some("PRODUCT_ID_UNRESOLVED")
+        );
         assert!(!page.rows[0].unavailable);
         // A faded row that still links its product keeps that identity.
         let linked = "<b><a class='nav' href='https://authored.booth.pm/items/900001'>Authored title</a></b>";
-        let page = parse(&html(row("l-library-item-thumbnail opacity-[0.32]", "Private", linked)), "free", route).unwrap();
+        let page = parse(
+            &html(row(
+                "l-library-item-thumbnail opacity-[0.32]",
+                "Private",
+                linked,
+            )),
+            "free",
+            route,
+        )
+        .unwrap();
         assert_eq!(page.rows[0].product_id.as_deref(), Some("900001"));
         assert!(page.rows[0].unavailable);
         assert_eq!(page.unresolved, 0);

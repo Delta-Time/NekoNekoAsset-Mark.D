@@ -25,8 +25,14 @@ pub struct Block {
 /// A Google document linked from the page, ranked like the research harness.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {
-    DriveFile { id: String, resource_key: Option<String> },
-    DriveFolder { id: String, resource_key: Option<String> },
+    DriveFile {
+        id: String,
+        resource_key: Option<String>,
+    },
+    DriveFolder {
+        id: String,
+        resource_key: Option<String>,
+    },
     Document(String),
     Presentation(String),
 }
@@ -56,7 +62,9 @@ fn license_word(text: &str) -> bool {
 fn text_lines(element: ElementRef, skip: Option<ElementRef>) -> String {
     let mut out = String::new();
     for node in element.descendants() {
-        if skip.is_some_and(|skip| node.ancestors().any(|a| a.id() == skip.id()) || node.id() == skip.id()) {
+        if skip.is_some_and(|skip| {
+            node.ancestors().any(|a| a.id() == skip.id()) || node.id() == skip.id()
+        }) {
             continue;
         }
         match node.value() {
@@ -80,13 +88,18 @@ pub fn page(html: &str) -> Page {
         .select(&Selector::parse("div.js-market-item-detail-description").unwrap())
         .next()
     {
-        blocks.push(Block { heading: String::new(), text: text_lines(description, None) });
+        blocks.push(Block {
+            heading: String::new(),
+            text: text_lines(description, None),
+        });
     }
     let heading = Selector::parse("h2,h3,h4").unwrap();
     for section in document.select(&Selector::parse("section.shop__text").unwrap()) {
         let head = section.select(&heading).next();
         blocks.push(Block {
-            heading: head.map(|h| h.text().collect::<String>().trim().to_owned()).unwrap_or_default(),
+            heading: head
+                .map(|h| h.text().collect::<String>().trim().to_owned())
+                .unwrap_or_default(),
             text: text_lines(section, head),
         });
     }
@@ -95,25 +108,48 @@ pub fn page(html: &str) -> Page {
     let mut candidates = vec![];
     for block in &blocks {
         let mut previous = "";
-        for line in block.text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            for found in regex!(r#"https?://[^\s"<>　（）()「」『』【】\[\]、。]+"#).find_iter(line) {
-                let raw = found.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?']);
-                let Ok(url) = url::Url::parse(&html_unescape(raw)) else { continue };
+        for line in block
+            .text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            for found in regex!(r#"https?://[^\s"<>　（）()「」『』【】\[\]、。]+"#).find_iter(line)
+            {
+                let raw = found
+                    .as_str()
+                    .trim_end_matches(['.', ',', ';', ':', '!', '?']);
+                let Ok(url) = url::Url::parse(&html_unescape(raw)) else {
+                    continue;
+                };
                 if uv.is_none() && uv_url(&url) {
                     uv = Some(url.to_string());
                     continue;
                 }
-                let Some(link) = google_link(&url) else { continue };
+                let Some(link) = google_link(&url) else {
+                    continue;
+                };
                 if !seen.insert(format!("{link:?}")) {
                     continue;
                 }
                 let label = line.replace(raw, "");
-                let label = if label.trim().is_empty() { previous } else { label.trim() };
-                let context = license_word(label) || license_word(&block.heading) || license_word(previous);
+                let label = if label.trim().is_empty() {
+                    previous
+                } else {
+                    label.trim()
+                };
+                let context =
+                    license_word(label) || license_word(&block.heading) || license_word(previous);
                 let both = format!("{label} {}", block.heading);
-                let language = if regex!(r"(?i)(?:^|[^a-z])(?:jp|ja|jpn)(?:$|[^a-z])|日本語|japanese|規約全文|本文|正文").is_match(&both) {
+                let language = if regex!(
+                    r"(?i)(?:^|[^a-z])(?:jp|ja|jpn)(?:$|[^a-z])|日本語|japanese|規約全文|本文|正文"
+                )
+                .is_match(&both)
+                {
                     0
-                } else if regex!(r"(?i)(?:^|[^a-z])(?:en|eng)(?:$|[^a-z])|english|英語").is_match(&both) {
+                } else if regex!(r"(?i)(?:^|[^a-z])(?:en|eng)(?:$|[^a-z])|english|英語")
+                    .is_match(&both)
+                {
                     2
                 } else if other_language(&both) {
                     3
@@ -128,7 +164,10 @@ pub fn page(html: &str) -> Page {
                     Link::Document(_) => 2,
                     Link::Presentation(_) => 3,
                 };
-                candidates.push(Candidate { link, rank: (u8::from(!context), u8::from(skip), language, kind) });
+                candidates.push(Candidate {
+                    link,
+                    rank: (u8::from(!context), u8::from(skip), language, kind),
+                });
             }
             previous = line;
         }
@@ -138,18 +177,29 @@ pub fn page(html: &str) -> Page {
     let name = Selector::parse("div.variation-name").unwrap();
     let control = Selector::parse("a[href^='https://booth.pm/downloadables/']").unwrap();
     for variation in document.select(&Selector::parse("li.variation-item").unwrap()) {
-        let variation_name = variation.select(&name).next().map(|n| n.text().collect::<String>()).unwrap_or_default();
+        let variation_name = variation
+            .select(&name)
+            .next()
+            .map(|n| n.text().collect::<String>())
+            .unwrap_or_default();
         for anchor in variation.select(&control) {
             let href = anchor.value().attr("href").unwrap_or_default();
             let title = anchor.value().attr("title").unwrap_or_default();
             if regex!(r"^https://booth\.pm/downloadables/\d+\?variation_id=\d+$").is_match(href)
                 && (license_word(&variation_name) || license_word(title))
             {
-                free_licenses.push(FreeLicense { route: href.to_owned() });
+                free_licenses.push(FreeLicense {
+                    route: href.to_owned(),
+                });
             }
         }
     }
-    Page { blocks, uv, candidates, free_licenses }
+    Page {
+        blocks,
+        uv,
+        candidates,
+        free_licenses,
+    }
 }
 
 pub fn other_language(text: &str) -> bool {
@@ -161,29 +211,54 @@ fn html_unescape(text: &str) -> String {
 }
 
 fn uv_url(url: &url::Url) -> bool {
-    url.host_str().is_some_and(|h| h == "uv-license.com" || h.ends_with(".uv-license.com"))
+    url.host_str()
+        .is_some_and(|h| h == "uv-license.com" || h.ends_with(".uv-license.com"))
         && url.path().ends_with("/license")
-        && url.query_pairs().any(|(k, _)| k == "utf8" || UV_TERMS.contains(&k.as_ref()))
+        && url
+            .query_pairs()
+            .any(|(k, _)| k == "utf8" || UV_TERMS.contains(&k.as_ref()))
 }
 
 fn google_link(url: &url::Url) -> Option<Link> {
     let host = url.host_str()?;
     let id = |re: &Regex| re.captures(url.path()).map(|c| c[1].to_owned());
-    let key = url.query_pairs().find(|(k, _)| k == "resourcekey").map(|(_, v)| v.into_owned());
+    let key = url
+        .query_pairs()
+        .find(|(k, _)| k == "resourcekey")
+        .map(|(_, v)| v.into_owned());
     match host {
         "drive.google.com" | "drive.usercontent.google.com" => {
             if let Some(id) = id(regex!(r"/file/d/([A-Za-z0-9_-]{10,})")) {
-                Some(Link::DriveFile { id, resource_key: key })
+                Some(Link::DriveFile {
+                    id,
+                    resource_key: key,
+                })
             } else if let Some(id) = id(regex!(r"/folders/([A-Za-z0-9_-]{10,})")) {
-                Some(Link::DriveFolder { id, resource_key: key })
+                Some(Link::DriveFolder {
+                    id,
+                    resource_key: key,
+                })
             } else {
-                let id = url.query_pairs().find(|(k, _)| k == "id").map(|(_, v)| v.into_owned())?;
-                regex!(r"^[A-Za-z0-9_-]{10,}$").is_match(&id).then_some(Link::DriveFile { id, resource_key: key })
+                let id = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "id")
+                    .map(|(_, v)| v.into_owned())?;
+                regex!(r"^[A-Za-z0-9_-]{10,}$")
+                    .is_match(&id)
+                    .then_some(Link::DriveFile {
+                        id,
+                        resource_key: key,
+                    })
             }
         }
         "docs.google.com" => {
-            let c = regex!(r"/(document|presentation)/d/([A-Za-z0-9_-]{10,})").captures(url.path())?;
-            Some(if &c[1] == "document" { Link::Document(c[2].to_owned()) } else { Link::Presentation(c[2].to_owned()) })
+            let c =
+                regex!(r"/(document|presentation)/d/([A-Za-z0-9_-]{10,})").captures(url.path())?;
+            Some(if &c[1] == "document" {
+                Link::Document(c[2].to_owned())
+            } else {
+                Link::Presentation(c[2].to_owned())
+            })
         }
         _ => None,
     }
@@ -194,12 +269,20 @@ pub const UV_TERMS: [&str; 8] = ["pcu", "ccu", "ddw", "dmd", "pru", "seu", "veu"
 /// A UV term is on only when its last value is `true`, as the UV License site reads it.
 pub fn uv_terms(url: &str) -> BTreeMap<String, bool> {
     let pairs: Vec<(String, String)> = url::Url::parse(url)
-        .map(|u| u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect())
+        .map(|u| {
+            u.query_pairs()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        })
         .unwrap_or_default();
     UV_TERMS
         .iter()
         .map(|term| {
-            let last = pairs.iter().rev().find(|(k, _)| k == term).map(|(_, v)| v.as_str());
+            let last = pairs
+                .iter()
+                .rev()
+                .find(|(k, _)| k == term)
+                .map(|(_, v)| v.as_str());
             ((*term).to_owned(), last == Some("true"))
         })
         .collect()
@@ -258,11 +341,30 @@ const ANSWERS: &[(&str, &[&str])] = &[
 
 /// Item title prefixes that anchor each letter in the Japanese document.
 const TITLES: [&str; 24] = [
-    "個人による利用", "法人による利用", "自ら利用する目的で、ソーシャル", "自ら利用する目的で、オンラインゲーム",
-    "そのプラットフォームにおいて", "性的表現", "暴力的表現", "政治活動", "調整、", "本データまたはパーツを改変",
-    "他のデータを改変", "調整または改変を第三者", "未改変状態", "改変した本データ", "映像作品", "出版物",
-    "有体物", "製品開発", "本データのメッシュやウェイトをコピー", "本データのメッシュやウェイトを利用せず",
-    "本データをそのまま利用しないで", "利用時のクレジット", "権利義務の譲渡", "特記事項",
+    "個人による利用",
+    "法人による利用",
+    "自ら利用する目的で、ソーシャル",
+    "自ら利用する目的で、オンラインゲーム",
+    "そのプラットフォームにおいて",
+    "性的表現",
+    "暴力的表現",
+    "政治活動",
+    "調整、",
+    "本データまたはパーツを改変",
+    "他のデータを改変",
+    "調整または改変を第三者",
+    "未改変状態",
+    "改変した本データ",
+    "映像作品",
+    "出版物",
+    "有体物",
+    "製品開発",
+    "本データのメッシュやウェイトをコピー",
+    "本データのメッシュやウェイトを利用せず",
+    "本データをそのまま利用しないで",
+    "利用時のクレジット",
+    "権利義務の譲渡",
+    "特記事項",
 ];
 
 fn answers() -> &'static Vec<(&'static str, String)> {
@@ -270,7 +372,11 @@ fn answers() -> &'static Vec<(&'static str, String)> {
     CELL.get_or_init(|| {
         ANSWERS
             .iter()
-            .flat_map(|(code, phrases)| phrases.iter().map(move |p| (*code, flat(p).trim_end_matches('。').to_owned())))
+            .flat_map(|(code, phrases)| {
+                phrases
+                    .iter()
+                    .map(move |p| (*code, flat(p).trim_end_matches('。').to_owned()))
+            })
             .collect()
     })
 }
@@ -281,7 +387,9 @@ fn classify(chunk: &str) -> Option<&'static str> {
     let mut rest = chunk.to_owned();
     for trailer in [
         regex!(r"上記の利用の許可には.*?含まれます。"),
-        regex!(r"（[1-8１-８]）(?:利用主体|オンラインサービスへのアップロード|センシティブな表現|加工|再配布・配布|メディア・プロダクトへの利用|二次創作|その他)"),
+        regex!(
+            r"（[1-8１-８]）(?:利用主体|オンラインサービスへのアップロード|センシティブな表現|加工|再配布・配布|メディア・プロダクトへの利用|二次創作|その他)"
+        ),
         regex!(r"[3３]\.特記事項"),
         regex!(r"[0-9０-９]+/[0-9０-９]+"),
     ] {
@@ -339,14 +447,21 @@ pub fn vn3(text: &str) -> Option<Vn3> {
             continue;
         }
         let end = next.map(|(_, at)| *at).unwrap_or_else(|| {
-            flat[start..].char_indices().nth(600).map(|(offset, _)| start + offset).unwrap_or(flat.len())
+            flat[start..]
+                .char_indices()
+                .nth(600)
+                .map(|(offset, _)| start + offset)
+                .unwrap_or(flat.len())
         });
         if end < start {
             continue;
         }
         let chunk = &flat[start..end];
         let code = if letters[*index] == 'X' {
-            let body = regex!(r"[4４]\.権利者").split(chunk).next().unwrap_or_default();
+            let body = regex!(r"[4４]\.権利者")
+                .split(chunk)
+                .next()
+                .unwrap_or_default();
             // Only an explicit "なし" says there are none; an empty body means the
             // extractor put the notes elsewhere.
             if regex!(r"^(?:特に)?(?:なし|無し|ありません)").is_match(body) {
@@ -363,7 +478,10 @@ pub fn vn3(text: &str) -> Option<Vn3> {
             result.insert(letters[*index].to_string(), code.to_owned());
         }
     }
-    (!result.is_empty()).then_some(Vn3 { version, answers: result })
+    (!result.is_empty()).then_some(Vn3 {
+        version,
+        answers: result,
+    })
 }
 
 fn flat_title(index: usize) -> &'static str {
@@ -374,7 +492,10 @@ fn flat_title(index: usize) -> &'static str {
 /// NFKC with runs of spaces collapsed, as the CC0 rule reads each line.
 fn nf(text: &str) -> String {
     let text: String = text.nfkc().collect();
-    regex!(r"[ \t\u{3000}]+").replace_all(&text, " ").trim().to_owned()
+    regex!(r"[ \t\u{3000}]+")
+        .replace_all(&text, " ")
+        .trim()
+        .to_owned()
 }
 
 fn cc0_token(text: &str) -> bool {
@@ -403,7 +524,9 @@ fn about_the_asset(sentence: &str) -> bool {
     let Some(token) = regex!(r"(?i)(?:^|[^a-z0-9])(cc\s*-?\s*0)(?:$|[^0-9])|(creative\s*commons\s*zero)|(クリエイティブ・?コモンズ・?ゼロ)").captures(sentence) else {
         return false;
     };
-    let start = (1..=3).find_map(|group| token.get(group)).map_or(0, |found| found.start());
+    let start = (1..=3)
+        .find_map(|group| token.get(group))
+        .map_or(0, |found| found.start());
     let subject = sentence[..start].to_lowercase();
     regex!(
         r"(?x)^[\W_]*
@@ -444,7 +567,9 @@ pub fn cc0(blocks: &[Block]) -> bool {
                 && regex!(r"(?i)ライセンス|license|licence|利用規約|規約|terms|著作権|copyright").is_match(&heading)
                 && line != heading;
             // Each sentence must both declare and be about the asset itself.
-            let stated = line.split(['。', '！', '!', '？', '?']).any(|s| cc0_token(s) && cc0_declaration(s) && about_the_asset(s));
+            let stated = line
+                .split(['。', '！', '!', '？', '?'])
+                .any(|s| cc0_token(s) && cc0_declaration(s) && about_the_asset(s));
             if !about_other && (stated || deed) {
                 declared = true;
             }

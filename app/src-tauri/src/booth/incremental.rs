@@ -44,7 +44,10 @@ impl Baseline {
                 // A row that cannot name its receipt cannot be reused safely.
                 return BTreeMap::new();
             };
-            known.entry(format!("/orders/{order}")).or_default().push(row.clone());
+            known
+                .entry(format!("/orders/{order}"))
+                .or_default()
+                .push(row.clone());
         }
         for route in &self.details {
             if route.strip_prefix("/orders/").is_some_and(safety::numeric) {
@@ -121,7 +124,11 @@ pub(super) struct Tracker {
 impl Tracker {
     pub fn new(base: &Baseline) -> Self {
         let mut known: BTreeMap<String, Vec<KnownRow>> = BTreeMap::new();
-        let rows = base.rows.iter().enumerate().filter(|(_, row)| !withheld(row));
+        let rows = base
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !withheld(row));
         for (position, (index, row)) in rows.enumerate() {
             known
                 .entry(row.product_id.clone().unwrap_or_default())
@@ -221,7 +228,10 @@ impl Tracker {
                 .known
                 .iter()
                 .map(|(product, rows)| {
-                    (product.clone(), rows.iter().map(|row| row.content.clone()).collect())
+                    (
+                        product.clone(),
+                        rows.iter().map(|row| row.content.clone()).collect(),
+                    )
                 })
                 .collect(),
             read: self.read.clone(),
@@ -260,8 +270,14 @@ impl UpdatedTracker {
             return false;
         };
         let current = content(row);
-        !self.known.get(product).is_some_and(|rows| rows.contains(&current))
-            && !self.read.get(product).is_some_and(|rows| rows.contains(&current))
+        !self
+            .known
+            .get(product)
+            .is_some_and(|rows| rows.contains(&current))
+            && !self
+                .read
+                .get(product)
+                .is_some_and(|rows| rows.contains(&current))
     }
     /// A row BOOTH moved sits above every row it did not, whether or not anything this account
     /// sees changed, so an unchanged row alone proves nothing. Reaching the rows that led this
@@ -284,7 +300,12 @@ impl UpdatedTracker {
             let current = content(row);
             let known = self.known.get(product);
             let unchanged = known.is_some_and(|rows| rows.contains(&current));
-            if !unchanged && !self.read.get(product).is_some_and(|rows| rows.contains(&current)) {
+            if !unchanged
+                && !self
+                    .read
+                    .get(product)
+                    .is_some_and(|rows| rows.contains(&current))
+            {
                 // A product no list has shown was acquired out of order or just now, and among
                 // several rows of one product, which one changed is unknown.
                 if known.is_none_or(|rows| rows.len() != 1) {
@@ -357,7 +378,12 @@ pub(super) fn merged_rows(
         return None;
     }
     let mut rows = prefix.to_vec();
-    rows.extend(base.rows[overlap_end + 1..].iter().filter(|row| !withheld(row)).cloned());
+    rows.extend(
+        base.rows[overlap_end + 1..]
+            .iter()
+            .filter(|row| !withheld(row))
+            .cloned(),
+    );
     let mut places = BTreeMap::new();
     for (place, row) in rows.iter().enumerate() {
         if let Some(product) = &row.product_id {
@@ -366,7 +392,10 @@ pub(super) fn merged_rows(
     }
     let known: BTreeSet<_> = base.rows.iter().chain(prefix).map(content).collect();
     let mut changed = vec![];
-    for row in updated.iter().filter(|row| !withheld(row) && !known.contains(&content(row))) {
+    for row in updated
+        .iter()
+        .filter(|row| !withheld(row) && !known.contains(&content(row)))
+    {
         let Some(product) = &row.product_id else {
             continue;
         };
@@ -432,13 +461,20 @@ mod tests {
             source: "purchase".into(),
             complete: true,
             ordering: Ordering::Unknown,
-            rows: vec![receipt(1, "910001"), receipt(2, "910001"), receipt(3, "910002")],
+            rows: vec![
+                receipt(1, "910001"),
+                receipt(2, "910001"),
+                receipt(3, "910002"),
+            ],
             full_traversal_at: "previous-full-pass".into(),
             details: BTreeSet::from(["/orders/910003".into()]),
             updated_head: vec![],
         };
         let known = pass.known_receipts("synthetic", "purchase");
-        assert_eq!(known.keys().collect::<Vec<_>>(), ["/orders/910001", "/orders/910002", "/orders/910003"]);
+        assert_eq!(
+            known.keys().collect::<Vec<_>>(),
+            ["/orders/910001", "/orders/910002", "/orders/910003"]
+        );
         assert_eq!(known["/orders/910001"].len(), 2);
         assert!(known["/orders/910003"].is_empty());
         assert!(pass.known_receipts("other", "purchase").is_empty());
@@ -456,7 +492,10 @@ mod tests {
         // Baselines saved before receipt routes were recorded still load.
         let mut saved = serde_json::to_value(base()).unwrap();
         saved.as_object_mut().unwrap().remove("details");
-        assert!(serde_json::from_value::<Baseline>(saved).unwrap().details.is_empty());
+        assert!(serde_json::from_value::<Baseline>(saved)
+            .unwrap()
+            .details
+            .is_empty());
     }
     #[test]
     fn moved_page_boundary_stops_by_stable_records_and_preserves_tail() {
@@ -562,8 +601,19 @@ mod tests {
         let mut b = base();
         b.rows[5] = with_file(1, "700001");
         assert!(b.usable("synthetic", "library"));
-        let same_order = vec![row(0), row(1), row(2), row(3), row(4), with_file(1, "700001"), row(6)];
-        assert_eq!(Tracker::new(&b).observe(&page(same_order[..4].to_vec())), None);
+        let same_order = vec![
+            row(0),
+            row(1),
+            row(2),
+            row(3),
+            row(4),
+            with_file(1, "700001"),
+            row(6),
+        ];
+        assert_eq!(
+            Tracker::new(&b).observe(&page(same_order[..4].to_vec())),
+            None
+        );
         let mut t = Tracker::new(&b);
         assert_eq!(t.observe(&page(same_order[..3].to_vec())), None);
         assert_eq!(t.observe(&page(same_order[3..].to_vec())), Some(6));
@@ -595,7 +645,10 @@ mod tests {
         b.rows[5] = delisted("other-old-place");
         assert!(b.usable("synthetic", "library"));
         let mut t = Tracker::new(&b);
-        assert_eq!(t.observe(&page(vec![row(0), row(1), delisted("new-place")])), None);
+        assert_eq!(
+            t.observe(&page(vec![row(0), row(1), delisted("new-place")])),
+            None
+        );
         assert_eq!(t.observe(&page(vec![row(3), row(4)])), Some(4));
         // It stays out of what is carried forward, or it would be there again next time.
         let prefix = [row(0), row(1), delisted("new-place"), row(3), row(4)];
@@ -614,9 +667,18 @@ mod tests {
         assert!(u.changes(&with_file(9000, "700001")));
         assert!(!u.changes(&row(20000)) && !u.changes(&row(9000)));
         // A new file on a row far down the list, and the new purchase, then two quiet pages.
-        assert_eq!(u.observe(&updated(vec![with_file(9000, "700001"), row(20000)])), UpdatedRead::Reading);
-        assert_eq!(u.observe(&updated(vec![row(5000), row(5001)])), UpdatedRead::Reading);
-        assert_eq!(u.observe(&updated(vec![row(4000), row(3000)])), UpdatedRead::Settled);
+        assert_eq!(
+            u.observe(&updated(vec![with_file(9000, "700001"), row(20000)])),
+            UpdatedRead::Reading
+        );
+        assert_eq!(
+            u.observe(&updated(vec![row(5000), row(5001)])),
+            UpdatedRead::Reading
+        );
+        assert_eq!(
+            u.observe(&updated(vec![row(4000), row(3000)])),
+            UpdatedRead::Settled
+        );
         let prefix = [row(20000), row(0), row(1), row(2)];
         let read = [with_file(9000, "700001"), row(20000), row(5000)];
         let merged = merged_rows(&b, &prefix, 2, &read).unwrap();
@@ -624,15 +686,26 @@ mod tests {
         let all = merged.rows;
         assert_eq!(all.len(), 10001);
         assert_eq!(all[0].source_record_id, "synthetic:20000");
-        assert_eq!(all.iter().filter(|r| r.source_record_id == "synthetic:9000").count(), 1);
-        let place = all.iter().position(|r| r.source_record_id == "synthetic:9000").unwrap();
+        assert_eq!(
+            all.iter()
+                .filter(|r| r.source_record_id == "synthetic:9000")
+                .count(),
+            1
+        );
+        let place = all
+            .iter()
+            .position(|r| r.source_record_id == "synthetic:9000")
+            .unwrap();
         assert_eq!(all[place].files.len(), 1);
         assert_eq!(place, 9000 + 1);
         // A change resets the count, a new purchase does not count, and neither does a page
         // of delisted rows, which says nothing.
         let mut u = t.updated(&[]);
         assert_eq!(u.observe(&updated(vec![row(7000)])), UpdatedRead::Reading);
-        assert_eq!(u.observe(&updated(vec![with_file(7001, "700002")])), UpdatedRead::Reading);
+        assert_eq!(
+            u.observe(&updated(vec![with_file(7001, "700002")])),
+            UpdatedRead::Reading
+        );
         assert_eq!(u.observe(&updated(vec![row(7002)])), UpdatedRead::Reading);
         assert_eq!(u.observe(&updated(vec![row(20000)])), UpdatedRead::Reading);
         assert_eq!(u.observe(&updated(vec![row(7003)])), UpdatedRead::Reading);
@@ -653,11 +726,33 @@ mod tests {
         // Thirty rows BOOTH moved show nothing new here, then a real change, then the old order.
         let mut u = t.updated(&head);
         for start in [500, 510, 520] {
-            assert_eq!(u.observe(&updated(leading(start, start + 10))), UpdatedRead::Reading, "{start}");
+            assert_eq!(
+                u.observe(&updated(leading(start, start + 10))),
+                UpdatedRead::Reading,
+                "{start}"
+            );
         }
-        assert_eq!(u.observe(&updated(vec![with_file(9000, "700001"), row(100), row(101)])), UpdatedRead::Reading);
+        assert_eq!(
+            u.observe(&updated(vec![
+                with_file(9000, "700001"),
+                row(100),
+                row(101)
+            ])),
+            UpdatedRead::Reading
+        );
         // A row of the old order that moved is simply absent from its place.
-        assert_eq!(u.observe(&updated(vec![row(102), row(103), row(105), row(106), row(107), row(108), row(109)])), UpdatedRead::Reading);
+        assert_eq!(
+            u.observe(&updated(vec![
+                row(102),
+                row(103),
+                row(105),
+                row(106),
+                row(107),
+                row(108),
+                row(109)
+            ])),
+            UpdatedRead::Reading
+        );
         assert_eq!(u.observe(&updated(vec![row(110)])), UpdatedRead::Settled);
         // Rows out of the old order start the count again.
         let mut u = t.updated(&head);
@@ -669,13 +764,19 @@ mod tests {
         // A row of the old order with new files is a change, not a witness.
         let mut u = t.updated(&head);
         assert_eq!(u.observe(&updated(leading(100, 109))), UpdatedRead::Reading);
-        assert_eq!(u.observe(&updated(vec![with_file(109, "700002")])), UpdatedRead::Reading);
+        assert_eq!(
+            u.observe(&updated(vec![with_file(109, "700002")])),
+            UpdatedRead::Reading
+        );
         assert_eq!(u.observe(&updated(leading(110, 119))), UpdatedRead::Reading);
         assert_eq!(u.observe(&updated(leading(119, 120))), UpdatedRead::Settled);
         // The next pass looks for what was read now, then what fell below it, within a bound.
         let read = leading(500, 503);
         let next = next_head(&read, &head);
-        assert_eq!(next[..3], [content(&read[0]), content(&read[1]), content(&read[2])]);
+        assert_eq!(
+            next[..3],
+            [content(&read[0]), content(&read[1]), content(&read[2])]
+        );
         assert_eq!(next[3], head[0]);
         assert_eq!(next.len(), HEAD_KEPT);
         assert_eq!(next_head(&[], &head), head);
@@ -693,7 +794,14 @@ mod tests {
         unstable.error_code = Some("PRODUCT_TITLE_UNRESOLVED".into());
         let mut dead_end = updated(vec![row(5)]);
         dead_end.next.clear();
-        for bad in [updated(unknown), unstated, unresolved, updated(vec![unstable]), updated(vec![]), dead_end] {
+        for bad in [
+            updated(unknown),
+            unstated,
+            unresolved,
+            updated(vec![unstable]),
+            updated(vec![]),
+            dead_end,
+        ] {
             assert_eq!(t.updated(&[]).observe(&bad), UpdatedRead::Broken);
         }
         // The list's own end is not a dead end, and a page that settles needs no next page.
@@ -709,13 +817,25 @@ mod tests {
         let mut twice = base();
         twice.rows[5] = with_file(1, "700001");
         let t = overlap(&twice, vec![vec![row(0)], vec![row(1)]]);
-        assert_eq!(t.updated(&[]).observe(&updated(vec![with_file(1, "700002")])), UpdatedRead::Broken);
-        assert_eq!(t.updated(&[]).observe(&updated(vec![with_file(1, "700001")])), UpdatedRead::Reading);
+        assert_eq!(
+            t.updated(&[])
+                .observe(&updated(vec![with_file(1, "700002")])),
+            UpdatedRead::Broken
+        );
+        assert_eq!(
+            t.updated(&[])
+                .observe(&updated(vec![with_file(1, "700001")])),
+            UpdatedRead::Reading
+        );
         // Nor on either of two identical rows.
         let mut same = base();
         same.rows[5] = row(1);
         let t = overlap(&same, vec![vec![row(0)], vec![row(1)]]);
-        assert_eq!(t.updated(&[]).observe(&updated(vec![with_file(1, "700002")])), UpdatedRead::Broken);
+        assert_eq!(
+            t.updated(&[])
+                .observe(&updated(vec![with_file(1, "700002")])),
+            UpdatedRead::Broken
+        );
     }
     #[test]
     fn a_row_keeps_its_files_whichever_record_id_its_page_gives_it() {
@@ -731,17 +851,33 @@ mod tests {
         let mut apart = with_file(1, "700009");
         apart.source_record_id = "synthetic:1".into();
         let mut u = t.updated(&[]);
-        assert_eq!(u.observe(&updated(vec![first.clone()])), UpdatedRead::Reading);
-        assert_eq!(u.observe(&updated(vec![apart.clone()])), UpdatedRead::Settled);
+        assert_eq!(
+            u.observe(&updated(vec![first.clone()])),
+            UpdatedRead::Reading
+        );
+        assert_eq!(
+            u.observe(&updated(vec![apart.clone()])),
+            UpdatedRead::Settled
+        );
         let merged = merged_rows(&b, &[row(0), first], 1, &[apart]).unwrap();
         assert!(merged.changed.is_empty());
-        let names: Vec<_> = merged.rows[..3].iter().map(|row| row.files.first().map(|file| file.id.clone())).collect();
-        assert_eq!(names, [None, Some("700001".to_owned()), Some("700009".to_owned())]);
+        let names: Vec<_> = merged.rows[..3]
+            .iter()
+            .map(|row| row.files.first().map(|file| file.id.clone()))
+            .collect();
+        assert_eq!(
+            names,
+            [None, Some("700001".to_owned()), Some("700009".to_owned())]
+        );
     }
     #[test]
     fn only_an_order_the_page_stated_and_a_recent_full_read_allow_stopping() {
         let mut b = base();
-        for ordering in [Ordering::Unknown, Ordering::FileUpdatedNewestFirst, Ordering::DownloadedNewestFirst] {
+        for ordering in [
+            Ordering::Unknown,
+            Ordering::FileUpdatedNewestFirst,
+            Ordering::DownloadedNewestFirst,
+        ] {
             b.ordering = ordering;
             assert!(!b.usable("synthetic", "library"), "{ordering:?}");
         }

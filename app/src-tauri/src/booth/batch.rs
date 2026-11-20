@@ -134,9 +134,21 @@ mod tests {
     #[test]
     fn a_new_observation_time_alone_is_not_a_change() {
         let stored = json!({"id":"a","n":1,"observedAt":"earlier"});
-        assert!(same_except_observed_at(&stored, &json!({"id":"a","n":1,"observedAt":"later"})));
-        assert!(same_except_observed_at(&json!({"id":"a","n":1}), &json!({"id":"a","n":1,"observedAt":"later"})));
-        assert!(!same_except_observed_at(&stored, &json!({"id":"a","n":2,"observedAt":"earlier"})));
-        assert!(!same_except_observed_at(&stored, &json!({"id":"a","n":1,"m":null,"observedAt":"later"})));
+        assert!(same_except_observed_at(
+            &stored,
+            &json!({"id":"a","n":1,"observedAt":"later"})
+        ));
+        assert!(same_except_observed_at(
+            &json!({"id":"a","n":1}),
+            &json!({"id":"a","n":1,"observedAt":"later"})
+        ));
+        assert!(!same_except_observed_at(
+            &stored,
+            &json!({"id":"a","n":2,"observedAt":"earlier"})
+        ));
+        assert!(!same_except_observed_at(
+            &stored,
+            &json!({"id":"a","n":1,"m":null,"observedAt":"later"})
+        ));
     }
 }

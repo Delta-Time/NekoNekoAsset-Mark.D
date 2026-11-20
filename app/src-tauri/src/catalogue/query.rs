@@ -93,7 +93,8 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
         }
         conn.execute_batch("DELETE FROM temp.list_changes; UPDATE temp.list_events SET n=0;")?;
         // Two count sets: every product, and the default list without unavailable ones.
-        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 2] = Default::default();
+        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 2] =
+            Default::default();
         let mut hidden = 0i64;
         let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,unavailable=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6,7")?;
         let mut rows = stmt.query([])?;
@@ -241,16 +242,17 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     }
     // The license database chose these; an empty list keeps nothing.
     if let Some(ids) = args["licenseIds"].as_array() {
-        conditions.push(format!("p.id IN(SELECT value FROM json_each({}))", bind(Sql::Text(json!(ids).to_string()))));
+        conditions.push(format!(
+            "p.id IN(SELECT value FROM json_each({}))",
+            bind(Sql::Text(json!(ids).to_string()))
+        ));
     }
     let avatar = text(args, "avatar");
     let mut pinned = vec![];
     if !avatar.is_empty() && avatar != "all" {
         let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-        let registry = avatars::registry_from(
-            &projection::bases_in(conn, "temp.list_rows")?,
-            &preferences,
-        )?;
+        let registry =
+            avatars::registry_from(&projection::bases_in(conn, "temp.list_rows")?, &preferences)?;
         let avatar_id = registry.resolve(avatar);
         // Base pins override ordinary filters, but never the user's explicit
         // hidden/visible, R-18 or unavailable visibility boundaries.
@@ -258,7 +260,10 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) FROM temp.list_rows WHERE id=?1",
         )?;
         for id in registry.bases(&avatar_id) {
-            if visible_base.query_row(params![id, hidden_only, sensitive, hide_unavailable], |row| row.get::<_, bool>(0))? {
+            if visible_base.query_row(
+                params![id, hidden_only, sensitive, hide_unavailable],
+                |row| row.get::<_, bool>(0),
+            )? {
                 pinned.push(id);
             }
         }
@@ -270,8 +275,16 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         let mut values = vec![];
         while let Some(row) = rows.next()? {
             let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
-            if registry.evidence_identity(&preferences, &evidence_id, &name, &known).as_ref() == Some(&avatar_id) {
-                values.push(format!("({},{})", bind(Sql::Text(evidence_id)), bind(Sql::Text(name))));
+            if registry
+                .evidence_identity(&preferences, &evidence_id, &name, &known)
+                .as_ref()
+                == Some(&avatar_id)
+            {
+                values.push(format!(
+                    "({},{})",
+                    bind(Sql::Text(evidence_id)),
+                    bind(Sql::Text(name))
+                ));
             }
         }
         let assigned = if values.is_empty() {
@@ -304,7 +317,9 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         } else {
             "1=1".into()
         };
-        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"));
+        conditions.push(format!(
+            "EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"
+        ));
     }
     let search = normalized(
         args["search"]
@@ -412,7 +427,11 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     };
     let scope = {
         let mut hasher = DefaultHasher::new();
-        (args["accountIds"].to_string(), args["presentation"].to_string()).hash(&mut hasher);
+        (
+            args["accountIds"].to_string(),
+            args["presentation"].to_string(),
+        )
+            .hash(&mut hasher);
         hasher.finish()
     };
     let mut fingerprints = Map::new();
@@ -476,8 +495,8 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         products.push(product);
     }
     // Sidebar counts follow the preferences in every scope, including Hidden.
-    let counts = &list.counts[usize::from(args["hideUnavailable"] == true)]
-        [usize::from(hide_unclassified)];
+    let counts =
+        &list.counts[usize::from(args["hideUnavailable"] == true)][usize::from(hide_unclassified)];
     let mut result = json!({"products":products,"total":list.total,"matchedIds":ids,"matched":ids.len(),"counts":counts,"allDownloaded":all_downloaded});
     if known.is_some() {
         result["fingerprints"] = Value::Object(fingerprints);
@@ -503,7 +522,10 @@ pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
         accounts.insert(id?, json!(0));
     }
     let visible = if list_preferences(conn)?.0 {
-        concat!("COALESCE(json_extract(p.summary,'$.hidden'),0)=0 AND NOT ", unavailable_sql!())
+        concat!(
+            "COALESCE(json_extract(p.summary,'$.hidden'),0)=0 AND NOT ",
+            unavailable_sql!()
+        )
     } else {
         "COALESCE(json_extract(p.summary,'$.hidden'),0)=0"
     };

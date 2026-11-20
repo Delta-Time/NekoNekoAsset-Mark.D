@@ -52,12 +52,7 @@ fn product(c: &Catalogue, id: &str, provider: &str) {
     if provider == "gumroad" {
         source["sourceDescription"] = json!("Authored hair for VRChat.");
     }
-    c.put(
-        "product",
-        id,
-        source,
-    )
-    .unwrap();
+    c.put("product", id, source).unwrap();
 }
 
 fn hide(c: &Catalogue, ids: &[&str], hidden: bool) -> Value {
@@ -173,7 +168,8 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     product(&c, "b", "booth");
     product(&c, "c", "local");
     let query = |extra: Value| {
-        let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list","allSummaries":true});
+        let mut args =
+            json!({"sort":"title","includeFiles":false,"presentation":"list","allSummaries":true});
         for (key, value) in extra.as_object().unwrap() {
             args[key] = value.clone();
         }
@@ -186,7 +182,10 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     let known = first["fingerprints"].clone();
     assert_eq!(first["matchedIds"], json!(["a", "b", "c"]));
     assert_eq!(known.as_object().unwrap().len(), 3);
-    assert_eq!((&first["counts"]["all"], &first["counts"]["hidden"]), (&json!(3), &json!(0)));
+    assert_eq!(
+        (&first["counts"]["all"], &first["counts"]["hidden"]),
+        (&json!(3), &json!(0))
+    );
     let unchanged = query(json!({"knownSummaries":known}));
     assert_eq!(unchanged["matchedIds"], json!(["a", "b", "c"]));
     assert_eq!(unchanged["products"], json!([]));
@@ -197,7 +196,10 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     let visible = query(json!({"knownSummaries":known}));
     assert_eq!(visible["matchedIds"], json!(["b", "c"]));
     assert_eq!(visible["products"], json!([]));
-    assert_eq!((&visible["counts"]["all"], &visible["counts"]["hidden"]), (&json!(2), &json!(1)));
+    assert_eq!(
+        (&visible["counts"]["all"], &visible["counts"]["hidden"]),
+        (&json!(2), &json!(1))
+    );
     let hidden = query(json!({"hiddenOnly":true,"knownSummaries":known}));
     assert_eq!(hidden["matchedIds"], json!(["a"]));
     assert_eq!(hidden["products"][0]["hidden"], true);
@@ -356,8 +358,12 @@ fn library_recommendations_exclude_hidden_even_as_explicit_context() {
 fn unavailable_store_products_follow_the_list_preference_and_keep_their_records() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("account", "account", json!({"id":"account","provider":"booth"}))
-        .unwrap();
+    c.put(
+        "account",
+        "account",
+        json!({"id":"account","provider":"booth"}),
+    )
+    .unwrap();
     for id in ["a-file", "b-empty", "c-kept", "e-hidden-empty"] {
         product(&c, id, "booth");
     }
@@ -437,23 +443,28 @@ fn all_hides_unclassified_products_unless_the_user_lists_them_there() {
     let fixture = Fixture::new();
     let c = fixture.open();
     product(&c, "a-hair", "local");
-    c.put("product", "b-print", json!({"id":"b-print","title":"Authored unrelated print"}))
-        .unwrap();
+    c.put(
+        "product",
+        "b-print",
+        json!({"id":"b-print","title":"Authored unrelated print"}),
+    )
+    .unwrap();
     let all = |hide: Option<bool>| {
         let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list"});
         if let Some(hide) = hide {
             args["hideUnclassified"] = json!(hide);
         }
         let result = c.command("query", args).unwrap();
-        (result["matchedIds"].clone(), result["counts"]["all"].clone())
+        (
+            result["matchedIds"].clone(),
+            result["counts"]["all"].clone(),
+        )
     };
     assert_eq!(all(None), (json!(["a-hair"]), json!(1)));
     assert_eq!(all(Some(true)), all(None));
     assert_eq!(all(Some(false)), (json!(["a-hair", "b-print"]), json!(2)));
     // Unclassified itself keeps its products either way.
-    let unclassified = c
-        .command("query", json!({"category":"NonVRChat"}))
-        .unwrap();
+    let unclassified = c.command("query", json!({"category":"NonVRChat"})).unwrap();
     assert_eq!(unclassified["matchedIds"], json!(["b-print"]));
     assert_eq!(unclassified["counts"]["categories"]["NonVRChat"], 1);
     // Bootstrap counts follow the saved preference, on by default.

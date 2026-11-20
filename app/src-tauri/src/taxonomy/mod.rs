@@ -458,14 +458,19 @@ pub fn infer_product_category(source: &Value) -> Value {
                         || kind == "Udon"
                             && (tag.contains("udon")
                                 || word_match(tag, "u#")
-                                || WORLD_GIMMICK_TAGS.iter().chain(WORLD_BUILD_TAGS).any(|word| tag.contains(word))
+                                || WORLD_GIMMICK_TAGS
+                                    .iter()
+                                    .chain(WORLD_BUILD_TAGS)
+                                    .any(|word| tag.contains(word))
                                 || tag.contains("チクワカーシステム")
                                 || tag.contains("chikuwa vehicle system"))
                         || kind == "Gimmick" && names_avatar_build(tag)
                 })
                 .map(|(tag, _)| json!({"field":"sourceTags","value":tag}))
                 .collect(),
-            _ => vec![json!({"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")})],
+            _ => vec![
+                json!({"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")}),
+            ],
         };
         result = json!({"category":kind,"basis":basis,"inferred":true,"evidence":found});
     }
@@ -602,18 +607,23 @@ pub fn infer_product_category(source: &Value) -> Value {
         && in_3d
         && store.is_none()
         && result["category"] == "Accessory"
-        && normalized_tags
-            .iter()
-            .any(|tag| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world"))
-        && !normalized_tags
-            .iter()
-            .any(|tag| ["アクセサリ", "アバター", "avatar"].iter().any(|word| tag.contains(word)))
+        && normalized_tags.iter().any(|tag| {
+            tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world")
+        })
+        && !normalized_tags.iter().any(|tag| {
+            ["アクセサリ", "アバター", "avatar"]
+                .iter()
+                .any(|word| tag.contains(word))
+        })
     {
         result = json!({"category":"World","basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world")).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
     }
     // What a title or tag separates from BOOTH's tools still has to show where it runs.
-    let store_tools =
-        store.is_some() && matches!(category_name.as_str(), "3dツール・システム" | "ソフトウェア");
+    let store_tools = store.is_some()
+        && matches!(
+            category_name.as_str(),
+            "3dツール・システム" | "ソフトウェア"
+        );
     let restricted = store_tools || matches!(result["category"].as_str(), Some("Tool" | "Texture"));
     let store_texture = result["category"] == "Texture" && matches!(store, Some(("Texture", _)));
     let os_without_target_context = os_tag && !unity_scope && !explicit_vr_tag;
@@ -700,7 +710,12 @@ fn names_type(text: &str, category: &str) -> bool {
 }
 
 /// Tags saying a product goes into a world or onto an avatar, which BOOTH has no category for.
-const WORLD_GIMMICK_TAGS: &[&str] = &["ワールドギミック", "world gimmick", "udonギミック", "udon gimmick"];
+const WORLD_GIMMICK_TAGS: &[&str] = &[
+    "ワールドギミック",
+    "world gimmick",
+    "udonギミック",
+    "udon gimmick",
+];
 const WORLD_BUILD_TAGS: &[&str] = &["ワールドアセット", "world asset", "ワールドキット"];
 const AVATAR_TAGS: &[&str] = &[
     "アバターギミック",
@@ -728,7 +743,10 @@ fn store_type(
     tags: &[String],
     opening: &str,
 ) -> Option<(&'static str, &'static str)> {
-    let any_tag = |words: &[&str]| tags.iter().any(|tag| words.iter().any(|word| tag.contains(word)));
+    let any_tag = |words: &[&str]| {
+        tags.iter()
+            .any(|tag| words.iter().any(|word| tag.contains(word)))
+    };
     let system_title = word_match(title, "cvs2") || title.contains("チクワカー");
     let system_tag = any_tag(&["チクワカーシステム", "chikuwa vehicle system"]);
     let stated = match leaf {
@@ -739,9 +757,15 @@ fn store_type(
         "3dテクスチャ" => "Texture",
         "3dツール・システム" | "ソフトウェア" => "Tool",
         "3d環境・ワールド" => "World",
-        "3dキャラクター" => return sells_texture(title).then_some(("Texture", "sourceTitle")),
+        "3dキャラクター" => {
+            return sells_texture(title).then_some(("Texture", "sourceTitle"))
+        }
         _ if title.contains("販売ワールド") => return Some(("World", "sourceTitle")),
-        _ if system_title || ["vrchat world prefab", "vrc world prefab"].iter().any(|word| title.contains(word)) => {
+        _ if system_title
+            || ["vrchat world prefab", "vrc world prefab"]
+                .iter()
+                .any(|word| title.contains(word)) =>
+        {
             return Some(("Udon", "sourceTitle"))
         }
         _ if system_tag || any_tag(WORLD_GIMMICK_TAGS) => return Some(("Udon", "sourceTags")),
@@ -803,15 +827,30 @@ fn store_type(
     // sold with their shader.
     let room = world && any_tag(&["部屋", "建物", "住宅", "ホームワールド"]);
     let scenery = world
-        && (any_tag(&["家具", "インテリア", "ハウス", "植物", "樹木", "自然", "背景", "環境", "小物"])
-            || word_tag(tags, "house")
+        && (any_tag(&[
+            "家具",
+            "インテリア",
+            "ハウス",
+            "植物",
+            "樹木",
+            "自然",
+            "背景",
+            "環境",
+            "小物",
+        ]) || word_tag(tags, "house")
             || word_tag(tags, "prop")
             || word_tag(tags, "props"));
     let named_world = world && !tool && names_a_world(title);
     if !tool && !(named_world && (room || scenery)) && sold(&["udon"])
-        || ["udonギミック", "udon用ギミック", "udon gimmick", "ワールドギミック", "world gimmick"]
-            .iter()
-            .any(|word| sold_as(title, word))
+        || [
+            "udonギミック",
+            "udon用ギミック",
+            "udon gimmick",
+            "ワールドギミック",
+            "world gimmick",
+        ]
+        .iter()
+        .any(|word| sold_as(title, word))
         || system_title
     {
         return Some(("Udon", "sourceTitle"));
@@ -821,7 +860,9 @@ fn store_type(
     }
     let gimmick = sold(&["ギミック", "gimmick", "기믹", "交互组件", "互動元件"]);
     // Named as a system or gimmick that a Udon tag explains, even under a world label.
-    if !tool && tagged("Udon") && (gimmick || title.contains("システム") || word_match(title, "system"))
+    if !tool
+        && tagged("Udon")
+        && (gimmick || title.contains("システム") || word_match(title, "system"))
     {
         return Some(("Udon", "sourceTitle"));
     }
@@ -837,7 +878,13 @@ fn store_type(
         return Some(("Shader", "sourceTitle"));
     }
     // A tool that works on avatars names the editor; a gimmick goes on the avatar.
-    let editor_tag = any_tag(&["editor拡張", "エディタ拡張", "エディター拡張", "unityeditor", "unity editor"]);
+    let editor_tag = any_tag(&[
+        "editor拡張",
+        "エディタ拡張",
+        "エディター拡張",
+        "unityeditor",
+        "unity editor",
+    ]);
     // A finished world carries Udon tags for what is inside it.
     if any_tag(WORLD_GIMMICK_TAGS) && !room
         || !world
@@ -849,9 +896,15 @@ fn store_type(
     if tool {
         return Some(("Tool", "sourceTitle"));
     }
-    let for_worlds = ["ワールド用", "ワールド向け", "for world", "for vrchat world", "for vrc world"]
-        .iter()
-        .any(|phrase| title.contains(phrase));
+    let for_worlds = [
+        "ワールド用",
+        "ワールド向け",
+        "for world",
+        "for vrchat world",
+        "for vrc world",
+    ]
+    .iter()
+    .any(|phrase| title.contains(phrase));
     if tagged("Udon") && for_worlds {
         return Some(("Udon", "sourceTitle"));
     }
@@ -859,11 +912,24 @@ fn store_type(
     let editing_tool = editor_tag && tagged("Tool");
     if gimmick && !editing_tool {
         let for_avatar = !for_worlds
-            && (["アバター用", "アバター向け", "アバターギミック", "for avatar", "avatar gimmick"]
-                .iter()
-                .any(|word| title.contains(word))
+            && ([
+                "アバター用",
+                "アバター向け",
+                "アバターギミック",
+                "for avatar",
+                "avatar gimmick",
+            ]
+            .iter()
+            .any(|word| title.contains(word))
                 || avatar_tag);
-        return Some((if (world || for_worlds) && !for_avatar { "Udon" } else { "Gimmick" }, "sourceTitle"));
+        return Some((
+            if (world || for_worlds) && !for_avatar {
+                "Udon"
+            } else {
+                "Gimmick"
+            },
+            "sourceTitle",
+        ));
     }
     if world {
         if avatar_tag {
@@ -894,7 +960,10 @@ fn store_type(
     }
     // Software lists what its output is for, so only the tool category reads the rest.
     if !software_leaf && !tagged("Tool") && !tags.iter().any(|tag| software_type(tag)) {
-        if let Some(kind) = ["Udon", "Shader", "Gimmick"].into_iter().find(|kind| tagged(kind)) {
+        if let Some(kind) = ["Udon", "Shader", "Gimmick"]
+            .into_iter()
+            .find(|kind| tagged(kind))
+        {
             return Some((kind, "sourceTags"));
         }
     }
@@ -908,8 +977,27 @@ fn word_tag(tags: &[String], word: &str) -> bool {
 /// A title calling itself a world, not a gimmick for one or something placed in one.
 fn names_a_world(title: &str) -> bool {
     const NOT_A_PLACE: &[&str] = &[
-        "ギミック", "シェーダ", "用", "向け", "対応", "専用", "設置", "制作", "パーツ", "小物", "アセット", "素材",
-        "キット", "で", "に", "内", "gimmick", "prefab", "asset", "kit", "shader",
+        "ギミック",
+        "シェーダ",
+        "用",
+        "向け",
+        "対応",
+        "専用",
+        "設置",
+        "制作",
+        "パーツ",
+        "小物",
+        "アセット",
+        "素材",
+        "キット",
+        "で",
+        "に",
+        "内",
+        "gimmick",
+        "prefab",
+        "asset",
+        "kit",
+        "shader",
     ];
     ["ワールド", "world"].iter().any(|word| {
         title.match_indices(word).any(|(start, word)| {
@@ -953,8 +1041,25 @@ fn sold_as(title: &str, word: &str) -> bool {
         let after = after.strip_prefix("ギミック").unwrap_or(after);
         !title[..start].ends_with("with ")
             && ![
-                "付", "つき", "搭載", "あり", "有り", "多数", "満載", "入り", "同梱", "対応", "専用",
-                "用", "向け", "込み", "使用", "不使用", "なし", "無し", "非対応",
+                "付",
+                "つき",
+                "搭載",
+                "あり",
+                "有り",
+                "多数",
+                "満載",
+                "入り",
+                "同梱",
+                "対応",
+                "専用",
+                "用",
+                "向け",
+                "込み",
+                "使用",
+                "不使用",
+                "なし",
+                "無し",
+                "非対応",
             ]
             .iter()
             .any(|suffix| after.starts_with(suffix))
@@ -1021,9 +1126,17 @@ fn mentions_video_or_effect(text: &str) -> bool {
     ["エフェクト", "パーティクル", "動画", "映像", "動く背景"]
         .iter()
         .any(|word| text.contains(word))
-        || ["effect", "effects", "particle", "particles", "vfx", "gif", "vj"]
-            .iter()
-            .any(|word| word_match(text, word))
+        || [
+            "effect",
+            "effects",
+            "particle",
+            "particles",
+            "vfx",
+            "gif",
+            "vj",
+        ]
+        .iter()
+        .any(|word| word_match(text, word))
 }
 
 // Keep runtime/platform scope separate from product type. Blender alone does
@@ -1379,7 +1492,9 @@ pub fn parsed_avatar_label(title: &str) -> AvatarLabelParts {
 /// name unambiguous.
 pub fn avatar_edition(entry: &Value) -> bool {
     entry["variantListing"] == true
-        || entry["labelQualifiers"].as_array().is_some_and(|values| !values.is_empty())
+        || entry["labelQualifiers"]
+            .as_array()
+            .is_some_and(|values| !values.is_empty())
 }
 
 /// The name located in a known Base product's title, plus bounded presentation
@@ -1662,8 +1777,13 @@ pub fn avatar_display_name(avatar: &Value) -> String {
     } else {
         format!("{original} / {english}")
     };
-    let qualifiers: Vec<_> = avatar["labelQualifiers"].as_array().into_iter().flatten()
-        .filter_map(Value::as_str).filter(|value| !value.is_empty()).collect();
+    let qualifiers: Vec<_> = avatar["labelQualifiers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .collect();
     if !qualifiers.is_empty() {
         display.push_str(&format!(" ({})", qualifiers.join(", ")));
     }
@@ -1792,20 +1912,40 @@ pub fn owned_base_options(products: &[Value]) -> Vec<Value> {
         let Some(id) = product["id"].as_str().filter(|id| !id.trim().is_empty()) else {
             continue;
         };
-        let known = avatars().iter().find(|avatar| avatar.value["productId"].as_str() == Some(id));
-        let source_title = product["sourceTitle"].as_str().filter(|name| !name.trim().is_empty())
-            .or_else(|| product["title"].as_str().filter(|name| !name.trim().is_empty()));
+        let known = avatars()
+            .iter()
+            .find(|avatar| avatar.value["productId"].as_str() == Some(id));
+        let source_title = product["sourceTitle"]
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                product["title"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+            });
         let title = source_title.unwrap_or(id);
-        let mut entry = known.map(|avatar| avatar.value.clone()).unwrap_or_else(|| json!({
-            "id":format!("product:{id}"), "productId":id, "officialName":title,
-            "aliases":[], "provenance":{"kind":"catalogueBaseProduct", "productId":id},
-        }));
+        let mut entry = known.map(|avatar| avatar.value.clone()).unwrap_or_else(|| {
+            json!({
+                "id":format!("product:{id}"), "productId":id, "officialName":title,
+                "aliases":[], "provenance":{"kind":"catalogueBaseProduct", "productId":id},
+            })
+        });
         if known.is_none() {
-            let parsed = if source_title.is_some() { parsed_product_avatar_label(id, title) } else {
-                AvatarLabelParts { original: id.to_owned(), source_latin: None, qualifiers: vec![], name_kind: "fallback" }
+            let parsed = if source_title.is_some() {
+                parsed_product_avatar_label(id, title)
+            } else {
+                AvatarLabelParts {
+                    original: id.to_owned(),
+                    source_latin: None,
+                    qualifiers: vec![],
+                    name_kind: "fallback",
+                }
             };
             let english = if parsed.name_kind == "single" {
-                parsed.source_latin.clone().unwrap_or_else(|| romanized_name(&parsed.original))
+                parsed
+                    .source_latin
+                    .clone()
+                    .unwrap_or_else(|| romanized_name(&parsed.original))
             } else {
                 String::new()
             };
@@ -1927,12 +2067,36 @@ mod tests {
     #[test]
     fn gumroad_requires_explicit_vrchat_in_source_title_or_description() {
         for (category, title, description) in [
-            ("Shader", "Authored paint shader for Blender", "A rendering material."),
-            ("World", "Authored Unreal classroom", "An environment tutorial."),
-            ("Clothes", "Authored clothing mesh", "For Unity and other engines."),
-            ("Base", "Original 3D Avatar Soraneko", "A generic 3D character."),
-            ("Udon", "Authored script", "Includes tools and VR controller models."),
-            ("Shader", "Authored shader", "VRChatters and avrcollision are unrelated words."),
+            (
+                "Shader",
+                "Authored paint shader for Blender",
+                "A rendering material.",
+            ),
+            (
+                "World",
+                "Authored Unreal classroom",
+                "An environment tutorial.",
+            ),
+            (
+                "Clothes",
+                "Authored clothing mesh",
+                "For Unity and other engines.",
+            ),
+            (
+                "Base",
+                "Original 3D Avatar Soraneko",
+                "A generic 3D character.",
+            ),
+            (
+                "Udon",
+                "Authored script",
+                "Includes tools and VR controller models.",
+            ),
+            (
+                "Shader",
+                "Authored shader",
+                "VRChatters and avrcollision are unrelated words.",
+            ),
         ] {
             let source = json!({"store":"Gumroad","sourceTitle":title,
                 "sourceDescription":description,"sourceCategory":{"name":category,"parentName":"VRChat"},
@@ -2033,7 +2197,9 @@ mod tests {
             super::avatar_label_parts("Original 3D Avatar"),
             ("Original 3D Avatar".into(), None)
         );
-        let unnamed = super::owned_base_options(&[serde_json::json!({"id":"synthetic-unnamed","category":"Base","sourceTitle":"Original 3D Avatar"})]);
+        let unnamed = super::owned_base_options(&[
+            serde_json::json!({"id":"synthetic-unnamed","category":"Base","sourceTitle":"Original 3D Avatar"}),
+        ]);
         assert_eq!(unnamed.len(), 1);
         assert_eq!(unnamed[0]["id"], "product:synthetic-unnamed");
         assert_eq!(unnamed[0]["nameKind"], "fallback");
@@ -2681,242 +2847,1120 @@ mod tests {
     fn booth_categories_and_what_a_product_is_built_on_decide_its_type() {
         // Independently authored structures of what sellers file in each category.
         for (leaf, title, tags, expected) in [
-            ("3D環境・ワールド", "【販売ワールド】Authored Hotel", &["VRChat", "Udon", "シェーダー", "ギミック"][..], "World"),
-            ("3D環境・ワールド", "【販売ワールド】Authored Bar ギミック シェーダー", &["VRChat", "Udon"], "World"),
-            ("3D環境・ワールド", "Authored Room", &["VRChat", "Udon", "UdonSharp"], "World"),
+            (
+                "3D環境・ワールド",
+                "【販売ワールド】Authored Hotel",
+                &["VRChat", "Udon", "シェーダー", "ギミック"][..],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "【販売ワールド】Authored Bar ギミック シェーダー",
+                &["VRChat", "Udon"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room",
+                &["VRChat", "Udon", "UdonSharp"],
+                "World",
+            ),
             ("3D環境・ワールド", "Authored Room", &["小物"], "World"),
-            ("3D環境・ワールド", "Authored ワールド", &["シェーダー", "小物"], "World"),
+            (
+                "3D環境・ワールド",
+                "Authored ワールド",
+                &["シェーダー", "小物"],
+                "World",
+            ),
             // Built for a world, an avatar or the renderer, whatever the store called it.
-            ("3D環境・ワールド", "Authored Light", &["VRChat", "シェーダー"], "Shader"),
-            ("3D環境・ワールド", "Authored フォグパーティクル", &["VRChat"], "Shader"),
-            ("3D環境・ワールド", "AuthoredVolumetricFog", &["VRChat"], "Shader"),
-            ("3D環境・ワールド", "Authored Table", &["VRChat", "ワールドギミック"], "Udon"),
-            ("3D環境・ワールド", "[CVS2] Authored Car", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "Authored Meter", &["チクワカーシステム"], "Udon"),
-            ("3D環境・ワールド", "【ワールド用】Authored 表示ギミック", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "Authored アバターギミック", &["VRChat"], "Gimmick"),
-            ("3D環境・ワールド", "【VRC向けワールド】Authored", &["VRChat", "ワールドギミック", "Udon"], "World"),
-            ("3D環境・ワールド", "Authored Room", &["VRChat", "VRChatワールド"], "World"),
+            (
+                "3D環境・ワールド",
+                "Authored Light",
+                &["VRChat", "シェーダー"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored フォグパーティクル",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "AuthoredVolumetricFog",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Table",
+                &["VRChat", "ワールドギミック"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "[CVS2] Authored Car",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Meter",
+                &["チクワカーシステム"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "【ワールド用】Authored 表示ギミック",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored アバターギミック",
+                &["VRChat"],
+                "Gimmick",
+            ),
+            (
+                "3D環境・ワールド",
+                "【VRC向けワールド】Authored",
+                &["VRChat", "ワールドギミック", "Udon"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room",
+                &["VRChat", "VRChatワールド"],
+                "World",
+            ),
             // A place keeps its tags to itself, and a word beside "with" is not what is sold.
-            ("3D環境・ワールド", "Authored Hotel【PCVR／Quest】", &["部屋", "ホームワールド", "Udon", "ワールドギミック"], "World"),
-            ("3D環境・ワールド", "Authored Beach Club", &["VRChatワールド", "シェーダー"], "World"),
-            ("3D環境・ワールド", "VRChat World Authored Mansion udon", &["家具", "ワールド", "udon"], "World"),
-            ("3D環境・ワールド", "[Udon] Authored Door", &["Udon", "家具"], "Udon"),
-            ("3D環境・ワールド", "Authored Kotatsu", &["インテリア", "ワールドギミック"], "Udon"),
-            ("3D環境・ワールド", "Authored Clock【VRChat Worldギミック】", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "VRChat World用 Authored Water Shader", &["VRChat"], "Shader"),
-            ("3D環境・ワールド", "Authored アバターペデスタルギミック", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "Authored Tail", &["アバターギミック", "ModularAvatar"], "Gimmick"),
-            ("3D環境・ワールド", "【VRChatアバターギミック】Authored パーティクル", &["VRChat"], "Gimmick"),
-            ("3D環境・ワールド", "VRChat World Authored Heights", &["家具", "ワールドギミック"], "World"),
-            ("3D環境・ワールド", "Authored Cafe with Volumetric Lighting", &["VRChat"], "World"),
-            ("3D環境・ワールド", "【VRCワールド】Authored Stage パーティクル演出", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Authored Room【Udon不使用】", &["VRChat"], "World"),
-            ("3D環境・ワールド", "VRChatワールド軽量化ツール", &["VRChat"], "Tool"),
-            ("3D環境・ワールド", "【Udon】Authored 花火パーティクル", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "プリ機 ワールドギミック Authored", &["インテリア", "ワールド"], "Udon"),
-            ("3D環境・ワールド", "Authored しっぽギミック", &["アバターギミック", "ModularAvatar"], "Gimmick"),
-            ("3D環境・ワールド", "アバター用 Authored ギミック", &["VRChat"], "Gimmick"),
-            ("3D環境・ワールド", "Authored ギミック付き家電", &["VRChat", "ギミック"], "World"),
-            ("3Dツール・システム", "Authored NPC セットアップツール", &["VRChat", "ワールドアセット"], "Udon"),
-            ("3Dツール・システム", "【ワールド用】Authored 時計ギミック", &["VRChat"], "Udon"),
-            ("3Dツール・システム", "Authored Addon", &["VRChat", "VRChatギミック"], "Gimmick"),
-            ("3Dツール・システム", "Authored Scene Cleaner Tool", &["VRChat", "Udon", "エディタ拡張"], "Tool"),
-            ("3Dツール・システム", "Authored Scene Cleaner", &["VRChat", "UdonSharp", "エディタ拡張"], "Tool"),
-            ("3Dツール・システム", "ギミック作成ツール Authored", &["VRChat", "Udon"], "Tool"),
-            ("3Dツール・システム", "Authored 撫でギミック", &["VRChat", "UnityEditor"], "Gimmick"),
-            ("3Dツール・システム", "【MA対応】Authored Tailor", &["VRChat", "ツール"], "Tool"),
-            ("3Dツール・システム", "UdonSharp Refactor Tool", &["VRChat", "UdonSharp"], "Tool"),
-            ("3Dツール・システム", "「Authored つく～る」アバターギミックを作るギミック", &["VRChat", "エディター拡張", "ツール"], "Tool"),
-            ("3Dツール・システム", "【Authored】【ModularAvatar対応】", &["VRChat"], "Gimmick"),
-            ("3Dツール・システム", "Authored VRM Exporter", &["VRChat", "VRMA対応"], "Tool"),
-            ("3Dツール・システム", "Authored Tracker", &["VRChat", "ツール", "ギミック", "ModularAvatar"], "Gimmick"),
-            ("3Dツール・システム", "Authored Mesh", &["VRChat", "便利ツール", "MA対応"], "Tool"),
-            ("3Dモデル（その他）", "Authored Table", &["VRChat", "ワールドギミック"], "Udon"),
-            ("3Dツール・システム", "Authored Fixer", &["VRChat", "ModularAvatar", "Editor拡張"], "Tool"),
-            ("ソフトウェア", "Authored Panel", &["VRChat", "udonギミック"], "Udon"),
-            ("ソフトウェア", "Authored script", &["Udon", "UdonSharp"], "Udon"),
-            ("ソフトウェア", "Authored Kit", &["VRChat", "ModularAvatar対応"], "Gimmick"),
-            ("ソフトウェア", "Authored Light Tool", &["VRChat", "ModularAvatar"], "Tool"),
-            ("ソフトウェア", "Authored Volumetric Light", &["VRChat", "Unity"], "Shader"),
-            ("ソフトウェア", "Authored Camera", &["VRChat", "ギミック"], "Tool"),
-            ("3D小道具", "VRChat Udon用ギミック「Authored」", &["VRChat"], "Udon"),
-            ("3D小道具", "【VRChat向け】Authored Drink【ワールド小物】", &["VRChat", "アバター用小物"], "World"),
-            ("3D小道具", "Authored Coffee セット（Worldギミック）", &["VRChat"], "Udon"),
-            ("3D小道具", "Authored Underworld Props", &["VRChat"], "Accessory"),
-            ("3D小道具", "【ワールド小物】Authored Add-on", &["VRChat"], "World"),
-            ("ゲーム関連商品", "Authored Cafe World Prefab", &["VRChat"], "World"),
-            ("3Dモデル（その他）", "Authored Sign", &["VRChat", "ワールド", "3dモデル 小物"], "World"),
-            ("3Dモデル（その他）", "Authored Cup", &["VRChat", "ワールド", "小物", "アバター"], "Accessory"),
-            ("3Dキャラクター", "Authored専用テクスチャ", &["VRChat"], "Texture"),
-            ("3Dキャラクター", "オリジナル3Dモデル「Authored」", &["VRChat", "テクスチャ"], "Base"),
-            ("3Dキャラクター", "オリジナル3Dモデル「Authored」+追加テクスチャ", &["VRChat"], "Base"),
-            ("3Dキャラクター", "Authored Model with Textures", &["VRChat"], "Base"),
-            ("3Dキャラクター", "Authored専用テクスチャセット", &["VRChat"], "Texture"),
-            ("3Dキャラクター", "Authored Model", &["チクワカーシステム", "VRChat"], "Base"),
-            ("3Dキャラクター", "【販売ワールド】Authored", &["VRChat"], "Base"),
-            ("3Dモデル（その他）", "Authored Pin", &["VRChat", "ワールド固定", "小物"], "Accessory"),
-            ("3D環境・ワールド", "ギミック付き Authored Room", &["VRChat", "Udon"], "World"),
-            ("3D環境・ワールド", "Authored Room ギミック有り", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Authored Room（Udonギミック付き）", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Udon対応 Authored Room", &["Udon"], "World"),
+            (
+                "3D環境・ワールド",
+                "Authored Hotel【PCVR／Quest】",
+                &["部屋", "ホームワールド", "Udon", "ワールドギミック"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Beach Club",
+                &["VRChatワールド", "シェーダー"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "VRChat World Authored Mansion udon",
+                &["家具", "ワールド", "udon"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "[Udon] Authored Door",
+                &["Udon", "家具"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Kotatsu",
+                &["インテリア", "ワールドギミック"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Clock【VRChat Worldギミック】",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "VRChat World用 Authored Water Shader",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored アバターペデスタルギミック",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Tail",
+                &["アバターギミック", "ModularAvatar"],
+                "Gimmick",
+            ),
+            (
+                "3D環境・ワールド",
+                "【VRChatアバターギミック】Authored パーティクル",
+                &["VRChat"],
+                "Gimmick",
+            ),
+            (
+                "3D環境・ワールド",
+                "VRChat World Authored Heights",
+                &["家具", "ワールドギミック"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Cafe with Volumetric Lighting",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "【VRCワールド】Authored Stage パーティクル演出",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room【Udon不使用】",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "VRChatワールド軽量化ツール",
+                &["VRChat"],
+                "Tool",
+            ),
+            (
+                "3D環境・ワールド",
+                "【Udon】Authored 花火パーティクル",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "プリ機 ワールドギミック Authored",
+                &["インテリア", "ワールド"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored しっぽギミック",
+                &["アバターギミック", "ModularAvatar"],
+                "Gimmick",
+            ),
+            (
+                "3D環境・ワールド",
+                "アバター用 Authored ギミック",
+                &["VRChat"],
+                "Gimmick",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored ギミック付き家電",
+                &["VRChat", "ギミック"],
+                "World",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored NPC セットアップツール",
+                &["VRChat", "ワールドアセット"],
+                "Udon",
+            ),
+            (
+                "3Dツール・システム",
+                "【ワールド用】Authored 時計ギミック",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Addon",
+                &["VRChat", "VRChatギミック"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Scene Cleaner Tool",
+                &["VRChat", "Udon", "エディタ拡張"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Scene Cleaner",
+                &["VRChat", "UdonSharp", "エディタ拡張"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "ギミック作成ツール Authored",
+                &["VRChat", "Udon"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored 撫でギミック",
+                &["VRChat", "UnityEditor"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "【MA対応】Authored Tailor",
+                &["VRChat", "ツール"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "UdonSharp Refactor Tool",
+                &["VRChat", "UdonSharp"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "「Authored つく～る」アバターギミックを作るギミック",
+                &["VRChat", "エディター拡張", "ツール"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "【Authored】【ModularAvatar対応】",
+                &["VRChat"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored VRM Exporter",
+                &["VRChat", "VRMA対応"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Tracker",
+                &["VRChat", "ツール", "ギミック", "ModularAvatar"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Mesh",
+                &["VRChat", "便利ツール", "MA対応"],
+                "Tool",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored Table",
+                &["VRChat", "ワールドギミック"],
+                "Udon",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Fixer",
+                &["VRChat", "ModularAvatar", "Editor拡張"],
+                "Tool",
+            ),
+            (
+                "ソフトウェア",
+                "Authored Panel",
+                &["VRChat", "udonギミック"],
+                "Udon",
+            ),
+            (
+                "ソフトウェア",
+                "Authored script",
+                &["Udon", "UdonSharp"],
+                "Udon",
+            ),
+            (
+                "ソフトウェア",
+                "Authored Kit",
+                &["VRChat", "ModularAvatar対応"],
+                "Gimmick",
+            ),
+            (
+                "ソフトウェア",
+                "Authored Light Tool",
+                &["VRChat", "ModularAvatar"],
+                "Tool",
+            ),
+            (
+                "ソフトウェア",
+                "Authored Volumetric Light",
+                &["VRChat", "Unity"],
+                "Shader",
+            ),
+            (
+                "ソフトウェア",
+                "Authored Camera",
+                &["VRChat", "ギミック"],
+                "Tool",
+            ),
+            (
+                "3D小道具",
+                "VRChat Udon用ギミック「Authored」",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D小道具",
+                "【VRChat向け】Authored Drink【ワールド小物】",
+                &["VRChat", "アバター用小物"],
+                "World",
+            ),
+            (
+                "3D小道具",
+                "Authored Coffee セット（Worldギミック）",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D小道具",
+                "Authored Underworld Props",
+                &["VRChat"],
+                "Accessory",
+            ),
+            (
+                "3D小道具",
+                "【ワールド小物】Authored Add-on",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "ゲーム関連商品",
+                "Authored Cafe World Prefab",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored Sign",
+                &["VRChat", "ワールド", "3dモデル 小物"],
+                "World",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored Cup",
+                &["VRChat", "ワールド", "小物", "アバター"],
+                "Accessory",
+            ),
+            (
+                "3Dキャラクター",
+                "Authored専用テクスチャ",
+                &["VRChat"],
+                "Texture",
+            ),
+            (
+                "3Dキャラクター",
+                "オリジナル3Dモデル「Authored」",
+                &["VRChat", "テクスチャ"],
+                "Base",
+            ),
+            (
+                "3Dキャラクター",
+                "オリジナル3Dモデル「Authored」+追加テクスチャ",
+                &["VRChat"],
+                "Base",
+            ),
+            (
+                "3Dキャラクター",
+                "Authored Model with Textures",
+                &["VRChat"],
+                "Base",
+            ),
+            (
+                "3Dキャラクター",
+                "Authored専用テクスチャセット",
+                &["VRChat"],
+                "Texture",
+            ),
+            (
+                "3Dキャラクター",
+                "Authored Model",
+                &["チクワカーシステム", "VRChat"],
+                "Base",
+            ),
+            (
+                "3Dキャラクター",
+                "【販売ワールド】Authored",
+                &["VRChat"],
+                "Base",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored Pin",
+                &["VRChat", "ワールド固定", "小物"],
+                "Accessory",
+            ),
+            (
+                "3D環境・ワールド",
+                "ギミック付き Authored Room",
+                &["VRChat", "Udon"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room ギミック有り",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room（Udonギミック付き）",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Udon対応 Authored Room",
+                &["Udon"],
+                "World",
+            ),
             ("3D環境・ワールド", "モダン Authored スツール", &[], "World"),
-            ("3D環境・ワールド", "Authored ツールームアパート", &[], "World"),
+            (
+                "3D環境・ワールド",
+                "Authored ツールームアパート",
+                &[],
+                "World",
+            ),
             ("3D環境・ワールド", "Room【設定ツール同梱】", &[], "World"),
-            ("3D環境・ワールド", "Room Udon ギミック付き", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Room シェーダー同梱", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Room with Gimmicks", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Authored Solar System", &["VRChat"], "World"),
-            ("3D環境・ワールド", "Authored 雨粒シェーダー", &["VRChat"], "Shader"),
-            ("3D環境・ワールド", "AuthoredWaterShader", &["VRChat"], "Shader"),
-            ("3D環境・ワールド", "【VRC Udonギミック】Authored Darts", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "Authored Slot【UdonChips】", &["VRChat"], "Udon"),
-            ("3D環境・ワールド", "【VRChatワールドギミック】Authored Camera", &["VRChat", "Udon"], "Udon"),
-            ("3D環境・ワールド", "[VRCワールド] AUTHORED CAR SYSTEM", &["udon"], "Udon"),
-            ("3D環境・ワールド", "Authored Lift for VRChat Worlds", &["Udon"], "Udon"),
-            ("3D環境・ワールド", "ワールド制作支援ツール", &["VRChat"], "Tool"),
-            ("3Dツール・システム", "Authored 影シェーダー【導入ツール同梱】", &["VRChat"], "Shader"),
-            ("3Dツール・システム", "シェーダー変換ツール", &["VRChat"], "Tool"),
-            ("3Dツール・システム", "Authored 音ギミック", &["VRChat", "シェーダー"], "Gimmick"),
-            ("3Dツール・システム", "AuthoredLens", &["VRChat", "VRChatギミック"], "Gimmick"),
-            ("3Dツール・システム", "AuthoredMat", &["VRChat", "シェーダー", "VRChatギミック"], "Shader"),
-            ("3Dツール・システム", "AuthoredBed", &["VRChat", "Udon", "ギミック"], "Udon"),
-            ("3Dツール・システム", "AuthoredTool", &["VRChat", "ツール", "ギミック"], "Tool"),
-            ("3Dツール・システム", "AuthoredKit", &["VRChat", "エディタ拡張", "ギミック"], "Tool"),
-            ("3Dツール・システム", "Authored Fitter", &["VRChat", "衣装", "テクスチャ"], "Tool"),
-            ("3Dモーション・アニメーション", "Authored AFK", &["VRChat", "衣装", "シェーダー"], "Motion"),
-            ("3Dテクスチャ", "Authored Eye", &["VRChat", "モーション", "シェーダー"], "Texture"),
+            (
+                "3D環境・ワールド",
+                "Room Udon ギミック付き",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Room シェーダー同梱",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Room with Gimmicks",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Solar System",
+                &["VRChat"],
+                "World",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored 雨粒シェーダー",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "AuthoredWaterShader",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3D環境・ワールド",
+                "【VRC Udonギミック】Authored Darts",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Slot【UdonChips】",
+                &["VRChat"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "【VRChatワールドギミック】Authored Camera",
+                &["VRChat", "Udon"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "[VRCワールド] AUTHORED CAR SYSTEM",
+                &["udon"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Lift for VRChat Worlds",
+                &["Udon"],
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                "ワールド制作支援ツール",
+                &["VRChat"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored 影シェーダー【導入ツール同梱】",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3Dツール・システム",
+                "シェーダー変換ツール",
+                &["VRChat"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored 音ギミック",
+                &["VRChat", "シェーダー"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "AuthoredLens",
+                &["VRChat", "VRChatギミック"],
+                "Gimmick",
+            ),
+            (
+                "3Dツール・システム",
+                "AuthoredMat",
+                &["VRChat", "シェーダー", "VRChatギミック"],
+                "Shader",
+            ),
+            (
+                "3Dツール・システム",
+                "AuthoredBed",
+                &["VRChat", "Udon", "ギミック"],
+                "Udon",
+            ),
+            (
+                "3Dツール・システム",
+                "AuthoredTool",
+                &["VRChat", "ツール", "ギミック"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "AuthoredKit",
+                &["VRChat", "エディタ拡張", "ギミック"],
+                "Tool",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Fitter",
+                &["VRChat", "衣装", "テクスチャ"],
+                "Tool",
+            ),
+            (
+                "3Dモーション・アニメーション",
+                "Authored AFK",
+                &["VRChat", "衣装", "シェーダー"],
+                "Motion",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Eye",
+                &["VRChat", "モーション", "シェーダー"],
+                "Texture",
+            ),
             ("3Dテクスチャ", "Authored Eye", &[], "Texture"),
-            ("3Dテクスチャ", "AuthoredShader専用マテリアル", &["VRChat", "シェーダー"], "Texture"),
-            ("3Dテクスチャ", "Authored Skin シェーダー", &["VRChat"], "Shader"),
-            ("3Dテクスチャ", "Authored Frost Glass Shader", &["VRChat", "Shader"], "Shader"),
-            ("3Dテクスチャ", "Authored シェーダーに使用できるマスクテクスチャ", &["VRChat"], "Texture"),
-            ("3Dテクスチャ", "Authored Eye", &["VRChat", "Shader"], "Texture"),
-            ("3Dテクスチャ", "Authored Eye Add-on", &["ソフトウェア"], "Texture"),
+            (
+                "3Dテクスチャ",
+                "AuthoredShader専用マテリアル",
+                &["VRChat", "シェーダー"],
+                "Texture",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Skin シェーダー",
+                &["VRChat"],
+                "Shader",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Frost Glass Shader",
+                &["VRChat", "Shader"],
+                "Shader",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored シェーダーに使用できるマスクテクスチャ",
+                &["VRChat"],
+                "Texture",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Eye",
+                &["VRChat", "Shader"],
+                "Texture",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Eye Add-on",
+                &["ソフトウェア"],
+                "Texture",
+            ),
             ("3D衣装", "Authored Dress Add-on", &[], "Clothes"),
-            ("3D衣装", "Authored Dress", &["VRChat", "ソフトウェア"], "Clothes"),
+            (
+                "3D衣装",
+                "Authored Dress",
+                &["VRChat", "ソフトウェア"],
+                "Clothes",
+            ),
             ("3D衣装", "着せ替え エディタ拡張", &["VRChat"], "Tool"),
-            ("3D靴", "Authored Boots", &["VRChat", "シェーダー"], "Clothes"),
+            (
+                "3D靴",
+                "Authored Boots",
+                &["VRChat", "シェーダー"],
+                "Clothes",
+            ),
             ("3D髪型", "Authored Bob", &["VRChat", "衣装"], "Hair"),
-            ("3D装飾品", "Authored Ring", &["VRChat", "テクスチャ"], "Accessory"),
-            ("3D小道具", "Authored Cup", &["VRChat", "ワールド"], "Accessory"),
+            (
+                "3D装飾品",
+                "Authored Ring",
+                &["VRChat", "テクスチャ"],
+                "Accessory",
+            ),
+            (
+                "3D小道具",
+                "Authored Cup",
+                &["VRChat", "ワールド"],
+                "Accessory",
+            ),
             // A generic category leaves the type to the tags.
-            ("3Dモデル（その他）", "Authored Pin", &["VRChat", "アクセサリー"], "Accessory"),
-            ("3Dモデル（その他）", "【販売ワールド】Authored Room", &["VRChat", "Udon"], "World"),
-            ("3Dモデル（その他）", "Authored Cape", &["VRChat", "世界観衣装"], "Clothes"),
-            ("3Dモデル（その他）", "Authored プロポーズリング", &["VRChat"], "NonVRChat"),
+            (
+                "3Dモデル（その他）",
+                "Authored Pin",
+                &["VRChat", "アクセサリー"],
+                "Accessory",
+            ),
+            (
+                "3Dモデル（その他）",
+                "【販売ワールド】Authored Room",
+                &["VRChat", "Udon"],
+                "World",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored Cape",
+                &["VRChat", "世界観衣装"],
+                "Clothes",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored プロポーズリング",
+                &["VRChat"],
+                "NonVRChat",
+            ),
             // It is 3D data already, so these need no VRChat or Unity word.
-            ("3Dモデル（その他）", "Authored Walk", &["アニメーション"], "Motion"),
-            ("3Dモデル（その他）", "Authored World 紹介動画あり", &[], "World"),
+            (
+                "3Dモデル（その他）",
+                "Authored Walk",
+                &["アニメーション"],
+                "Motion",
+            ),
+            (
+                "3Dモデル（その他）",
+                "Authored World 紹介動画あり",
+                &[],
+                "World",
+            ),
         ] {
             let source = booth_listing("3Dモデル", leaf, title, tags);
-            assert_eq!(infer_product_category(&source)["category"], expected, "{leaf} {title}");
+            assert_eq!(
+                infer_product_category(&source)["category"],
+                expected,
+                "{leaf} {title}"
+            );
         }
         // Declared software in tools and motion categories still decides, as for Base.
         assert_eq!(
-            infer_product_category(&booth_listing("3Dモデル", "3Dモーション・アニメーション", "Blenderアドオン Authored", &["Blender", "Unity"]))["category"],
+            infer_product_category(&booth_listing(
+                "3Dモデル",
+                "3Dモーション・アニメーション",
+                "Blenderアドオン Authored",
+                &["Blender", "Unity"]
+            ))["category"],
             "Tool"
         );
         // A tool outside any VRChat or Unity context stays out of the default list.
-        let result = infer_product_category(&booth_listing("3Dモデル", "3Dツール・システム", "Authored Blender Tool", &["Blender"]));
+        let result = infer_product_category(&booth_listing(
+            "3Dモデル",
+            "3Dツール・システム",
+            "Authored Blender Tool",
+            &["Blender"],
+        ));
         assert_eq!(result["category"], "NonVRChat");
         assert_eq!(result["scope"], "unknown");
         // The store's own 3D category stands against a tag for what its sources need.
         for (leaf, title, tags, expected, scope) in [
-            ("3D衣装", "VRChat向け Authored Dress", &["Photoshop"][..], "Clothes", "vrchat"),
-            ("3D衣装", "Authored Dress", &["Photoshop", "Windows"], "Clothes", "unknown"),
-            ("3Dテクスチャ", "Authored Eye", &["Photoshop"], "Texture", "unknown"),
-            ("3D環境・ワールド", "Authored Room", &["Windows"], "World", "unknown"),
-            ("3Dキャラクター", "VRChat向け Authored Model", &["Photoshop"], "Base", "vrchat"),
+            (
+                "3D衣装",
+                "VRChat向け Authored Dress",
+                &["Photoshop"][..],
+                "Clothes",
+                "vrchat",
+            ),
+            (
+                "3D衣装",
+                "Authored Dress",
+                &["Photoshop", "Windows"],
+                "Clothes",
+                "unknown",
+            ),
+            (
+                "3Dテクスチャ",
+                "Authored Eye",
+                &["Photoshop"],
+                "Texture",
+                "unknown",
+            ),
+            (
+                "3D環境・ワールド",
+                "Authored Room",
+                &["Windows"],
+                "World",
+                "unknown",
+            ),
+            (
+                "3Dキャラクター",
+                "VRChat向け Authored Model",
+                &["Photoshop"],
+                "Base",
+                "vrchat",
+            ),
             // A title naming the application is not about source files.
-            ("3Dモーション・アニメーション", "After Effects用 Authored Preset", &[], "Motion", "other"),
+            (
+                "3Dモーション・アニメーション",
+                "After Effects用 Authored Preset",
+                &[],
+                "Motion",
+                "other",
+            ),
             // A tool has to show where it runs, whatever a title separates it into.
-            ("3Dツール・システム", "Authored Tool", &["Unity", "AE"], "NonVRChat", "other"),
-            ("3Dツール・システム", "Authored Blender Shader", &["Blender"], "NonVRChat", "unknown"),
-            ("3Dツール・システム", "Authored Glow シェーダー", &["AfterEffects"], "NonVRChat", "other"),
+            (
+                "3Dツール・システム",
+                "Authored Tool",
+                &["Unity", "AE"],
+                "NonVRChat",
+                "other",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Blender Shader",
+                &["Blender"],
+                "NonVRChat",
+                "unknown",
+            ),
+            (
+                "3Dツール・システム",
+                "Authored Glow シェーダー",
+                &["AfterEffects"],
+                "NonVRChat",
+                "other",
+            ),
         ] {
             let result = infer_product_category(&booth_listing("3Dモデル", leaf, title, tags));
             assert_eq!(result["category"], expected, "{leaf} {title}");
             assert_eq!(result["scope"], scope, "{leaf} {title}");
         }
         // A description calling a garment an add-on is not defining software.
-        let swimsuit = infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3D衣装","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceDescription":"Authored用の水着アドオンです。"}));
+        let swimsuit = infer_product_category(
+            &json!({"store":"BOOTH","sourceCategory":{"name":"3D衣装","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceDescription":"Authored用の水着アドオンです。"}),
+        );
         assert_eq!(swimsuit["category"], "Clothes");
         // Evidence is what decided, and a listing with no category has none to cite.
-        let titled = infer_product_category(&json!({"store":"BOOTH","sourceTitle":"【販売ワールド】Authored"}));
+        let titled = infer_product_category(
+            &json!({"store":"BOOTH","sourceTitle":"【販売ワールド】Authored"}),
+        );
         assert_eq!(titled["category"], "World");
-        assert_eq!(titled["evidence"], json!([{"field":"sourceTitle","value":"【販売ワールド】Authored"}]));
-        let shader = infer_product_category(&booth_listing("3Dモデル", "3D環境・ワールド", "Authored シェーダー", &["VRChat"]));
-        assert_eq!(shader["evidence"], json!([{"field":"sourceTitle","value":"Authored シェーダー"}]));
-        let world = infer_product_category(&booth_listing("3Dモデル", "3D環境・ワールド", "Authored", &["Udon"]));
-        assert_eq!(world["evidence"], json!([{"field":"sourceCategory.name","value":"3D環境・ワールド"}]));
+        assert_eq!(
+            titled["evidence"],
+            json!([{"field":"sourceTitle","value":"【販売ワールド】Authored"}])
+        );
+        let shader = infer_product_category(&booth_listing(
+            "3Dモデル",
+            "3D環境・ワールド",
+            "Authored シェーダー",
+            &["VRChat"],
+        ));
+        assert_eq!(
+            shader["evidence"],
+            json!([{"field":"sourceTitle","value":"Authored シェーダー"}])
+        );
+        let world = infer_product_category(&booth_listing(
+            "3Dモデル",
+            "3D環境・ワールド",
+            "Authored",
+            &["Udon"],
+        ));
+        assert_eq!(
+            world["evidence"],
+            json!([{"field":"sourceCategory.name","value":"3D環境・ワールド"}])
+        );
         // A decision from a tag cites the tag that made it.
         for (leaf, tags, tag, kind) in [
-            ("3D環境・ワールド", vec!["VRChat", "ワールドギミック"], "ワールドギミック", "Udon"),
-            ("3D環境・ワールド", vec!["VRChat", "チクワカーシステム"], "チクワカーシステム", "Udon"),
-            ("ソフトウェア", vec!["VRChat", "ModularAvatar対応"], "ModularAvatar対応", "Gimmick"),
+            (
+                "3D環境・ワールド",
+                vec!["VRChat", "ワールドギミック"],
+                "ワールドギミック",
+                "Udon",
+            ),
+            (
+                "3D環境・ワールド",
+                vec!["VRChat", "チクワカーシステム"],
+                "チクワカーシステム",
+                "Udon",
+            ),
+            (
+                "ソフトウェア",
+                vec!["VRChat", "ModularAvatar対応"],
+                "ModularAvatar対応",
+                "Gimmick",
+            ),
             ("ソフトウェア", vec!["VRChat", "U#"], "U#", "Udon"),
         ] {
-            let result = infer_product_category(&booth_listing("3Dモデル", leaf, "Authored", &tags));
+            let result =
+                infer_product_category(&booth_listing("3Dモデル", leaf, "Authored", &tags));
             assert_eq!(result["category"], kind, "{leaf}");
             assert_eq!(result["basis"], "sourceTags", "{leaf}");
-            assert_eq!(result["evidence"], json!([{"field":"sourceTags","value":tag}]), "{leaf}");
+            assert_eq!(
+                result["evidence"],
+                json!([{"field":"sourceTags","value":tag}]),
+                "{leaf}"
+            );
         }
     }
 
     #[test]
     fn stores_other_than_booth_keep_their_rules() {
         for (source, expected) in [
-            (json!({"provider":"gumroad","sourceTitle":"Authored","sourceDescription":"VRChat outfit for Authored."}), "Clothes"),
-            (json!({"provider":"jinxxy","sourceTitle":"Authored","sourceDescription":"A cute outfit for Authored."}), "Clothes"),
-            (json!({"provider":"jinxxy","sourceTitle":"Authored World VFX"}), "World"),
-            (json!({"provider":"local","sourceTitle":"Authored Walk Animation"}), "Motion"),
-            (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"VRChat Authored","sourceTags":["Udon"]}), "Udon"),
-            (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"Authored"}), "NonVRChat"),
-            (json!({"provider":"gumroad","sourceTitle":"VRChat Authored","sourceTags":["ワールドギミック"]}), "Gimmick"),
-            (json!({"provider":"jinxxy","sourceTitle":"[CVS2] Authored"}), "Gimmick"),
+            (
+                json!({"provider":"gumroad","sourceTitle":"Authored","sourceDescription":"VRChat outfit for Authored."}),
+                "Clothes",
+            ),
+            (
+                json!({"provider":"jinxxy","sourceTitle":"Authored","sourceDescription":"A cute outfit for Authored."}),
+                "Clothes",
+            ),
+            (
+                json!({"provider":"jinxxy","sourceTitle":"Authored World VFX"}),
+                "World",
+            ),
+            (
+                json!({"provider":"local","sourceTitle":"Authored Walk Animation"}),
+                "Motion",
+            ),
+            (
+                json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"VRChat Authored","sourceTags":["Udon"]}),
+                "Udon",
+            ),
+            (
+                json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"Authored"}),
+                "NonVRChat",
+            ),
+            (
+                json!({"provider":"gumroad","sourceTitle":"VRChat Authored","sourceTags":["ワールドギミック"]}),
+                "Gimmick",
+            ),
+            (
+                json!({"provider":"jinxxy","sourceTitle":"[CVS2] Authored"}),
+                "Gimmick",
+            ),
         ] {
-            assert_eq!(infer_product_category(&source)["category"], expected, "{source}");
+            assert_eq!(
+                infer_product_category(&source)["category"],
+                expected,
+                "{source}"
+            );
         }
     }
 
     #[test]
     fn tags_outside_booth_3d_categories_need_vrchat_or_unity_evidence() {
         for (parent, leaf, title, tags, expected) in [
-            ("素材データ", "背景画像", "【動く背景】Authored Room", &["アニメーション", "配信背景"][..], "NonVRChat"),
-            ("映像作品", "アニメーション", "Authored 第1話 DVD", &["アニメーション"], "NonVRChat"),
-            ("映像作品", "アニメーション", "Authored Blu-ray", &[], "NonVRChat"),
-            ("素材データ", "素材（その他）", "Authored Loop", &["アニメーション", "モーショングラフィックス", "VJ素材"], "NonVRChat"),
-            ("素材データ", "素材（その他）", "Authored プリセット", &["モーション", "プリセット"], "NonVRChat"),
-            ("イラスト", "メイキング・講座", "Authored 講座", &["アニメーション"], "NonVRChat"),
-            ("ファッション", "パーカー", "Authored Hoodie", &["衣装"], "NonVRChat"),
-            ("アクセサリー", "ペンダント", "Authored Pendant", &[], "NonVRChat"),
-            ("素材データ", "BGM素材", "Authored BGM", &["異世界"], "NonVRChat"),
+            (
+                "素材データ",
+                "背景画像",
+                "【動く背景】Authored Room",
+                &["アニメーション", "配信背景"][..],
+                "NonVRChat",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "Authored 第1話 DVD",
+                &["アニメーション"],
+                "NonVRChat",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "Authored Blu-ray",
+                &[],
+                "NonVRChat",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored Loop",
+                &["アニメーション", "モーショングラフィックス", "VJ素材"],
+                "NonVRChat",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored プリセット",
+                &["モーション", "プリセット"],
+                "NonVRChat",
+            ),
+            (
+                "イラスト",
+                "メイキング・講座",
+                "Authored 講座",
+                &["アニメーション"],
+                "NonVRChat",
+            ),
+            (
+                "ファッション",
+                "パーカー",
+                "Authored Hoodie",
+                &["衣装"],
+                "NonVRChat",
+            ),
+            (
+                "アクセサリー",
+                "ペンダント",
+                "Authored Pendant",
+                &[],
+                "NonVRChat",
+            ),
+            (
+                "素材データ",
+                "BGM素材",
+                "Authored BGM",
+                &["異世界"],
+                "NonVRChat",
+            ),
             // The motion data sellers file there keeps its place.
-            ("素材データ", "素材（その他）", "Authored Idle", &["VRChat", "アニメーション", "モーション素材"], "Motion"),
-            ("映像作品", "アニメーション", "VRC用 Authored Motion", &["VRChat", "Emote"], "Motion"),
-            ("映像作品", "アニメーション", "Authored Animation Pack", &["VRChat"], "Motion"),
-            ("映像作品", "アニメーション", "Authored 表情アニメーション", &["Unity", "アニメーション"], "Motion"),
-            ("ゲーム", "ゲーム関連商品", "Authored Combo", &["VRChat", "アニメーション", "ツール"], "Motion"),
-            ("素材データ", "素材（その他）", "Authored Idle", &["VRChat", "エモート"], "Motion"),
-            ("素材データ", "素材（その他）", "Authored Set", &["VRChat", "ポーズ集"], "Motion"),
-            ("素材データ", "素材（その他）", "Authored ポーズ集", &["イラスト用"], "NonVRChat"),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored Idle",
+                &["VRChat", "アニメーション", "モーション素材"],
+                "Motion",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "VRC用 Authored Motion",
+                &["VRChat", "Emote"],
+                "Motion",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "Authored Animation Pack",
+                &["VRChat"],
+                "Motion",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "Authored 表情アニメーション",
+                &["Unity", "アニメーション"],
+                "Motion",
+            ),
+            (
+                "ゲーム",
+                "ゲーム関連商品",
+                "Authored Combo",
+                &["VRChat", "アニメーション", "ツール"],
+                "Motion",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored Idle",
+                &["VRChat", "エモート"],
+                "Motion",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored Set",
+                &["VRChat", "ポーズ集"],
+                "Motion",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored ポーズ集",
+                &["イラスト用"],
+                "NonVRChat",
+            ),
             // Particle sellers tag アニメーション and every platform; none of that is the type.
-            ("素材データ", "素材（その他）", "【Unity/VRChat】Authored Fire", &["アニメーション", "Unity", "パーティクル", "VRChat"], "NonVRChat"),
-            ("映像作品", "アニメーション", "【Unity/VRChat】World of Authored", &["アニメーション", "Unity", "エフェクト", "vrchat world"], "NonVRChat"),
-            ("映像作品", "アニメーション", "【VRChatライブ映像】Authored", &["VRChat"], "NonVRChat"),
+            (
+                "素材データ",
+                "素材（その他）",
+                "【Unity/VRChat】Authored Fire",
+                &["アニメーション", "Unity", "パーティクル", "VRChat"],
+                "NonVRChat",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "【Unity/VRChat】World of Authored",
+                &["アニメーション", "Unity", "エフェクト", "vrchat world"],
+                "NonVRChat",
+            ),
+            (
+                "映像作品",
+                "アニメーション",
+                "【VRChatライブ映像】Authored",
+                &["VRChat"],
+                "NonVRChat",
+            ),
             // Other types still come from their tags once the scope is explicit.
-            ("ゲーム", "ゲーム関連商品", "Authored Lift script for VRChat Worlds", &["VRChat", "Udon"], "Udon"),
-            ("ゲーム", "ゲーム関連商品", "【販売ワールド】Authored Room", &["VRChat", "Udon"], "World"),
-            ("素材データ", "素材（その他）", "Authored Water", &["Unity", "シェーダー"], "Shader"),
-            ("素材データ", "背景画像", "Authored Skybox", &["VRChat", "ワールド"], "World"),
-            ("素材データ", "背景画像", "Authored Eye", &["VRChat", "テクスチャ"], "Texture"),
+            (
+                "ゲーム",
+                "ゲーム関連商品",
+                "Authored Lift script for VRChat Worlds",
+                &["VRChat", "Udon"],
+                "Udon",
+            ),
+            (
+                "ゲーム",
+                "ゲーム関連商品",
+                "【販売ワールド】Authored Room",
+                &["VRChat", "Udon"],
+                "World",
+            ),
+            (
+                "素材データ",
+                "素材（その他）",
+                "Authored Water",
+                &["Unity", "シェーダー"],
+                "Shader",
+            ),
+            (
+                "素材データ",
+                "背景画像",
+                "Authored Skybox",
+                &["VRChat", "ワールド"],
+                "World",
+            ),
+            (
+                "素材データ",
+                "背景画像",
+                "Authored Eye",
+                &["VRChat", "テクスチャ"],
+                "Texture",
+            ),
         ] {
             let source = booth_listing(parent, leaf, title, tags);
-            assert_eq!(infer_product_category(&source)["category"], expected, "{leaf} {title}");
+            assert_eq!(
+                infer_product_category(&source)["category"],
+                expected,
+                "{leaf} {title}"
+            );
         }
         // A VRChat video is no asset type, and its VRChat word keeps it in the default list.
-        let video = infer_product_category(&booth_listing("映像作品", "アニメーション", "【VRChatライブ映像】Authored", &["VRChat"]));
+        let video = infer_product_category(&booth_listing(
+            "映像作品",
+            "アニメーション",
+            "【VRChatライブ映像】Authored",
+            &["VRChat"],
+        ));
         assert_eq!(video["category"], "NonVRChat");
         assert_eq!(video["scope"], "vrchat");
     }
@@ -2935,7 +3979,9 @@ mod tests {
             ("VRChat用 Authored ポーズ集", "Motion"),
         ] {
             assert_eq!(
-                infer_product_category(&json!({"store":"BOOTH","sourceTitle":title,"publicPageAvailability":"unavailable"}))["category"],
+                infer_product_category(
+                    &json!({"store":"BOOTH","sourceTitle":title,"publicPageAvailability":"unavailable"})
+                )["category"],
                 expected,
                 "{title}"
             );
@@ -2949,7 +3995,9 @@ mod tests {
             "VRChat 向けの小物です。ヘアゴムとアクセサリーがセットです。",
             "Includes a texture, a tool and a world prefab.",
         ] {
-            let result = infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description}));
+            let result = infer_product_category(
+                &json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description}),
+            );
             assert_eq!(result["category"], "NonVRChat", "{description}");
             // It stays in the default list as Unclassified, because it says VRChat.
             assert_eq!(result["scope"], "vrchat", "{description}");
@@ -2959,7 +4007,9 @@ mod tests {
             ("Unity editor tool for avatars.", "Tool"),
         ] {
             assert_eq!(
-                infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description}))["category"],
+                infer_product_category(
+                    &json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description})
+                )["category"],
                 expected,
                 "{description}"
             );
@@ -3151,38 +4201,73 @@ mod tests {
         let options = owned_base_options(&products);
         assert_eq!(options.len(), 6);
         for product in &products[..6] {
-            assert!(options.iter().any(|option| option["id"] == format!("product:{}", product["id"].as_str().unwrap())));
+            assert!(options.iter().any(
+                |option| option["id"] == format!("product:{}", product["id"].as_str().unwrap())
+            ));
         }
         for id in ["authored-wrapper", "authored-ambiguous", "authored-bundle"] {
-            let option = options.iter().find(|option| option["productId"] == id).unwrap();
+            let option = options
+                .iter()
+                .find(|option| option["productId"] == id)
+                .unwrap();
             assert!(!option["displayName"].as_str().unwrap().is_empty());
             assert_eq!(option["englishName"], "");
             assert_ne!(option["nameKind"], "single");
         }
-        let latin = options.iter().find(|option| option["productId"] == "authored-latin").unwrap();
+        let latin = options
+            .iter()
+            .find(|option| option["productId"] == "authored-latin")
+            .unwrap();
         assert_eq!(latin["displayName"], "Ren♡Ai");
         assert_eq!(latin["englishNameStatus"], "sourceTitleSpelling");
-        assert!(options.iter().all(|option| option["entitlementEstablished"] == false));
+        assert!(options
+            .iter()
+            .all(|option| option["entitlementEstablished"] == false));
     }
 
     #[test]
     fn public_identity_presentation_corrections_never_spread_to_similar_products() {
         for (id, source, expected) in [
-            ("8547624", "銀髪スーツの悪魔 メイネーラ VRChat向けオリジナル3Dアバター #e62f8b", "メイネーラ"),
-            ("4309253", "ブルーアーカイブ 二次創作3Dアバター 棗 イロハ", "棗 イロハ"),
+            (
+                "8547624",
+                "銀髪スーツの悪魔 メイネーラ VRChat向けオリジナル3Dアバター #e62f8b",
+                "メイネーラ",
+            ),
+            (
+                "4309253",
+                "ブルーアーカイブ 二次創作3Dアバター 棗 イロハ",
+                "棗 イロハ",
+            ),
         ] {
-            let options = owned_base_options(&[json!({"id":id,"category":"Base","sourceTitle":source})]);
+            let options =
+                owned_base_options(&[json!({"id":id,"category":"Base","sourceTitle":source})]);
             assert_eq!(options[0]["id"], format!("product:{id}"));
             assert_eq!(options[0]["officialName"], expected);
-            assert!(matches!(options[0]["englishNameStatus"].as_str(), Some("romanizationFallback" | "unresolvedReading")));
-            assert_eq!(options[0]["englishNameEvidence"]["kind"], "presentationFallback");
-            assert_ne!(parsed_product_avatar_label("authored-other", source).original, expected);
+            assert!(matches!(
+                options[0]["englishNameStatus"].as_str(),
+                Some("romanizationFallback" | "unresolvedReading")
+            ));
+            assert_eq!(
+                options[0]["englishNameEvidence"]["kind"],
+                "presentationFallback"
+            );
+            assert_ne!(
+                parsed_product_avatar_label("authored-other", source).original,
+                expected
+            );
         }
-        assert_eq!(parsed_product_avatar_label("8547624", "Authored other name").original, "Authored other name");
-        let label = owned_base_options(&[json!({"id":"authored-nanase","category":"Base","sourceTitle":"【VRChat想定 オリジナル3Dモデル『ナナセ・ノワール -Nanase Noir-』Gen3.0"})]);
-        assert_eq!(label[0]["displayName"], "ナナセ・ノワール / Nanase Noir (Gen3.0)");
+        assert_eq!(
+            parsed_product_avatar_label("8547624", "Authored other name").original,
+            "Authored other name"
+        );
+        let label = owned_base_options(&[
+            json!({"id":"authored-nanase","category":"Base","sourceTitle":"【VRChat想定 オリジナル3Dモデル『ナナセ・ノワール -Nanase Noir-』Gen3.0"}),
+        ]);
+        assert_eq!(
+            label[0]["displayName"],
+            "ナナセ・ノワール / Nanase Noir (Gen3.0)"
+        );
     }
-
 
     #[test]
     fn bundled_identities_are_unique_and_have_public_provenance() {

@@ -350,18 +350,36 @@ impl RequestStore {
                 Err(_) => {
                     // Keep unknown/corrupt dedupe evidence intact. It must neither
                     // authorize cleanup/replay nor disable unrelated requests.
-                    let Some(id) = raw["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok()) else { continue };
+                    let Some(id) = raw["id"]
+                        .as_str()
+                        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                    else {
+                        continue;
+                    };
                     for _ in 0..3 {
-                        if self.catalogue.get(KIND, id)?.as_ref() != Some(&raw) { break; }
-                        let Some(before) = self.catalogue.get("job", id)? else { break };
-                        if before["type"] != "unity:import" || !matches!(before["state"].as_str(), Some("queued" | "running")) { break; }
+                        if self.catalogue.get(KIND, id)?.as_ref() != Some(&raw) {
+                            break;
+                        }
+                        let Some(before) = self.catalogue.get("job", id)? else {
+                            break;
+                        };
+                        if before["type"] != "unity:import"
+                            || !matches!(before["state"].as_str(), Some("queued" | "running"))
+                        {
+                            break;
+                        }
                         let mut job = before.clone();
                         job["state"] = json!("needsAction");
                         job["errorCode"] = json!("UNITY_REQUEST_INVALID");
                         if self.catalogue.put_many_if_unchanged(
                             vec![("job".into(), id.into(), job)],
-                            vec![(KIND.into(), id.into(), Some(raw.clone())), ("job".into(), id.into(), Some(before))],
-                        )? { break; }
+                            vec![
+                                (KIND.into(), id.into(), Some(raw.clone())),
+                                ("job".into(), id.into(), Some(before)),
+                            ],
+                        )? {
+                            break;
+                        }
                     }
                 }
             }
@@ -370,15 +388,25 @@ impl RequestStore {
     }
 
     pub fn pending(&self) -> Result<Vec<RequestRecord>> {
-        Ok(self.readable_records()?.into_iter().filter(|record| !terminal(&record.phase)).collect())
+        Ok(self
+            .readable_records()?
+            .into_iter()
+            .filter(|record| !terminal(&record.phase))
+            .collect())
     }
 
     /// Startup-only cleanup candidates; terminal receipts remain eligible.
     /// The caller owns filesystem cleanup and persists snapshot_removed after success.
     pub fn cleanup_pending(&self) -> Result<Vec<RequestRecord>> {
-        Ok(self.readable_records()?.into_iter().filter(|record|
-            self.is_local(record) && !record.snapshot_removed && record.snapshot_cleanup_proved()
-        ).collect())
+        Ok(self
+            .readable_records()?
+            .into_iter()
+            .filter(|record| {
+                self.is_local(record)
+                    && !record.snapshot_removed
+                    && record.snapshot_cleanup_proved()
+            })
+            .collect())
     }
 
     pub fn update(&self, record: &RequestRecord) -> Result<()> {
@@ -513,7 +541,10 @@ mod tests {
         assert_eq!(job["errorCode"], "UNITY_REQUEST_INVALID");
         store.pending().unwrap();
         assert_eq!(c.get("job", &invalid.request_id).unwrap(), Some(job));
-        assert!(format!("{:#}", store.get(&invalid.request_id).err().unwrap()).contains("UNITY_REQUEST_INVALID"));
+        assert!(
+            format!("{:#}", store.get(&invalid.request_id).err().unwrap())
+                .contains("UNITY_REQUEST_INVALID")
+        );
         store.create(&record()).unwrap();
         assert_eq!(store.pending().unwrap().len(), 2);
     }

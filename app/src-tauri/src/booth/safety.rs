@@ -144,7 +144,9 @@ pub fn resolver(value: &str) -> Option<(String, Option<String>, String)> {
     let (mut variant, mut format) = (None, false);
     for (key, value) in url.query_pairs() {
         match key.as_ref() {
-            "variation_id" if numeric(&value) && variant.is_none() => variant = Some(value.into_owned()),
+            "variation_id" if numeric(&value) && variant.is_none() => {
+                variant = Some(value.into_owned())
+            }
             "type" if value == TRACK_FORMAT && !format => format = true,
             _ => return None,
         }
@@ -316,9 +318,13 @@ mod tests {
     }
     #[test]
     fn observed_deeplink_retains_only_canonical_file_and_variant_identity() {
-        let canonical = observed_resolver("https://booth.pm/downloadables/700001?variation_id=800001").unwrap();
+        let canonical =
+            observed_resolver("https://booth.pm/downloadables/700001?variation_id=800001").unwrap();
         assert_eq!(observed_resolver("https://booth.pm/downloadables/700001/deeplink?client=booth-library-manager&variation_id=800001&type=zip"), Some(canonical));
-        assert!(resolver("https://booth.pm/downloadables/700001/deeplink?variation_id=800001").is_none());
+        assert!(
+            resolver("https://booth.pm/downloadables/700001/deeplink?variation_id=800001")
+                .is_none()
+        );
         for url in [
             "https://booth.pm/downloadables/700001/deeplink/extra?variation_id=800001",
             "https://booth.pm/downloadables/700001/deeplink/deeplink?variation_id=800001",
@@ -458,7 +464,10 @@ mod tests {
             "/library?sort=file_updated_at_desc&page=1",
         ] {
             let url = route(value, "library").unwrap();
-            assert_eq!(url.as_str(), "https://accounts.booth.pm/library?sort=file_updated_at_desc&page=1");
+            assert_eq!(
+                url.as_str(),
+                "https://accounts.booth.pm/library?sort=file_updated_at_desc&page=1"
+            );
             let canonical = format!("{}?{}", url.path(), url.query().unwrap());
             assert_eq!(canonical, updated_route(1));
             assert!(updated_order(&canonical));
@@ -466,12 +475,21 @@ mod tests {
         assert!(!updated_order("/library?page=1"));
         for (value, source) in [
             ("/library?sort=bogus&page=1", "library"),
-            ("/library?sort=file_updated_at_desc&sort=file_updated_at_desc", "library"),
+            (
+                "/library?sort=file_updated_at_desc&sort=file_updated_at_desc",
+                "library",
+            ),
             ("/library?sort=file_updated_at_desc&page=0", "library"),
-            ("/library?sort=file_updated_at_desc&page=1&q=authored", "library"),
+            (
+                "/library?sort=file_updated_at_desc&page=1&q=authored",
+                "library",
+            ),
             ("/library?page=1&page=2", "library"),
             ("/library/gifts?sort=file_updated_at_desc&page=1", "gift"),
-            ("/library/free_downloads?sort=file_updated_at_desc&page=1", "free"),
+            (
+                "/library/free_downloads?sort=file_updated_at_desc&page=1",
+                "free",
+            ),
             ("/orders?sort=file_updated_at_desc&page=1", "purchase"),
         ] {
             assert!(route(value, source).is_err(), "{value}");

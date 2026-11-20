@@ -692,8 +692,14 @@ mod tests {
     #[test]
     fn unity_receives_ordinary_paths_for_verbatim_roots() {
         for (verbatim, plain) in [
-            (r"\\?\E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
-            (r"\\?\UNC\nas\share\A.unitypackage", r"\\nas\share\A.unitypackage"),
+            (
+                r"\\?\E:\Library\A.unitypackage",
+                r"E:\Library\A.unitypackage",
+            ),
+            (
+                r"\\?\UNC\nas\share\A.unitypackage",
+                r"\\nas\share\A.unitypackage",
+            ),
             (r"E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
         ] {
             assert_eq!(plain_path(verbatim), plain);

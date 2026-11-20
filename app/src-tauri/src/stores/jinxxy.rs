@@ -706,7 +706,9 @@ fn membership_signature(page: &InventoryPage) -> String {
         .iter()
         .map(|entry| (entry.inventory_id.as_str(), entry.product_id.as_deref()))
         .collect();
-    hex::encode(Sha256::digest(json!([page.pages, members]).to_string().as_bytes()))
+    hex::encode(Sha256::digest(
+        json!([page.pages, members]).to_string().as_bytes(),
+    ))
 }
 
 fn stage_observed_group(
@@ -721,11 +723,21 @@ fn stage_observed_group(
             Ok((entitlement.clone(), batch.get("entitlement", &entitlement)?))
         })
         .collect::<Result<_>>()?;
-    let product = if details.iter().all(|(detail, _, _)| detail.inventory_complete) {
+    let product = if details
+        .iter()
+        .all(|(detail, _, _)| detail.inventory_complete)
+    {
         stage_complete_group(batch, account, details)?
     } else {
-        let first = details.first().ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
-        ensure!(details.iter().all(|(detail, _, _)| detail.product_id == first.0.product_id), "JINXXY_PRODUCT_BINDING_UNPROVEN");
+        let first = details
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
+        ensure!(
+            details
+                .iter()
+                .all(|(detail, _, _)| detail.product_id == first.0.product_id),
+            "JINXXY_PRODUCT_BINDING_UNPROVEN"
+        );
         for (detail, acquired, payment) in details {
             stage_detail(batch, account, detail, *acquired, payment.as_ref())?;
         }
@@ -959,15 +971,27 @@ fn sync_detail(
 ) -> Option<InventoryDetail> {
     // This catches only parsing of one already scoped inventory response.
     // Account verification and authenticated HTTP errors remain outside it.
-    let detail = parse_detail(data, &entry.inventory_id, entry.product_id.as_deref())
-        .and_then(|detail| {
-            ensure!(detail.order_id.as_ref().zip(entry.order_id.as_ref()).is_none_or(|(a, b)| a == b), "JINXXY_PRODUCT_BINDING_UNPROVEN");
+    let detail =
+        parse_detail(data, &entry.inventory_id, entry.product_id.as_deref()).and_then(|detail| {
+            ensure!(
+                detail
+                    .order_id
+                    .as_ref()
+                    .zip(entry.order_id.as_ref())
+                    .is_none_or(|(a, b)| a == b),
+                "JINXXY_PRODUCT_BINDING_UNPROVEN"
+            );
             Ok(detail)
         });
     match detail {
         Ok(detail) => Some(detail),
         Err(_) => {
-            unresolved_detail(entry, incomplete_products, unresolved_inventory, unbound_inventory);
+            unresolved_detail(
+                entry,
+                incomplete_products,
+                unresolved_inventory,
+                unbound_inventory,
+            );
             None
         }
     }
@@ -1234,7 +1258,9 @@ impl JinxxyService {
             return Ok(());
         }
         for job in self.inner.catalogue.list("job")? {
-            if job["store"] == "Jinxxy" && matches!(job["state"].as_str(), Some("running" | "queued")) {
+            if job["store"] == "Jinxxy"
+                && matches!(job["state"].as_str(), Some("running" | "queued"))
+            {
                 self.prepare_recovered_job(job)?;
             }
         }
@@ -1245,80 +1271,90 @@ impl JinxxyService {
                 if let Some((service, mut job, _work)) = Self::next_worker_job(&owner) {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                    let _work = _work;
-                    let _execution = if job["type"] == "jinxxyLogin" { None } else { Some(service.inner.execution.lock().await) };
-                    let result = service.execute(&app, &mut job).await;
-                    if let Err(error) = result {
-                        let code = fixed_error(&error);
-                        if matches!(
-                            code.as_str(),
-                            "AUTH_REQUIRED"
-                                | "PERMISSION_DENIED"
-                                | "STORE_IDENTITY_CHANGED"
-                                | "JINXXY_IDENTITY_UNPROVEN"
-                                | "JINXXY_PRODUCT_BINDING_UNPROVEN"
-                        ) {
-                            if let Ok(account) = account_arg(&job) {
-                                service.clear_downloads(&account, None);
-                            }
-                        }
-                        let state = if code == "CANCELLED" {
-                            "cancelled"
-                        } else if matches!(
-                            code.as_str(),
-                            "AUTH_REQUIRED"
-                                | "JINXXY_IDENTITY_UNPROVEN"
-                                | "STORE_IDENTITY_CHANGED"
-                                | "JINXXY_MANIFEST_INCOMPLETE"
-                                | "JINXXY_PRODUCT_BINDING_UNPROVEN"
-                        ) {
-                            "needsAction"
+                        let _work = _work;
+                        let _execution = if job["type"] == "jinxxyLogin" {
+                            None
                         } else {
-                            "failed"
+                            Some(service.inner.execution.lock().await)
                         };
-                        // Keep the terminal result pending locally until its transaction
-                        // is durable; a database error must not strand a running job.
-                        while let Err(error) = service.save_job(&app, &mut job, state, Some(&code))
-                        {
-                            if fixed_error(&error) == "JOB_UNAVAILABLE" {
-                                break;
+                        let result = service.execute(&app, &mut job).await;
+                        if let Err(error) = result {
+                            let code = fixed_error(&error);
+                            if matches!(
+                                code.as_str(),
+                                "AUTH_REQUIRED"
+                                    | "PERMISSION_DENIED"
+                                    | "STORE_IDENTITY_CHANGED"
+                                    | "JINXXY_IDENTITY_UNPROVEN"
+                                    | "JINXXY_PRODUCT_BINDING_UNPROVEN"
+                            ) {
+                                if let Ok(account) = account_arg(&job) {
+                                    service.clear_downloads(&account, None);
+                                }
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        }
-                    }
-                    if job["type"] == "jinxxyLogin" {
-                        if let Ok(account) = account_arg(&job) {
-                            if let Err(error) = session::finish_login(
-                                &app,
-                                StoreProvider::Jinxxy,
-                                &account,
-                                job["state"] == "completed",
-                            )
-                            .await
+                            let state = if code == "CANCELLED" {
+                                "cancelled"
+                            } else if matches!(
+                                code.as_str(),
+                                "AUTH_REQUIRED"
+                                    | "JINXXY_IDENTITY_UNPROVEN"
+                                    | "STORE_IDENTITY_CHANGED"
+                                    | "JINXXY_MANIFEST_INCOMPLETE"
+                                    | "JINXXY_PRODUCT_BINDING_UNPROVEN"
+                            ) {
+                                "needsAction"
+                            } else {
+                                "failed"
+                            };
+                            // Keep the terminal result pending locally until its transaction
+                            // is durable; a database error must not strand a running job.
+                            while let Err(error) =
+                                service.save_job(&app, &mut job, state, Some(&code))
                             {
-                                eprintln!(
-                                    "Jinxxy login window close failed: {}",
-                                    fixed_error(&error)
+                                if fixed_error(&error) == "JOB_UNAVAILABLE" {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            }
+                        }
+                        if job["type"] == "jinxxyLogin" {
+                            if let Ok(account) = account_arg(&job) {
+                                if let Err(error) = session::finish_login(
+                                    &app,
+                                    StoreProvider::Jinxxy,
+                                    &account,
+                                    job["state"] == "completed",
+                                )
+                                .await
+                                {
+                                    eprintln!(
+                                        "Jinxxy login window close failed: {}",
+                                        fixed_error(&error)
+                                    );
+                                }
+                                if let Err(error) = session::discard_unverified_account(
+                                    &service.inner.catalogue,
+                                    StoreProvider::Jinxxy,
+                                    &account,
+                                ) {
+                                    eprintln!(
+                                        "Jinxxy login cleanup failed: {}",
+                                        fixed_error(&error)
+                                    );
+                                }
+                                let _ = app.emit(
+                                    "nna:changed",
+                                    if job["state"] == "completed" {
+                                        json!({"scope":"booth","sessionChanged":true})
+                                    } else {
+                                        json!({"scope":"booth"})
+                                    },
                                 );
                             }
-                            if let Err(error) =
-                                session::discard_unverified_account(&service.inner.catalogue, StoreProvider::Jinxxy, &account)
-                            {
-                                eprintln!("Jinxxy login cleanup failed: {}", fixed_error(&error));
-                            }
-                            let _ = app.emit(
-                                "nna:changed",
-                                if job["state"] == "completed" {
-                                    json!({"scope":"booth","sessionChanged":true})
-                                } else {
-                                    json!({"scope":"booth"})
-                                },
-                            );
                         }
-                    }
-                    if let Ok(mut running) = service.inner.running.lock() {
-                        running.remove(&Self::worker_key(&job));
-                    }
+                        if let Ok(mut running) = service.inner.running.lock() {
+                            running.remove(&Self::worker_key(&job));
+                        }
                     });
                 }
                 // Idle workers must not retain an old Setup library after its
@@ -1333,14 +1369,18 @@ impl JinxxyService {
         Ok(())
     }
     fn prepare_recovered_job(&self, mut job: Value) -> Result<()> {
-        let id = job["id"].as_str().filter(|id| !id.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?.to_owned();
+        let id = job["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?
+            .to_owned();
         let result = (|| -> Result<()> {
             let account_id = account_arg(&job)?;
             let account = self.account(&account_id)?;
             if self.inner.catalogue.library_root().is_some()
                 && (job["originDeviceId"] != self.inner.catalogue.device_id()
-                    || (job["type"] != "jinxxyLogin" && !super::has_local_session(&self.inner.catalogue, &account)))
+                    || (job["type"] != "jinxxyLogin"
+                        && !super::has_local_session(&self.inner.catalogue, &account)))
             {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
@@ -1350,14 +1390,21 @@ impl JinxxyService {
             }
             if job["type"] == "jinxxyLogin" {
                 self.finish_job(&mut job, "needsAction", Some("RETRY_REQUIRED"))?;
-                session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account_id)?;
+                session::discard_unverified_account(
+                    &self.inner.catalogue,
+                    StoreProvider::Jinxxy,
+                    &account_id,
+                )?;
                 return Ok(());
             }
             job["state"] = json!("queued");
             self.inner.catalogue.put("job", &id, job)
         })();
         if let Err(error) = result {
-            if let Some(before) = self.inner.catalogue.get("job", &id)?
+            if let Some(before) = self
+                .inner
+                .catalogue
+                .get("job", &id)?
                 .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
             {
                 let mut failed = before.clone();
@@ -1395,21 +1442,45 @@ impl JinxxyService {
         Some((service, job, work))
     }
     fn worker_key(job: &Value) -> String {
-        job["accountId"].as_str().map(|account| format!("account:{account}"))
+        job["accountId"]
+            .as_str()
+            .map(|account| format!("account:{account}"))
             .unwrap_or_else(|| format!("job:{}", job["id"].as_str().unwrap_or("")))
     }
     fn ensure_retryable(&self, job: &Value) -> Result<()> {
-        ensure!(matches!(job["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_ACTIVE");
-        let running = self.inner.running.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+        ensure!(
+            matches!(
+                job["state"].as_str(),
+                Some("failed" | "needsAction" | "cancelled")
+            ),
+            "JOB_ACTIVE"
+        );
+        let running = self
+            .inner
+            .running
+            .lock()
+            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
         ensure!(!running.contains(&Self::worker_key(job)), "JOB_ACTIVE");
         Ok(())
     }
     fn requeue_job(&self, previous: &Value) -> Result<Value> {
-        ensure!(matches!(previous["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_ACTIVE");
+        ensure!(
+            matches!(
+                previous["state"].as_str(),
+                Some("failed" | "needsAction" | "cancelled")
+            ),
+            "JOB_ACTIVE"
+        );
         // Keep selection's reservation lock through the captured-row commit.
-        let running = self.inner.running.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+        let running = self
+            .inner
+            .running
+            .lock()
+            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
         ensure!(!running.contains(&Self::worker_key(previous)), "JOB_ACTIVE");
-        let id = previous["id"].as_str().ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?;
+        let id = previous["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?;
         let mut job = previous.clone();
         crate::support::reset_attempt(&mut job);
         job["state"] = json!("queued");
@@ -1418,10 +1489,13 @@ impl JinxxyService {
         job["completedAt"] = Value::Null;
         job["updatedAt"] = json!(Utc::now().to_rfc3339());
         job["originDeviceId"] = json!(self.inner.catalogue.device_id());
-        ensure!(self.inner.catalogue.put_many_if_unchanged(
-            vec![("job".into(), id.into(), job.clone())],
-            vec![("job".into(), id.into(), Some(previous.clone()))],
-        )?, "JOB_ACTIVE");
+        ensure!(
+            self.inner.catalogue.put_many_if_unchanged(
+                vec![("job".into(), id.into(), job.clone())],
+                vec![("job".into(), id.into(), Some(previous.clone()))],
+            )?,
+            "JOB_ACTIVE"
+        );
         Ok(job)
     }
     fn account(&self, id: &str) -> Result<Value> {
@@ -1510,7 +1584,11 @@ impl JinxxyService {
         let status = match state {
             "running" => "running",
             // Assets left as they were keep coverage open, as in the other stores.
-            "complete" | "completed" if job["progress"]["incompleteProducts"].as_u64().unwrap_or(0) > 0 => "incomplete",
+            "complete" | "completed"
+                if job["progress"]["incompleteProducts"].as_u64().unwrap_or(0) > 0 =>
+            {
+                "incomplete"
+            }
             "complete" | "completed" => "complete",
             "cancelled" => "cancelled",
             _ if error == Some("VERIFICATION_PAGE_LIMIT") => "incomplete",
@@ -1580,7 +1658,9 @@ impl JinxxyService {
             let state = if cancelled { "cancelled" } else { state };
             let error = if cancelled { Some("CANCELLED") } else { error };
             let mut terminal = job.clone();
-            terminal["supportLastStage"] = json!(crate::support::operation_stage(job["progress"]["stage"].as_str().unwrap_or("")));
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(
+                job["progress"]["stage"].as_str().unwrap_or("")
+            ));
             let now = Utc::now().to_rfc3339();
             terminal["state"] = json!(state);
             terminal["errorCode"] = json!(error);
@@ -1752,7 +1832,12 @@ impl JinxxyService {
                 unbound_inventory,
             )),
             Err(error) if asset_answer(&error) => {
-                unresolved_detail(entry, incomplete_products, unresolved_inventory, unbound_inventory);
+                unresolved_detail(
+                    entry,
+                    incomplete_products,
+                    unresolved_inventory,
+                    unbound_inventory,
+                );
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -1858,9 +1943,21 @@ impl JinxxyService {
             && record["authenticatedAt"].as_str().is_none_or(str::is_empty)
             && record["identityHash"].as_str().is_none_or(str::is_empty);
         if login_job.is_some() {
-            session::remember(window.clone(), &self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account).await?;
+            session::remember(
+                window.clone(),
+                &self.inner.catalogue.device_dir(),
+                StoreProvider::Jinxxy,
+                account,
+            )
+            .await?;
             if session::existing_window(app, StoreProvider::Jinxxy, account)?.is_none() {
-                if unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account)?; }
+                if unverified {
+                    session::forget(
+                        &self.inner.catalogue.device_dir(),
+                        StoreProvider::Jinxxy,
+                        account,
+                    )?;
+                }
                 anyhow::bail!("CANCELLED");
             }
         }
@@ -1877,7 +1974,13 @@ impl JinxxyService {
             match batch.try_commit() {
                 Ok(Some(_)) => {}
                 result => {
-                    if login_job.is_some() && unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account)?; }
+                    if login_job.is_some() && unverified {
+                        session::forget(
+                            &self.inner.catalogue.device_dir(),
+                            StoreProvider::Jinxxy,
+                            account,
+                        )?;
+                    }
                     result?;
                     anyhow::bail!("CONCURRENT_UPDATE");
                 }
@@ -1913,7 +2016,11 @@ impl JinxxyService {
                 )
                 .await;
                 if let Err(error) = opening {
-                    session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account)?;
+                    session::discard_unverified_account(
+                        &self.inner.catalogue,
+                        StoreProvider::Jinxxy,
+                        &account,
+                    )?;
                     return Err(error);
                 }
                 self.enqueue(app, &account, "jinxxyLogin", None)
@@ -1946,22 +2053,38 @@ impl JinxxyService {
                     let mut cancelled_queued = false;
                     for attempt in 0..4 {
                         let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
-                        let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                        let mut latest = batch
+                            .get("job", id)?
+                            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                            break;
+                        }
                         let queued = latest["state"] == "queued";
                         latest["cancelRequested"] = json!(true);
                         latest["updatedAt"] = json!(Utc::now().to_rfc3339());
-                        if queued { latest["state"] = json!("cancelled"); }
+                        if queued {
+                            latest["state"] = json!("cancelled");
+                        }
                         batch.stage("job", id, latest.clone())?;
-                        if batch.try_commit()?.is_some() { job = latest; cancelled_queued = queued; break; }
+                        if batch.try_commit()?.is_some() {
+                            job = latest;
+                            cancelled_queued = queued;
+                            break;
+                        }
                         ensure!(attempt < 3, "CONCURRENT_UPDATE");
                     }
-                    if cancelled_queued { self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?; }
+                    if cancelled_queued {
+                        self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?;
+                    }
                     let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
                     if cancelled_queued && job["type"] == "jinxxyLogin" {
                         let account = account_arg(&job)?;
                         session::finish_login(app, StoreProvider::Jinxxy, &account, false).await?;
-                        session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account)?;
+                        session::discard_unverified_account(
+                            &self.inner.catalogue,
+                            StoreProvider::Jinxxy,
+                            &account,
+                        )?;
                         let _ = app.emit("nna:changed", json!({"scope":"booth"}));
                     }
                 } else {
@@ -2364,10 +2487,12 @@ impl JinxxyService {
                             &detail.product_id,
                         )
                         .await
-                        .map_err(|error| match fixed_error(&error).as_str() {
-                            // A cookie-less public page says nothing about the buyer session.
-                            "AUTH_REQUIRED" => "PUBLIC_METADATA_FAILED".to_owned(),
-                            code => code.to_owned(),
+                        .map_err(|error| {
+                            match fixed_error(&error).as_str() {
+                                // A cookie-less public page says nothing about the buyer session.
+                                "AUTH_REQUIRED" => "PUBLIC_METADATA_FAILED".to_owned(),
+                                code => code.to_owned(),
+                            }
                         });
                         public_presentations.insert(detail.product_id.clone(), presentation);
                     }
@@ -2544,13 +2669,10 @@ impl JinxxyService {
         // A grant published before a restart counts only if the closing pass listed it.
         let listed: BTreeSet<String> = finished.intersection(&observed).cloned().collect();
         for product in &completed_products {
-            if !unbound_inventory.is_empty() || incomplete_products.contains(product) { continue; }
-            self.certify_product_membership(
-                job,
-                &account,
-                &format!("jinxxy:{product}"),
-                &listed,
-            )?;
+            if !unbound_inventory.is_empty() || incomplete_products.contains(product) {
+                continue;
+            }
+            self.certify_product_membership(job, &account, &format!("jinxxy:{product}"), &listed)?;
             let _ = app.emit(
                 "nna:changed",
                 json!({"scope":"catalogue","productIds":[format!("jinxxy:{product}")]}),
@@ -2565,8 +2687,7 @@ impl JinxxyService {
         self.check_cancelled(&id)?;
         // Assets Jinxxy answered about individually keep their previous snapshot and
         // uncertified membership; they do not fail the job.
-        let incomplete =
-            incomplete_assets(job, &incomplete_products, &unbound_inventory, &missing);
+        let incomplete = incomplete_assets(job, &incomplete_products, &unbound_inventory, &missing);
         if incomplete > 0 {
             job["progress"]["incompleteProducts"] = json!(incomplete);
         }
@@ -2840,25 +2961,53 @@ mod tests {
     use super::*;
     #[test]
     fn malformed_inventory_detail_keeps_its_record_unresolved_and_later_grants_publish() {
-        let path = std::env::temp_dir().join(format!("jinxxy-detail-isolation-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("jinxxy-detail-isolation-{}", uuid::Uuid::new_v4()));
         let catalogue = Catalogue::open(&path).unwrap();
         let account = "d0140000-0000-4000-8000-000000000001";
-        catalogue.put("account", account, json!({"id":account,"store":"Jinxxy"})).unwrap();
+        catalogue
+            .put("account", account, json!({"id":account,"store":"Jinxxy"}))
+            .unwrap();
         let entry = |inventory: &str, product: Option<&str>| InventoryEntry {
-            inventory_id: inventory.into(), product_id: product.map(str::to_owned), order_id: None,
-            title: None, author: None, source_url: None, thumbnail_url: None,
-            imported_from: None, created_at: None, is_gift: false,
+            inventory_id: inventory.into(),
+            product_id: product.map(str::to_owned),
+            order_id: None,
+            title: None,
+            author: None,
+            source_url: None,
+            thumbnail_url: None,
+            imported_from: None,
+            created_at: None,
+            is_gift: false,
         };
         let malformed = entry("1234567890123456701", Some("1234567890123456711"));
         let healthy = entry("1234567890123456702", Some("1234567890123456712"));
         let file = json!({"id":"1234567890123456721","file_name":"authored.txt","size":1});
-        let malformed_data = [json!({"inventory_item":{"id":malformed.inventory_id,"item":{"id":malformed.product_id,"files":[file.clone(),file.clone()]}}})];
-        let healthy_data = [json!({"inventory_item":{"id":healthy.inventory_id,"item":{"id":healthy.product_id,"files":[file]}}})];
+        let malformed_data = [
+            json!({"inventory_item":{"id":malformed.inventory_id,"item":{"id":malformed.product_id,"files":[file.clone(),file.clone()]}}}),
+        ];
+        let healthy_data = [
+            json!({"inventory_item":{"id":healthy.inventory_id,"item":{"id":healthy.product_id,"files":[file]}}}),
+        ];
         let mut incomplete = BTreeSet::new();
         let mut unresolved = BTreeSet::new();
         let mut unbound = BTreeSet::new();
-        assert!(sync_detail(&malformed_data, &malformed, &mut incomplete, &mut unresolved, &mut unbound).is_none());
-        let detail = sync_detail(&healthy_data, &healthy, &mut incomplete, &mut unresolved, &mut unbound).unwrap();
+        assert!(sync_detail(
+            &malformed_data,
+            &malformed,
+            &mut incomplete,
+            &mut unresolved,
+            &mut unbound
+        )
+        .is_none());
+        let detail = sync_detail(
+            &healthy_data,
+            &healthy,
+            &mut incomplete,
+            &mut unresolved,
+            &mut unbound,
+        )
+        .unwrap();
         let mut batch = crate::booth::RecordBatch::new(&catalogue);
         stage_observed_group(&mut batch, account, &[(detail, None, None)]).unwrap();
         batch.commit().unwrap();
@@ -2866,10 +3015,26 @@ mod tests {
         assert!(!incomplete.contains("1234567890123456712"));
         assert!(unresolved.contains("1234567890123456701"));
         assert!(unbound.is_empty());
-        assert!(catalogue.related("acquisition", "jinxxy:1234567890123456711").unwrap().is_empty());
-        assert_eq!(catalogue.related("acquisition", "jinxxy:1234567890123456712").unwrap().len(), 1);
+        assert!(catalogue
+            .related("acquisition", "jinxxy:1234567890123456711")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            catalogue
+                .related("acquisition", "jinxxy:1234567890123456712")
+                .unwrap()
+                .len(),
+            1
+        );
         let unknown = entry("1234567890123456701", None);
-        assert!(sync_detail(&malformed_data, &unknown, &mut incomplete, &mut unresolved, &mut unbound).is_none());
+        assert!(sync_detail(
+            &malformed_data,
+            &unknown,
+            &mut incomplete,
+            &mut unresolved,
+            &mut unbound
+        )
+        .is_none());
         // An unbound failed grant blocks every membership certification.
         assert_eq!(unbound, BTreeSet::from(["1234567890123456701".to_owned()]));
         drop(catalogue);
@@ -2902,9 +3067,16 @@ mod tests {
             assert!(!asset_answer(&anyhow::anyhow!(code)), "{code}");
         }
         let entry = |inventory: &str, product: Option<&str>| InventoryEntry {
-            inventory_id: inventory.into(), product_id: product.map(str::to_owned), order_id: None,
-            title: None, author: None, source_url: None, thumbnail_url: None,
-            imported_from: None, created_at: None, is_gift: false,
+            inventory_id: inventory.into(),
+            product_id: product.map(str::to_owned),
+            order_id: None,
+            title: None,
+            author: None,
+            source_url: None,
+            thumbnail_url: None,
+            imported_from: None,
+            created_at: None,
+            is_gift: false,
         };
         let (mut incomplete, mut unresolved, mut unbound) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -2913,24 +3085,43 @@ mod tests {
             ("1234567890123456702", Some("1234567890123456711")),
             ("1234567890123456703", None),
         ] {
-            unresolved_detail(&entry(inventory, product), &mut incomplete, &mut unresolved, &mut unbound);
+            unresolved_detail(
+                &entry(inventory, product),
+                &mut incomplete,
+                &mut unresolved,
+                &mut unbound,
+            );
         }
         assert_eq!(unresolved.len(), 3);
         // Two grants of one product count once; a grant without a known product counts alone.
         let sync = json!({"type":"jinxxySync"});
-        assert_eq!(incomplete_assets(&sync, &incomplete, &unbound, &BTreeSet::new()), 2);
-        assert_eq!(incomplete_assets(&sync, &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new()), 0);
+        assert_eq!(
+            incomplete_assets(&sync, &incomplete, &unbound, &BTreeSet::new()),
+            2
+        );
+        assert_eq!(
+            incomplete_assets(&sync, &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new()),
+            0
+        );
         // A selected update counts its selected products the listing no longer shows.
         let update = json!({"type":"jinxxyUpdate","productIds":["jinxxy:1234567890123456711","jinxxy:1234567890123456712"]});
-        let missing = missing_selected(&update, &BTreeSet::from(["1234567890123456711".to_owned()])).unwrap();
+        let missing =
+            missing_selected(&update, &BTreeSet::from(["1234567890123456711".to_owned()])).unwrap();
         assert_eq!(missing, BTreeSet::from(["1234567890123456712".to_owned()]));
-        assert_eq!(incomplete_assets(&update, &incomplete, &unbound, &missing), 2);
+        assert_eq!(
+            incomplete_assets(&update, &incomplete, &unbound, &missing),
+            2
+        );
     }
 
     #[test]
     fn listing_change_detection_counts_only_grant_membership() {
         let listing = |rows: Value, pages: u64| {
-            parse_inventory(&[json!({"inventory_items":{"page":1,"page_count":pages,"payload":rows}})], 1).unwrap()
+            parse_inventory(
+                &[json!({"inventory_items":{"page":1,"page_count":pages,"payload":rows}})],
+                1,
+            )
+            .unwrap()
         };
         let first = json!({"id":INVENTORY,"created_at":"2026-01-01T00:00:00Z","item":{"id":PRODUCT,"name":"Authored title","url":"authored","base_price":1000,"currency_code":"USD","description":"Authored description","cover":{"url":"https://jinxxy-c.jinxxy-cdn.com/authored.png"},"user":{"username":"authored-maker"}}});
         let second = json!({"id":"1234567890123456790","item":{"id":"1234567890123456791"}});
@@ -2943,15 +3134,30 @@ mod tests {
         edited["item"]["description"] = json!("Rewritten description");
         edited["item"]["cover"]["url"] = json!("https://jinxxy-c.jinxxy-cdn.com/replaced.png");
         edited["item"]["user"]["username"] = json!("renamed-maker");
-        assert_eq!(membership_signature(&listing(json!([second.clone(), edited]), 2)), base);
+        assert_eq!(
+            membership_signature(&listing(json!([second.clone(), edited]), 2)),
+            base
+        );
         // A new or removed grant, a rebound product or a new page count is one.
         let third = json!({"id":"1234567890123456792","item":{"id":"1234567890123456793"}});
-        assert_ne!(membership_signature(&listing(json!([first.clone(), second.clone(), third]), 2)), base);
-        assert_ne!(membership_signature(&listing(json!([first.clone()]), 2)), base);
+        assert_ne!(
+            membership_signature(&listing(json!([first.clone(), second.clone(), third]), 2)),
+            base
+        );
+        assert_ne!(
+            membership_signature(&listing(json!([first.clone()]), 2)),
+            base
+        );
         let mut rebound = second.clone();
         rebound["item"]["id"] = json!("1234567890123456799");
-        assert_ne!(membership_signature(&listing(json!([first.clone(), rebound]), 2)), base);
-        assert_ne!(membership_signature(&listing(json!([first, second]), 3)), base);
+        assert_ne!(
+            membership_signature(&listing(json!([first.clone(), rebound]), 2)),
+            base
+        );
+        assert_ne!(
+            membership_signature(&listing(json!([first, second]), 3)),
+            base
+        );
     }
 
     #[test]
@@ -2962,17 +3168,23 @@ mod tests {
         assert!(catalogue.library_root().is_some());
         let account = "d0140000-0000-4000-8000-000000000001";
         let record = json!({"id":account,"store":"Jinxxy","status":"connected","state":"connected","identityVerified":true,"identityHash":"authored-identity"});
-        let snapshot = session::profile_path(&catalogue.device_dir(), StoreProvider::Jinxxy, account)
-            .unwrap()
-            .join("session.bin");
+        let snapshot =
+            session::profile_path(&catalogue.device_dir(), StoreProvider::Jinxxy, account)
+                .unwrap()
+                .join("session.bin");
         std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
         std::fs::write(&snapshot, b"authored protected snapshot").unwrap();
         for kind in ["jinxxySync", "jinxxyUpdate"] {
             catalogue.put("account", account, record.clone()).unwrap();
             let mut job = json!({"id":kind,"type":kind,"store":"Jinxxy","accountId":account,"state":"running"});
             catalogue.put("job", kind, job.clone()).unwrap();
-            service.finish_job(&mut job, "needsAction", Some("AUTH_REQUIRED")).unwrap();
-            assert_eq!(std::fs::read(&snapshot).unwrap(), b"authored protected snapshot");
+            service
+                .finish_job(&mut job, "needsAction", Some("AUTH_REQUIRED"))
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&snapshot).unwrap(),
+                b"authored protected snapshot"
+            );
             // The shared record stays as it was for other devices; this device waits for a
             // sign-in, whose save clears its marker.
             let stored = catalogue.get("account", account).unwrap().unwrap();
@@ -2997,16 +3209,30 @@ mod tests {
         let service = JinxxyService::new(catalogue.clone()).unwrap();
         let missing = "d0140000-0000-4000-8000-000000000001";
         let healthy = "d0140000-0000-4000-8000-000000000002";
-        catalogue.put("account", healthy, json!({"id":healthy,"store":"Jinxxy"})).unwrap();
-        for (id, owner) in [("authored-orphan-job", missing), ("authored-healthy-job", healthy)] {
+        catalogue
+            .put("account", healthy, json!({"id":healthy,"store":"Jinxxy"}))
+            .unwrap();
+        for (id, owner) in [
+            ("authored-orphan-job", missing),
+            ("authored-healthy-job", healthy),
+        ] {
             let job = json!({"id":id,"type":"jinxxySync","store":"Jinxxy","accountId":owner,"state":"running"});
             catalogue.put("job", id, job.clone()).unwrap();
             service.prepare_recovered_job(job).unwrap();
         }
-        let orphan = catalogue.get("job", "authored-orphan-job").unwrap().unwrap();
+        let orphan = catalogue
+            .get("job", "authored-orphan-job")
+            .unwrap()
+            .unwrap();
         assert_eq!(orphan["state"], "needsAction");
         assert_eq!(orphan["errorCode"], "ACCOUNT_UNAVAILABLE");
-        assert_eq!(catalogue.get("job", "authored-healthy-job").unwrap().unwrap()["state"], "queued");
+        assert_eq!(
+            catalogue
+                .get("job", "authored-healthy-job")
+                .unwrap()
+                .unwrap()["state"],
+            "queued"
+        );
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
@@ -3018,14 +3244,19 @@ mod tests {
         let service = fixture.service();
         let first = "d0140000-0000-4000-8000-000000000001";
         let second = "d0140000-0000-4000-8000-000000000002";
-        for (id, kind, account) in [("authored-metadata", "jinxxySync", first), ("authored-login", "jinxxyLogin", second), ("authored-same-account", "jinxxyUpdate", first)] {
+        for (id, kind, account) in [
+            ("authored-metadata", "jinxxySync", first),
+            ("authored-login", "jinxxyLogin", second),
+            ("authored-same-account", "jinxxyUpdate", first),
+        ] {
             service.inner.catalogue.put("job", id, json!({"id":id,"type":kind,"store":"Jinxxy","accountId":account,"state":"queued"})).unwrap();
         }
         let metadata_busy = service.inner.execution.try_lock().unwrap();
         let owner = Arc::downgrade(&service.inner);
         let (login_owner, login, login_work) = JinxxyService::next_worker_job(&owner).unwrap();
         assert_eq!(login["type"], "jinxxyLogin");
-        let (metadata_owner, metadata, metadata_work) = JinxxyService::next_worker_job(&owner).unwrap();
+        let (metadata_owner, metadata, metadata_work) =
+            JinxxyService::next_worker_job(&owner).unwrap();
         assert_eq!(metadata["accountId"], first);
         assert!(JinxxyService::next_worker_job(&owner).is_none());
         assert_eq!(service.inner.running.lock().unwrap().len(), 2);
@@ -3044,22 +3275,48 @@ mod tests {
         let fixture = WorkerFixture::new();
         let service = fixture.service();
         let before = json!({"id":"authored-retry","type":"jinxxySync","store":"Jinxxy","accountId":"authored-account","state":"failed","cancelRequested":true});
-        service.inner.catalogue.put("job", "authored-retry", before.clone()).unwrap();
+        service
+            .inner
+            .catalogue
+            .put("job", "authored-retry", before.clone())
+            .unwrap();
         service.ensure_retryable(&before).unwrap();
-        service.inner.running.lock().unwrap().insert(JinxxyService::worker_key(&before));
+        service
+            .inner
+            .running
+            .lock()
+            .unwrap()
+            .insert(JinxxyService::worker_key(&before));
         assert!(service.requeue_job(&before).is_err());
-        assert_eq!(service.inner.catalogue.get("job", "authored-retry").unwrap(), Some(before.clone()));
+        assert_eq!(
+            service
+                .inner
+                .catalogue
+                .get("job", "authored-retry")
+                .unwrap(),
+            Some(before.clone())
+        );
         service.inner.running.lock().unwrap().clear();
         let queued = service.requeue_job(&before).unwrap();
         assert_eq!(queued["state"], "queued");
         assert_eq!(queued["cancelRequested"], false);
         assert!(service.requeue_job(&before).is_err());
         assert!(service.ensure_retryable(&queued).is_err());
-        assert_eq!(service.inner.catalogue.get("job", "authored-retry").unwrap(), Some(queued));
+        assert_eq!(
+            service
+                .inner
+                .catalogue
+                .get("job", "authored-retry")
+                .unwrap(),
+            Some(queued)
+        );
     }
     #[test]
     fn incomplete_inventory_grant_keeps_known_files_and_does_not_block_healthy_publication() {
-        let path = std::env::temp_dir().join(format!("nna-jinxxy-partial-grants-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "nna-jinxxy-partial-grants-{}",
+            uuid::Uuid::new_v4()
+        ));
         let catalogue = Catalogue::open(&path).unwrap();
         let service = JinxxyService::new(catalogue.clone()).unwrap();
         let account = "d0140000-0000-4000-8000-000000000001";
@@ -3067,7 +3324,13 @@ mod tests {
         let healthy_inventory = "1234567890123456702";
         let partial_product = "1234567890123456711";
         let healthy_product = "1234567890123456712";
-        catalogue.put("account", account, json!({"id":account,"store":"Jinxxy","status":"connected","state":"connected"})).unwrap();
+        catalogue
+            .put(
+                "account",
+                account,
+                json!({"id":account,"store":"Jinxxy","status":"connected","state":"connected"}),
+            )
+            .unwrap();
         let partial_entitlement = format!("jinxxy:{account}:{partial_inventory}");
         catalogue.put("entitlement", &partial_entitlement, json!({"id":partial_entitlement,"accountId":account,"productId":format!("jinxxy:{partial_product}"),"inventoryId":partial_inventory,"source":"library","fileIds":["retained-file"],"manifestComplete":false})).unwrap();
         let partial = parse_detail(&[json!({"inventory_item":{"id":partial_inventory,"item":{"id":partial_product,"name":"Authored incomplete","files":[]}}})], partial_inventory, Some(partial_product)).unwrap();
@@ -3079,28 +3342,96 @@ mod tests {
             stage_observed_group(&mut batch, account, &[(detail, None, None)]).unwrap();
             batch.commit().unwrap();
         }
-        assert_eq!(catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap()["fileIds"], json!(["retained-file"]));
+        assert_eq!(
+            catalogue
+                .get("entitlement", &partial_entitlement)
+                .unwrap()
+                .unwrap()["fileIds"],
+            json!(["retained-file"])
+        );
         let mut job = json!({"id":"authored-partial-job","type":"jinxxySync","store":"Jinxxy","accountId":account,"state":"running","completedProducts":2});
-        catalogue.put("job", "authored-partial-job", job.clone()).unwrap();
-        service.certify_product_membership(&job, account, &format!("jinxxy:{healthy_product}"), &BTreeSet::from([healthy_inventory.to_owned()])).unwrap();
-        assert_eq!(catalogue.get("entitlement", &format!("jinxxy:{account}:{healthy_inventory}")).unwrap().unwrap()["manifestComplete"], true);
-        assert_eq!(catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap()["manifestComplete"], false);
+        catalogue
+            .put("job", "authored-partial-job", job.clone())
+            .unwrap();
+        service
+            .certify_product_membership(
+                &job,
+                account,
+                &format!("jinxxy:{healthy_product}"),
+                &BTreeSet::from([healthy_inventory.to_owned()]),
+            )
+            .unwrap();
+        assert_eq!(
+            catalogue
+                .get(
+                    "entitlement",
+                    &format!("jinxxy:{account}:{healthy_inventory}")
+                )
+                .unwrap()
+                .unwrap()["manifestComplete"],
+            true
+        );
+        assert_eq!(
+            catalogue
+                .get("entitlement", &partial_entitlement)
+                .unwrap()
+                .unwrap()["manifestComplete"],
+            false
+        );
         // The partial grant no longer holds every sync at needs-action; the job completes and counts it.
-        let incomplete = incomplete_assets(&job, &BTreeSet::from([partial_product.to_owned()]), &BTreeSet::new(), &BTreeSet::new());
+        let incomplete = incomplete_assets(
+            &job,
+            &BTreeSet::from([partial_product.to_owned()]),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
         job["progress"] = json!({"stage":"finalizing","incompleteProducts":incomplete});
         service.finish_job(&mut job, "completed", None).unwrap();
-        assert_eq!((&job["state"], &job["errorCode"]), (&json!("completed"), &Value::Null));
+        assert_eq!(
+            (&job["state"], &job["errorCode"]),
+            (&json!("completed"), &Value::Null)
+        );
         assert_eq!(job["progress"]["incompleteProducts"], 1);
-        let stored = catalogue.get("job", "authored-partial-job").unwrap().unwrap();
-        assert_eq!((&stored["state"], &stored["progress"]["incompleteProducts"]), (&json!("completed"), &json!(1)));
+        let stored = catalogue
+            .get("job", "authored-partial-job")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (&stored["state"], &stored["progress"]["incompleteProducts"]),
+            (&json!("completed"), &json!(1))
+        );
         let account_row = catalogue.get("account", account).unwrap().unwrap();
-        assert_eq!((&account_row["status"], &account_row["syncState"]), (&json!("connected"), &json!("complete")));
-        let partial_grant = catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap();
-        assert_eq!((&partial_grant["manifestComplete"], &partial_grant["fileIds"]), (&json!(false), &json!(["retained-file"])));
-        assert_eq!(catalogue.related("acquisition", &format!("jinxxy:{healthy_product}")).unwrap().len(), 1);
+        assert_eq!(
+            (&account_row["status"], &account_row["syncState"]),
+            (&json!("connected"), &json!("complete"))
+        );
+        let partial_grant = catalogue
+            .get("entitlement", &partial_entitlement)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                &partial_grant["manifestComplete"],
+                &partial_grant["fileIds"]
+            ),
+            (&json!(false), &json!(["retained-file"]))
+        );
+        assert_eq!(
+            catalogue
+                .related("acquisition", &format!("jinxxy:{healthy_product}"))
+                .unwrap()
+                .len(),
+            1
+        );
         // An asset left as it was keeps coverage open, as in the other stores.
-        let coverage = catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap();
-        assert_eq!((&coverage["status"], &coverage["coverageComplete"]), (&json!("incomplete"), &json!(false)));
+        let coverage = catalogue
+            .get("source_coverage", &format!("jinxxy:{account}:inventory"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (&coverage["status"], &coverage["coverageComplete"]),
+            (&json!("incomplete"), &json!(false))
+        );
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
@@ -3608,9 +3939,19 @@ mod tests {
         }
         for status in [301, 303, 307, 308] {
             let status = reqwest::StatusCode::from_u16(status).unwrap();
-            assert!(resolved_location(&endpoint, status, Some("https://authored-cdn.example/file.zip")).is_ok());
+            assert!(resolved_location(
+                &endpoint,
+                status,
+                Some("https://authored-cdn.example/file.zip")
+            )
+            .is_ok());
         }
-        assert!(resolved_location(&endpoint, reqwest::StatusCode::FORBIDDEN, Some("https://authored-cdn.example/file.zip")).is_err());
+        assert!(resolved_location(
+            &endpoint,
+            reqwest::StatusCode::FORBIDDEN,
+            Some("https://authored-cdn.example/file.zip")
+        )
+        .is_err());
         assert!(resolved_location(&endpoint, reqwest::StatusCode::OK, None).is_err());
         assert!(resolved_location(&endpoint, found, None).is_err());
         for location in [
@@ -3622,12 +3963,16 @@ mod tests {
             "https://jinxxy.com/login?redirect=%2Fmy%2Finventory",
             "/login",
         ] {
-            assert!(resolved_location(&endpoint, found, Some(location)).is_err(), "{location}");
+            assert!(
+                resolved_location(&endpoint, found, Some(location)).is_err(),
+                "{location}"
+            );
         }
     }
     #[test]
     fn one_files_sign_in_answer_or_expired_link_is_not_account_expiry() {
-        let path = std::env::temp_dir().join(format!("nna-jinxxy-file-answer-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("nna-jinxxy-file-answer-{}", uuid::Uuid::new_v4()));
         let catalogue = Catalogue::open(&path).unwrap();
         let service = JinxxyService::new(catalogue.clone()).unwrap();
         let account = "d0140000-0000-4000-8000-000000000001";
@@ -3644,11 +3989,21 @@ mod tests {
         );
         let kept = service.file_answer(account, anyhow::anyhow!("NETWORK_UNAVAILABLE"));
         assert_eq!(kept.to_string(), "NETWORK_UNAVAILABLE");
-        assert!(service.inner.downloads.lock().unwrap().contains_key(account));
+        assert!(service
+            .inner
+            .downloads
+            .lock()
+            .unwrap()
+            .contains_key(account));
         let mapped = service.file_answer(account, anyhow::anyhow!("AUTH_REQUIRED"));
         assert_eq!(mapped.to_string(), "DOWNLOAD_RESOLVER_FAILED");
         // The next ticket verifies the account's inventory again, the account-wide evidence.
-        assert!(!service.inner.downloads.lock().unwrap().contains_key(account));
+        assert!(!service
+            .inner
+            .downloads
+            .lock()
+            .unwrap()
+            .contains_key(account));
         use reqwest::ResponseBuilderExt;
         let response = |url: &str, status: u16| {
             reqwest::Response::from(
@@ -3663,7 +4018,9 @@ mod tests {
         assert!(validate_download_response(&response(signed, 200), None).is_ok());
         for status in [401, 403] {
             assert_eq!(
-                validate_download_response(&response(signed, status), None).unwrap_err().to_string(),
+                validate_download_response(&response(signed, status), None)
+                    .unwrap_err()
+                    .to_string(),
                 "SIGNED_LINK_EXPIRED"
             );
         }
@@ -3673,13 +4030,19 @@ mod tests {
             "http://authored-cdn.example/authored.zip",
         ] {
             assert_eq!(
-                validate_download_response(&response(url, 200), None).unwrap_err().to_string(),
+                validate_download_response(&response(url, 200), None)
+                    .unwrap_err()
+                    .to_string(),
                 "UNSAFE_DOWNLOAD_URL"
             );
         }
         // The compiled flow stays bound to the origin its token was issued for.
         let issued = Url::parse("https://download.example/").unwrap();
-        assert!(validate_download_response(&response("https://download.example/compiled", 200), Some(&issued)).is_ok());
+        assert!(validate_download_response(
+            &response("https://download.example/compiled", 200),
+            Some(&issued)
+        )
+        .is_ok());
         assert!(validate_download_response(&response(signed, 200), Some(&issued)).is_err());
         drop(service);
         drop(catalogue);
@@ -4308,9 +4671,11 @@ mod tests {
             missing_selected(&selected, &BTreeSet::new()).unwrap(),
             BTreeSet::from([PRODUCT.to_owned()])
         );
-        assert!(missing_selected(&selected, &BTreeSet::from([PRODUCT.to_owned()]))
-            .unwrap()
-            .is_empty());
+        assert!(
+            missing_selected(&selected, &BTreeSet::from([PRODUCT.to_owned()]))
+                .unwrap()
+                .is_empty()
+        );
         let mixed_selected =
             json!({"type":"jinxxyUpdate","productIds":[product_id,"jinxxy:1234567890123456791"]});
         assert_eq!(
