@@ -737,10 +737,10 @@ fn clean_name(text: &str, qualifiers: &mut Vec<String>) -> String {
             || status_note(word)
             || platform_word(word.trim_matches(|c: char| !c.is_alphanumeric()))
     };
-    let Some(end) = words.iter().rposition(|word| !note(&word)) else {
+    let Some(end) = words.iter().rposition(|word| !note(word)) else {
         return String::new();
     };
-    let start = words.iter().position(|word| !note(&word)).unwrap_or(end);
+    let start = words.iter().position(|word| !note(word)).unwrap_or(end);
     let name = words[start..=end].join(" ");
     // Keep -Pure- whole, but drop a dash left over from a removed neighbour.
     match (name.starts_with(dash), name.ends_with(dash)) {

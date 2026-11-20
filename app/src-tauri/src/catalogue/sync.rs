@@ -319,42 +319,42 @@ pub fn write_entity(
         }
     }
     let mut edits: Vec<(String, Value)> = Vec::new();
-    if next.is_none() {
-        edits.push((key(kind, id, DELETED), json!(true)));
-    } else {
-        let next = next.unwrap();
-        // An ordinary edit cannot resurrect a concurrent deletion.
-        if before.is_none() || effective(doc, &key(kind, id, DELETED))?.is_none() {
-            edits.push((key(kind, id, DELETED), json!(false)));
-        }
-        for field in previous.keys().chain(next.keys()).collect::<BTreeSet<_>>() {
-            if !recreating && previous.get(field) == next.get(field) {
-                continue;
+    match next {
+        None => edits.push((key(kind, id, DELETED), json!(true))),
+        Some(next) => {
+            // An ordinary edit cannot resurrect a concurrent deletion.
+            if before.is_none() || effective(doc, &key(kind, id, DELETED))?.is_none() {
+                edits.push((key(kind, id, DELETED), json!(false)));
             }
-            if kind == "collection" && field == "productIds" {
-                let old = members(previous.get(field))?;
-                let new = members(next.get(field))?;
-                for member in old.union(&new) {
-                    if recreating || old.contains(member) != new.contains(member) {
-                        edits.push((
-                            key(kind, id, &format!("{MEMBER}{}", json!([field, member]))),
-                            json!(new.contains(member)),
-                        ));
-                    }
+            for field in previous.keys().chain(next.keys()).collect::<BTreeSet<_>>() {
+                if !recreating && previous.get(field) == next.get(field) {
+                    continue;
                 }
-                edits.push((
-                    key(kind, id, field),
-                    if next.contains_key(field) {
-                        present(&json!([]))
-                    } else {
-                        absent()
-                    },
-                ));
-            } else {
-                edits.push((
-                    key(kind, id, field),
-                    next.get(field).map(present).unwrap_or_else(absent),
-                ));
+                if kind == "collection" && field == "productIds" {
+                    let old = members(previous.get(field))?;
+                    let new = members(next.get(field))?;
+                    for member in old.union(&new) {
+                        if recreating || old.contains(member) != new.contains(member) {
+                            edits.push((
+                                key(kind, id, &format!("{MEMBER}{}", json!([field, member]))),
+                                json!(new.contains(member)),
+                            ));
+                        }
+                    }
+                    edits.push((
+                        key(kind, id, field),
+                        if next.contains_key(field) {
+                            present(&json!([]))
+                        } else {
+                            absent()
+                        },
+                    ));
+                } else {
+                    edits.push((
+                        key(kind, id, field),
+                        next.get(field).map(present).unwrap_or_else(absent),
+                    ));
+                }
             }
         }
     }
@@ -1041,6 +1041,7 @@ fn publish(folder: &Path, bytes: &[u8]) -> Result<bool> {
 
 /// Imports into a candidate first. Caller commits returned document+projection in
 /// SQLite atomically. Exported changes are replay-safe after any SQLite rollback.
+#[cfg(test)]
 pub fn exchange(doc: &mut AutoCommit, folder: &Path) -> Result<Value> {
     validate_doc(doc)?;
     let mut result = exchange_validated(doc, folder)?;

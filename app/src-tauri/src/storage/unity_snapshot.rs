@@ -38,6 +38,8 @@ pub struct UnitySnapshotEntry {
     pub path: PathBuf,
 }
 pub struct UnitySnapshot {
+    // Only tests read it, to check where the snapshot was written.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub directory: PathBuf,
     pub entries: Vec<UnitySnapshotEntry>,
 }
@@ -258,7 +260,7 @@ impl StorageService {
                     } else if remote["sourceRelativePath"].is_string() {
                         super::transfer::managed_source_path(&remote).ok()
                     } else {
-                        Some(io::managed_name(name)).filter(|_| !name.is_empty())
+                        (!name.is_empty()).then_some(io::managed_name(name))
                     };
                     if let Some(leaf) = name.and_then(|name| {
                         self.unity_leaf(&remote, &artifact, &root, "", &name, &artifact)

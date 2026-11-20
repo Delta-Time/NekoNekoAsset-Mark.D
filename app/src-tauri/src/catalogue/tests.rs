@@ -4487,7 +4487,8 @@ fn defaults_scope_r18_and_unknown_last() {
     assert_eq!(prefs["downloadConcurrency"], 6);
     c.command("preferences", json!({"patch":{"autoDownloadAll":true}}))
         .unwrap();
-    for field in ["setupComplete"] {
+    {
+        let field = "setupComplete";
         assert_eq!(
             c.command("preferences", json!({"patch":{field:true}}))
                 .unwrap_err()

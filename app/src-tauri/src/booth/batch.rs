@@ -83,6 +83,7 @@ impl<'a> RecordBatch<'a> {
         }
         Ok(result.into_values().collect())
     }
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.staged.len()
     }

@@ -12,8 +12,13 @@ pub const LETTERS: &str = "ABCDEFGHIJKLMNOPQRSTUVWX";
 macro_rules! regex {
     ($pattern:expr) => {{
         static CELL: OnceLock<Regex> = OnceLock::new();
-        CELL.get_or_init(|| Regex::new($pattern).unwrap())
+        compiled_once(&CELL, $pattern)
     }};
+}
+
+/// Compiles each `regex!` pattern once, even where the macro sits inside a loop.
+fn compiled_once(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
+    cell.get_or_init(|| Regex::new(pattern).unwrap())
 }
 
 /// One text block of the item page: the main description or a seller section.
@@ -70,10 +75,12 @@ fn text_lines(element: ElementRef, skip: Option<ElementRef>) -> String {
         match node.value() {
             Node::Text(text) => out.push_str(text),
             Node::Element(e) if e.name() == "br" => out.push('\n'),
-            Node::Element(e) if matches!(e.name(), "p" | "div" | "li" | "h2" | "h3" | "h4") => {
-                if !out.ends_with('\n') && !out.is_empty() {
-                    out.push('\n');
-                }
+            Node::Element(e)
+                if matches!(e.name(), "p" | "div" | "li" | "h2" | "h3" | "h4")
+                    && !out.ends_with('\n')
+                    && !out.is_empty() =>
+            {
+                out.push('\n')
             }
             _ => {}
         }

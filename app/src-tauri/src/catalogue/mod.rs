@@ -1637,6 +1637,7 @@ pub(super) fn validate_source_thumbnail_url(value: &str) -> Result<()> {
     Ok(())
 }
 impl Catalogue {
+    #[cfg(test)]
     pub fn open(data_dir: &Path) -> Result<Self> {
         Self::open_at(data_dir, data_dir, None, None)
     }
@@ -2085,7 +2086,7 @@ impl Catalogue {
                         return 4;
                     }
                     // Covers unspaced CJK names and filename prefixes/suffixes.
-                    tokens
+                    if tokens
                         .iter()
                         .filter(|word| {
                             word.chars().count() >= 6
@@ -2097,8 +2098,11 @@ impl Catalogue {
                                     || word.contains(s.as_str()) && s.chars().count() >= 6
                             })
                         })
-                        .then_some(3)
-                        .unwrap_or(0)
+                    {
+                        3
+                    } else {
+                        0
+                    }
                 })
                 .max()
                 .unwrap_or(0);
@@ -2122,6 +2126,7 @@ impl Catalogue {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn publish_ai_analysis(
         &self,
         product_id: &str,
@@ -2795,6 +2800,7 @@ impl Catalogue {
         Ok(())
     }
     /// Global revision and the latest revision requiring a full catalogue refresh.
+    #[cfg(test)]
     pub fn change_revisions(&self) -> Result<(u64, u64)> {
         let conn = self
             .inner
@@ -2814,6 +2820,7 @@ impl Catalogue {
     pub fn prepare_sync_document(&self) -> Result<()> {
         self.on_sync_worker(|catalogue| catalogue.flush_sync_outbox())
     }
+    #[cfg(test)]
     pub fn revision(&self) -> Result<u64> {
         let conn = self
             .inner
@@ -3581,7 +3588,7 @@ impl Catalogue {
     ) -> Result<Value> {
         let mut value = raw(tx, "preferences", "app")?.unwrap_or(json!({"id":"app"}));
         let was_complete = value["setupComplete"] == true;
-        let patch = args.get("patch").unwrap_or(&args);
+        let patch = args.get("patch").unwrap_or(args);
         ensure!(patch.is_object(), "catalogue.invalid_preferences");
         validate_ui_preferences(patch)?;
         for (k, v) in patch.as_object().unwrap() {

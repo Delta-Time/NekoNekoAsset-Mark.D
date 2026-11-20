@@ -1619,8 +1619,7 @@ impl StorageService {
         for source in extracted.source_paths {
             let records: Vec<_> = group_records
                 .iter()
-                .cloned()
-                .filter(|a| {
+                .filter(|&a| {
                     a["rootId"] == root["id"]
                         && a["relativePath"]
                             .as_str()
@@ -1628,6 +1627,7 @@ impl StorageService {
                             .as_ref()
                             == Some(&source)
                 })
+                .cloned()
                 .collect();
             if records.is_empty() || records.iter().any(|a| a["status"] != "ready") {
                 continue;

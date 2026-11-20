@@ -211,12 +211,7 @@ fn scope_owned_prices(product: &mut Value, accounts: Option<&Vec<Value>>) {
     if !product["ownedCurrentPrices"].is_array() {
         return;
     }
-    let mut current: Vec<Value> = product["ownedCurrentPrices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .cloned()
-        .collect();
+    let mut current: Vec<Value> = product["ownedCurrentPrices"].as_array().unwrap().to_vec();
     if let Some(accounts) = accounts {
         for row in &mut current {
             row["accountIds"] = json!(strings(&row["accountIds"])

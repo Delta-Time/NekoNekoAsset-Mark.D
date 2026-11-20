@@ -2746,12 +2746,10 @@ fn bundle_parent(bundle: &gumroad::LibraryBundle) -> (LibraryPurchase, ContentOb
         },
         ContentObservation {
             purchase_id: String::new(),
-            receipt_purchase_id: None,
             product_id: bundle.product_id.clone(),
             variant_id: None,
             title: bundle.label.clone(),
             acquired_at: None,
-            product_available: None,
             has_membership: false,
             files: Vec::new(),
             inventory_complete: false,
@@ -3233,7 +3231,7 @@ mod tests {
                         .shared()
                     })
                     .unwrap();
-                    async move { read.await }
+                    read
                 })
                 .buffered(2);
             let mut results = Vec::new();

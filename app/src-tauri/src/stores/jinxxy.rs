@@ -786,13 +786,7 @@ pub struct InventoryEntry {
     pub inventory_id: String,
     pub product_id: Option<String>,
     pub order_id: Option<String>,
-    pub title: Option<String>,
-    pub author: Option<String>,
-    pub source_url: Option<String>,
-    pub thumbnail_url: Option<String>,
-    pub imported_from: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
-    pub is_gift: bool,
 }
 pub struct InventoryPage {
     pub page: u64,
@@ -840,13 +834,7 @@ pub fn parse_inventory(data: &[Value], expected_page: u64) -> Result<InventoryPa
             inventory_id,
             product_id: optional_identity(&row["item"]["id"])?,
             order_id: optional_identity(&row["order"]["id"])?,
-            title: text(&row["item"]["name"]).or_else(|| text(&row["listing"]["name"])),
-            author: text(&row["item"]["user"]["username"]),
-            source_url: product_url(&row["item"]),
-            thumbnail_url: public_url(&row["item"]["cover"]["url"]),
-            imported_from: text(&row["imported_from"]),
             created_at: date(&row["created_at"]),
-            is_gift: row["isGift"] == true,
         });
     }
     Ok(InventoryPage { page, pages, items })
@@ -2972,13 +2960,7 @@ mod tests {
             inventory_id: inventory.into(),
             product_id: product.map(str::to_owned),
             order_id: None,
-            title: None,
-            author: None,
-            source_url: None,
-            thumbnail_url: None,
-            imported_from: None,
             created_at: None,
-            is_gift: false,
         };
         let malformed = entry("1234567890123456701", Some("1234567890123456711"));
         let healthy = entry("1234567890123456702", Some("1234567890123456712"));
@@ -3070,13 +3052,7 @@ mod tests {
             inventory_id: inventory.into(),
             product_id: product.map(str::to_owned),
             order_id: None,
-            title: None,
-            author: None,
-            source_url: None,
-            thumbnail_url: None,
-            imported_from: None,
             created_at: None,
-            is_gift: false,
         };
         let (mut incomplete, mut unresolved, mut unbound) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());

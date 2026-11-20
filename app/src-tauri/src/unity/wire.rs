@@ -33,6 +33,8 @@ pub struct Registry {
     capability: String,
     pub heartbeat_utc: String,
     pub enabled: bool,
+    // Required in a valid registry; the live busy state comes from each Bridge reply.
+    #[allow(dead_code)]
     pub busy: bool,
 }
 
@@ -666,7 +668,7 @@ fn validate_transfer_response(
     registry: &Registry,
     request: &RequestIdentity,
 ) -> Result<()> {
-    validate_response(&response, registry, Some(request))?;
+    validate_response(response, registry, Some(request))?;
     // After accepted, an error envelope alone cannot prove durable staging or safe cleanup.
     if response.receipt.is_none() {
         return Err(anyhow!("UNITY_INVALID_RESPONSE"));

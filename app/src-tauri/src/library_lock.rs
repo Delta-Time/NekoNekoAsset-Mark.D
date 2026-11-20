@@ -17,6 +17,7 @@ impl LibraryLock {
     }
 
     /// A setup probe must not materialize even a lock file in its candidate.
+    #[cfg(test)]
     pub(crate) fn acquire_existing(root: &Path) -> Result<Self> {
         Self::acquire_with_create(root, false)
     }

@@ -439,24 +439,20 @@ pub(super) fn job_changes_product(before: Option<&Value>, after: Option<&Value>)
     if !before.is_some_and(file_job) && !after.is_some_and(file_job) {
         return false;
     }
-    match (before, after) {
-        (Some(before), Some(after))
-            if [
-                "productId",
-                "productIds",
-                "completedProductIds",
-                "type",
-                "state",
-                "errorCode",
-            ]
-            .iter()
-            .all(|field| before[*field] == after[*field])
-                && matches!(text(after, "state"), "queued" | "running") =>
-        {
-            false
-        }
-        _ => true,
-    }
+    let (Some(before), Some(after)) = (before, after) else {
+        return true;
+    };
+    let unchanged = [
+        "productId",
+        "productIds",
+        "completedProductIds",
+        "type",
+        "state",
+        "errorCode",
+    ]
+    .iter()
+    .all(|field| before[*field] == after[*field]);
+    !(unchanged && matches!(text(after, "state"), "queued" | "running"))
 }
 
 fn latest_file_job(jobs: &[Value]) -> Option<&Value> {
@@ -1449,11 +1445,11 @@ fn store_projection(conn: &Connection, p: &Value) -> Result<()> {
         return Ok(());
     }
     let mut terms = vec![
-        text(&p, "id").to_owned(),
-        text(&p, "title").to_owned(),
-        text(&p, "sourceTitle").to_owned(),
-        text(&p, "shop").to_owned(),
-        text(&p, "note").to_owned(),
+        text(p, "id").to_owned(),
+        text(p, "title").to_owned(),
+        text(p, "sourceTitle").to_owned(),
+        text(p, "shop").to_owned(),
+        text(p, "note").to_owned(),
     ];
     terms.extend(strings(&p["tags"]));
     terms.extend(strings(&p["ownedAvatars"]));
@@ -1467,11 +1463,11 @@ fn store_projection(conn: &Connection, p: &Value) -> Result<()> {
     let search = normalized(&expanded.join(" "));
     let scope = text(&p["categoryInference"], "scope");
     let in_all = if p["categoryOverride"] == true || p["aiCategoryApplied"] == true {
-        text(&p, "category") != "NonVRChat"
+        text(p, "category") != "NonVRChat"
     } else {
-        scope != "other" && (text(&p, "category") != "NonVRChat" || scope == "vrchat")
+        scope != "other" && (text(p, "category") != "NonVRChat" || scope == "vrchat")
     };
-    conn.execute("INSERT INTO products(id,body,summary,category,status,sensitive,downloaded,title,acquired,price,search,in_all) VALUES(?1,?2,?12,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET body=excluded.body,summary=excluded.summary,category=excluded.category,status=excluded.status,sensitive=excluded.sensitive,downloaded=excluded.downloaded,title=excluded.title,acquired=excluded.acquired,price=excluded.price,search=excluded.search,in_all=excluded.in_all",params![id,body,text(&p,"category"),text(&p,"status"),p["sensitive"]==true,p["fullyDownloaded"]==true,normalized(text(&p,"title")),p["acquiredSortKey"].as_str(),p["price"].as_f64(),search,in_all,serde_json::to_string(&summary(p))?])?;
+    conn.execute("INSERT INTO products(id,body,summary,category,status,sensitive,downloaded,title,acquired,price,search,in_all) VALUES(?1,?2,?12,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET body=excluded.body,summary=excluded.summary,category=excluded.category,status=excluded.status,sensitive=excluded.sensitive,downloaded=excluded.downloaded,title=excluded.title,acquired=excluded.acquired,price=excluded.price,search=excluded.search,in_all=excluded.in_all",params![id,body,text(p,"category"),text(p,"status"),p["sensitive"]==true,p["fullyDownloaded"]==true,normalized(text(p,"title")),p["acquiredSortKey"].as_str(),p["price"].as_f64(),search,in_all,serde_json::to_string(&summary(p))?])?;
     if previous.as_ref().is_some_and(|(_, old)| *old == search) {
         return Ok(());
     }

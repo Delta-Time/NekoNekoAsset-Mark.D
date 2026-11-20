@@ -108,7 +108,7 @@ impl StorageService {
         // Store products' current download lists; local products have none.
         let mut offered: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         for a in artifacts {
-            let root_id = io::required_string(&a, "rootId")?;
+            let root_id = io::required_string(a, "rootId")?;
             if root_filter.is_some_and(|id| id != root_id) {
                 continue;
             }
@@ -134,7 +134,7 @@ impl StorageService {
                 // A kept store file, one the store dropped or refused, exports its
                 // downloaded original even where extraction failed; the store's own
                 // files must be ready.
-                let product = io::required_string(&a, "productId")?;
+                let product = io::required_string(a, "productId")?;
                 if a["status"] != "ready" && !offered.contains_key(product) {
                     let ids = if self
                         .catalogue
@@ -170,13 +170,13 @@ impl StorageService {
                 );
             }
             if a["originalAvailable"] == true && (!usable_only || a["extractedPath"].is_null()) {
-                let rel = io::required_string(&a, "relativePath")?;
+                let rel = io::required_string(a, "relativePath")?;
                 if seen.insert((root_id.to_owned(), rel.to_owned())) {
                     result.push(PayloadSource {
                         root_id: root_id.to_owned(),
                         relative_path: rel.to_owned(),
                         source_path: io::safe_join(&root_path, rel)?,
-                        expected_hash: Some(io::required_string(&a, "hash")?.to_owned()),
+                        expected_hash: Some(io::required_string(a, "hash")?.to_owned()),
                         is_directory: false,
                     });
                 }
@@ -215,7 +215,7 @@ impl StorageService {
             {
                 continue;
             }
-            let id = io::required_string(&product, "id")?;
+            let id = io::required_string(product, "id")?;
             let Some(artifact) = artifacts.iter().find(|a| a["productId"] == id) else {
                 continue;
             };
@@ -820,7 +820,7 @@ impl StorageService {
             ),
             "file_not_usable"
         );
-        let path = io::safe_join(&root, io::required_string(&artifact, "relativePath")?)?;
+        let path = io::safe_join(root, io::required_string(artifact, "relativePath")?)?;
         // Archive filename actions prefer completed extraction, independently of
         // whether an original was retained or has since become damaged.
         if artifact["status"] == "ready" && archive::is_supported_archive(&path) {

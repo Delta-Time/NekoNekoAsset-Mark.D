@@ -515,6 +515,8 @@ pub fn public_metadata(value: &Value, id: &str) -> Result<Value> {
 pub(super) fn gift_accepted_date(value: &Value, id: &str) -> Option<String> {
     let same_item = match value.get("id")? {
         Value::String(actual) => actual == id,
+        // A numeric id matches by its JSON text; `Value == &str` only matches strings.
+        #[allow(clippy::cmp_owned)]
         actual => actual.to_string() == id,
     };
     if !same_item {

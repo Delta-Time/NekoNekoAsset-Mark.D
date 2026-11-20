@@ -426,6 +426,7 @@ fn document_rank(name: &str) -> u8 {
 }
 
 /// Text of a PDF, a plain-text file, or the PDFs and text files inside a ZIP.
+#[cfg(test)]
 pub fn file_texts(bytes: &[u8]) -> Vec<String> {
     read_file(bytes).0
 }

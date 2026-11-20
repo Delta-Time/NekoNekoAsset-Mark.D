@@ -1726,12 +1726,12 @@ fn romanize_kana(clean: &str) -> String {
             .get(index + 1)
             .filter(|c| matches!(c, 'ゃ' | 'ゅ' | 'ょ'))
         {
-            if base.ends_with('i') {
+            if let Some(without_i) = base.strip_suffix('i') {
                 let stem = match base {
                     "shi" => "sh",
                     "chi" => "ch",
                     "ji" => "j",
-                    _ => &base[..base.len() - 1],
+                    _ => without_i,
                 };
                 syllable = format!(
                     "{}{}{}",
@@ -1886,6 +1886,7 @@ pub fn canonical_tag(text: &str) -> String {
 
 /// Caller keeps the returned raw spelling and owns durable overlay/rejection
 /// persistence. This only de-duplicates equivalents and applies explicit rejection.
+#[cfg(test)]
 pub fn effective_tags(source: &[String], user: &[String], rejected: &[String]) -> Vec<String> {
     let rejected: BTreeSet<_> = rejected.iter().map(|tag| canonical_tag(tag)).collect();
     let mut seen = BTreeSet::new();

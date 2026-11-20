@@ -135,10 +135,10 @@ impl Catalogue {
                 }).collect();
                 let removed_files: BTreeSet<_> = sources.iter().filter(|(kind, _, _)| kind == "remote_file").map(|(_, id, _)| id.clone()).collect();
                 for product_id in &candidates {
-                    let Some(product) = raw(tx, "product", &product_id)? else { continue };
+                    let Some(product) = raw(tx, "product", product_id)? else { continue };
                     let mut shared = product["provider"] == "local" || product["custom"] == true;
                     for kind in ACCOUNT_SOURCE_KINDS {
-                        shared |= related(tx, kind, &product_id)?.iter().any(|record| {
+                        shared |= related(tx, kind, product_id)?.iter().any(|record| {
                             // Accountless/manual source facts must not be lost either.
                             record["accountId"].as_str() != Some(id)
                         });

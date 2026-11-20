@@ -431,7 +431,7 @@ pub async fn jinxxy_english(window: WebviewWindow) -> Result<()> {
         for attempt in 0..20 {
             if attempt % 5 == 0 {
                 window
-                    .eval(&format!(
+                    .eval(format!(
                         "document.cookie = {};",
                         serde_json::to_string(JINXXY_ENGLISH_PREFERENCE).unwrap()
                     ))

@@ -47,6 +47,15 @@ regex = "1"
 # License filter: text of VN3 generator PDFs, through its own ToUnicode maps. Pure Rust, MIT.
 lopdf = { version = "0.36", default-features = false }
 
+[lints.clippy]
+# Long signatures and nested types are left until the largest functions are split.
+too_many_arguments = "allow"
+type_complexity = "allow"
+# `&[id.clone()]` reads more plainly than `std::slice::from_ref(&id)`.
+cloned_ref_to_slice_refs = "allow"
+# Read-only flags are cleared only on Windows, where that grants no wider access.
+permissions_set_readonly_false = "allow"
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 # Local OS phonetic reading for Japanese avatar names; no network or model lookup.

@@ -662,7 +662,7 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 4096];
-                socket.read(&mut bytes).await.unwrap();
+                let _request = socket.read(&mut bytes).await.unwrap();
                 socket.write_all(response.as_bytes()).await.unwrap();
             });
             let client = Client::builder()
@@ -701,7 +701,7 @@ mod tests {
             ] {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 4096];
-                socket.read(&mut bytes).await.unwrap();
+                let _request = socket.read(&mut bytes).await.unwrap();
                 socket.write_all(response).await.unwrap();
             }
         });
@@ -737,7 +737,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 4096];
-            socket.read(&mut bytes).await.unwrap();
+            let _request = socket.read(&mut bytes).await.unwrap();
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
         });
         let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
@@ -771,7 +771,7 @@ mod tests {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 tokio::spawn(async move {
                     let mut bytes = [0; 4096];
-                    socket.read(&mut bytes).await.unwrap();
+                    let _request = socket.read(&mut bytes).await.unwrap();
                     tokio::time::sleep(Duration::from_millis(3750)).await;
                     socket
                         .write_all(
@@ -870,7 +870,7 @@ mod tests {
             for attempt in 0..3 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 4096];
-                socket.read(&mut bytes).await.unwrap();
+                let _request = socket.read(&mut bytes).await.unwrap();
                 let response = if attempt < 2 {
                     b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice()
                 } else {

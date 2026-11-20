@@ -316,7 +316,7 @@ pub fn normalize_output(
             &mut category.evidence_refs,
             &category.basis,
             category.confidence,
-            &known,
+            known,
         )?;
     }
     ensure!(
@@ -328,7 +328,7 @@ pub fn normalize_output(
     for tag in &mut output.tags {
         bounded(&tag.label, 160, false)?;
         tag.label = tag.label.trim().to_owned();
-        proof(&mut tag.evidence_refs, &tag.basis, tag.confidence, &known)?;
+        proof(&mut tag.evidence_refs, &tag.basis, tag.confidence, known)?;
     }
     for alias in &mut output.tag_aliases {
         bounded(&alias.from, 160, false)?;
@@ -339,7 +339,7 @@ pub fn normalize_output(
             &mut alias.evidence_refs,
             &alias.basis,
             alias.confidence,
-            &known,
+            known,
         )?;
     }
     for candidate in &mut output.source_url_candidates {
@@ -349,7 +349,7 @@ pub fn normalize_output(
             &mut candidate.evidence_refs,
             &candidate.basis,
             candidate.confidence,
-            &known,
+            known,
         )?;
     }
     let key = crate::taxonomy::canonical_tag;

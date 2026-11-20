@@ -601,7 +601,7 @@ mod tests {
         let mut b = base();
         b.rows[5] = with_file(1, "700001");
         assert!(b.usable("synthetic", "library"));
-        let same_order = vec![
+        let same_order = [
             row(0),
             row(1),
             row(2),

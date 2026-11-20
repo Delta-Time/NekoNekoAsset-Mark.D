@@ -3846,7 +3846,7 @@ mod tests {
         let header = "<b>発送通知コメント</b>";
         let pair = format!("{header}<div>PRIVATE</div>");
         let mut cases: Vec<_> = [
-            format!("<div class='sheet'><div class='text-14'><div>発送通知コメント</div><div>PRIVATE</div></div></div>"),
+            "<div class='sheet'><div class='text-14'><div>発送通知コメント</div><div>PRIVATE</div></div></div>".to_string(),
             format!("<div class='sheet'><div>PRIVATE_BODY<div>{pair}</div></div></div>"),
             format!("<div class='sheet'><div> <div>{pair}</div></div></div>"),
             format!("<div class='sheet'><div><span>PRIVATE_UNKNOWN_HEADING</span><div>{pair}</div></div></div>"),
@@ -3856,11 +3856,11 @@ mod tests {
             "<div class='sheet'><div>発送通知コメント</div><p>PRIVATE<br><br><br></p></div>".to_string(),
             "<div class='sheet'><b><span>発送通知コメント</span></b><p>PRIVATE<br><br><br></p></div>".to_string(),
             format!("<div class='sheet'>{header}<section>PRIVATE<br><br><br></section></div>"),
-            format!("<div class='sheet'><b data-id='900003'>発送通知コメント</b><div>PRIVATE</div></div>"),
+            "<div class='sheet'><b data-id='900003'>発送通知コメント</b><div>PRIVATE</div></div>".to_string(),
             // Relative links resolve to the account host, which is not an item host.
-            format!("<div class='sheet'><b><a href='/items/900003'>発送通知コメント</a></b><div>PRIVATE</div></div>"),
+            "<div class='sheet'><b><a href='/items/900003'>発送通知コメント</a></b><div>PRIVATE</div></div>".to_string(),
         ].into_iter().collect();
-        cases.push(format!("<div class='sheet'><b><a href='https://booth.pm/ja/items/900003'>発送通知コメント</a></b><div>PRIVATE</div></div>"));
+        cases.push("<div class='sheet'><b><a href='https://booth.pm/ja/items/900003'>発送通知コメント</a></b><div>PRIVATE</div></div>".to_string());
         for notice in cases {
             let fragment = Html::parse_fragment(&notice);
             assert!(known_notice_prefix(fragment.select(&sel(".sheet")).next().unwrap()).is_none());
@@ -4550,7 +4550,7 @@ mod tests {
             page.rows[0].files[0].source_url,
             "https://booth.pm/downloadables/700001?variation_id=800001"
         );
-        assert_eq!(page.rows[0].manifest_complete, true);
+        assert!(page.rows[0].manifest_complete);
     }
     #[test]
     fn receipt_dropdowns_cover_every_file_without_counting_alternate_methods_twice() {

@@ -269,6 +269,7 @@ pub struct LibraryBundle {
 }
 
 /// Expected page/archive scope must match the returned props; stale Inertia state cannot certify a page.
+#[cfg(test)]
 pub fn parse_library_props(
     props: &Value,
     base: &Url,
@@ -420,12 +421,10 @@ pub struct FileObservation {
 #[derive(Clone)]
 pub struct ContentObservation {
     pub purchase_id: String,
-    pub receipt_purchase_id: Option<String>,
     pub product_id: String,
     pub variant_id: Option<String>,
     pub title: Option<String>,
     pub acquired_at: Option<DateTime<Utc>>,
-    pub product_available: Option<bool>,
     pub has_membership: bool,
     pub files: Vec<FileObservation>,
     pub inventory_complete: bool,
@@ -451,7 +450,6 @@ impl ContentObservation {
 fn file_items(
     items: &[Value],
     folders: &[String],
-    base: &Url,
     files: &mut Vec<FileObservation>,
     seen: &mut BTreeSet<String>,
     unresolved: &mut usize,
@@ -474,7 +472,7 @@ fn file_items(
                 };
                 let mut path = folders.to_vec();
                 path.push(name);
-                file_items(children, &path, base, files, seen, unresolved, depth + 1)?;
+                file_items(children, &path, files, seen, unresolved, depth + 1)?;
             }
             Some("file") => {
                 let Ok(file_id) = identifier(&item["id"]) else {
@@ -577,7 +575,6 @@ pub fn parse_content_props(
         Some(items) => file_items(
             items,
             &[],
-            base,
             &mut files,
             &mut BTreeSet::new(),
             &mut unsupported_items,
@@ -629,11 +626,9 @@ pub fn parse_content_props(
         purchase_id,
         product_id,
         // Unused beyond this observation, so an unreadable value is unknown, not a failure.
-        receipt_purchase_id: identifier(&purchase["receipt_purchase_id"]).ok(),
         variant_id: optional_id(&purchase["variant_id"])?,
         title: optional_text(&purchase["product_name"]),
         acquired_at,
-        product_available: purchase["product_available"].as_bool(),
         has_membership: purchase["membership"].is_object(),
         inventory_complete: unsupported_items == 0,
         unsupported_items,

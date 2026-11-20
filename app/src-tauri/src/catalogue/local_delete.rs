@@ -42,13 +42,8 @@ impl Catalogue {
                     .collect();
                 if retained.len() != members.len() {
                     collection["productIds"] = json!(retained);
-                    Self::write(
-                        tx,
-                        projections,
-                        "collection",
-                        &text(&collection, "id").to_owned(),
-                        Some(collection),
-                    )?;
+                    let id = text(&collection, "id").to_owned();
+                    Self::write(tx, projections, "collection", &id, Some(collection))?;
                 }
             }
             // A later retry of a partial batch import must not recreate a deleted
@@ -101,13 +96,8 @@ impl Catalogue {
                     Self::write(tx, projections, "job", &import_id, Some(import))?;
                 }
             }
-            Self::write(
-                tx,
-                projections,
-                "job",
-                &text(&job, "id").to_owned(),
-                Some(job),
-            )?;
+            let id = text(&job, "id").to_owned();
+            Self::write(tx, projections, "job", &id, Some(job))?;
             Ok(())
         })
     }

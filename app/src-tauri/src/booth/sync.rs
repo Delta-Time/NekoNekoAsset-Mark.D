@@ -3050,22 +3050,17 @@ impl BoothService {
                 early.published.insert(product);
                 continue;
             }
-            if let Some(observation) = early.observations.get(&product) {
-                match observation {
-                    Ok(patch) => {
-                        for entry in early.publications.products.get_mut(&product).unwrap() {
-                            if publication_entry_published(entry, &early.publications.checkpoints) {
-                                continue;
-                            }
-                            entry
-                                .draft
-                                .as_object_mut()
-                                .unwrap()
-                                .extend(patch.as_object().unwrap().clone());
-                            entry.needs_enrichment = false;
-                        }
+            if let Some(Ok(patch)) = early.observations.get(&product) {
+                for entry in early.publications.products.get_mut(&product).unwrap() {
+                    if publication_entry_published(entry, &early.publications.checkpoints) {
+                        continue;
                     }
-                    Err(_) => {}
+                    entry
+                        .draft
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(patch.as_object().unwrap().clone());
+                    entry.needs_enrichment = false;
                 }
             }
             let entries = &early.publications.products[&product];
@@ -4362,6 +4357,7 @@ fn patched_product_fields(
     }
     Some(updated)
 }
+#[cfg(test)]
 fn saved_product_line_binding(saved: &[parser::Row], fresh: &parser::Row) -> bool {
     let Some(keys) = parser::diagnostic_digital_file_keys(fresh) else {
         return false;
@@ -6229,7 +6225,7 @@ mod tests {
             vec!["900001"]
         );
         assert!(early.publications.products["900002"][0].needs_enrichment);
-        assert!(early.publications.additive_versions.get("900002").is_none());
+        assert!(!early.publications.additive_versions.contains_key("900002"));
         assert!(catalogue.get("product", "900002").unwrap().is_none());
         // An unrelated completed observation is not reconsidered on this callback.
         early
@@ -8944,7 +8940,7 @@ mod tests {
     #[test]
     fn source_queue_numeric_not_lexical() {
         assert_eq!(
-            next_route(&vec![
+            next_route(&[
                 "/library?page=10".into(),
                 "/library?page=2".into(),
                 "/orders/1".into()

@@ -15,7 +15,6 @@ mod shared;
 mod tests;
 mod transfer;
 mod unity_snapshot;
-pub use unity_snapshot::{UnityLeaf, UnitySnapshot, UnitySnapshotEntry};
 
 pub(crate) fn checked_library_root(path: &Path) -> Result<PathBuf> {
     ensure!(path.is_absolute(), "root_offline");
@@ -113,12 +112,15 @@ fn adaptive_download_count(
     let syncing = provider.is_some_and(|provider| {
         jobs.iter().any(|job| {
             matches!(job["state"].as_str(), Some("queued" | "running"))
-                && match (provider, job["type"].as_str()) {
+                && matches!(
+                    (provider, job["type"].as_str()),
                     (StoreProvider::Booth, Some("boothSync" | "boothUpdate"))
-                    | (StoreProvider::Gumroad, Some("gumroadSync" | "gumroadUpdate"))
-                    | (StoreProvider::Jinxxy, Some("jinxxySync" | "jinxxyUpdate")) => true,
-                    _ => false,
-                }
+                        | (
+                            StoreProvider::Gumroad,
+                            Some("gumroadSync" | "gumroadUpdate")
+                        )
+                        | (StoreProvider::Jinxxy, Some("jinxxySync" | "jinxxyUpdate"))
+                )
         })
     });
     if syncing {
@@ -768,7 +770,7 @@ impl StorageService {
                 continue;
             }
             let files = self.catalogue.related("remote_file", id)?;
-            let entitlements = self.catalogue.effective_entitlements(&id)?;
+            let entitlements = self.catalogue.effective_entitlements(id)?;
             let (files, _) = file_manifest(files, &entitlements);
             let files: Vec<_> = files
                 .into_iter()

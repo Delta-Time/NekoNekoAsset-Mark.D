@@ -440,21 +440,6 @@ impl AiService {
             .ok_or_else(|| anyhow!("ai_key_missing"))
     }
 
-    pub async fn analyze(&self, input: &AnalysisInput) -> Result<AnalysisOutput> {
-        self.analyze_impl(input, false, &[], None).await
-    }
-
-    pub async fn organize(&self, input: &AnalysisInput) -> Result<AnalysisOutput> {
-        self.analyze_impl(input, true, &[], None).await
-    }
-
-    pub async fn analyze_with_images(
-        &self,
-        input: &AnalysisInput,
-        images: &[AiImage],
-    ) -> Result<AnalysisOutput> {
-        self.analyze_impl(input, false, images, None).await
-    }
     pub async fn analyze_with_images_for_config(
         &self,
         input: &AnalysisInput,
@@ -521,17 +506,6 @@ impl AiService {
         );
         let value = post_config_json(&config, key, &payload, 60, 128 * 1024).await?;
         analysis_response(&value, &input, tag_only)
-    }
-
-    pub async fn reply(
-        &self,
-        system: &str,
-        messages: &[AiMessage],
-        images: &[AiImage],
-        schema: Option<&Value>,
-    ) -> Result<String> {
-        self.reply_impl(system, messages, images, schema, None)
-            .await
     }
 
     pub async fn reply_for_config(
@@ -861,6 +835,7 @@ fn analysis_response(
     Ok(output)
 }
 
+#[cfg(test)]
 async fn post_json(
     key: String,
     payload: &Value,

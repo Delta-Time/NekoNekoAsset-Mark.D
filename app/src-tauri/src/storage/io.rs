@@ -535,6 +535,12 @@ fn windows_shell_path(path: &str) -> Result<String> {
     }
     Ok(path.to_owned())
 }
+pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    match value[field].as_str() {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => bail!("invalid_arguments"),
+    }
+}
 
 #[cfg(test)]
 mod launch_path_tests {
@@ -692,11 +698,5 @@ mod launch_path_tests {
         assert_eq!(tree_bytes(&library).unwrap(), 4099);
         fs::remove_dir(link).unwrap();
         fs::remove_dir_all(root).unwrap();
-    }
-}
-pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
-    match value[field].as_str() {
-        Some(s) if !s.is_empty() => Ok(s),
-        _ => bail!("invalid_arguments"),
     }
 }

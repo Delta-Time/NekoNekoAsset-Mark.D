@@ -317,15 +317,13 @@ impl UnityService {
                     .get(&args.job_id)?
                     .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
                 ensure!(self.requests.is_local(&record), "UNITY_OTHER_DEVICE");
-                if action == "cancel" {
-                    if !terminal(&record.phase) {
-                        self.cancellations
-                            .lock()
-                            .await
-                            .entry(args.job_id.clone())
-                            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
-                            .store(true, Ordering::Release);
-                    }
+                if action == "cancel" && !terminal(&record.phase) {
+                    self.cancellations
+                        .lock()
+                        .await
+                        .entry(args.job_id.clone())
+                        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+                        .store(true, Ordering::Release);
                 }
                 if !record.bytes_started {
                     return Ok(details(&record));

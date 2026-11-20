@@ -1,6 +1,6 @@
 use anyhow::{anyhow, ensure, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use image::{codecs::jpeg::JpegEncoder, GenericImageView, ImageFormat, ImageReader, Limits};
+use image::{codecs::jpeg::JpegEncoder, ImageFormat, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
@@ -115,6 +115,7 @@ pub fn normalize_images(images: &[AiImage]) -> Result<Vec<AiImage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::GenericImageView;
     #[test]
     fn phone_photo_orientation_is_applied_before_metadata_is_removed() {
         let mut jpeg = vec![];
