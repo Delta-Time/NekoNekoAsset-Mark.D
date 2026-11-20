@@ -49,10 +49,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test_release.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build frontend
+      - name: Check and build frontend
         working-directory: app
         run: |
           pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec biome ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

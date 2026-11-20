@@ -33,8 +33,6 @@ import {
   statusKeys,
   isProductDownloaded,
   getProductDisplayStatus,
-  sensitiveMatches,
-  accountMatches,
   defaultSortDirection,
   thumbnailSizes,
   resultGeometry,
@@ -86,13 +84,7 @@ import ActivityHistory from './ActivityHistory';
 import { uxText } from './ux-i18n';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
 import ThemePicker, { defaultThemeOptions, themeDisplayName } from './ThemePicker';
-import Workflows, {
-  WorkflowContent,
-  LibraryAccess,
-  isStoreJob,
-  isStoreSyncJob,
-  syncProgressLabel,
-} from './Workflows';
+import Workflows, { WorkflowContent, LibraryAccess, isStoreJob, isStoreSyncJob } from './Workflows';
 import type { ImportSeed } from './Workflows';
 import type { UnitySeed } from './UnityWorkflow';
 import { unityError } from './unity-i18n';
@@ -353,10 +345,6 @@ import type {
   LibraryStatus,
   ProductOverlayChange,
 } from './backend';
-import { progressPercent } from './backend';
-const unfinishedLocalImport = (job: NativeJob) =>
-  job.type === 'storage:import_local' &&
-  (!job.productIds?.length || job.productIds.some((id) => !job.completedProductIds?.includes(id)));
 const configuredLibraryRoot = (state: Pick<NativeState, 'roots' | 'preferences'>) =>
   typeof state.preferences.libraryRootId === 'string'
     ? state.roots.find((root) => root.id === state.preferences.libraryRootId)
@@ -3640,73 +3628,71 @@ export default function App() {
           {view === 'activity' ? (
             activity
           ) : view === 'ai-suggestions' ? null : (
-            <>
-              <div className="result-layout">
-                <section
-                  className="result-workspace"
-                  onKeyDown={resultKeys}
-                  onDragOver={(e) => {
-                    if (e.dataTransfer.types.includes('Files')) {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = 'copy';
+            <div className="result-layout">
+              <section
+                className="result-workspace"
+                onKeyDown={resultKeys}
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes('Files')) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                  }
+                }}
+                onDrop={(e) => e.preventDefault()}
+              >
+                {toolbar}
+                {filtered.length ? (
+                  <Results
+                    items={filtered}
+                    size={thumb}
+                    density={density}
+                    state={scrollState.current}
+                    activeId={focusId}
+                    metadataCount={
+                      Number(cardColumns.includes('shop')) +
+                      Number(cardColumns.includes('acquired'))
                     }
-                  }}
-                  onDrop={(e) => e.preventDefault()}
-                >
-                  {toolbar}
-                  {filtered.length ? (
-                    <Results
-                      items={filtered}
-                      size={thumb}
-                      density={density}
-                      state={scrollState.current}
-                      activeId={focusId}
-                      metadataCount={
-                        Number(cardColumns.includes('shop')) +
-                        Number(cardColumns.includes('acquired'))
-                      }
-                      render={item}
-                      gestures={
-                        oneHandedDrag
-                          ? {
-                              selected: selectedSet,
-                              select: (ids, first) => {
-                                setSelected(ids);
-                                if (first) anchor.current = first;
-                              },
-                              drop: (ids, category) =>
-                                run(
-                                  userPatch(ids, { category, categoryOverride: true }).then(() =>
-                                    notify(
-                                      q('movedToCategory')
-                                        .replace('{count}', ids.length.toLocaleString(locale))
-                                        .replace('{category}', categoryLabel(category)),
-                                    ),
+                    render={item}
+                    gestures={
+                      oneHandedDrag
+                        ? {
+                            selected: selectedSet,
+                            select: (ids, first) => {
+                              setSelected(ids);
+                              if (first) anchor.current = first;
+                            },
+                            drop: (ids, category) =>
+                              run(
+                                userPatch(ids, { category, categoryOverride: true }).then(() =>
+                                  notify(
+                                    q('movedToCategory')
+                                      .replace('{count}', ids.length.toLocaleString(locale))
+                                      .replace('{category}', categoryLabel(category)),
                                   ),
                                 ),
-                            }
-                          : null
-                      }
-                    />
-                  ) : resultsPending ? (
-                    <div className="empty-state results-loading" role="status">
-                      <LoaderCircle size={25} className="progress-spin" aria-hidden="true" />
-                      <h2>{q(loaded && query.search.trim() ? 'searching' : 'loading')}</h2>
-                    </div>
-                  ) : (
-                    <div className="empty-state">
-                      <Search size={25} />
-                      <h2>{q(!catalogueTotal ? 'emptyLibrary' : 'noResults')}</h2>
-                      {products.length > 0 && (
-                        <Button onClick={clearFilters}>{q('clearFilters')}</Button>
-                      )}
-                    </div>
-                  )}
-                  {footer}
-                </section>
-                {inspector && inspectorPane}
-              </div>
-            </>
+                              ),
+                          }
+                        : null
+                    }
+                  />
+                ) : resultsPending ? (
+                  <div className="empty-state results-loading" role="status">
+                    <LoaderCircle size={25} className="progress-spin" aria-hidden="true" />
+                    <h2>{q(loaded && query.search.trim() ? 'searching' : 'loading')}</h2>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    <Search size={25} />
+                    <h2>{q(!catalogueTotal ? 'emptyLibrary' : 'noResults')}</h2>
+                    {products.length > 0 && (
+                      <Button onClick={clearFilters}>{q('clearFilters')}</Button>
+                    )}
+                  </div>
+                )}
+                {footer}
+              </section>
+              {inspector && inspectorPane}
+            </div>
           )}
         </main>
       </div>

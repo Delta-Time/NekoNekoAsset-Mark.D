@@ -139,8 +139,7 @@ const validColor = (color: unknown): color is string =>
 export function parseThemeConfig(text: string): Record<string, string> {
   const value = JSON.parse(text);
   if (
-    !value ||
-    value.format !== 'NekoNekoAsset.Theme' ||
+    value?.format !== 'NekoNekoAsset.Theme' ||
     value.version !== 1 ||
     !value.tokens ||
     typeof value.tokens !== 'object' ||
