@@ -1735,13 +1735,17 @@ impl Catalogue {
             is_sync_worker: false,
         };
         // Downloads a store stopped offering before 0.3.5 left Files while their
-        // bytes stayed. List them once; later opens find none.
-        let unlisted = projection::unlisted_kept_files(
-            &*this
+        // bytes stayed, and before 0.3.13 a file its store refused stayed listed
+        // with nothing on disk. Refresh those once; later opens find none.
+        let unlisted: BTreeSet<String> = {
+            let conn = this
                 .inner
                 .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-        )?;
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+            let mut ids = projection::unlisted_kept_files(&conn)?;
+            ids.extend(projection::listed_refused_files(&conn)?);
+            ids.into_iter().collect()
+        };
         if !unlisted.is_empty() {
             this.mutate(|tx, projections| {
                 for id in &unlisted {

@@ -313,6 +313,24 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
+/// Store products whose projection predates leaving out refused files: a file the
+/// store refused as no longer offered is listed with nothing of it on disk.
+pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT a.product_id FROM entities a
+         JOIN products p ON p.id=a.product_id, json_each(p.body,'$.files') f
+         WHERE a.kind='artifact'
+           AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
+           AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
+           AND COALESCE(json_extract(f.value,'$.kept'),0)=0
+           AND COALESCE(json_extract(f.value,'$.status'),'') NOT IN
+             ('ready','downloaded','extracting','extractionFailed','missing')",
+    )?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
 fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
     values.collect::<BTreeSet<_>>().into_iter().collect()
 }
@@ -348,6 +366,10 @@ fn offered_sources(
         .filter(|file| file["originKind"] != "local" && !text(file, "sourceFileId").is_empty())
         .map(source_key)
         .collect()
+}
+/// The store refused this file as no longer offered on its last download.
+fn refused_download(artifact: &Value) -> bool {
+    text(artifact, "errorCode") == "store_file_unavailable"
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     artifact["attentionDismissed"] != true && artifact_failed(artifact)
@@ -446,6 +468,15 @@ fn job_needs_attention(job: &Value, product: &str) -> bool {
     matches!(text(job, "state"), "failed" | "needsAction")
         && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
         && !strings(&job["attentionDismissed"]).iter().any(|id| id == product)
+        && !only_refused(job)
+}
+
+/// A download that failed only on files its store no longer offers leaves nothing
+/// to retry: a product download never asks for them again.
+fn only_refused(job: &Value) -> bool {
+    job["failures"].as_object().is_some_and(|failures| {
+        !failures.is_empty() && failures.values().all(refused_download)
+    })
 }
 
 /// Records to rewrite so one product's current failures stop raising Attention. No
@@ -541,8 +572,8 @@ fn refresh_local(
                 remote.push(file);
             }
         }
-        // A store file outside the current list, listed or not, changes rows,
-        // search and evidence; the full refresh rebuilds them consistently.
+        // A store file outside the current list, listed or not, or one its store
+        // refused changes rows, search and evidence; the full refresh rebuilds them.
         let kept_or_unlisted = product["provider"] != "local" && {
             let rows = product["files"].as_array();
             let listed: BTreeSet<&str> = rows
@@ -552,9 +583,9 @@ fn refresh_local(
                 .collect();
             rows.into_iter().flatten().any(|file| {
                 file["kept"] == true && changed_files.contains(text(file, "id"))
-            }) || artifacts
-                .iter()
-                .any(|artifact| !listed.contains(text(artifact, "fileId")))
+            }) || artifacts.iter().any(|artifact| {
+                !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
+            })
         };
         if kept_or_unlisted {
             return Ok(false);
@@ -780,6 +811,11 @@ fn effective_with_jobs(
             *entry = artifact;
         }
     }
+    let refused: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|artifact| refused_download(artifact))
+        .map(|artifact| text(artifact, "fileId"))
+        .collect();
     let mut roots = BTreeMap::new();
     for root in artifacts
         .iter()
@@ -1094,6 +1130,11 @@ fn effective_with_jobs(
         } else {
             status
         };
+        // A file its store refused is gone like a dropped one: listed only while
+        // something of it is on disk, however long a grant still names it.
+        if !retained && refused.contains(fid.as_str()) && kept_status(false, status).is_none() {
+            continue;
+        }
         known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {

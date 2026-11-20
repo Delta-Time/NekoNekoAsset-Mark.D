@@ -347,7 +347,8 @@ impl StorageService {
                 for product in &ids {
                     let (files, _) = self.remote_files(product)?;
                     ensure!(!files.is_empty(), "manifest_incomplete");
-                    for file in files {
+                    // A file its store refused has nothing to wait for; downloaded bytes still go.
+                    for file in self.without_last_failure(files, &["store_file_unavailable"])? {
                         let a = self
                             .catalogue
                             .get("artifact", &artifact_id(&file))?

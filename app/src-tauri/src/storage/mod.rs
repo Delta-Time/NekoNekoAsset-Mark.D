@@ -155,6 +155,16 @@ fn fingerprint(files: &[Value]) -> String {
     fields.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
     io::key(&serde_json::to_string(&fields).unwrap_or_default())
 }
+/// Last download outcomes a product download leaves out. A file its store refused as
+/// no longer offered is never asked for again, and the list drops it unless it was
+/// downloaded; a closed free offer is tried again when its product is downloaded alone.
+fn skipped_failures(alone: bool) -> &'static [&'static str] {
+    if alone {
+        &["store_file_unavailable"]
+    } else {
+        &["store_file_unavailable", "free_offer_unavailable"]
+    }
+}
 fn selected_download_files(files: Vec<Value>, selected: &Value) -> Result<Vec<Value>> {
     if selected.is_null() {
         return Ok(files);
@@ -426,16 +436,15 @@ impl StorageService {
             .filter(|f| f["accountId"].as_str().is_some_and(|a| enabled.contains(a)))
             .collect())
     }
-    /// Leaves out files whose last download found their free offer closed. Asking for
-    /// that one product tries again; bulk and automatic runs do not.
-    fn without_ended_offers(&self, files: Vec<Value>) -> Result<Vec<Value>> {
+    /// Leaves out files whose last download ended with one of `codes`.
+    fn without_last_failure(&self, files: Vec<Value>, codes: &[&str]) -> Result<Vec<Value>> {
         let mut remaining = Vec::with_capacity(files.len());
         for file in files {
             let last = format!("pending-{}", io::key(file["id"].as_str().unwrap_or("")));
             if self
                 .catalogue
                 .get("artifact", &last)?
-                .is_none_or(|artifact| artifact["errorCode"] != "free_offer_unavailable")
+                .is_none_or(|artifact| !codes.iter().any(|code| artifact["errorCode"] == *code))
             {
                 remaining.push(file);
             }
@@ -449,8 +458,8 @@ impl StorageService {
         } else {
             files
         };
-        if job["skipEndedOffers"] == true {
-            self.without_ended_offers(files)
+        if job["selectedFileIds"].is_null() {
+            self.without_last_failure(files, skipped_failures(job["skipEndedOffers"] != true))
         } else {
             Ok(files)
         }
@@ -746,9 +755,10 @@ impl StorageService {
                         .is_some_and(|a| accounts.contains(a))
                 })
                 .collect();
-            // The job that found an offer closed recorded the list still holding its file.
+            // The job that found an offer closed or a file refused recorded the list
+            // still holding that file.
             let with_ended = fingerprint(&files);
-            let files = self.without_ended_offers(files)?;
+            let files = self.without_last_failure(files, skipped_failures(false))?;
             if files.is_empty() {
                 continue;
             }
@@ -822,17 +832,20 @@ impl StorageService {
                 continue;
             }
             let (files, complete) = self.remote_files(&id)?;
+            let listed = !files.is_empty();
             let files = if automatic {
                 self.enabled_files(files)?
             } else {
                 files
             };
-            let files = if automatic || bulk {
-                self.without_ended_offers(files)?
+            let files = if selected.is_null() {
+                self.without_last_failure(files, skipped_failures(!(automatic || bulk)))?
             } else {
                 files
             };
-            if (automatic || bulk) && files.is_empty() {
+            // Only an unknown list is worth a job that says so; files the store refused
+            // leave nothing to ask for.
+            if (automatic || bulk || listed) && files.is_empty() {
                 continue;
             }
             let files = selected_download_files(files, &selected)?;

@@ -3334,6 +3334,43 @@ fn reopen_lists_downloads_dropped_before_kept_files_existed() {
     assert_eq!(fixture.open().change_domains().unwrap(), revisions);
 }
 #[test]
+fn a_refused_file_leaves_the_list_and_search_and_reopen_drops_one_listed_before() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put("product", "p", json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"})).unwrap();
+    // A grant still names the file its store now refuses, as an update can leave it.
+    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["kept","gone"],"manifestComplete":true})).unwrap();
+    for id in ["kept", "gone"] {
+        c.put("remote_file", id, json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"})).unwrap();
+    }
+    c.put("artifact", "a-kept", json!({"id":"a-kept","productId":"p","fileId":"kept","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
+    let category = text(&projection(&c, "p"), "category").to_owned();
+    let found = |c: &Catalogue, term: &str| {
+        c.command("query", json!({"search":term,"category":category,"includeFiles":false})).unwrap()["matched"].clone()
+    };
+    assert_eq!(found(&c, "gone.zip"), 1);
+    c.put("job", "refused", json!({"id":"refused","productId":"p","type":"download","state":"needsAction","updatedAt":"2026-01-02T00:00:00Z","errorCode":"store_file_unavailable","failures":{"gone":{"fileId":"gone","errorCode":"store_file_unavailable"}}})).unwrap();
+    c.put("artifact", "pending-gone", json!({"id":"pending-gone","productId":"p","fileId":"gone","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+    let product = projection(&c, "p");
+    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["kept"]);
+    assert_eq!((product["total"].clone(), product["status"].clone()), (json!(1), json!("ready")));
+    assert_eq!(found(&c, "gone.zip"), 0);
+    {
+        // The projection an earlier version stored: the refused file still listed.
+        let conn = c.inner.lock().unwrap();
+        conn.execute("UPDATE products SET body=json_set(json_insert(body,'$.files[#]',json('{\"id\":\"gone\",\"name\":\"gone.zip\",\"status\":\"unknown\"}')),'$.total',2,'$.status','attention'),status='attention' WHERE id='p'", []).unwrap();
+    }
+    assert_eq!(projection(&c, "p")["files"].as_array().unwrap().len(), 2);
+    drop(c);
+    let reopened = fixture.open();
+    let product = projection(&reopened, "p");
+    assert_eq!((product["files"].as_array().unwrap().len(), product["status"].clone()), (1, json!("ready")));
+    // Later opens find nothing left to drop.
+    let revisions = reopened.change_domains().unwrap();
+    drop(reopened);
+    assert_eq!(fixture.open().change_domains().unwrap(), revisions);
+}
+#[test]
 fn source_overlay_restart_and_cjk_index() {
     let f = Fixture::new();
     let c = f.open();
