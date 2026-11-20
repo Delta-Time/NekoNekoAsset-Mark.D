@@ -2,7 +2,7 @@
   "format": "NekoNekoAsset.ThirdPartyLicenseLedger",
   "formatVersion": 1,
   "cargoLockSha256": "e5d6a185b36693eeb085b921a6f7ce7df1e913038b583f08281bed4e9152691a",
-  "pnpmLockSha256": "c3c923b5060281c3d6eb667b33530a772baac9eeae0246ead7bddcab9b213ff8",
+  "pnpmLockSha256": "35616ec56ec141eae8f5374a5e76e516196931fcb6b1145c917dfdcd0e9ee256",
   "scopeNotes": [
     "Rust entries conservatively cover every exact current Cargo.lock package, including build-only and conditional-platform crates, and retain previously recorded original legal documents; they are not a claim that every entry ships in the Windows executable.",
     "Frontend entries cover the installed runtime dependency closure from package.json; TypeScript, Vite, pnpm and CLI/build-tool executables are not redistributed.",

@@ -52,7 +52,7 @@
     {
       "resourcePath": "licenses/dependency-ledger.json",
       "bytes": 848165,
-      "sha256": "111bdff6d19a78021f4e68b1eb6269d550a30fd034d0bb28b7d76f8d7fa4c068"
+      "sha256": "b1f3c2cc921e434a80e1c8238231ff9bf38397d04a76733665ce12dbdd53352c"
     },
     {
       "resourcePath": "licenses/frontend/NOTICES.txt",

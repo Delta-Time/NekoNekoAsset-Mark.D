@@ -5,3 +5,7 @@
 /app/src-tauri/Cargo.lock -text
 # Unity archives and provenance are verified against exact source/meta bytes.
 /unity/Packages/** -text -whitespace
+# Biome writes LF, so its sources keep LF on every platform.
+/app/src/** text=auto eol=lf
+/app/*.json text eol=lf
+/app/*.ts text eol=lf

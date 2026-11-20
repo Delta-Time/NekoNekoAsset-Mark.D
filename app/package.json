@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
+    "format": "biome format --write",
+    "lint": "biome lint",
     "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
     "tauri": "tauri",
     "native:test": "cargo test --manifest-path src-tauri/Cargo.toml --lib --locked",
@@ -19,6 +21,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.8",
     "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
