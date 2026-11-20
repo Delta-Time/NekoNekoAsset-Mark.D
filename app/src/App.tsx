@@ -1,89 +1,53 @@
 import type { CSSProperties } from 'react';
 import {
   Search,
-  Grid2X2,
-  List,
-  Columns2,
   RefreshCw,
   Download,
   Folder,
   Plus,
-  MoreHorizontal,
   X,
   FileArchive,
   FileBox,
   CheckCircle2,
-  AlertCircle,
   Bookmark,
   Package,
   SlidersHorizontal,
   Tags,
   Settings,
-  Eye,
   EyeOff,
   Trash2,
   LoaderCircle,
   BellOff,
   Scale,
 } from 'lucide-react';
-import {
-  categoryKeys,
-  statusKeys,
-  isProductDownloaded,
-  getProductDisplayStatus,
-  defaultSortDirection,
-  thumbnailSizes,
-  currentPriceLabel,
-  cardPriceLabel,
-  fileCountLabel,
-} from './model';
-import type { Product, Locale, SortDirection } from './model';
+import { categoryKeys } from './model';
+import type { Product } from './model';
 import { version as appVersion } from '../package.json';
-import { localeNames } from './i18n';
-import Preview from './Preview';
 import AvatarManager from './AvatarManager';
 import AssetInspector from './AssetInspector';
 import DeleteLocalProducts from './DeleteLocalProducts';
 import ConfirmProducts from './ConfirmProducts';
 import ConfirmDelete from './ConfirmDelete';
-import ScaleControl from './ScaleControl';
-import Toggle from './Toggle';
-import { contentLang } from './content-lang';
-import { CategoryIcon } from './LibraryIcons';
 import UpdatePrompt from './UpdatePrompt';
 import { resumesAfterRestart, updateText } from './update-i18n';
-import { resetText } from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
 import FeaturesSettings from './FeaturesSettings';
 import SpendingDialog from './SpendingDialog';
-import { LibraryContextMenu, ResponsiveLibraryToolbar } from './LibraryMenus';
+import { LibraryContextMenu } from './LibraryMenus';
 import type { ContextAction } from './LibraryMenus';
-import ActivityHistory from './ActivityHistory';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
-import ThemePicker, { defaultThemeOptions } from './ThemePicker';
-import Workflows, { WorkflowContent, LibraryAccess, isStoreJob } from './Workflows';
-import EditDialogs, { exportThemeConfig } from './EditDialogs';
-import { LicenseFilterDialog, licenseSummary } from './Licenses';
+import { defaultThemeOptions } from './ThemePicker';
+import Workflows, { WorkflowContent, LibraryAccess } from './Workflows';
+import EditDialogs from './EditDialogs';
+import { LicenseFilterDialog } from './Licenses';
 import { licenseText } from './license-i18n';
-import {
-  invokeAction,
-  errorCode,
-  openExternal,
-  fetchProductMetadata,
-  cancelAi,
-  retryAi,
-  cancelUnity,
-  retryUnityInventory,
-} from './backend';
-import { nativeWorkflowText } from './native-workflow-i18n';
+import { invokeAction, openExternal, fetchProductMetadata } from './backend';
 import Button from './shared/Button';
 import SmallDialog from './shared/SmallDialog';
 import { appText } from './shared/app-text';
-import ProductStatus from './features/results/ProductStatus';
 import Results from './features/results/Results';
 import { configuredLibraryRoot } from './features/library/library-root';
-import { acquisitionKinds, fresh, leavingHidden } from './features/filters/query';
 import { useUiPreferences } from './features/preferences/useUiPreferences';
 import { useLayout } from './features/shell/useLayout';
 import { useNavigation } from './features/shell/useNavigation';
@@ -105,6 +69,14 @@ import { useAppearance } from './features/appearance/useAppearance';
 import { useSettingsPane } from './features/settings/useSettingsPane';
 import { useUpdates } from './features/updates/useUpdates';
 import { useShortcuts } from './features/shell/useShortcuts';
+import ProductItem from './features/results/ProductItem';
+import SingleActions from './features/products/SingleActions';
+import ResultsFooter from './features/results/ResultsFooter';
+import LibraryToolbar from './features/filters/LibraryToolbar';
+import Sidebar from './features/sidebar/Sidebar';
+import BatchSummary from './features/inspector/BatchSummary';
+import AppearanceSettings from './features/appearance/AppearanceSettings';
+import ActivityView from './features/activity/ActivityView';
 export default function App() {
   const uiPrefs = useUiPreferences();
   const {
@@ -114,25 +86,13 @@ export default function App() {
     setTheme,
     presets,
     thumb,
-    setThumb,
     density,
-    setDensity,
     navWidth,
     setNavWidth,
     inspectorWidth,
     setInspectorWidth,
     cardColumns,
-    columns,
-    setColumns,
-    uiScale,
-    roundedCorners,
-    setRoundedCorners,
-    reduceMotion,
-    setReduceMotion,
-    bundledFonts,
-    setBundledFonts,
     oneHandedDrag,
-    setOneHandedDrag,
   } = uiPrefs;
   const layout = useLayout({
     navWidth,
@@ -156,7 +116,6 @@ export default function App() {
     tab,
     setTab,
     inspector,
-    setInspector,
     context,
     setContext,
     licenseOpen,
@@ -190,19 +149,14 @@ export default function App() {
     syncing,
     aiEnabled,
     licenseEnabled,
-    batchEnabled,
   } = library;
   const selection = useSelection();
-  const { setSelected, focusId, setFocusId, revealed, setRevealed, anchor, clearSelection } =
-    selection;
+  const { setSelected, focusId, revealed, setRevealed, anchor } = selection;
   const filters = useFilters({ selection, notices, nav, library });
   const {
     query,
-    setQuery,
     sort,
-    setSort,
     direction,
-    setDirection,
     collection,
     setCollection,
     savedScope,
@@ -210,36 +164,19 @@ export default function App() {
     updateQuery,
     openSuggestedProduct,
     clearFilters,
-    changeSort,
-    defaultAccounts,
-    filtersActive,
   } = filters;
   const collectionStore = useCollections({ notices, filters, q });
   const { collections, collectionRows, collectionBusy } = collectionStore;
   const results = useResults({ library, filters, collectionStore, notices, q });
-  const {
-    products,
-    catalogueTotal,
-    scrollState,
-    queryResult,
-    queryBusy,
-    queryKey,
-    filtered,
-    matchedIds,
-    resultsPending,
-    quickCounts,
-  } = results;
+  const { products, catalogueTotal, scrollState, filtered, matchedIds, resultsPending } = results;
   const selectedProducts = useSelectedProducts({ results, selection, library, nav, notices, q });
   const {
     visibleSelected,
     selectedSet,
-    productMap,
     active,
     chosen,
     availability,
     availabilityKey,
-    select,
-    keySelect,
     resultKeys,
   } = selectedProducts;
   const native = useNative({
@@ -252,8 +189,7 @@ export default function App() {
     notices,
     q,
   });
-  const { openSelectedLibrary, chooseLibrary, refreshState, refreshAvatarOptions, onNative } =
-    native;
+  const { openSelectedLibrary, chooseLibrary, refreshAvatarOptions, onNative } = native;
   const preferenceSync = usePreferenceSync({ library, notices, uiPrefs, q });
   const { onPreferences } = preferenceSync;
   const categories = useCategories({ library, uiPrefs, native, filters, q });
@@ -324,16 +260,13 @@ export default function App() {
   const appearance = useAppearance({ uiPrefs, preferenceSync, notices, library, q });
   const {
     setThemePreview,
-    selectedTheme,
     selectedThemeTokens,
     selectedThemeName,
     themeTokens,
     choosePreset,
-    themeDeleteBusy,
     themeDeleteTarget,
     setThemeDeleteTarget,
     deleteTheme,
-    changeScale,
     appTheme,
     appClass,
   } = appearance;
@@ -373,695 +306,60 @@ export default function App() {
     notices,
   });
   const { searchRef } = shortcuts;
-  const cardArt = (p: Product, compact = false) => (
-    <div
-      className={`thumb ${p.sensitive && query.sensitive === 'blur' && !revealed.has(p.id) ? 'blurred' : ''}`}
-    >
-      {!compact && columns.includes('category') && (
-        <span className="card-category" title={categoryLabel(p.category)}>
-          {categoryLabel(p.category)}
-        </span>
-      )}
-      <Preview
-        src={p.thumbnailHidden ? undefined : p.thumbnailOverrideUrl || p.previewUrl}
-        title={p.title}
-        className="asset-art"
-        lazy
-      />{' '}
-      {p.sensitive && query.sensitive === 'blur' && !revealed.has(p.id) && (
-        <button
-          type="button"
-          className="reveal"
-          title={q('revealImage')}
-          aria-label={q('showR18')}
-          onClick={(e) => {
-            if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-            e.stopPropagation();
-            setRevealed((old) => new Set([...old, p.id]));
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
-          }}
-        >
-          <span className="reveal-label">{compact ? <Eye size={14} /> : q('showR18')}</span>
-        </button>
-      )}
-    </div>
+  const singleActions = (p: Product) => (
+    <SingleActions
+      p={p}
+      actions={actions}
+      nav={nav}
+      edits={edits}
+      library={library}
+      selectedProducts={selectedProducts}
+      notices={notices}
+      q={q}
+    />
   );
-  // Import joins Download once a selected file is on disk, and takes its place when every product is ready.
-  const batchActions = (ids: string[]) => {
-    const ready =
-        ids.length > 0 &&
-        ids.every((id) => {
-          const p = productMap.get(id);
-          return !!p && getProductDisplayStatus(p) === 'ready' && isProductDownloaded(p);
-        }),
-      importable = ids.some((id) => (productMap.get(id)?.downloaded ?? 0) > 0);
-    return (
-      <div className="scope-actions" role="group" aria-label={q('selected')}>
-        <div className="scope-actions-left">
-          {batchEnabled.edit && (
-            <Button title={q('edit')} onClick={edit} disabled={!ids.length}>
-              <SlidersHorizontal size={14} />
-              <span>{q('edit')}</span>
-            </Button>
-          )}
-          {batchEnabled.collection && (
-            <Button
-              title={q('addToCollection')}
-              onClick={() => setDialog('collection')}
-              disabled={!ids.length}
-            >
-              <Folder size={14} />
-              <span>{q('addToCollection')}</span>
-            </Button>
-          )}
-          {batchEnabled.export && (
-            <Button title={q('exportZip')} onClick={() => exportZip(ids)} disabled={!ids.length}>
-              <FileArchive size={14} />
-              <span>{q('exportZip')}</span>
-            </Button>
-          )}
-          {aiEnabled && batchEnabled.ai && (
-            <Button title={q('aiTags')} onClick={() => setFlow('ai')} disabled={!ids.length}>
-              <Tags size={14} />
-              <span>{q('aiTags')}</span>
-            </Button>
-          )}
-          {batchEnabled.spending && (
-            <Button
-              title={q('spending')}
-              onClick={() => setDialog('spending')}
-              disabled={!ids.length}
-            >
-              <Package size={14} />
-              <span>{q('spending')}</span>
-            </Button>
-          )}
-          {batchEnabled.delete && localSelection(ids) && (
-            <Button title={q('delete')} className="danger" onClick={() => requestLocalDelete(ids)}>
-              <Trash2 size={14} />
-              <span>{q('delete')}</span>
-            </Button>
-          )}
-          {batchEnabled.hide && onlineSelection(ids) && (
-            <Button
-              title={q(hiddenSelection(ids) ? 'unhide' : 'hide')}
-              onClick={() => run(hideProducts(ids, !hiddenSelection(ids)))}
-            >
-              <EyeOff size={14} />
-              <span>{q(hiddenSelection(ids) ? 'unhide' : 'hide')}</span>
-            </Button>
-          )}
-        </div>
-        <div className="scope-actions-right">
-          {batchEnabled.update && (
-            <Button title={q('update')} onClick={() => update(ids)} disabled={!ids.length}>
-              <RefreshCw size={14} />
-              <span>{q('update')}</span>
-            </Button>
-          )}
-          {licenseEnabled && batchEnabled.licenses && (
-            <Button
-              title={licenseText(locale, 'syncLicenses')}
-              onClick={() => syncLicenses(ids)}
-              disabled={!ids.length}
-            >
-              <Scale size={14} />
-              <span>{licenseText(locale, 'syncLicenses')}</span>
-            </Button>
-          )}
-          {batchEnabled.download && !ready && (
-            <Button
-              title={q('download')}
-              primary
-              onClick={() => download(ids)}
-              disabled={!ids.length || allUnavailable(ids)}
-            >
-              <Download size={14} />
-              <span>{q('download')}</span>
-            </Button>
-          )}
-          {batchEnabled.unity && importable && (
-            <Button
-              title={q('importUnity')}
-              className="unity-action"
-              primary={ready}
-              onClick={() => openUnity(ids)}
-            >
-              <FileBox size={14} />
-              <span>{q('importUnity')}</span>
-            </Button>
-          )}
-        </div>
-      </div>
-    );
-  };
-  const singleActions = (p: Product) => {
-    const ready = getProductDisplayStatus(p) === 'ready' && isProductDownloaded(p),
-      downloads = activeDownloads(p.id);
-    return (
-      <div className="detail-actions">
-        {!downloads.length && allUnavailable([p.id]) ? (
-          <Button className="unavailable-action" title={q('downloadUnavailable')} disabled>
-            <span>{q('downloadUnavailable')}</span>
-          </Button>
-        ) : downloads.length ? (
-          <Button
-            className="cancel-download"
-            title={q('cancelDownload')}
-            disabled={downloads.every((job) => job.cancelRequested)}
-            onClick={() => cancelDownloads([p.id])}
-          >
-            <X size={14} />
-            <span>{q('cancel')}</span>
-          </Button>
-        ) : (
-          <Button
-            primary={!ready}
-            className={ready ? 'unity-action' : ''}
-            title={q(ready ? 'importUnity' : 'download')}
-            onClick={() => (ready ? openUnity([p.id]) : download([p.id]))}
-          >
-            {ready ? <FileBox size={14} /> : <Download size={14} />}
-            <span>{q(ready ? 'importUnity' : 'download')}</span>
-          </Button>
-        )}
-        <Button onClick={edit}>
-          <SlidersHorizontal size={14} />
-          {q('edit')}
-        </Button>
-        <details className="action-menu">
-          <summary aria-label={q('more')}>
-            <MoreHorizontal size={16} />
-          </summary>
-          <div className="popup-menu">
-            {[
-              'update',
-              ...(licenseEnabled ? ['syncLicenses'] : []),
-              'download',
-              ...(chosen.some((id) => activeDownloads(id).length) ? ['cancelDownload'] : []),
-              ...(aiEnabled ? ['ai'] : []),
-              'importUnity',
-              'exportZip',
-              ...(needsAttention(chosen) ? ['dismissAttention'] : []),
-              ...(p.provider === 'local'
-                ? ['delete']
-                : [
-                    p.hidden ? 'unhide' : 'hide',
-                    ...(onlineSelection(chosen) && hasDownloadedFiles(chosen)
-                      ? ['deleteDownloads']
-                      : []),
-                  ]),
-            ].map((key) => (
-              <button
-                key={key}
-                className={key === 'delete' || key === 'deleteDownloads' ? 'danger' : undefined}
-                disabled={key === 'download' && allUnavailable(chosen)}
-                onClick={(e) => {
-                  e.currentTarget.closest('details')?.removeAttribute('open');
-                  if (key === 'delete') requestLocalDelete([p.id]);
-                  else if (key === 'hide' || key === 'unhide')
-                    run(hideProducts([p.id], key === 'hide'));
-                  else if (key === 'update') update(chosen);
-                  else if (key === 'syncLicenses') syncLicenses(chosen);
-                  else if (key === 'download') download(chosen);
-                  else if (key === 'cancelDownload') cancelDownloads(chosen);
-                  else if (key === 'deleteDownloads') requestDeleteDownloads(chosen);
-                  else if (key === 'dismissAttention') dismissAttention(chosen);
-                  else if (key === 'ai') setFlow('ai');
-                  else if (key === 'importUnity') openUnity(chosen);
-                  else exportZip(chosen);
-                }}
-              >
-                {q(key)}
-              </button>
-            ))}
-          </div>
-        </details>
-      </div>
-    );
-  };
   const batchSummary = (
-    <div className="revised-batch">
-      <div className="batch-stack" aria-hidden="true">
-        {products
-          .filter((p) => selectedSet.has(p.id))
-          .slice(0, 5)
-          .map((p, k) => (
-            <span
-              key={p.id}
-              className={
-                p.sensitive && query.sensitive === 'blur' && !revealed.has(p.id)
-                  ? 'blurred'
-                  : undefined
-              }
-              style={{ '--k': k } as CSSProperties}
-            >
-              <Preview
-                src={p.thumbnailHidden ? undefined : p.thumbnailOverrideUrl || p.previewUrl}
-                title=""
-                className="asset-art"
-              />
-            </span>
-          ))}
-      </div>
-      <h2 className="batch-count">
-        <b>{visibleSelected.length.toLocaleString(locale)}</b>
-        <span>{q('selected')}</span>
-      </h2>
-      {batchActions(visibleSelected)}
-      <div className="selected-products">
-        {products
-          .filter((p) => selectedSet.has(p.id))
-          .slice(0, 12)
-          .map((p) => (
-            <div key={p.id} title={p.title}>
-              <span lang={contentLang(p.title)}>{p.title}</span>
-              <ProductStatus p={p} q={q} />
-            </div>
-          ))}
-      </div>
-    </div>
+    <BatchSummary
+      selectedProducts={selectedProducts}
+      library={library}
+      edits={edits}
+      nav={nav}
+      actions={actions}
+      notices={notices}
+      uiPrefs={uiPrefs}
+      results={results}
+      filters={filters}
+      selection={selection}
+      q={q}
+    />
   );
   const sidebar = (
-    <aside className="sidebar" style={{ width: navWidth, flexBasis: navWidth }}>
-      <div className="quick-scopes">
-        <button
-          className={`nav-item quick-scope ${query.category === 'all' && !collection && query.avatar === 'all' && query.quick === 'all' ? 'active' : ''}`}
-          onClick={clearFilters}
-        >
-          <Grid2X2 size={15} />
-          <span>{q('allAssets')}</span>
-          <span className="count">{quickCounts.all.toLocaleString(locale)}</span>
-        </button>
-        <button
-          className={`nav-item quick-scope ${query.quick === 'downloaded' ? 'active' : ''}`}
-          onClick={() =>
-            updateQuery({ quick: 'downloaded', category: 'all', avatar: 'all', status: 'all' })
-          }
-        >
-          <CheckCircle2 size={15} />
-          <span>{q('downloaded')}</span>
-          <span className="count">{quickCounts.downloaded.toLocaleString(locale)}</span>
-        </button>
-        <button
-          className={`nav-item quick-scope ${query.quick === 'attention' ? 'active' : ''}`}
-          onClick={() =>
-            updateQuery({ quick: 'attention', category: 'all', avatar: 'all', status: 'all' })
-          }
-        >
-          <AlertCircle size={15} />
-          <span>{q('attention')}</span>
-          <span className="count">{quickCounts.attention.toLocaleString(locale)}</span>
-        </button>
-        <button
-          className={`nav-item quick-scope ${query.quick === 'hidden' ? 'active' : ''}`}
-          onClick={() => {
-            updateQuery({ ...fresh, sensitive: query.sensitive, quick: 'hidden' });
-            setCollection('');
-          }}
-        >
-          <EyeOff size={15} />
-          <span>{q('hidden')}</span>
-          <span className="count">{(quickCounts.hidden ?? 0).toLocaleString(locale)}</span>
-        </button>
-      </div>
-      <details className="nav-foldout" open>
-        <summary>{q('categories')}</summary>
-        {categoryKeys.map((key) => (
-          <button
-            className={`nav-item category-item ${query.category === key ? 'active' : ''}`}
-            key={key}
-            data-drop-category={key}
-            onClick={() => updateQuery({ category: key })}
-          >
-            <CategoryIcon category={key} />
-            <span>{q(key)}</span>
-          </button>
-        ))}
-      </details>
-      <section className="nav-avatar-section">
-        <div className="nav-section-heading">
-          <details className="nav-foldout" open>
-            <summary>{q('customCategories')}</summary>
-            {categoryList.map((category) => (
-              <button
-                className={`nav-item category-item custom-category ${query.category === category.id ? 'active' : ''}`}
-                key={category.id}
-                title={category.name}
-                data-drop-category={category.id}
-                onClick={() => updateQuery({ category: category.id })}
-              >
-                <CategoryIcon category={category.id} />
-                <span>{category.name}</span>
-              </button>
-            ))}
-          </details>
-          <button
-            className="avatar-manager"
-            title={q('customCategories')}
-            aria-label={q('customCategories')}
-            onClick={() => setDialog('manageCategories')}
-          >
-            +
-          </button>
-        </div>
-      </section>
-      <section className="nav-avatar-section">
-        <div className="nav-section-heading">
-          <details className="nav-foldout" open>
-            <summary>{q('compatibleAvatars')}</summary>
-            {avatarChoices.map((avatar) => (
-              <button
-                key={avatar}
-                title={avatarLabel(avatar)}
-                className={`nav-item avatar-row ${query.avatar === avatar ? 'active' : ''}`}
-                onClick={() => updateQuery({ avatar })}
-              >
-                <span lang={contentLang(avatarLabel(avatar))}>{avatarLabel(avatar)}</span>
-                <small>
-                  {avatarOptions.find((option) => option.id === avatar)?.matchingProductCount ?? 0}
-                </small>
-              </button>
-            ))}
-          </details>
-          <button
-            className="avatar-manager"
-            title={q('manageAvatars')}
-            aria-label={q('manageAvatars')}
-            onClick={() => {
-              setDialog('avatars');
-              run(refreshAvatarOptions());
-            }}
-          >
-            +
-          </button>
-        </div>
-      </section>
-      <section className="nav-avatar-section">
-        <div className="nav-section-heading">
-          <details className="nav-foldout" open>
-            <summary>{q('collections')}</summary>
-            {Object.keys(collections).map((name) => (
-              <button
-                className={`nav-item ${collection === name ? 'active' : ''}`}
-                key={name}
-                title={name}
-                onClick={() => {
-                  setCollection(name);
-                  updateQuery(leavingHidden(query));
-                }}
-              >
-                <Folder size={13} />
-                <span>{name}</span>
-              </button>
-            ))}
-          </details>
-          <button
-            className="avatar-manager"
-            title={q('collections')}
-            aria-label={q('collections')}
-            onClick={() => setDialog('manageCollections')}
-          >
-            +
-          </button>
-        </div>
-      </section>
-      <section className="nav-avatar-section">
-        <div className="nav-section-heading">
-          <details className="nav-foldout" open>
-            <summary>{q('savedSearches')}</summary>
-            {saved.map((search, i) => (
-              <button
-                className={`nav-item ${savedScope === i ? 'active' : ''}`}
-                key={i}
-                title={search.name}
-                onClick={() => {
-                  setQuery({
-                    ...fresh,
-                    ...search.query,
-                    sensitive: query.sensitive,
-                    accountIds: search.query.accountIds ?? null,
-                  });
-                  setSort(search.sort || 'acquired');
-                  setDirection(search.direction || defaultSortDirection(search.sort || 'acquired'));
-                  setCollection('');
-                  setSavedScope(i);
-                  clearSelection();
-                }}
-              >
-                <Bookmark size={13} />
-                <span>{search.name}</span>
-              </button>
-            ))}
-          </details>
-          <button
-            className="avatar-manager"
-            title={q('savedSearches')}
-            aria-label={q('savedSearches')}
-            onClick={() => setDialog('manageSearches')}
-          >
-            +
-          </button>
-        </div>
-      </section>
-    </aside>
-  );
-  const filterChip = (id: string, label: string, value: string, onClear: () => void) => (
-    <span key={id} className="filter-chip">
-      <span title={label + ': ' + value}>
-        {label}: {value}
-      </span>
-      <button
-        aria-label={q('clearFilters') + ' · ' + label}
-        title={q('clearFilters') + ' · ' + label}
-        onClick={onClear}
-      >
-        <X size={12} />
-      </button>
-    </span>
-  );
-  const accountControl = (
-    <details className="account-scope">
-      <summary aria-label={q('accountScope')}>
-        {query.accountIds === null
-          ? q('accountAll')
-          : query.accountIds.length
-            ? q('selectedAccounts') + ' · ' + query.accountIds.length
-            : query.includeOffline
-              ? nativeWorkflowText(locale, 'offlineFiles')
-              : q('noAccounts')}
-      </summary>
-      <div className="popup-menu">
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={query.accountIds === null}
-            onChange={(e) => updateQuery({ accountIds: e.target.checked ? null : [] })}
-          />
-          {q('accountAll')}
-        </label>
-        {accounts.map((account) => (
-          <label className="check-row" key={account.id}>
-            <input
-              type="checkbox"
-              checked={query.accountIds === null || query.accountIds.includes(account.id)}
-              onChange={(e) => {
-                const ids = query.accountIds ?? accounts.map((account) => account.id);
-                updateQuery({
-                  accountIds: e.target.checked
-                    ? [...new Set([...ids, account.id])]
-                    : ids.filter((id) => id !== account.id),
-                });
-              }}
-            />
-            <span>
-              {account.store} · {account.name}
-            </span>
-          </label>
-        ))}
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={query.includeOffline}
-            onChange={(e) => updateQuery({ includeOffline: e.target.checked })}
-          />
-          <span>{nativeWorkflowText(locale, 'offlineFiles')}</span>
-        </label>
-      </div>
-    </details>
-  );
-  const acquisitionControl = (
-    <details className="account-scope acquisition-scope">
-      <summary aria-label={q('acquisitionFilter')}>
-        {(query.acquisition ?? acquisitionKinds)
-          .map((kind) => q(kind + (query.acquisition?.length === 1 ? 'Assets' : 'Short')))
-          .join(' · ') || q('noAssets')}
-      </summary>
-      <div className="popup-menu">
-        {acquisitionKinds.map((kind) => (
-          <label className="check-row" key={kind}>
-            <input
-              type="checkbox"
-              checked={!query.acquisition || query.acquisition.includes(kind)}
-              onChange={(e) => {
-                const kinds = acquisitionKinds.filter((item) =>
-                  item === kind
-                    ? e.target.checked
-                    : !query.acquisition || query.acquisition.includes(item),
-                );
-                updateQuery({
-                  acquisition: kinds.length === acquisitionKinds.length ? null : kinds,
-                });
-              }}
-            />
-            <span>{q(kind + 'Assets')}</span>
-          </label>
-        ))}
-      </div>
-    </details>
-  );
-  const sortControls = (
-    <>
-      <select aria-label={q('sort')} value={sort} onChange={(e) => changeSort(e.target.value)}>
-        {['acquired', 'title', 'price', 'status'].map((key) => (
-          <option key={key} value={key}>
-            {q(key)}
-          </option>
-        ))}
-      </select>
-      <select
-        className="sort-direction"
-        title={q(direction === 'asc' ? 'ascending' : 'descending')}
-        aria-label={q('sortDirection')}
-        value={direction}
-        onChange={(e) => {
-          setDirection(e.target.value as SortDirection);
-          setSavedScope(null);
-          clearSelection();
-        }}
-      >
-        <option value="asc">{q('ascending')}</option>
-        <option value="desc">{q('descending')}</option>
-      </select>
-      {sort === 'status' && (
-        <select
-          aria-label={q('status')}
-          value={query.status}
-          onChange={(e) => updateQuery({ status: e.target.value })}
-        >
-          <option value="all">{q('allStates')}</option>
-          {statusKeys.map((status) => (
-            <option key={status} value={status}>
-              {q(status)}
-            </option>
-          ))}
-        </select>
-      )}
-      <span className="toolbar-spacer" />
-      <span className="result-total">
-        <b>{resultsPending ? '…' : matchedIds.length.toLocaleString(locale)}</b> {q('products')}
-      </span>
-      <Button title={q('details')} onClick={() => setInspector((value) => !value)}>
-        <Columns2 size={14} />
-      </Button>
-    </>
-  );
-  const licenseControl = licenseEnabled && (
-    <button
-      type="button"
-      ref={licenseButton}
-      className="license-scope"
-      aria-pressed={!!query.license}
-      onClick={() => setLicenseOpen(true)}
-    >
-      {licenseText(locale, 'license')}
-      {query.license ? ` · ${Object.keys(query.license).length.toLocaleString(locale)}` : ''}
-    </button>
-  );
-  const chips = (
-    <>
-      {query.search &&
-        filterChip('search', q('searchFilter'), query.search, () => updateQuery({ search: '' }))}
-      {query.category !== 'all' &&
-        filterChip('category', q('categoryFilter'), categoryLabel(query.category), () =>
-          updateQuery({ category: 'all' }),
-        )}
-      {query.avatar !== 'all' &&
-        filterChip('avatar', q('avatarFilter'), avatarLabel(query.avatar), () =>
-          updateQuery({ avatar: 'all' }),
-        )}
-      {collection &&
-        filterChip('collection', q('collectionFilter'), collection, () => {
-          setCollection('');
-          clearSelection();
-        })}
-      {!defaultAccounts &&
-        filterChip(
-          'accounts',
-          q('accountFilter'),
-          [
-            ...(query.accountIds === null
-              ? [q('accountAll')]
-              : accounts
-                  .filter((account) => query.accountIds?.includes(account.id))
-                  .map((account) => account.name)),
-            ...(query.includeOffline ? [nativeWorkflowText(locale, 'offlineFiles')] : []),
-          ].join(', ') || q('noAccounts'),
-          () => updateQuery({ accountIds: null, includeOffline: true }),
-        )}
-      {query.acquisition &&
-        filterChip(
-          'acquisition',
-          q('acquisitionFilter'),
-          query.acquisition.map((kind) => q(kind + 'Short')).join(', ') || q('noAssets'),
-          () => updateQuery({ acquisition: null }),
-        )}
-      {licenseEnabled &&
-        query.license &&
-        filterChip(
-          'license',
-          licenseText(locale, 'license')!,
-          licenseSummary(locale, query.license),
-          () => updateQuery({ license: null }),
-        )}
-      {query.quick !== 'all' &&
-        filterChip('quick', q('stateFilter'), q(query.quick), () => updateQuery({ quick: 'all' }))}
-      {query.status !== 'all' &&
-        filterChip('status', q('stateFilter'), q(query.status), () =>
-          updateQuery({ status: 'all' }),
-        )}
-      {(sort !== 'acquired' || direction !== 'desc') &&
-        filterChip(
-          'sort',
-          q('sortFilter'),
-          q(sort) + ' · ' + q(direction === 'asc' ? 'ascending' : 'descending'),
-          () => {
-            setSort('acquired');
-            setDirection('desc');
-            clearSelection();
-          },
-        )}
-      {filtersActive && (
-        <Button className="filter-clear-all" title={q('clearFilters')} onClick={clearFilters}>
-          <X size={14} />
-        </Button>
-      )}
-    </>
+    <Sidebar
+      uiPrefs={uiPrefs}
+      filters={filters}
+      results={results}
+      categories={categories}
+      nav={nav}
+      avatars={avatars}
+      notices={notices}
+      native={native}
+      collectionStore={collectionStore}
+      library={library}
+      selection={selection}
+      q={q}
+    />
   );
   const toolbar = (
-    <ResponsiveLibraryToolbar
-      accounts={
-        <>
-          {accountControl}
-          {acquisitionControl}
-          {licenseControl}
-        </>
-      }
-      controls={sortControls}
-      chips={chips}
-      label={q('sortingMenu')}
+    <LibraryToolbar
+      filters={filters}
+      uiPrefs={uiPrefs}
+      library={library}
+      nav={nav}
+      selection={selection}
+      results={results}
+      categories={categories}
+      avatars={avatars}
+      q={q}
     />
   );
   const contextActions: ContextAction[] = context
@@ -1187,229 +485,33 @@ export default function App() {
       ]
     : [];
   const item = (p: Product, list: boolean) => (
-    <div
-      id={'product-' + p.id}
-      data-product-id={p.id}
+    <ProductItem
       key={p.id}
-      role="option"
-      aria-selected={selectedSet.has(p.id)}
-      tabIndex={0}
-      className={
-        (list ? 'revised-row' : 'product-card') + ' ' + (selectedSet.has(p.id) ? 'selected' : '')
-      }
-      onClick={(e) => select(p, e)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        const ids = selectedSet.has(p.id) ? visibleSelected : [p.id];
-        if (!selectedSet.has(p.id)) {
-          setSelected(ids);
-          setFocusId(p.id);
-        }
-        setContext({ x: e.clientX, y: e.clientY, ids });
-      }}
-      onDragStart={(e) => e.preventDefault()}
-      onMouseDown={(e) => {
-        if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault();
-      }}
-      onKeyDown={(e) => keySelect(e, p)}
-    >
-      {(!list || density !== 40) && (
-        <div className={list ? 'row-thumb' : ''}>{cardArt(p, list)}</div>
-      )}
-      <div className="product-info">
-        <strong className="product-title" lang={contentLang(p.title)} title={p.title}>
-          {p.title}
-        </strong>
-        {columns.includes('shop') && (!list || density !== 40) && (
-          <span
-            className="product-shop"
-            lang={p.provider === 'local' ? undefined : contentLang(p.shop)}
-            title={p.provider === 'local' ? q('localProductShop') : p.shop || q('unknownShop')}
-          >
-            {p.provider === 'local' ? q('localProductShop') : p.shop || q('unknownShop')}
-          </span>
-        )}
-        {list ? (
-          <ProductStatus p={p} q={q} />
-        ) : (
-          <>
-            {columns.includes('acquired') && (
-              <span
-                className="card-acquired"
-                title={q('acquired') + ': ' + (p.acquired || q('unknown'))}
-              >
-                {p.acquired || q('unknown')}
-              </span>
-            )}
-            <div
-              className={
-                'card-bottom ' +
-                ((columns.includes('price') && cardPriceLabel(locale, p)) ||
-                (columns.includes('files') && p.downloaded > 0)
-                  ? 'has-metrics'
-                  : '')
-              }
-            >
-              <ProductStatus p={p} q={q} />
-              <span className="card-metrics">
-                {columns.includes('price') && cardPriceLabel(locale, p) && (
-                  <span className="card-price" title={cardPriceLabel(locale, p)!}>
-                    {cardPriceLabel(locale, p)}
-                  </span>
-                )}
-                {columns.includes('files') && p.downloaded > 0 && (
-                  <span className="card-file-count" title={q('downloaded') + ': ' + p.downloaded}>
-                    <span aria-hidden="true">●</span> {p.downloaded}
-                  </span>
-                )}
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-      {list && columns.includes('category') && (
-        <span className="list-extra" title={categoryLabel(p.category)}>
-          {categoryLabel(p.category)}
-        </span>
-      )}
-      {list && columns.includes('files') && (
-        <span className="list-extra file-count">{fileCountLabel(p)}</span>
-      )}
-      {list && columns.includes('acquired') && (
-        <span className="list-extra">{p.acquired || q('unknown')}</span>
-      )}
-      {list && columns.includes('price') && (
-        <span className="list-extra">{currentPriceLabel(locale, p) || '—'}</span>
-      )}
-      <input
-        type="checkbox"
-        aria-label={q('select') + ' ' + p.title}
-        checked={selectedSet.has(p.id)}
-        onClick={(e) => e.stopPropagation()}
-        onChange={() => select(p, { ctrlKey: true, metaKey: false, shiftKey: false })}
-      />
-    </div>
+      p={p}
+      list={list}
+      selectedProducts={selectedProducts}
+      selection={selection}
+      nav={nav}
+      uiPrefs={uiPrefs}
+      categories={categories}
+      filters={filters}
+      q={q}
+    />
   );
   const footer = (
-    <footer className="result-footer">
-      {visibleSelected.length > 0 && (
-        <div
-          className="selection-actions"
-          onKeyUpCapture={(e) => {
-            const row = e.currentTarget,
-              b = (e.target as HTMLElement).getBoundingClientRect(),
-              r = row.getBoundingClientRect();
-            if (b.right > r.right) row.scrollLeft += b.right - r.right + 2;
-            else if (b.left < r.left) row.scrollLeft -= r.left - b.left + 2;
-          }}
-          onFocusCapture={(e) => {
-            const row = e.currentTarget,
-              target = e.target as HTMLElement;
-            requestAnimationFrame(() => {
-              const b = target.getBoundingClientRect(),
-                r = row.getBoundingClientRect();
-              if (b.right > r.right) row.scrollLeft += b.right - r.right + 2;
-              else if (b.left < r.left) row.scrollLeft -= r.left - b.left + 2;
-            });
-          }}
-        >
-          <div className="selection-group">
-            <Button title={q('clearSelection')} onClick={() => setSelected([])}>
-              <X size={13} />
-            </Button>
-            <strong className="selection-count">
-              <b key={visibleSelected.length}>{visibleSelected.length.toLocaleString(locale)}</b>
-              <span>{q('selected')}</span>
-            </strong>
-            {batchEnabled.selectAll && (
-              <Button
-                title={q('selectAll')}
-                onClick={() => setSelected(matchedIds)}
-                disabled={
-                  !matchedIds.length || queryBusy || visibleSelected.length >= matchedIds.length
-                }
-              >
-                <CheckCircle2 size={14} />
-                <span>{q('selectAll')}</span>
-              </Button>
-            )}
-          </div>
-          {batchActions(visibleSelected)}
-        </div>
-      )}
-      <div className="result-controls">
-        <label className="thumbnail-control" title={q('thumbnail')}>
-          <List size={14} />
-          <input
-            aria-label={q('thumbnail')}
-            type="range"
-            min={0}
-            max={thumbnailSizes.length - 1}
-            step={1}
-            value={thumbnailSizes.indexOf(thumb as (typeof thumbnailSizes)[number])}
-            style={
-              {
-                '--fill': `${(Math.max(0, thumbnailSizes.indexOf(thumb as (typeof thumbnailSizes)[number])) / (thumbnailSizes.length - 1)) * 100}%`,
-              } as CSSProperties
-            }
-            aria-valuetext={thumb === 0 ? q('listView') : `${q('thumbnail')} ${thumb}px`}
-            onChange={(e) => setThumb(thumbnailSizes[+e.target.value])}
-          />
-          <Grid2X2 size={14} />
-        </label>
-        <select
-          aria-label={q('density')}
-          title={q(density === 40 ? 'compact' : density === 74 ? 'standard' : 'comfortable')}
-          value={density}
-          onChange={(e) => setDensity(+e.target.value)}
-        >
-          <option value={40}>{q('compact')}</option>
-          <option value={74}>{q('standard')}</option>
-          <option value={90}>{q('comfortable')}</option>
-        </select>
-        <details className="column-menu">
-          <summary aria-label={q('columns')} title={q('columns')}>
-            <Columns2 size={14} />
-            <span>{q('columns')}</span>
-          </summary>
-          <div className="popup-menu">
-            {['shop', 'category', 'files', 'acquired', 'price'].map((column) => (
-              <label className="check-row" key={column}>
-                <input
-                  type="checkbox"
-                  checked={columns.includes(column)}
-                  onChange={(e) =>
-                    setColumns(
-                      e.target.checked
-                        ? [...columns, column]
-                        : columns.filter((key) => key !== column),
-                    )
-                  }
-                />
-                {q(column)}
-              </label>
-            ))}
-          </div>
-        </details>
-        {queryResult?.key === queryKey && queryResult.allDownloaded !== true && (
-          <Button
-            primary
-            title={q('downloadAll')}
-            disabled={!matchedIds.length || queryBusy}
-            onClick={() => setProductConfirm({ kind: 'downloadAll', ids: matchedIds, names: [] })}
-          >
-            <Download size={14} />
-            <span>{q('downloadAll')}</span>
-          </Button>
-        )}
-      </div>
-    </footer>
+    <ResultsFooter
+      selectedProducts={selectedProducts}
+      library={library}
+      edits={edits}
+      nav={nav}
+      actions={actions}
+      notices={notices}
+      uiPrefs={uiPrefs}
+      selection={selection}
+      results={results}
+      q={q}
+    />
   );
-  const localeOptions = Object.entries(localeNames).map(([id, name]) => (
-    <option key={id} value={id}>
-      {name}
-    </option>
-  ));
   const themeOptions = [...defaultThemeOptions, ...presets];
   const workflowProps = {
     locale,
@@ -1472,57 +574,14 @@ export default function App() {
     onPreferences,
   };
   const appearanceContent = (
-    <div className="appearance-content">
-      <label className="field">
-        <span>{q('language')}</span>
-        <select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
-          {localeOptions}
-        </select>
-      </label>
-      <label className="field">
-        <span>{q('uiScale')}</span>
-        <ScaleControl label={q('uiScale')} value={uiScale} onCommit={changeScale} />
-      </label>
-      <div className="appearance-toggles">
-        <Toggle label={q('roundedCorners')} checked={roundedCorners} onChange={setRoundedCorners} />
-        <Toggle label={q('reduceMotion')} checked={reduceMotion} onChange={setReduceMotion} />
-        <Toggle label={q('oneHandedDrag')} checked={oneHandedDrag} onChange={setOneHandedDrag} />
-        <Toggle label={q('bundledFonts')} checked={bundledFonts} onChange={setBundledFonts} />
-      </div>
-      <label className="field">
-        <span>{q('themePreset')}</span>
-      </label>
-      <ThemePicker locale={locale} options={themeOptions} value={theme} onChange={setTheme} />
-      <div className="theme-actions">
-        <Button disabled={themeDeleteBusy} onClick={() => setDialog('theme')}>
-          {q('editTheme')}
-        </Button>
-        <Button
-          className="danger"
-          disabled={themeDeleteBusy || !presets.some((p) => p.id === theme)}
-          onClick={() => setThemeDeleteTarget({ id: selectedTheme.id, name: selectedThemeName })}
-        >
-          {resetText(locale, 'deleteTheme')}
-        </Button>
-        <div className="theme-transfer-actions">
-          <Button
-            disabled={themeDeleteBusy}
-            onClick={() => {
-              setThemePreview(null);
-              setDialog('theme');
-            }}
-          >
-            {q('importTheme')}
-          </Button>
-          <Button
-            disabled={themeDeleteBusy}
-            onClick={() => run(exportThemeConfig(selectedThemeTokens, selectedThemeName))}
-          >
-            {q('exportTheme')}
-          </Button>
-        </div>
-      </div>
-    </div>
+    <AppearanceSettings
+      uiPrefs={uiPrefs}
+      appearance={appearance}
+      nav={nav}
+      notices={notices}
+      q={q}
+      themeOptions={themeOptions}
+    />
   );
   const inspectorPane = (
     <>
@@ -1673,55 +732,16 @@ export default function App() {
     </>
   );
   const activity = (
-    <ActivityHistory
-      locale={locale}
-      jobs={nativeState.jobs}
-      accounts={accounts}
-      products={products}
-      aiEnabled={aiEnabled}
-      onCancelDownloads={() => cancelDownloads()}
-      onClear={async () => {
-        await onNative('catalogue', 'clear_activity');
-        await refreshState();
-      }}
-      onUnityResults={(job) => setFlow('unity-results:' + job.id)}
-      onUnityRetry={(job) => {
-        void retryUnityInventory(job.id)
-          .then((seed) => openUnity(seed.productIds, seed.leafRefs))
-          .catch((error) => notify(q(errorCode(error))));
-      }}
-      onCancel={(job) =>
-        run(
-          job.type === 'licenses:sync'
-            ? invokeAction('licenses', 'cancel', { jobId: job.id })
-            : job.type === 'unity:import'
-              ? cancelUnity(job.id)
-              : job.type.startsWith('ai:')
-                ? cancelAi(job.id)
-                : onNative(
-                    isStoreJob(job.type) ? 'booth' : 'storage',
-                    isStoreJob(job.type) ? 'cancel_sync' : 'cancel_job',
-                    { jobId: job.id },
-                  ),
-        )
-      }
-      onRetry={(job) =>
-        run(
-          job.type === 'licenses:sync'
-            ? invokeAction('licenses', 'retry', { jobId: job.id })
-            : job.type.startsWith('ai:')
-              ? retryAi(job.id)
-              : onNative(
-                  isStoreJob(job.type) ? 'booth' : 'storage',
-                  isStoreJob(job.type) ? 'retry_sync' : 'retry_job',
-                  { jobId: job.id },
-                ),
-        )
-      }
-      onSignIn={(job) => {
-        if (job.accountId) run(onNative('booth', 'account_login', { accountId: job.accountId }));
-      }}
-      onOpenStorage={() => openSettings('storage')}
+    <ActivityView
+      uiPrefs={uiPrefs}
+      library={library}
+      results={results}
+      actions={actions}
+      native={native}
+      nav={nav}
+      notices={notices}
+      settingsPane={settingsPane}
+      q={q}
     />
   );
   if (
