@@ -61,6 +61,7 @@ pub struct StorageService {
     stores: Arc<StoreService>,
     started: Arc<AtomicBool>,
     queue_gate: Arc<AsyncMutex<()>>,
+    closing_local_imports: Arc<AtomicBool>,
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -191,6 +192,7 @@ impl StorageService {
             stores,
             started: Arc::new(AtomicBool::new(false)),
             queue_gate: Arc::new(AsyncMutex::new(())),
+            closing_local_imports: Arc::new(AtomicBool::new(false)),
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -543,6 +545,7 @@ impl StorageService {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
+        let queue = self.queue_gate.lock().await;
         let setup = (|| -> Result<()> {
             self.lock_process()?;
             for mut job in self.catalogue.list("job")? {
@@ -564,9 +567,10 @@ impl StorageService {
                     }
                 }
             }
-            self.reconcile_archive_cleanup()?;
             Ok(())
         })();
+        drop(queue);
+        let setup = setup.and_then(|()| self.reconcile_archive_cleanup());
         if let Err(e) = setup {
             *self.process_lock.lock().unwrap() = None;
             self.started.store(false, Ordering::Release);
@@ -578,6 +582,9 @@ impl StorageService {
             // preference changes subsequently provide explicit, bounded invalidation.
             let _ = service.reevaluate_automatic().await;
             loop {
+                if service.closing_local_imports.load(Ordering::Acquire) {
+                    break;
+                }
                 let _ = service.drain_automatic_changes().await;
                 let work = match service.catalogue.begin_catalogue_work() {
                     Ok(permit) => permit,
@@ -591,9 +598,11 @@ impl StorageService {
                     .queued_jobs(Some("storage:import_local"), None)
                     .ok()
                     .and_then(|jobs| {
-                        jobs.into_iter().find(|job| {
+                        jobs.into_iter().filter(|job| {
                             service.catalogue.library_root().is_none()
                                 || job["originDeviceId"] == service.catalogue.device_id()
+                        }).min_by_key(|job| {
+                            job["createdAt"].as_str().and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
                         })
                     });
                 if let Some(job) = local {
@@ -952,6 +961,7 @@ impl StorageService {
             "want_download" => self.want_download(&args),
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
+                let _gate = self.queue_gate.lock().await;
                 self.cancel_job(id)
             }
             "cancel_downloads" => self.cancel_downloads(&args).await,

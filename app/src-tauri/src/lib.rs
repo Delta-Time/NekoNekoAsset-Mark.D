@@ -1606,12 +1606,26 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             window_state::on_event(window, event);
-            if window.label() == "main"
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
-            {
-                // Hidden authentication WebViews must not keep the desktop app
-                // alive after its main window closes. Durable jobs resume on launch.
-                window.app_handle().exit(0);
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let app = window.app_handle().clone();
+                    let services = app.try_state::<LibraryHost>()
+                        .and_then(|host| host.active_services().ok().flatten());
+                    if let Some(services) = services {
+                        if !services.storage.begin_local_import_shutdown() {
+                            return;
+                        }
+                        tauri::async_runtime::spawn(async move {
+                            if services.storage.discard_waiting_local_imports().await.is_err() {
+                                eprintln!("Local import queue cleanup on close failed");
+                            }
+                            app.exit(0);
+                        });
+                    } else {
+                        app.exit(0);
+                    }
+                }
             }
         })
         .setup(move |app| {

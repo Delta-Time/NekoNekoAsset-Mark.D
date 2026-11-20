@@ -54,6 +54,8 @@ export function updateJobBlocker(jobs:{type:string;state:string}[]):string{
  return !job?'':jobBlockers[job.type]??(job.type.startsWith('ai:')?'updates_busy_ai':'updates_busy_job');
 }
 
+export const displayAppVersion=(version:string)=>version.replace(/\+(D\d+)$/,'.$1');
+
 // Bridge releases share numeric App versions; absent or unrecognized versions stay unknown.
 export function isNewerBridge(latest:string,current:string|null|undefined):boolean{
  const parse=(value:string)=>/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value)?.slice(1).map(Number);

@@ -4,6 +4,8 @@
 /* Details on the left; actions top-right and the date bottom-right, so dates line up whatever the buttons. */
 .activity-history .activity-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr; grid-template-areas: "info actions" "info time"; align-items: start; }
 .activity-history .activity-row > .activity-info { grid-area: info; align-self: stretch; display: flex; flex-direction: column; }
+.activity-history .activity-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.activity-history-open-product { align-self: flex-start; }
 /* When the buttons make the card taller, the status line drops to share the bottom line with the date. */
 .activity-history .activity-info > .activity-history-meta { margin-top: auto; }
 .activity-history .activity-row > .activity-history-actions { grid-area: actions; }

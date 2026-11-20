@@ -10,8 +10,9 @@ import {isTauri} from '@tauri-apps/api/core';
 import './local-import.css';
 import Preview from './Preview';
 
-type LocalImportProps=Pick<Props,'locale'|'products'|'importSeed'|'libraryReady'|'nativeState'|'onNative'|'onLibraryReady'|'onClose'|'onNotice'|'onNewAssets'>&{
+type LocalImportProps=Pick<Props,'locale'|'products'|'importSeed'|'libraryReady'|'nativeState'|'onNative'|'onLibraryReady'|'onClose'|'onImportAccepted'>&{
  onDirtyChange?:(dirty:boolean)=>void;
+ onBusyChange?:(busy:boolean)=>void;
 };
 type Source={path:string;kind:'file'|'folder'|'unknown'};
 type Draft={name:string;category:string;categoryManual:boolean;tags:string[];pendingTag:string;sourceUrl:string;thumbnail:{relativePath:string;path:string;name:string}|null;thumbnailUrl:string};
@@ -82,8 +83,8 @@ export default function LocalImport(c:LocalImportProps){
  }
  async function run(action:()=>Promise<void>){
   if(lock.current)return;
-  lock.current=true;setBusy(true);setError('');
-  try{await action();}catch(e){setError(errorCode(e));}finally{lock.current=false;setBusy(false);}
+  lock.current=true;setBusy(true);c.onBusyChange?.(true);setError('');
+  try{await action();}catch(e){setError(errorCode(e));}finally{lock.current=false;setBusy(false);c.onBusyChange?.(false);}
  }
  function addSources(paths:string[],kind:Source['kind']){
   if(paths.some(path=>!absolutePath(path)))throw new Error('root_not_absolute');
@@ -91,9 +92,20 @@ export default function LocalImport(c:LocalImportProps){
   setBatchDrafts(current=>({...Object.fromEntries(paths.map(path=>[path,emptyDraft(fileName(path).replace(/\.zip$/i,''))])),...current}));
   if(mode==='single'&&paths[0])setSingleDraft(current=>current.name.trim()?current:{...current,name:kind==='folder'?fileName(paths[0]):fileName(paths[0]).replace(/\.[^.]+$/,'')});
  }
- useEffect(()=>{if(!isTauri())return;let stop:(()=>void)|undefined;let alive=true;void getCurrentWebview().onDragDropEvent(event=>{if(!alive||lock.current)return;const payload=event.payload;setDropping(payload.type==='enter'||payload.type==='over');if(payload.type==='drop'){setDropping(false);try{addSources(payload.paths,'unknown');}catch(error){setError(errorCode(error));}}}).then(unlisten=>{if(alive)stop=unlisten;else unlisten();}).catch(()=>{});return()=>{alive=false;stop?.();};},[mode]);
+ useEffect(()=>{
+  if(!isTauri())return;
+  let stop:(()=>void)|undefined,alive=true;
+  void getCurrentWebview().onDragDropEvent(({payload})=>{
+   if(!alive)return;
+   if(payload.type==='leave'||lock.current){setDropping(false);return;}
+   const {x,y}=payload.position;
+   const overImport=!!document.elementFromPoint(x/devicePixelRatio,y/devicePixelRatio)?.closest('.wf-import');
+   setDropping(overImport&&payload.type!=='drop');
+   if(overImport&&payload.type==='drop')try{addSources(payload.paths,'unknown');}catch(error){setError(errorCode(error));}
+  }).then(unlisten=>{if(alive)stop=unlisten;else unlisten();}).catch(()=>{});
+  return()=>{alive=false;stop?.();};
+ },[mode]);
  const fetchMetadata=()=>run(async()=>{if(!sourceUrl.trim())throw new Error('invalidURL');const data=await native('booth','fetch_product_metadata',{url:sourceUrl.trim()});if(!data||typeof data.title!=='string'||!categoryKeys.includes(data.category)||!Array.isArray(data.tags))throw new Error('invalidMetadata');updateDraft({name:data.title,category:data.category,categoryManual:true,tags:data.tags,sourceUrl:data.sourceUrl,thumbnail:null,thumbnailUrl:data.thumbnailUrl??''});});
- useEffect(()=>{if(seed?.sources?.length)addSources(seed.sources,'unknown');},[seed?.sources]);
  const chooseSources=(folder:boolean)=>run(async()=>{
   const result=await native('dialog',folder?'folder':'open_file',folder?{multiple:true}:{multiple:true,...(mode==='batch'?{filters:[{name:'ZIP',extensions:['zip']}]}:{})});
   addSources(selectedPaths(result),folder?'folder':'file');
@@ -126,9 +138,7 @@ export default function LocalImport(c:LocalImportProps){
   if(typeof result?.jobId!=='string')throw new Error('operationFailed');
   accepted.current=true;
   c.onDirtyChange?.(false);
-  const productIds=Array.isArray(result.productIds)?result.productIds.filter((id:unknown):id is string=>typeof id==='string'):[];
-  c.onNewAssets?.(productIds,mode==='single'?category:undefined,result.jobId);
-  c.onNotice(L('importQueued'));
+  c.onImportAccepted?.(result.jobId,typeof result.waiting==='number'?result.waiting:0);
   c.onClose();
  });
  const errorView=error&&<div className="wf-error" role="alert">{L(error)}</div>;
