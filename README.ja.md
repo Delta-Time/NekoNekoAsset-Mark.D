@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Yan-K/NekoNekoAsset-Public?include_prereleases&label=release&color=FF5FA2"></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><img alt="Mark.D Releases" src="https://img.shields.io/github/v/release/Delta-Time/NekoNekoAsset-Mark.D?include_prereleases&label=Mark.D&color=FF5FA2"></a>
   <img alt="Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0969DA">
   <img alt="Unity 2022.3+" src="https://img.shields.io/badge/Unity-2022.3%2B-222222">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2EA043"></a>
@@ -13,6 +13,21 @@
   <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <b>日本語</b>
 </p>
 
+## このフォークとサポート
+
+**NekoNekoAsset Mark.D** は、[Yan-K さんの NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) のフォークです。原則として本家のバージョン番号に合わせ、Mark.D 版では末尾に `.D1`、`.D2`、`.D3` のように `.D` と数字を付けます。たとえば、本家の `0.1.2` をベースにした Mark.D の第3版は `0.1.2.D3` と表示されます。
+
+質問や不具合の報告は GitHub Issues へお願いします。本家とフォークのどちらに原因があるか分からない場合も、**アプリ画面右下のバージョン表示**で報告先を選び、Issue には表示されたバージョンを末尾まで記載してください。
+
+| 画面右下のバージョン表示 | 報告先 |
+| --- | --- |
+| 末尾に `.D` と数字がある（例 `0.1.2.D3`） | [Mark.D の Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| 末尾に `.D` と数字がない（例 `0.1.2`） | [本家の Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+
+Mark.D の Issues では、末尾に `.D` と数字が付くバージョンの報告のみ受け付けます。本家のメンテナーへの負担を避けるため、Mark.D 版で見つかった不具合の報告は、Mark.D の Issues に一本化してください。
+
+本家との互換性は可能な限り維持します。バージョン間の互換性は保証の対象外です。
+
 <h3 align="center">素材、買いすぎ？ ねこにおまかせ！</h3>
 
 <p align="center">
@@ -20,7 +35,7 @@ NekoNekoAsset は Windows 向けのデスクトップアプリです。BOOTH・G
 </p>
 
 <p align="center">
-  <a href="https://yan-k.github.io/NekoNekoAsset-Public/ja/"><b>公式サイト</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>Windows 版をダウンロード</b></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><b>Mark.D の Windows 版をダウンロード</b></a> · <a href="https://yan-k.github.io/NekoNekoAsset-Public/ja/"><b>本家の公式サイト</b></a>
 </p>
 
 <p align="center">
@@ -66,11 +81,11 @@ NekoNekoAsset は Windows 向けのデスクトップアプリです。BOOTH・G
 
 ## インストール
 
-1. [公式サイト](https://yan-k.github.io/NekoNekoAsset-Public/ja/)か [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) から、最新の `NekoNekoAsset_x.y.z_x64-setup.exe` をダウンロードします。
-2. インストーラーを実行します。SmartScreen の警告が出たら、ファイルがこの 2 か所のどちらかから来たことを確かめて、「詳細情報」→「実行」を押してください。
+1. 使いたい版の Windows x64 インストーラーを [Mark.D の Releases](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases) または [本家の Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) からダウンロードします。
+2. インストーラーを実行します。SmartScreen の警告が出たら、使いたい版のリリースページから入手したことを確かめて、「詳細情報」→「実行」を押してください。
 3. ライブラリの保存先を選び、ストアにログイン（オフラインで始めることもできます）すれば完了です。
 
-今のところ Windows 64 ビットのみ対応です。新しいバージョンはアプリ内でお知らせし、署名を検証してからインストールします。
+Windows 64 ビット版に対応しています。本家版では、アプリ内で新しいバージョンをお知らせし、署名を検証してからインストールします。
 
 ## Unity Bridge
 
@@ -245,7 +260,7 @@ BOOTH では VRChat と関係のない商品もたくさん売られているた
 
 </details>
 
-ほかにも質問があれば、[GitHub Issues で質問](https://github.com/Yan-K/NekoNekoAsset-Public/issues)してください。
+ほかにも質問があれば、[このフォークとサポート](#このフォークとサポート)で使用中のバージョンに対応する報告先を確認してください。
 
 ## ソースからビルド
 

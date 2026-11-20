@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Yan-K/NekoNekoAsset-Public?include_prereleases&label=release&color=FF5FA2"></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><img alt="Mark.D Releases" src="https://img.shields.io/github/v/release/Delta-Time/NekoNekoAsset-Mark.D?include_prereleases&label=Mark.D&color=FF5FA2"></a>
   <img alt="Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0969DA">
   <img alt="Unity 2022.3+" src="https://img.shields.io/badge/Unity-2022.3%2B-222222">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2EA043"></a>
@@ -13,6 +13,21 @@
   <a href="README.md">English</a> · <b>繁體中文</b> · <a href="README.ja.md">日本語</a>
 </p>
 
+## 此分支與支援
+
+**NekoNekoAsset Mark.D** 是 [Yan-K 的 NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) 的分支（fork）。Mark.D 原則上沿用上游的版本號碼，並在結尾加上 `.D` 和數字，例如 `.D1`、`.D2` 或 `.D3`。以原版 `0.1.2` 為基礎的 Mark.D 第 3 版會顯示為 `0.1.2.D3`。
+
+需要支援或回報問題時，請查看 **App 畫面右下角的版本**，並在 Issue 中填寫完整版本。即使無法判斷問題源自原版或 Mark.D，也請依畫面顯示的版本選擇回報位置。
+
+| 畫面右下角顯示的版本 | 回報位置 |
+| --- | --- |
+| 結尾有 `.D` 和數字（例如 `0.1.2.D3`） | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| 結尾沒有帶數字的 `.D` 後綴（例如 `0.1.2`） | [原專案 Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+
+Mark.D Issues 僅受理結尾有 `.D` 和數字的版本。為了避免增加上游維護者的負擔，請統一在 Mark.D Issues 回報使用 Mark.D 版時發現的問題。
+
+我們會盡可能維持與原版的相容性，各版本之間的相容性不在保證範圍內。
+
 <h3 align="center">素材買太多？交給貓貓整理！</h3>
 
 <p align="center">
@@ -20,7 +35,7 @@ NekoNekoAsset 是一款 Windows 桌面 App。它會同步你在 BOOTH、Gumroad�
 </p>
 
 <p align="center">
-  <a href="https://yan-k.github.io/NekoNekoAsset-Public/zh-tw/"><b>官方網站</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>下載 Windows 版</b></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><b>下載 Mark.D Windows 版</b></a> · <a href="https://yan-k.github.io/NekoNekoAsset-Public/zh-tw/"><b>原專案官方網站</b></a>
 </p>
 
 <p align="center">
@@ -66,11 +81,11 @@ NekoNekoAsset 是一款 Windows 桌面 App。它會同步你在 BOOTH、Gumroad�
 
 ## 安裝
 
-1. 到[官方網站](https://yan-k.github.io/NekoNekoAsset-Public/zh-tw/)或 [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) 下載最新的 `NekoNekoAsset_x.y.z_x64-setup.exe`。
-2. 執行安裝程式。如果跳出 SmartScreen 警告，確認檔案是從這兩個地方下載的之後，點「其他資訊」→「仍要執行」。
+1. 從 [Mark.D Releases](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases) 或 [原專案 Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) 下載所需版本的 Windows x64 安裝程式。
+2. 執行安裝程式。如果出現 SmartScreen 警告，請先確認檔案來自所需版本的發行頁，再按「其他資訊」→「仍要執行」。
 3. 選擇素材庫位置，登入商店帳號（也可以先離線使用），完成！
 
-目前只支援 Windows 64 位元。之後的新版本會在 App 內提示，驗證簽章後才安裝。
+支援 Windows 64 位元。原版 App 內會提供更新，並在驗證簽章後安裝。
 
 ## Unity Bridge
 
@@ -245,7 +260,7 @@ BOOTH 也賣很多和 VRChat 無關的東西，所以預設的「全部」只顯
 
 </details>
 
-還有其他問題？[到 GitHub Issues 問我們](https://github.com/Yan-K/NekoNekoAsset-Public/issues)。
+還有其他問題？請參閱[此分支與支援](#此分支與支援)，依使用版本選擇回報位置。
 
 ## 從原始碼建置
 

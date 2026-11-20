@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Yan-K/NekoNekoAsset-Public?include_prereleases&label=release&color=FF5FA2"></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><img alt="Mark.D Releases" src="https://img.shields.io/github/v/release/Delta-Time/NekoNekoAsset-Mark.D?include_prereleases&label=Mark.D&color=FF5FA2"></a>
   <img alt="Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0969DA">
   <img alt="Unity 2022.3+" src="https://img.shields.io/badge/Unity-2022.3%2B-222222">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2EA043"></a>
@@ -13,6 +13,21 @@
   <b>English</b> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a>
 </p>
 
+## Fork and support
+
+**NekoNekoAsset Mark.D** is a fork of [NekoNekoAsset by Yan-K](https://github.com/Yan-K/NekoNekoAsset-Public). Mark.D generally follows the upstream version number and appends a revision suffix such as `.D1`, `.D2`, or `.D3`. For example, revision 3 based on upstream `0.1.2` is displayed as `0.1.2.D3`.
+
+For support or bug reports, check the version shown in the **bottom-right corner of the app** and include the full version in the issue. If you are unsure where the bug originates, use the displayed version to choose a tracker.
+
+| Version shown in the app | Where to report |
+| --- | --- |
+| Ends in `.D` followed by a number, for example `0.1.2.D3` | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| Has no numbered `.D` suffix, for example `0.1.2` | [Upstream Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+
+Mark.D Issues accepts reports only for versions with a numbered `.D` suffix. To avoid adding to the upstream maintainers’ workload, report Mark.D issues in the Mark.D tracker and use one tracker per report.
+
+Compatibility with upstream is maintained on a best-effort basis. Compatibility across versions is not guaranteed.
+
 <h3 align="center">Too many assets? Let the cat sort them!</h3>
 
 <p align="center">
@@ -20,7 +35,7 @@ NekoNekoAsset is a Windows desktop app that syncs the VRChat assets you bought o
 </p>
 
 <p align="center">
-  <a href="https://yan-k.github.io/NekoNekoAsset-Public/"><b>Website</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>Download for Windows</b></a>
+  <a href="https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases"><b>Download Mark.D for Windows</b></a> · <a href="https://yan-k.github.io/NekoNekoAsset-Public/"><b>Upstream website</b></a>
 </p>
 
 <p align="center">
@@ -66,11 +81,11 @@ Every store supports several accounts, each kept separate.
 
 ## Install
 
-1. Download the latest `NekoNekoAsset_x.y.z_x64-setup.exe` from the [website](https://yan-k.github.io/NekoNekoAsset-Public/) or [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases).
-2. Run the installer. If SmartScreen warns you, make sure the file came from one of those two places, then click **More info** → **Run anyway**.
+1. Download the Windows x64 installer for your edition from [Mark.D Releases](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases) or [Upstream Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases).
+2. Run the installer. If SmartScreen warns you, confirm that the file came from the release page for your edition, then click **More info** → **Run anyway**.
 3. Choose where your library lives, sign in to your stores (or start offline), and you are done.
 
-Windows 64-bit only for now. New versions are offered inside the app and installed only after their signature checks out.
+Windows 64-bit only. Upstream updates are offered inside the upstream app and installed after verification.
 
 ## Unity Bridge
 
@@ -245,7 +260,7 @@ BOOTH also sells plenty of things unrelated to VRChat, so the default “All” 
 
 </details>
 
-Still have questions? [Ask on GitHub Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues).
+Still have questions? See [Fork and support](#fork-and-support) for the issue tracker for your version.
 
 ## Build from source
 
