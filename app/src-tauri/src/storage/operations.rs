@@ -131,8 +131,9 @@ impl StorageService {
                 if artifact_id(&remote) != a["id"].as_str().unwrap_or("") {
                     continue;
                 }
-                // A kept store file exports its downloaded original even where
-                // extraction failed; the store's own files must be ready.
+                // A kept store file, one the store dropped or refused, exports its
+                // downloaded original even where extraction failed; the store's own
+                // files must be ready.
                 let product = io::required_string(&a, "productId")?;
                 if a["status"] != "ready" && !offered.contains_key(product) {
                     let ids = if self
@@ -141,9 +142,11 @@ impl StorageService {
                         .is_some_and(|p| p["provider"] != "local")
                     {
                         Some(
-                            self.remote_files(product)?
-                                .0
-                                .iter()
+                            self.without_last_failure(
+                                self.remote_files(product)?.0,
+                                &["store_file_unavailable"],
+                            )?
+                            .iter()
                                 .filter_map(|f| f["id"].as_str().map(str::to_owned))
                                 .collect(),
                         )

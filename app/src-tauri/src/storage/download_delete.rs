@@ -139,6 +139,9 @@ impl StorageService {
                         && !artifact["fileId"]
                             .as_str()
                             .is_some_and(|id| irreplaceable.contains(id))
+                        // The store's refusal stays, so a refused file's own delete takes
+                        // it out of the list instead of offering it again.
+                        && artifact["errorCode"] != "store_file_unavailable"
                 });
         let mut tops = HashSet::new();
         for artifact in &targets {
@@ -410,9 +413,10 @@ mod tests {
         let f = Fixture::new();
         let directory = f.product("beta", &["New.zip", "Old.zip"]);
         let c = &f.service.catalogue;
-        // The grant still names Old.zip, but its last download was refused as no longer offered.
+        // The grant still names Old.zip, but its last download was refused as no longer
+        // offered; the refusal record names the fresh path that attempt had planned.
         let pending = format!("pending-{}", io::key("beta-Old.zip"));
-        c.put("artifact",&pending,json!({"id":pending,"productId":"beta","fileId":"beta-Old.zip","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+        c.put("artifact",&pending,json!({"id":pending,"productId":"beta","fileId":"beta-Old.zip","rootId":"root","relativePath":format!("{directory}/Old.zip--dir-1/Old.zip"),"productDirectory":directory,"revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
         let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
         let result = f.service.delete_downloads(&json!({"productIds":["beta"]})).await.unwrap();
         assert_eq!(result["deletedFileIds"], json!(["beta-New.zip"]));
@@ -420,6 +424,13 @@ mod tests {
         let details = c.command("product_details", json!({"id":"beta"})).unwrap();
         let row = details["files"].as_array().unwrap().iter().find(|row| row["id"] == "beta-Old.zip").unwrap().clone();
         assert_eq!((row["kept"].clone(), row["status"].clone()), (json!(true), json!("ready")));
+        // Its own delete removes the bytes and keeps the refusal, so it leaves the list.
+        f.service.delete_downloads(&json!({"fileId":"beta-Old.zip"})).await.unwrap();
+        assert!(!old.exists());
+        assert!(c.get("artifact", &pending).unwrap().is_some());
+        let details = c.command("product_details", json!({"id":"beta"})).unwrap();
+        let ids: Vec<_> = details["files"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["beta-New.zip"]);
         f.finish();
     }
 

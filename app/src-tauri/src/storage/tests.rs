@@ -3289,6 +3289,17 @@ fn kept_file_whose_extraction_failed_still_exports_its_original() {
         &AtomicBool::new(false),
     ).unwrap();
     assert_eq!(result["fileCount"], 2);
+    // A file its store refused counts the same while a grant still names it.
+    f.service.catalogue.put("entitlement","test-entitlement",json!({"id":"test-entitlement","productId":"42","accountId":"test-account","fileIds":["test-file-0","test-file-1"],"manifestComplete":true})).unwrap();
+    // The record a refused download leaves, as the transfer writes it.
+    let pending = format!("pending-{}", io::key("test-file-1"));
+    f.service.catalogue.put("artifact",&pending,json!({"id":pending,"productId":"42","fileId":"test-file-1","rootId":"test-root","relativePath":"assets/refused/fixture-1.unitypackage","productDirectory":"assets/refused","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+    let result = f.service.disk_operation(
+        "export_zip",
+        &json!({"productIds":["42"],"path":f.path.join("refused.zip")}),
+        &AtomicBool::new(false),
+    ).unwrap();
+    assert_eq!(result["fileCount"], 2);
     // The store's own files must still be ready.
     let mut failed = current;
     failed["status"] = json!("extractionFailed");
