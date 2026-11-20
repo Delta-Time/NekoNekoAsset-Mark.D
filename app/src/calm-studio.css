@@ -536,8 +536,7 @@
 .app button.data-row:hover {
   background: var(--hover);
 }
-.app .segmented,
-.app .tabs {
+.app .segmented {
   gap: 3px;
   padding: 3px;
   border: 0;
@@ -545,9 +544,7 @@
   background: var(--field);
   box-shadow: inset 0 0 0 1px var(--line);
 }
-.app .segmented button,
-.app .tabs > button,
-.app .tabs .tab {
+.app .segmented button {
   min-height: 26px;
   padding: 0 12px;
   border: 0;
@@ -556,25 +553,17 @@
   color: var(--muted);
   font-weight: 600;
 }
-.app .segmented button:hover,
-.app .tabs > button:hover,
-.app .tabs .tab:hover {
+.app .segmented button:hover {
   background: transparent;
   color: var(--text);
 }
 .app .segmented button.active,
-.app .segmented button[aria-pressed="true"],
-.app .tabs > button[aria-pressed="true"],
-.app .tabs .tab.active {
+.app .segmented button[aria-pressed="true"] {
   background: var(--raised);
   color: var(--text);
   box-shadow:
     var(--sh-1),
     inset 0 0 0 1px color-mix(in oklab, var(--text) 7%, transparent);
-}
-.app .modal-body > .tabs {
-  margin: 0 0 14px;
-  align-self: flex-start;
 }
 .app .nna-toggle {
   gap: 12px;
@@ -1185,9 +1174,6 @@
 .app.app .avatar-manager:hover {
   background: var(--hover);
   color: var(--text);
-}
-.app .nav-item > .source-category-label > small {
-  color: var(--faint);
 }
 
 /* ---------- results: toolbar ---------- */

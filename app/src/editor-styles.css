@@ -150,12 +150,6 @@
   padding: 4px 0;
   overflow-wrap: anywhere;
 }
-.editor-thumbnail {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
 .editor-thumbnail-preview {
   position: relative;
   display: block;

@@ -70,12 +70,6 @@
 .ai-settings .ai-scopes input {
   flex: none;
 }
-.ai-settings .ai-key-label {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 6px;
-}
 .ai-settings .ai-status {
   margin-top: 10px;
   font-size: 12px;

@@ -371,9 +371,6 @@
 .asset-inspector-prices strong {
   font-weight: 500;
 }
-.asset-inspector-open-file {
-  flex: none;
-}
 
 .asset-inspector-page-link {
   position: relative;
