@@ -1,4 +1,3 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import {
   Search,
@@ -29,13 +28,11 @@ import {
 } from 'lucide-react';
 import {
   categoryKeys,
-  categoryName,
   statusKeys,
   isProductDownloaded,
   getProductDisplayStatus,
   defaultSortDirection,
   thumbnailSizes,
-  isLightTheme,
   currentPriceLabel,
   cardPriceLabel,
   fileCountLabel,
@@ -54,7 +51,7 @@ import Toggle from './Toggle';
 import { contentLang } from './content-lang';
 import { CategoryIcon } from './LibraryIcons';
 import UpdatePrompt from './UpdatePrompt';
-import { resumesAfterRestart, updateJobBlocker, updateText } from './update-i18n';
+import { resumesAfterRestart, updateText } from './update-i18n';
 import { resetText } from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
@@ -64,29 +61,21 @@ import { LibraryContextMenu, ResponsiveLibraryToolbar } from './LibraryMenus';
 import type { ContextAction } from './LibraryMenus';
 import ActivityHistory from './ActivityHistory';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
-import ThemePicker, { defaultThemeOptions, themeDisplayName } from './ThemePicker';
+import ThemePicker, { defaultThemeOptions } from './ThemePicker';
 import Workflows, { WorkflowContent, LibraryAccess, isStoreJob } from './Workflows';
-import { isTauri } from '@tauri-apps/api/core';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
 import EditDialogs, { exportThemeConfig } from './EditDialogs';
 import { LicenseFilterDialog, licenseSummary } from './Licenses';
 import { licenseText } from './license-i18n';
 import {
   invokeAction,
-  dialog as nativeDialog,
   errorCode,
-  nativeFileAction,
-  nativeZoom,
   openExternal,
   fetchProductMetadata,
-  updateLocalFiles,
   cancelAi,
   retryAi,
   cancelUnity,
   retryUnityInventory,
-  type LocalFileChanges,
 } from './backend';
-import type { NativeJob, ProductOverlayChange } from './backend';
 import { nativeWorkflowText } from './native-workflow-i18n';
 import Button from './shared/Button';
 import SmallDialog from './shared/SmallDialog';
@@ -95,7 +84,6 @@ import ProductStatus from './features/results/ProductStatus';
 import Results from './features/results/Results';
 import { configuredLibraryRoot } from './features/library/library-root';
 import { acquisitionKinds, fresh, leavingHidden } from './features/filters/query';
-import { neutralTokens } from './features/appearance/themes';
 import { useUiPreferences } from './features/preferences/useUiPreferences';
 import { useLayout } from './features/shell/useLayout';
 import { useNavigation } from './features/shell/useNavigation';
@@ -108,6 +96,15 @@ import { useResults } from './features/results/useResults';
 import { useSelectedProducts } from './features/selection/useSelectedProducts';
 import { useNative } from './features/library/useNative';
 import { usePreferenceSync } from './features/preferences/usePreferenceSync';
+import { useCategories } from './features/categories/useCategories';
+import { useAvatars } from './features/avatars/useAvatars';
+import { useLocalFiles } from './features/local-files/useLocalFiles';
+import { useProductEdits } from './features/products/useProductEdits';
+import { useProductActions } from './features/products/useProductActions';
+import { useAppearance } from './features/appearance/useAppearance';
+import { useSettingsPane } from './features/settings/useSettingsPane';
+import { useUpdates } from './features/updates/useUpdates';
+import { useShortcuts } from './features/shell/useShortcuts';
 export default function App() {
   const uiPrefs = useUiPreferences();
   const {
@@ -116,7 +113,6 @@ export default function App() {
     theme,
     setTheme,
     presets,
-    setPresets,
     thumb,
     setThumb,
     density,
@@ -128,11 +124,7 @@ export default function App() {
     cardColumns,
     columns,
     setColumns,
-    avatarSettings,
-    setAvatarSettings,
     uiScale,
-    setUiScale,
-    zoomTarget,
     roundedCorners,
     setRoundedCorners,
     reduceMotion,
@@ -172,7 +164,6 @@ export default function App() {
     licenseButton,
     importSeed,
     setImportSeed,
-    settingsReturn,
   } = nav;
   const q = (key: string) => appText(locale, key);
   const notices = useNotice({ q, flow, dialog });
@@ -187,12 +178,8 @@ export default function App() {
     libraryOpening,
     libraryStateRef,
     libraryRefreshPending,
-    libraryEpoch,
     blockedLibraryRequest,
-    initialLoad,
     saved,
-    customCategories,
-    setCustomCategories,
     snapshotVersion,
     libraryReady,
     autoAll,
@@ -232,13 +219,10 @@ export default function App() {
   const results = useResults({ library, filters, collectionStore, notices, q });
   const {
     products,
-    setProducts,
     catalogueTotal,
     scrollState,
     queryResult,
-    setQueryResult,
     queryBusy,
-    summaryCache,
     queryKey,
     filtered,
     matchedIds,
@@ -250,7 +234,6 @@ export default function App() {
     visibleSelected,
     selectedSet,
     productMap,
-    setProductDetails,
     active,
     chosen,
     availability,
@@ -269,664 +252,127 @@ export default function App() {
     notices,
     q,
   });
-  const {
-    reload,
-    openSelectedLibrary,
-    chooseLibrary,
-    refreshState,
-    refreshAvatarOptions,
-    onNative,
-  } = native;
+  const { openSelectedLibrary, chooseLibrary, refreshState, refreshAvatarOptions, onNative } =
+    native;
   const preferenceSync = usePreferenceSync({ library, notices, uiPrefs, q });
-  const { displayedPreferences, pendingPreferences, onPreferences, drainPreferenceWrites } =
-    preferenceSync;
-  const localFileLocks = useRef(new Set<string>()),
-    [localFilePending, setLocalFilePending] = useState(new Set<string>());
-  const [themePreview, setThemePreview] = useState<Record<string, string> | null>(null);
-  const [updateOpen, setUpdateOpen] = useState(false),
-    [updateRequest, setUpdateRequest] = useState(0),
-    [updateAvailable, setUpdateAvailable] = useState(false),
-    [aiChatUpdateBlocked, setAiChatUpdateBlocked] = useState(false);
-  const aiChatUpdateBlockedRef = useRef(false),
-    updateBlockerRef = useRef('');
-  const reportAiChatUpdateBlocked = useCallback((blocked: boolean) => {
-    aiChatUpdateBlockedRef.current = blocked;
-    setAiChatUpdateBlocked(blocked);
-  }, []);
-  const [deleteLocalSelection, setDeleteLocalSelection] = useState<{
-    ids: string[];
-    names: string[];
-  } | null>(null);
-  const [productConfirm, setProductConfirm] = useState<{
-      kind: 'downloadAll' | 'deleteDownloads';
-      ids: string[];
-      names: string[];
-    } | null>(null),
-    [deletingDownloads, setDeletingDownloads] = useState<ReadonlySet<string>>(new Set());
-  const watchedDownloads = useRef(new Set<string>()),
-    staleProducts = useRef(new Set<string>());
-  const [undo, setUndo] = useState<string | null>(null);
-  const avatarSettingsRef = useRef(avatarSettings);
-  avatarSettingsRef.current = avatarSettings;
-  const latestLocalImport = useRef<{
-      jobId: string;
-      plannedIds: string[];
-      category?: string;
-      handled?: boolean;
-    } | null>(null),
-    importNavigation = useRef({ query, collection, view });
-  importNavigation.current = { query, collection, view };
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (event.payload.type !== 'drop' || !event.payload.paths.length) return;
-        const point = event.payload.position;
-        const target = document.elementFromPoint(
-          point.x / devicePixelRatio,
-          point.y / devicePixelRatio,
-        );
-        if (!target?.closest('.result-workspace,.wf-import')) return;
-        const paths = event.payload.paths;
-        setImportSeed({
-          name: paths[0]
-            .replace(/[\\/]+$/, '')
-            .split(/[\\/]/)
-            .pop()
-            ?.replace(/\.[^.]+$/, ''),
-          sources: paths,
-          sourceKind: 'local',
-        });
-        setFlow('import');
-      })
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-  const zoomQueue = useRef(Promise.resolve());
-  const searchRef = useRef<HTMLInputElement>(null);
-  const jobs = useMemo(
-    () =>
-      new Map(
-        nativeState.jobs
-          .filter(
-            (j) =>
-              ['download', 'storage:import_local'].includes(j.type) &&
-              ['queued', 'running'].includes(j.state),
-          )
-          .flatMap((j) =>
-            [
-              ...new Set([j.productId, ...(j.productIds ?? [])].filter((id): id is string => !!id)),
-            ].map((id) => [id, j] as const),
-          ),
-      ),
-    [nativeState.jobs],
-  );
-  async function changeLocalFiles(
-    productId: string,
-    changes: LocalFileChanges | (() => Promise<LocalFileChanges | undefined>),
-  ) {
-    if (localFileLocks.current.has(productId) || jobs.has(productId))
-      throw new Error('storage_busy');
-    localFileLocks.current.add(productId);
-    setLocalFilePending(new Set(localFileLocks.current));
-    try {
-      const args = typeof changes === 'function' ? await changes() : changes;
-      if (!args) return;
-      const result = await updateLocalFiles(productId, args);
-      await refreshState();
-      return result;
-    } finally {
-      localFileLocks.current.delete(productId);
-      setLocalFilePending(new Set(localFileLocks.current));
-    }
-  }
-  const addLocalFiles = (productId: string, folder: boolean) =>
-    run(
-      changeLocalFiles(productId, async () => {
-        const result = await nativeDialog(folder ? 'folder' : 'open_file', { multiple: true });
-        const sources = result?.paths ?? (result?.path ? [result.path] : []);
-        return sources.length
-          ? { draftId: crypto.randomUUID(), addSources: sources, removeFileIds: [] }
-          : undefined;
-      }),
-    );
-  const changeAvatarDetails = async (
-    id: string,
-    patch: { displayName: string; shopName: string },
-  ) => {
-    const epoch = libraryEpoch.current;
-    await drainPreferenceWrites();
-    if (epoch !== libraryEpoch.current) throw new Error('library_not_open');
-    const next = {
-      ...avatarSettingsRef.current,
-      [id]: { ...avatarSettingsRef.current[id], ...patch },
-    };
-    await onPreferences({ avatarSettings: next });
-    if (epoch !== libraryEpoch.current) return;
-    avatarSettingsRef.current = next;
-    if (displayedPreferences.current) displayedPreferences.current.avatarSettings = next;
-    setAvatarSettings(next);
-    await refreshAvatarOptions().catch((error) => notify(q(errorCode(error))));
-  };
-  const categoryLabel = (key: string) => categoryName(key, customCategories, q),
-    categoryList = [...customCategories].sort((a, b) =>
-      a.name.localeCompare(b.name, locale, { numeric: true }),
-    );
-  const changeCategories = async (args: Record<string, unknown>) => {
-    const result = await onNative('catalogue', 'custom_category', args);
-    if (Array.isArray(result?.customCategories)) setCustomCategories(result.customCategories);
-    if (args.op === 'delete')
-      setQuery((old) => (old.category === args.id ? { ...old, category: 'all' } : old));
-  };
-  const avatarOptions = (nativeState.avatarOptions ?? []).map((option) => {
-      const settings = avatarSettings[option.id];
-      return {
-        ...option,
-        displayName:
-          settings?.displayName === undefined
-            ? option.displayName || option.sourceDisplayName
-            : settings.displayName.trim() || option.sourceDisplayName || option.displayName,
-        shopName:
-          settings?.shopName === undefined
-            ? option.shopName || option.sourceShopName
-            : settings.shopName.trim() || option.sourceShopName || option.shopName,
-      };
-    }),
-    avatarLabel = (id: string) => {
-      const option =
-        avatarOptions.find((option) => option.id === id) ??
-        avatarOptions.find((option) => option.aliases.includes(id));
-      return (
-        option?.displayName ||
-        [option?.officialName, option?.englishName].filter(Boolean).join(' / ') ||
-        id
-      );
-    };
-  const avatarEnabled = (id: string) => {
-    const option = avatarOptions.find((option) => option.id === id),
-      explicit = avatarSettings[id]?.enabled ?? option?.explicitEnabled;
-    if (typeof explicit === 'boolean') return explicit;
-    const automatic = nativeState.preferences.avatarAutomaticEnabled;
-    if (automatic && typeof automatic === 'object' && !Array.isArray(automatic))
-      return Reflect.get(automatic, id) === true;
-    return option?.enabled ?? false;
-  };
-  const changeAvatars = (ids: string[], enabled: boolean) => {
-    setAvatarSettings((old) => ({
-      ...old,
-      ...Object.fromEntries(ids.map((id) => [id, { ...old[id], enabled }])),
-    }));
-    if (!enabled && ids.includes(query.avatar)) updateQuery({ avatar: 'all' });
-  };
-  const avatarChoices = avatarOptions
-    .filter((option) => avatarEnabled(option.id))
-    .map((option) => option.id);
-  const selectedTheme =
-      presets.find((p) => p.id === theme) ||
-      defaultThemeOptions.find((p) => p.id === theme) ||
-      defaultThemeOptions[0],
-    selectedThemeTokens = { ...neutralTokens, ...selectedTheme.tokens },
-    selectedThemeName = ['dark', 'light'].includes(selectedTheme.id)
-      ? q(selectedTheme.id)
-      : themeDisplayName(locale, selectedTheme),
-    themeTokens = themePreview || selectedThemeTokens;
-  const batchPatch = async (changes: ProductOverlayChange[]) => {
-    const prepared = [];
-    for (const change of changes) {
-      const patch = { ...change.patch },
-        clearFields: string[] = [];
-      if (patch.thumbnailSourcePath) {
-        const copied = await nativeFileAction<{ relativePath: string }>('copy_image', {
-          path: patch.thumbnailSourcePath,
-          productId: change.id,
-        });
-        patch.thumbnailPath = copied.relativePath;
-        clearFields.push('thumbnailHidden');
-      } else if (patch.thumbnailSourcePath === null) {
-        clearFields.push('thumbnailPath', 'thumbnailHidden');
-        delete patch.thumbnailOverrideUrl;
-        delete patch.previewUrl;
-      }
-      delete patch.thumbnailSourcePath;
-      if (patch.titleOverride === false) {
-        clearFields.push('title');
-        delete patch.title;
-        delete patch.titleOverride;
-      }
-      if (patch.thumbnailOverrideUrl === '' && patch.previewUrl === '')
-        patch.thumbnailHidden = true;
-      if (patch.sourceUrlOverride === false) {
-        clearFields.push('sourceUrl');
-        delete patch.sourceUrl;
-      }
-      delete patch.sourceUrlOverride;
-      const editable = [
-        'title',
-        'category',
-        'tags',
-        'note',
-        'ownedAvatars',
-        'sensitive',
-        'rejectedTags',
-        'thumbnailPath',
-        'thumbnailHidden',
-        'sourceUrl',
-        'sourceThumbnailUrl',
-      ];
-      const nativePatch = Object.fromEntries(
-        Object.entries(patch).filter(([key]) => editable.includes(key)),
-      );
-      prepared.push({
-        id: change.id,
-        patch: nativePatch,
-        clearFields,
-        ...(change.ownedAvatarsDelta ? { ownedAvatarsDelta: change.ownedAvatarsDelta } : {}),
-      });
-    }
-    const result = await onNative('catalogue', 'overlay', { changes: prepared });
-    if (result?.changed !== 0) setUndo(result?.undoToken ?? result?.token ?? null);
-    await refreshAvatarOptions().catch((error) => notify(q(errorCode(error))));
-  };
-  const userPatch = async (ids: string[], value: Partial<Product>) =>
-    batchPatch(ids.map((id) => ({ id, patch: value })));
-  const localSelection = (ids: string[]) =>
-    ids.length > 0 &&
-    ids.every((id) => {
-      const product = productMap.get(id);
-      return product
-        ? product.provider === 'local'
-        : query.includeOffline && query.accountIds?.length === 0;
-    });
-  const requestLocalDelete = (ids: string[]) => {
-    if (localSelection(ids))
-      setDeleteLocalSelection({
-        ids: [...new Set(ids)],
-        names: ids.map((id) => productMap.get(id)?.title ?? '').filter(Boolean),
-      });
-  };
-  const onlineSelection = (ids: string[]) =>
-    ids.length > 0 &&
-    ids.every((id) => {
-      const product = productMap.get(id);
-      return product
-        ? !!product.provider && product.provider !== 'local'
-        : query.quick === 'hidden' || !query.includeOffline;
-    });
-  const hiddenSelection = (ids: string[]) =>
-    query.quick === 'hidden' || ids.every((id) => productMap.get(id)?.hidden === true);
-  const hideProducts = async (ids: string[], hidden: boolean) => {
-    if (!onlineSelection(ids)) return;
-    const result = await onNative('catalogue', 'overlay', {
-      changes: [...new Set(ids)].map((id) => ({ id, patch: { hidden }, clearFields: [] })),
-    });
-    if (result?.changed !== 0) setUndo(result?.undoToken ?? result?.token ?? null);
-    setQueryResult((result) =>
-      result
-        ? {
-            ...result,
-            products: result.products.filter((product) => !ids.includes(product.id)),
-            matchedIds: result.matchedIds.filter((id) => !ids.includes(id)),
-          }
-        : null,
-    );
-    setProducts((rows) =>
-      rows.map((product) => (ids.includes(product.id) ? { ...product, hidden } : product)),
-    );
-    setSelected((rows) => rows.filter((id) => !ids.includes(id)));
-    setFocusId((id) => (ids.includes(id) ? '' : id));
-    setProductDetails(null);
-    await reload();
-  };
-  const deleteLocalProducts = async (ids: string[]) => {
-    try {
-      const result = (await onNative('storage', 'delete_local_products', { productIds: ids })) as {
-        deletedProductIds: string[];
-      };
-      const removed = new Set(result.deletedProductIds);
-      for (const id of removed) summaryCache.current.delete(id);
-      setQueryResult((result) =>
-        result
-          ? {
-              ...result,
-              products: result.products.filter((product) => !removed.has(product.id)),
-              matchedIds: result.matchedIds.filter((id) => !removed.has(id)),
-              total: Math.max(0, result.total - removed.size),
-            }
-          : null,
-      );
-      setProducts((rows) => rows.filter((product) => !removed.has(product.id)));
-      setSelected((rows) => rows.filter((id) => !removed.has(id)));
-      setFocusId((id) => (removed.has(id) ? '' : id));
-      setProductDetails(null);
-      setUndo(null);
-    } finally {
-      await reload();
-    }
-  };
-  const undoAction = async () => {
-    if (!undo) return;
-    await onNative('catalogue', 'undo', { token: undo });
-    setUndo(null);
-  };
-  const activeDownloads = (productId: string) =>
-    nativeState.jobs.filter(
-      (job) =>
-        job.type === 'download' &&
-        job.productId === productId &&
-        ['queued', 'running'].includes(job.state),
-    );
-  const cancelDownloads = (ids?: string[]) =>
-    run(onNative('storage', 'cancel_downloads', ids ? { productIds: ids } : {}));
-  /** The store lists no file for these products and none is on disk. */
-  const allUnavailable = (ids: string[]) =>
-    ids.length > 0 && ids.every((id) => productMap.get(id)?.unavailable === true);
-  const hasDownloadedFiles = (ids: string[]) =>
-    ids.some((id) => {
-      const product = productMap.get(id);
-      return (
-        !product || product.downloaded > (product.keptFiles ?? 0) || product.status === 'attention'
-      );
-    });
-  const requestDeleteDownloads = (ids: string[]) => {
-    const unique = [...new Set(ids)];
-    if (onlineSelection(unique))
-      setProductConfirm({
-        kind: 'deleteDownloads',
-        ids: unique,
-        names: unique.map((id) => productMap.get(id)?.title ?? '').filter(Boolean),
-      });
-  };
-  const deleteDownloads = async (args: Record<string, unknown>, ids: string[]) => {
-    setDeletingDownloads((old) => new Set([...old, ...ids]));
-    try {
-      await invokeAction('storage', 'delete_downloads', args);
-    } finally {
-      setDeletingDownloads((old) => new Set([...old].filter((id) => !ids.includes(id))));
-    }
-  };
-  /** Downloads started here update their product when the store no longer offers a file. */
-  const watchDownloads = (result: unknown) => {
-    for (const id of (result as { jobIds?: unknown[] } | undefined)?.jobIds ?? [])
-      if (typeof id === 'string') watchedDownloads.current.add(id);
-  };
-  // One update per store covers every such product once those downloads settle, because a
-  // store update slows that store's transfers to one. An asset downloaded whole then gets
-  // its updated list through the download request it already holds.
-  useEffect(() => {
-    let active = false;
-    for (const job of nativeState.jobs as (NativeJob & {
-      failures?: Record<string, { errorCode?: string } | undefined>;
-    })[]) {
-      if (!watchedDownloads.current.has(job.id)) continue;
-      // A download waiting for its account's sign-in holds up no other update.
-      if (['queued', 'running'].includes(job.state)) {
-        if (job.errorCode !== 'auth_required') active = true;
-        continue;
-      }
-      watchedDownloads.current.delete(job.id);
-      if (
-        job.productId &&
-        (job.errorCode === 'store_file_unavailable' ||
-          Object.values(job.failures ?? {}).some(
-            (item) => item?.errorCode === 'store_file_unavailable',
-          ))
-      )
-        staleProducts.current.add(job.productId);
-    }
-    if (active || !staleProducts.current.size) return;
-    // Store IDs carry their store (BOOTH's are bare numbers), so a busy or signed-out
-    // account of one store cannot fail another store's update.
-    const stores = new Map<string, string[]>();
-    for (const id of staleProducts.current) {
-      const store = id.includes(':') ? id.slice(0, id.indexOf(':')) : 'booth';
-      stores.set(store, [...(stores.get(store) ?? []), id]);
-    }
-    staleProducts.current.clear();
-    for (const productIds of stores.values())
-      run(onNative('booth', 'update_products', { productIds }));
-  }, [nativeState.jobs]);
-  const download = (ids: string[]) => {
-    if (ids.length)
-      run(onNative('storage', 'enqueue_products', { productIds: ids }).then(watchDownloads));
-  };
-  const downloadFile = (fileId: string, redownload: boolean) =>
-    run(onNative('storage', 'enqueue_file', { fileId, redownload }).then(watchDownloads));
-  const update = (ids: string[]) => {
-    if (ids.length) run(onNative('booth', 'update_products', { productIds: ids }));
-  };
-  const syncLicenses = (ids: string[]) => {
-    if (ids.length)
-      run(
-        invokeAction<{ jobId?: string | null }>('licenses', 'sync', { productIds: ids }).then(
-          (result) => {
-            if (!result?.jobId) notify(licenseText(locale, 'noLicenseWork')!);
-          },
-        ),
-      );
-  };
-  const needsAttention = (ids: string[]) =>
-    ids.some((id) => productMap.get(id)?.status === 'attention');
-  const dismissAttention = (ids: string[]) => {
-    const targets = ids.filter((id) => productMap.get(id)?.status === 'attention');
-    if (targets.length) run(onNative('catalogue', 'dismiss_attention', { productIds: targets }));
-  };
-  /** Files the latest finished download of a product found the store no longer offers. */
-  const refusedFiles = (productId: string) => {
-    const job = nativeState.jobs
-      .filter(
-        (job) =>
-          job.type === 'download' &&
-          job.productId === productId &&
-          !['queued', 'running'].includes(job.state),
-      )
-      .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0] as
-      | (NativeJob & { failures?: Record<string, { errorCode?: string } | undefined> })
-      | undefined;
-    return Object.entries(job?.failures ?? {})
-      .filter(([, failure]) =>
-        ['store_file_unavailable', 'free_offer_unavailable'].includes(failure?.errorCode ?? ''),
-      )
-      .map(([id]) => id);
-  };
-  const exportZip = async (ids: string[]) => {
-    if (!ids.length) return;
-    try {
-      const destination = await nativeDialog('save_file', {
-        defaultName: 'NekoNekoAsset.zip',
-        filters: [{ name: 'ZIP', extensions: ['zip'] }],
-      });
-      if (destination)
-        await onNative('storage', 'export_zip', { productIds: ids, path: destination.path });
-    } catch (error) {
-      notify(q(errorCode(error)));
-    }
-  };
-  const edit = () => setDialog(visibleSelected.length > 1 ? 'batch' : 'edit');
-  const choosePreset = async (tokens: Record<string, string>, name = 'Custom') => {
-    let unique = name.trim() || 'Custom',
-      suffix = 2;
-    while (presets.some((p) => p.name.toLocaleLowerCase() === unique.toLocaleLowerCase()))
-      unique = `${name} (${suffix++})`;
-    const preset = { id: 'theme-' + Date.now(), name: unique, tokens };
-    const next = [...presets, preset];
-    await onPreferences({ presets: next, theme: preset.id });
-    setPresets(next);
-    setTheme(preset.id);
-    setThemePreview(null);
-  };
-  const themeDeleting = useRef(false),
-    [themeDeleteBusy, setThemeDeleteBusy] = useState(false);
-  const [themeDeleteTarget, setThemeDeleteTarget] = useState<{ id: string; name: string } | null>(
-    null,
-  );
-  const deleteTheme = async (id: string) => {
-    if (themeDeleting.current) return;
-    if (!presets.some((p) => p.id === id)) throw new Error('entryUnavailable');
-    themeDeleting.current = true;
-    setThemeDeleteBusy(true);
-    const next = presets.filter((p) => p.id !== id);
-    try {
-      await onPreferences({ presets: next, ...(theme === id ? { theme: 'dark' } : {}) });
-      setPresets(next);
-      setTheme((current) => (current === id ? 'dark' : current));
-      setThemePreview(null);
-    } finally {
-      themeDeleting.current = false;
-      setThemeDeleteBusy(false);
-    }
-  };
-  const openSettings = (route: string) => {
-    if (view !== 'settings')
-      settingsReturn.current = {
-        inspector,
-        tab,
-        view: view === 'activity' || view === 'ai-suggestions' ? view : 'library',
-      };
-    setSettingsRoute(route === 'ai-settings' && !aiEnabled ? 'features' : route);
-    setView('settings');
-    setInspector(true);
-  };
-  const toggleSettings = () => {
-    if (view === 'settings') {
-      setView(
-        settingsReturn.current.view === 'ai-suggestions' && !aiEnabled
-          ? 'library'
-          : settingsReturn.current.view,
-      );
-      setTab(settingsReturn.current.tab);
-      setInspector(settingsReturn.current.inspector);
-    } else openSettings(settingsRoute);
-  };
-  const changeScale = (scale: number) => {
-    const bounded = Math.max(80, Math.min(300, Math.round(scale)));
-    zoomTarget.current = bounded;
-    zoomQueue.current = zoomQueue.current.then(async () => {
-      if (bounded !== zoomTarget.current) return;
-      try {
-        const result = await nativeZoom(bounded);
-        if (bounded === zoomTarget.current) {
-          pendingPreferences.current.uiScale = result.scale;
-          setUiScale(result.scale);
-        }
-      } catch (error) {
-        if (bounded === zoomTarget.current) zoomTarget.current = uiScale;
-        notify(q(errorCode(error)));
-      }
-    });
-  };
-  useEffect(() => {
-    if (loaded && initialLoad.current) changeScale(zoomTarget.current);
-  }, [loaded]);
-  useEffect(() => {
-    const accepted = latestLocalImport.current;
-    if (!accepted || accepted.handled) return;
-    const job = nativeState.jobs.find(
-      (job) => job.id === accepted.jobId && job.type === 'storage:import_local',
-    );
-    if (job?.state !== 'completed') return;
-    accepted.handled = true;
-    const reusedId = job.productIds?.find((id) => !accepted.plannedIds.includes(id));
-    if (!reusedId) return;
-    notify(q('assetExists'));
-    void invokeAction<Product>('catalogue', 'product_details', { id: reusedId })
-      .then((product) => {
-        const current = importNavigation.current;
-        if (
-          latestLocalImport.current !== accepted ||
-          current.view !== 'library' ||
-          current.collection ||
-          JSON.stringify(current.query) !==
-            JSON.stringify({ ...fresh, category: accepted.category ?? 'all' })
-        )
-          return;
-        if (categoryKeys.some((key) => key === product.category))
-          updateQuery({ category: product.category });
-      })
-      .catch((error) => notify(q(errorCode(error))));
-  }, [nativeState.jobs, locale, flow]);
-  useEffect(() => {
-    document.documentElement.lang = locale;
-  }, [locale]);
-  // Decode the UI-language face and the Japanese face for product titles while the library loads, so CJK text is not blank on first paint (fonts.css uses font-display:block).
-  useEffect(() => {
-    if (!loaded || !bundledFonts) return;
-    const ui =
-      locale === 'zh-Hant'
-        ? 'Noto Sans TC'
-        : locale === 'zh-Hans'
-          ? 'Noto Sans SC'
-          : locale === 'ko'
-            ? 'Noto Sans KR'
-            : 'Noto Sans JP';
-    for (const family of new Set([ui, 'Noto Sans JP']))
-      void document.fonts.load(`13px "${family}"`, 'あ一').catch(() => {});
-  }, [loaded, bundledFonts, locale]);
-  useEffect(() => {
-    const handler = (e: globalThis.KeyboardEvent) => {
-      if (updateOpen || themeDeleteTarget) return;
-      if (!['ready', 'setup'].includes(libraryStateRef.current?.state ?? '') || libraryOpening)
-        return;
-      if (e.isComposing || e.keyCode === 229) return;
-      const editing =
-        e.target instanceof Element &&
-        !!e.target.closest('input,textarea,select,[contenteditable="true"]');
-      if ((e.ctrlKey || e.metaKey) && ['+', '=', '-', 'Add', 'Subtract'].includes(e.key)) {
-        e.preventDefault();
-        changeScale(zoomTarget.current + (['-', 'Subtract'].includes(e.key) ? -10 : 10));
-        return;
-      }
-      if (libraryStateRef.current?.state !== 'ready') return;
-      if (deleteLocalSelection) return;
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        e.key.toLowerCase() === 'a' &&
-        !editing &&
-        !flow &&
-        !dialog &&
-        !context &&
-        ['library', 'settings'].includes(view)
-      ) {
-        e.preventDefault();
-        setSelected(matchedIds);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !flow && !dialog) {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !flow && !dialog && !editing) {
-        e.preventDefault();
-        run(undoAction());
-      }
-      if (e.key === 'Escape' && !flow && !dialog) {
-        if (context) setContext(null);
-        else clearSelection();
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [
-    flow,
-    dialog,
+  const { onPreferences } = preferenceSync;
+  const categories = useCategories({ library, uiPrefs, native, filters, q });
+  const { categoryLabel, categoryList, changeCategories } = categories;
+  const avatars = useAvatars({ uiPrefs, library, preferenceSync, native, notices, filters, q });
+  const {
+    changeAvatarDetails,
+    avatarOptions,
+    avatarLabel,
+    avatarEnabled,
+    changeAvatars,
+    avatarChoices,
+  } = avatars;
+  const localFiles = useLocalFiles({ filters, nav, library, native, notices, uiPrefs, q });
+  const { localFilePending, latestLocalImport, jobs, changeLocalFiles, addLocalFiles } = localFiles;
+  const edits = useProductEdits({
+    native,
+    notices,
+    selectedProducts,
+    filters,
+    results,
+    selection,
+    nav,
+    q,
+  });
+  const {
     deleteLocalSelection,
-    undo,
-    uiScale,
-    context,
-    matchedIds,
-    view,
-    libraryOpening,
-    updateOpen,
+    setDeleteLocalSelection,
+    batchPatch,
+    userPatch,
+    localSelection,
+    requestLocalDelete,
+    onlineSelection,
+    hiddenSelection,
+    hideProducts,
+    deleteLocalProducts,
+    edit,
+  } = edits;
+  const actions = useProductActions({
+    library,
+    notices,
+    native,
+    selectedProducts,
+    edits,
+    uiPrefs,
+    q,
+  });
+  const {
+    productConfirm,
+    setProductConfirm,
+    deletingDownloads,
+    activeDownloads,
+    cancelDownloads,
+    allUnavailable,
+    hasDownloadedFiles,
+    requestDeleteDownloads,
+    deleteDownloads,
+    watchDownloads,
+    download,
+    downloadFile,
+    update,
+    syncLicenses,
+    needsAttention,
+    dismissAttention,
+    refusedFiles,
+    exportZip,
+  } = actions;
+  const appearance = useAppearance({ uiPrefs, preferenceSync, notices, library, q });
+  const {
+    setThemePreview,
+    selectedTheme,
+    selectedThemeTokens,
+    selectedThemeName,
+    themeTokens,
+    choosePreset,
+    themeDeleteBusy,
     themeDeleteTarget,
-  ]);
+    setThemeDeleteTarget,
+    deleteTheme,
+    changeScale,
+    appTheme,
+    appClass,
+  } = appearance;
+  const settingsPane = useSettingsPane({ nav, library });
+  const { openSettings, toggleSettings } = settingsPane;
+  const updates = useUpdates({
+    nav,
+    edits,
+    appearance,
+    library,
+    collectionStore,
+    localFiles,
+    preferenceSync,
+  });
+  const {
+    updateOpen,
+    setUpdateOpen,
+    updateRequest,
+    setUpdateRequest,
+    updateAvailable,
+    setUpdateAvailable,
+    reportAiChatUpdateBlocked,
+    updateCanOpen,
+    updateBlocker,
+    currentUpdateBlocker,
+    prepareUpdate,
+  } = updates;
+  const shortcuts = useShortcuts({
+    updates,
+    appearance,
+    library,
+    uiPrefs,
+    edits,
+    nav,
+    selection,
+    results,
+    notices,
+  });
+  const { searchRef } = shortcuts;
   const cardArt = (p: Product, compact = false) => (
     <div
       className={`thumb ${p.sensitive && query.sensitive === 'blur' && !revealed.has(p.id) ? 'blurred' : ''}`}
@@ -2025,31 +1471,7 @@ export default function App() {
     onNative,
     onPreferences,
   };
-  const updateCanOpen =
-    !flow && !dialog && !deleteLocalSelection && !themeDeleteTarget && !libraryOpening && !context;
-  const updateBlocker =
-    !setupDone || libraryState?.state !== 'ready' || libraryOpening
-      ? 'updates_busy_library'
-      : updateJobBlocker(nativeState.jobs) ||
-        (!updateCanOpen
-          ? 'updates_busy_window'
-          : aiChatUpdateBlocked
-            ? 'updates_busy_ai_chat'
-            : collectionBusy || localFilePending.size > 0 || themeDeleteBusy
-              ? 'updates_busy_saving'
-              : '');
-  updateBlockerRef.current = updateBlocker;
-  const currentUpdateBlocker = () =>
-    updateBlockerRef.current || (aiChatUpdateBlockedRef.current ? 'updates_busy_ai_chat' : '');
-  const prepareUpdate = async () => {
-    let blocker = currentUpdateBlocker();
-    if (blocker) throw new Error(blocker);
-    await zoomQueue.current;
-    await drainPreferenceWrites();
-    blocker = currentUpdateBlocker();
-    if (blocker) throw new Error(blocker);
-  };
-  const appearance = (
+  const appearanceContent = (
     <div className="appearance-content">
       <label className="field">
         <span>{q('language')}</span>
@@ -2149,7 +1571,7 @@ export default function App() {
             </nav>
             <div key={settingsRoute} className="embedded-settings-content">
               {settingsRoute === 'appearance' ? (
-                appearance
+                appearanceContent
               ) : settingsRoute === 'features' ? (
                 <FeaturesSettings
                   locale={locale}
@@ -2302,18 +1724,6 @@ export default function App() {
       onOpenStorage={() => openSettings('storage')}
     />
   );
-  const appTheme = themeTokens['--bg']
-    ? isLightTheme(themeTokens)
-      ? 'light'
-      : 'dark'
-    : theme === 'light'
-      ? 'light'
-      : 'dark';
-  const appClass =
-    'app corrected-shell variant-a' +
-    (roundedCorners ? '' : ' square-corners') +
-    (reduceMotion ? ' reduce-motion' : '') +
-    (bundledFonts ? '' : ' system-fonts');
   if (
     !libraryState ||
     libraryState.state === 'blocked' ||
