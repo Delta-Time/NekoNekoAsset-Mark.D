@@ -234,7 +234,7 @@
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
-  gap: 6px !important;
+  gap: 6px;
 }
 .selection-actions .scope-actions span {
   white-space: nowrap;
@@ -378,7 +378,7 @@
   z-index: 15;
   display: flex;
   align-items: center;
-  gap: 2px !important;
+  gap: 2px;
   margin: 0;
   padding: 6px;
   border: 1px solid var(--line-2);

@@ -243,7 +243,7 @@
   min-height: 19px;
 }
 .filter-clear-all {
-  padding: 3px 6px !important;
+  padding: 3px 6px;
 }
 .library-toolbar .account-scope .popup-menu {
   width: min(320px, calc(100cqw - 16px));
@@ -350,7 +350,7 @@
   min-width: 20px;
   height: 20px;
   min-height: 20px;
-  padding: 0 !important;
+  padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
@@ -368,7 +368,7 @@
 .app .active-filter-chips .filter-clear-all {
   height: 26px;
   min-height: 26px;
-  padding: 0 8px !important;
+  padding: 0 8px;
   border: 0;
   border-radius: 99px;
   background: transparent;

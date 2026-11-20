@@ -46,8 +46,8 @@
 }
 /* from library-008.css */
 .library-context {
-  position: fixed !important;
-  z-index: 1100 !important;
+  position: fixed;
+  z-index: 1100;
   min-width: 192px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
