@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.13 Beta - 2026-11-20
+
+### Changed
+
+- Downloading assets no longer stops to ask whether to update when a store no longer offers one of their files. Once the downloads you started finish, the App updates those assets in one update and downloads their new files. A single file that fails this way only updates its asset, so you pick its new files in Files.
+- A file a store no longer offers that you never downloaded leaves the asset's file list, and the asset no longer shows Attention because of it. Versions you downloaded before stay listed and usable.
+- Japanese uses the words VRChat and BOOTH users already use, such as 利用規約, 解凍, 入手, ライブラリ, 購入履歴 and ギフト, and Activity is 進行状況. The Unity Bridge's Japanese matches the App.
+- Settings › Features shows the License filter's readable licenses, Sync all licenses and Delete license database only while the filter is on.
+
+### Fixed
+
+- Loading bars, such as a sync in Activity or opening a library, sweep evenly instead of stalling at the right end.
+- Activity named AI tagging jobs "aiTags"; it now uses the AI tags label.
+- In Japanese, the setup theme card no longer cuts off its high-contrast theme name, and the sidebar no longer splits ダウンロード済み mid-word.
+
+### Release notes
+
+- This release includes Unity Bridge 0.3.13; only its Japanese text changed. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.12 Beta - 2026-11-18
 
 ### Added
