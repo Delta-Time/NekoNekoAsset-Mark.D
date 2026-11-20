@@ -7,7 +7,7 @@ import type { DragGestures } from '../../drag-gestures';
 
 /** The virtualized product grid or list. Only rows near the viewport are rendered; `state`
  * keeps the scroll position across remounts. */
-export default function Results({
+export default function ResultViewport({
   items,
   size,
   density,

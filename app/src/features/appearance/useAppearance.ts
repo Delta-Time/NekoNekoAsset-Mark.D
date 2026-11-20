@@ -41,6 +41,7 @@ export function useAppearance({
   const { loaded, initialLoad } = library;
   const [themePreview, setThemePreview] = useState<Record<string, string> | null>(null);
   const zoomQueue = useRef(Promise.resolve());
+  const themeOptions = [...defaultThemeOptions, ...presets];
   const selectedTheme =
       presets.find((p) => p.id === theme) ||
       defaultThemeOptions.find((p) => p.id === theme) ||
@@ -133,6 +134,7 @@ export function useAppearance({
     (reduceMotion ? ' reduce-motion' : '') +
     (bundledFonts ? '' : ' system-fonts');
   return {
+    themeOptions,
     setThemePreview,
     zoomQueue,
     selectedTheme,

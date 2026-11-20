@@ -4,7 +4,6 @@ import { resetText } from '../../settings-reset-i18n';
 import ScaleControl from '../../ScaleControl';
 import Toggle from '../../Toggle';
 import ThemePicker from '../../ThemePicker';
-import type { ThemeOption } from '../../ThemePicker';
 import { exportThemeConfig } from '../../EditDialogs';
 import Button from '../../shared/Button';
 import type { UiPreferences } from '../preferences/useUiPreferences';
@@ -19,14 +18,12 @@ export default function AppearanceSettings({
   nav,
   notices,
   q,
-  themeOptions,
 }: {
   uiPrefs: UiPreferences;
   appearance: Appearance;
   nav: Navigation;
   notices: Notices;
   q: (key: string) => string;
-  themeOptions: ThemeOption[];
 }) {
   const {
     locale,
@@ -52,6 +49,7 @@ export default function AppearanceSettings({
     selectedThemeName,
     setThemePreview,
     selectedThemeTokens,
+    themeOptions,
   } = appearance;
   const { setDialog } = nav;
   const { run } = notices;
