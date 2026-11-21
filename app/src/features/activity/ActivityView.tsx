@@ -1,12 +1,6 @@
 import ActivityHistory from '../../ActivityHistory';
-import {
-  cancelAi,
-  cancelUnity,
-  errorCode,
-  invokeAction,
-  retryAi,
-  retryUnityInventory,
-} from '../../backend';
+import { cancelUnity, errorCode, invokeAction, retryUnityInventory } from '../../backend';
+import { cancelAi, retryAi } from '../../ai-backend';
 import { isStoreJob } from '../workflows/jobs';
 import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Library } from '../library/useLibrary';

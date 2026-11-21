@@ -1,12 +1,12 @@
+import { errorCode } from '../../backend';
 import {
   type AiScopes,
   cancelAi,
   retryAi,
   type AiKeyStatus,
   getAiKeyStatus,
-  errorCode,
   startAi,
-} from '../../backend';
+} from '../../ai-backend';
 import { type Ctx, type ActionTask, Status, useAction, Panel, Row } from './parts';
 import { useState, useEffect } from 'react';
 

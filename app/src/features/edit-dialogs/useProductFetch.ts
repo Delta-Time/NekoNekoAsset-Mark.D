@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { categoryKeys } from '../../model';
-import {
-  dialog,
-  dismissAiSourceUrlCandidate,
-  errorCode,
-  nativeFileAction,
-  previewSource,
-} from '../../backend';
+import { dialog, errorCode, nativeFileAction, previewSource } from '../../backend';
+import { dismissAiSourceUrlCandidate } from '../../ai-backend';
 import type { FetchedProductMetadata } from '../../backend';
 import { normalizeProductUrl, sameTag } from './parts';
 import type { ListingDraft } from './useListingDraft';

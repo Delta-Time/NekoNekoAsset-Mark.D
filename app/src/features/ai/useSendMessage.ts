@@ -1,12 +1,7 @@
 import type { Locale } from '../../model';
-import {
-  cancelAiSuggestion,
-  createAiChat,
-  errorCode,
-  getAiChat,
-  sendAiSuggestion,
-} from '../../backend';
-import type { AiStoredTurn } from '../../backend';
+import { errorCode } from '../../backend';
+import { cancelAiSuggestion, createAiChat, getAiChat, sendAiSuggestion } from '../../ai-backend';
+import type { AiStoredTurn } from '../../ai-backend';
 import type { UnconfirmedTurn } from './chat-parts';
 import type { ChatRequest } from './useChatRequest';
 import type { ChatWorkspace } from './useChatWorkspace';

@@ -1,5 +1,5 @@
 import { ExternalLink, ImagePlus } from 'lucide-react';
-import type { AiSuggestionResponse } from '../../backend';
+import type { AiSuggestionResponse } from '../../ai-backend';
 import Preview from '../../Preview';
 import { contentLang } from '../../content-lang';
 import type { ChatWorkspace } from './useChatWorkspace';

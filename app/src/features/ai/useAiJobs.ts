@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { saveAiPreferences } from '../../backend';
-import type { AiScopes, NativeState } from '../../backend';
+import { saveAiPreferences } from '../../ai-backend';
+import type { NativeState } from '../../backend';
+import type { AiScopes } from '../../ai-backend';
 import { savedScopes } from './settings-parts';
 import type { SettingsRun } from './useSettingsRun';
 

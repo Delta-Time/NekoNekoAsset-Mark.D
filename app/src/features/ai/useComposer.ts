@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AiImage } from '../../backend';
+import type { AiImage } from '../../ai-backend';
 import { encoder } from './chat-parts';
 
 /** The message being written and its attached images. */

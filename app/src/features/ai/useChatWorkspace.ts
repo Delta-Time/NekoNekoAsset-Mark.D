@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '../../model';
-import { errorCode, listAiEntries, listAiWorkspace, openExternal } from '../../backend';
-import type { AiChatSummary, AiCustomPreset, AiEntry, AiPersonalization } from '../../backend';
+import { errorCode, openExternal } from '../../backend';
+import { listAiEntries, listAiWorkspace } from '../../ai-backend';
+import type { AiPersonalization } from '../../ai-personalization';
+import type { AiChatSummary, AiCustomPreset, AiEntry } from '../../ai-backend';
 import { getBuiltinAiPresets } from '../../ai-presets';
 import { aiSuggestionsText } from '../../ai-suggestions-i18n';
 import { sortChats } from './chat-parts';

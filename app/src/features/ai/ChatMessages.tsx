@@ -1,5 +1,5 @@
 import { MessageCircle, User } from 'lucide-react';
-import type { AiSuggestionResponse } from '../../backend';
+import type { AiSuggestionResponse } from '../../ai-backend';
 import { AiCatAvatar, imageSource } from './chat-parts';
 import ChatResult from './ChatResult';
 import type { ChatWorkspace } from './useChatWorkspace';

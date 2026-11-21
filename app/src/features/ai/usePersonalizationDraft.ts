@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { saveAiPersonalization } from '../../backend';
+import { saveAiPersonalization } from '../../ai-backend';
 import { DEFAULT_AI_PERSONALIZATION, normalizeAiAvatar } from '../../ai-personalization';
 import type { AiPersonalization } from '../../ai-personalization';
 import type { SettingsRun } from './useSettingsRun';

@@ -1,4 +1,4 @@
-import type { AiScopes } from '../../backend';
+import type { AiScopes } from '../../ai-backend';
 
 export function savedScopes(value: unknown): AiScopes {
   const saved = value && typeof value === 'object' ? (value as Partial<AiScopes>) : {};

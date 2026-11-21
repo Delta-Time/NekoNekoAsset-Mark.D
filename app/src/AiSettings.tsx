@@ -1,5 +1,6 @@
 import { Plus, Trash2, UserRound } from 'lucide-react';
-import { startAi, cancelAi, retryAi, type NativeState } from './backend';
+import type { NativeState } from './backend';
+import { startAi, cancelAi, retryAi } from './ai-backend';
 import type { Locale } from './model';
 import Toggle from './Toggle';
 import { getAiPersonalities, type AiPersonalization } from './ai-personalization';

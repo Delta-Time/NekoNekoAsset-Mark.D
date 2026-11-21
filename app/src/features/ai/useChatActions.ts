@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { deleteAiChat, errorCode, getAiChat, renameAiChat } from '../../backend';
-import type { AiChatSummary } from '../../backend';
+import { errorCode } from '../../backend';
+import { deleteAiChat, getAiChat, renameAiChat } from '../../ai-backend';
+import type { AiChatSummary } from '../../ai-backend';
 import type { Conversation } from './useConversation';
 import type { ChatRequest } from './useChatRequest';
 import type { HistoryEdits } from './useHistoryEdits';

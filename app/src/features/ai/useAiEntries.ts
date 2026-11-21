@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { errorCode } from '../../backend';
 import {
   getAiProviders,
   listAiEntries,
@@ -8,9 +9,8 @@ import {
   selectAiEntry,
   testAiDraft,
   testAiEntry,
-  errorCode,
-} from '../../backend';
-import type { AiEntryList, AiProviderPreset } from '../../backend';
+} from '../../ai-backend';
+import type { AiEntryList, AiProviderPreset } from '../../ai-backend';
 import type { SettingsRun } from './useSettingsRun';
 import type { PersonalizationDraft } from './usePersonalizationDraft';
 import type { AiJobs } from './useAiJobs';

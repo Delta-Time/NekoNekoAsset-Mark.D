@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { AiChatSummary, AiStoredTurn } from '../../backend';
+import type { AiChatSummary, AiStoredTurn } from '../../ai-backend';
 import type { ChatWorkspace } from './useChatWorkspace';
 
 /** The open chat: its preset, id and turns, whether the sidebar lists history or presets, and

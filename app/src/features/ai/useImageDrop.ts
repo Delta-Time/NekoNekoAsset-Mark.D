@@ -1,8 +1,9 @@
 import { useEffect, useRef, type ClipboardEvent, type DragEvent } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { errorCode, readAiDroppedImages } from '../../backend';
-import type { AiImage } from '../../backend';
+import { errorCode } from '../../backend';
+import { readAiDroppedImages } from '../../ai-backend';
+import type { AiImage } from '../../ai-backend';
 import { MAX_IMAGES, normalizeImage } from './chat-parts';
 import type { ChatRequest } from './useChatRequest';
 import type { ChatWorkspace } from './useChatWorkspace';

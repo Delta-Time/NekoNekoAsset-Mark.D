@@ -1,4 +1,4 @@
-import type { AiImage, AiChatSummary } from '../../backend';
+import type { AiImage, AiChatSummary } from '../../ai-backend';
 
 export const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;

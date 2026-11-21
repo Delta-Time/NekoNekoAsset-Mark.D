@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, Upload, X } from 'lucide-react';
 import type { Locale } from './model';
-import {
-  dialog,
-  errorCode,
-  exportAiPreset,
-  importAiPreset,
-  nativeFileAction,
-  saveAiPreset,
-  type AiCustomPreset,
-} from './backend';
+import { dialog, errorCode, nativeFileAction } from './backend';
+import { exportAiPreset, importAiPreset, saveAiPreset, type AiCustomPreset } from './ai-backend';
 import { aiSuggestionsText } from './ai-suggestions-i18n';
 
 export default function AiPresetEditor({

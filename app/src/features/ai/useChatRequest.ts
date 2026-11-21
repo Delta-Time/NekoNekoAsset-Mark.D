@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { cancelAiSuggestion } from '../../backend';
+import { cancelAiSuggestion } from '../../ai-backend';
 import type { UnconfirmedTurn } from './chat-parts';
 import type { ChatWorkspace } from './useChatWorkspace';
 import type { Conversation } from './useConversation';
