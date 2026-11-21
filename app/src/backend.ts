@@ -11,8 +11,10 @@ import type {
   Job,
   LicensesRequest,
   LicensesResponses,
+  ProductMetadata,
   StorageRequest,
   StoreRequest,
+  StoreResponses,
   UnityRequest,
   UnityResponses,
 } from './bindings';
@@ -21,6 +23,7 @@ export type {
   AvatarOption,
   Collection,
   Job,
+  ProductMetadata,
   Root,
   SourceProgress,
   TagOption,
@@ -42,7 +45,7 @@ type Requests = {
 /** What each typed action returns; the others return `any`. */
 type Responses = {
   catalogue: CatalogueResponses;
-  booth: Record<never, never>;
+  booth: StoreResponses;
   storage: Record<never, never>;
   unity: UnityResponses;
   licenses: LicensesResponses;
@@ -133,13 +136,6 @@ export interface ProductOverlayChange {
   id: string;
   patch: Partial<Product>;
   ownedAvatarsDelta?: AvatarDelta;
-}
-export interface FetchedProductMetadata {
-  sourceUrl: string;
-  title: string;
-  category: Product['category'];
-  tags: string[];
-  thumbnailUrl: string | null;
 }
 export interface LocalFileChanges {
   draftId: string;
@@ -317,7 +313,7 @@ export async function subscribeUpdateProgress(
     ? listen<UpdateProgress>('updates:progress', (event) => callback(event.payload))
     : () => {};
 }
-export async function fetchProductMetadata(url: string): Promise<FetchedProductMetadata> {
+export function fetchProductMetadata(url: string): Promise<ProductMetadata> {
   return invokeAction('booth', 'fetch_product_metadata', { url });
 }
 export function previewSource(path: string | null | undefined): string | undefined {

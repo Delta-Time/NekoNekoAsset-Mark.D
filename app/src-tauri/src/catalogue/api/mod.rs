@@ -208,6 +208,17 @@ pub struct OverlayChange {
     pub owned_avatars_delta: Option<Value>,
 }
 
+/// What removing an account removed: the account, the products only it held, and the
+/// shared products it left to their other accounts.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AccountRemoved {
+    pub account_removed: usize,
+    pub product_removed: usize,
+    pub retained_shared: usize,
+}
+
 /// Avatar choices a batch edit adds to and removes from each product. The overlay
 /// editor validates the raw object, so this type only describes it.
 #[derive(Serialize, Deserialize, TS)]

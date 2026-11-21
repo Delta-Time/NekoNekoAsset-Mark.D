@@ -123,19 +123,35 @@ impl Catalogue {
         ensure!(!id.is_empty(), "catalogue.invalid_id");
         self.mutate(|tx, projections| {
             if raw(tx, "account", id)?.is_none() {
-                return Ok(json!({"accountRemoved":0,"productRemoved":0,"retainedShared":0}));
+                return Ok(serde_json::to_value(api::AccountRemoved {
+                    account_removed: 0,
+                    product_removed: 0,
+                    retained_shared: 0,
+                })?);
             }
             ensure_account_idle(tx, id)?;
             let mut removed = BTreeSet::new();
             let mut retained_shared = 0;
             if remove_products {
                 let sources = account_sources(tx, id)?;
-                let candidates: BTreeSet<_> = sources.iter().filter_map(|(_, _, value)| {
-                    value["productId"].as_str().filter(|id| !id.is_empty()).map(str::to_owned)
-                }).collect();
-                let removed_files: BTreeSet<_> = sources.iter().filter(|(kind, _, _)| kind == "remote_file").map(|(_, id, _)| id.clone()).collect();
+                let candidates: BTreeSet<_> = sources
+                    .iter()
+                    .filter_map(|(_, _, value)| {
+                        value["productId"]
+                            .as_str()
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_owned)
+                    })
+                    .collect();
+                let removed_files: BTreeSet<_> = sources
+                    .iter()
+                    .filter(|(kind, _, _)| kind == "remote_file")
+                    .map(|(_, id, _)| id.clone())
+                    .collect();
                 for product_id in &candidates {
-                    let Some(product) = raw(tx, "product", product_id)? else { continue };
+                    let Some(product) = raw(tx, "product", product_id)? else {
+                        continue;
+                    };
                     let mut shared = product["provider"] == "local" || product["custom"] == true;
                     for kind in ACCOUNT_SOURCE_KINDS {
                         shared |= related(tx, kind, product_id)?.iter().any(|record| {
@@ -165,11 +181,21 @@ impl Catalogue {
                 if !removed.is_empty() {
                     for mut collection in rows(tx, "collection")? {
                         let members = strings(&collection["productIds"]);
-                        let retained: Vec<_> = members.iter().filter(|id| !removed.contains(*id)).cloned().collect();
+                        let retained: Vec<_> = members
+                            .iter()
+                            .filter(|id| !removed.contains(*id))
+                            .cloned()
+                            .collect();
                         if retained.len() != members.len() {
                             collection["productIds"] = json!(retained);
                             let collection_id = text(&collection, "id").to_owned();
-                            Self::write(tx, projections, "collection", &collection_id, Some(collection))?;
+                            Self::write(
+                                tx,
+                                projections,
+                                "collection",
+                                &collection_id,
+                                Some(collection),
+                            )?;
                         }
                     }
                 }
@@ -188,7 +214,11 @@ impl Catalogue {
                 // their physical bytes are still untouched.
             }
             Self::write(tx, projections, "account", id, None)?;
-            Ok(json!({"accountRemoved":1,"productRemoved":removed.len(),"retainedShared":retained_shared}))
+            Ok(serde_json::to_value(api::AccountRemoved {
+                account_removed: 1,
+                product_removed: removed.len(),
+                retained_shared,
+            })?)
         })
     }
 

@@ -690,7 +690,6 @@ async fn booth_action(
     use stores::api::StoreRequest as Request;
     let _operation = trusted(&window)?;
     let request = Request::parse(&action, args).map_err(UiError::from_error)?;
-    let text = |name: &str| request.args().get(name).and_then(Value::as_str);
     if let Some(setup) = services.active_setup()? {
         if services.opening.load(Ordering::Acquire) {
             return Err(UiError {
@@ -715,7 +714,7 @@ async fn booth_action(
         if matches!(request, Request::CancelSync(_) | Request::RetrySync(_)) {
             let job = setup
                 .catalogue
-                .get("job", text("jobId").unwrap_or(""))
+                .get("job", request.job_id().unwrap_or(""))
                 .map_err(UiError::from_error)?;
             if !job.is_some_and(|job| {
                 job["type"]
@@ -734,11 +733,11 @@ async fn booth_action(
             let account_id = if matches!(request, Request::RetrySync(_)) {
                 setup
                     .catalogue
-                    .get("job", text("jobId").unwrap_or(""))
+                    .get("job", request.job_id().unwrap_or(""))
                     .map_err(UiError::from_error)?
                     .and_then(|job| job["accountId"].as_str().map(str::to_owned))
             } else {
-                text("accountId").map(str::to_owned)
+                request.login_account().map(str::to_owned)
             };
             if let Some(account_id) = account_id {
                 let provider = setup
@@ -756,7 +755,7 @@ async fn booth_action(
         }
         let result = setup
             .stores
-            .command(&app, &action, request.into_args())
+            .command(&app, &action, request.args())
             .await
             .map_err(UiError::from_error)?;
         changed(&app, "booth");
@@ -799,7 +798,7 @@ async fn booth_action(
         };
         services
             .stores
-            .command(&app, &action, request.into_args())
+            .command(&app, &action, request.args())
             .await
             .map_err(UiError::from_error)?
     };

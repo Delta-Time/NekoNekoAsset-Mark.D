@@ -1,10 +1,5 @@
 import type { Locale, Product, CustomCategory } from './model';
-import type {
-  AvatarOption,
-  TagOption,
-  FetchedProductMetadata,
-  ProductOverlayChange,
-} from './backend';
+import type { AvatarOption, TagOption, ProductMetadata, ProductOverlayChange } from './backend';
 import './UnityWorkflow.css';
 import './editor-styles.css';
 import { LicenseEditor } from './Licenses';
@@ -56,7 +51,7 @@ export interface EditDialogsProps {
   avatarOptions?: AvatarOption[];
   avatarLabel?: (id: string) => string;
   onRefreshAvatars?: () => void | Promise<void>;
-  onFetchMetadata?: (url: string) => Promise<FetchedProductMetadata>;
+  onFetchMetadata?: (url: string) => Promise<ProductMetadata>;
   onLocalFiles?: (
     productId: string,
     args: { draftId: string; addSources: string[]; removeFileIds: string[] },

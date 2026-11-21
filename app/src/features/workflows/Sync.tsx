@@ -6,6 +6,7 @@ import { useState, useRef, useEffect } from 'react';
 import { errorCode } from '../../backend';
 import type { Job } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
+import type { SyncRequest } from '../../bindings';
 
 export function Sync(c: Ctx) {
   const { L } = c;
@@ -20,7 +21,7 @@ export function Sync(c: Ctx) {
     (a) => !needsLogin(a) && !historyJobs.some((job) => job.accountId === a.id && isActive(job)),
   );
   const [startErrors, setStartErrors] = useState<Record<string, string>>({});
-  const begin = (ids: string[], mode: string) =>
+  const begin = (ids: string[], mode: NonNullable<SyncRequest['mode']>) =>
     task.run(async () => {
       setStartErrors((previous) =>
         Object.fromEntries(Object.entries(previous).filter(([id]) => !ids.includes(id))),
@@ -207,7 +208,7 @@ export function Sync(c: Ctx) {
                     disabled={task.busy}
                     onClick={() =>
                       task.run(async () => {
-                        await native(c, 'booth', 'cancel_sync', { jobId: job.id, accountId: a.id });
+                        await native(c, 'booth', 'cancel_sync', { jobId: job.id });
                       })
                     }
                   >

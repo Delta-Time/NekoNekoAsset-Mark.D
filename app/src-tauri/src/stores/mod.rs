@@ -426,7 +426,10 @@ impl StoreService {
                     jobs.insert(id.into());
                 }
             }
-            return Ok(json!({"jobId":jobs.first(),"jobIds":jobs}));
+            return api::answer(api::StoreJobs {
+                job_id: jobs.first().cloned(),
+                job_ids: jobs.into_iter().collect(),
+            });
         }
         let provider = if matches!(action, "cancel_sync" | "retry_sync") {
             let job = args["jobId"]
@@ -471,7 +474,10 @@ impl StoreService {
             let name = normalized_account_name(&args["name"])?;
             self.rename_account(id, &name)?;
             let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-            return Ok(json!({"accountId":id,"name":name}));
+            return api::answer(api::AccountRenamed {
+                account_id: id.to_owned(),
+                name,
+            });
         }
         if matches!(action, "account_logout" | "account_remove") {
             self.catalogue.require_account_idle(
@@ -503,7 +509,7 @@ impl StoreService {
                 }),
             )?;
             let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-            return Ok(json!({"accountId":id}));
+            return api::answer(api::StoreAccount { account_id: id });
         }
         let result = match provider {
             StoreProvider::Booth => {

@@ -97,6 +97,54 @@ async fn store_execution_queue_is_shared_by_accounts_but_not_by_other_providers(
 }
 use super::*;
 #[test]
+fn store_requests_give_back_the_arguments_they_were_sent() {
+    // Parsing checks the round trip in test builds; a misspelled action stays an error.
+    for (action, args) in [
+        ("account_add", json!({"name":"Authored","store":"Gumroad"})),
+        ("account_add", json!({"label":"Authored older field"})),
+        ("account_login", json!({"accountId":"a"})),
+        ("login", json!({"accountId":"a"})),
+        ("account_logout", json!({"accountId":"a"})),
+        ("account_rename", json!({"accountId":"a","name":"Renamed"})),
+        (
+            "account_remove",
+            json!({"accountId":"a","removeProducts":false}),
+        ),
+        (
+            "sync",
+            json!({"accountId":"a","source":"all","mode":"incremental"}),
+        ),
+        ("cancel_sync", json!({"jobId":"j","provider":"booth"})),
+        ("retry_sync", json!({"jobId":"j"})),
+        (
+            "update_products",
+            json!({"productIds":["1"],"accountId":"a"}),
+        ),
+        (
+            "fetch_product_metadata",
+            json!({"url":"https://booth.pm/ja/items/1"}),
+        ),
+        (
+            "diagnose_ordering",
+            json!({"accountId":"a","source":"gift"}),
+        ),
+        ("diagnose_receipt_template", json!({"accountId":"a"})),
+        (
+            "diagnose_product_line_fields",
+            json!({"accountId":"a","receiptId":"1"}),
+        ),
+    ] {
+        assert_eq!(
+            api::StoreRequest::parse(action, args.clone())
+                .unwrap()
+                .args(),
+            args
+        );
+    }
+    let error = api::StoreRequest::parse("sinc", json!({})).err().unwrap();
+    assert_eq!(error.to_string(), "UNKNOWN_STORE_ACTION");
+}
+#[test]
 fn account_display_name_validation_is_bounded() {
     assert_eq!(
         normalized_account_name(&json!("  Authored\n name  ")).unwrap(),

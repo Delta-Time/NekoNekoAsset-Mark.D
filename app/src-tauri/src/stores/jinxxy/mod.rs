@@ -2093,7 +2093,9 @@ impl JinxxyService {
                     self.requeue_job(&job)?;
                     let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
                 }
-                Ok(json!({"jobId":id}))
+                super::api::answer(super::api::StoreJob {
+                    job_id: id.to_owned(),
+                })
             }
             "account_remove" | "account_logout" => {
                 let account = account_arg(&args)?;
@@ -2151,7 +2153,9 @@ impl JinxxyService {
                 }
                 self.clear_downloads(&account, None);
                 let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-                Ok(json!({"accountId":account}))
+                super::api::answer(super::api::StoreAccount {
+                    account_id: account,
+                })
             }
             "update_products" => {
                 let ids = args["productIds"]
@@ -2216,7 +2220,7 @@ impl JinxxyService {
                     )?);
                 }
                 let job_ids: Vec<_> = jobs.iter().map(|job| job["jobId"].clone()).collect();
-                Ok(json!({"jobId":job_ids.first(),"jobIds":job_ids}))
+                super::api::StoreJobs::of(job_ids)
             }
             _ => anyhow::bail!("UNKNOWN_STORE_ACTION"),
         }
@@ -2243,14 +2247,14 @@ impl JinxxyService {
                 job["type"] == kind && job["productIds"] == json!(products),
                 "ACCOUNT_BUSY"
             );
-            return Ok(json!({"jobId":job["id"]}));
+            return super::api::StoreJob::of(&job);
         }
         let id = format!("jinxxy:{}", uuid::Uuid::new_v4());
         let mut job = json!({"id":id,"type":kind,"store":"Jinxxy","accountId":account,"productIds":products,"createdAt":Utc::now().to_rfc3339(),"originDeviceId":self.inner.catalogue.device_id()});
         let record = self.account(account)?;
         job["accountName"] = record["name"].clone();
         self.save_job(app, &mut job, "queued", None)?;
-        Ok(json!({"jobId":id}))
+        super::api::answer(super::api::StoreJob { job_id: id })
     }
     async fn execute(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
         let id = job["id"]

@@ -238,6 +238,8 @@ export const categoryKeys = [
   'Udon',
   'NonVRChat',
 ] as const;
+export const isCategory = (value: string): value is (typeof categoryKeys)[number] =>
+  (categoryKeys as readonly string[]).includes(value);
 export function categoryName(
   category: string,
   custom: readonly CustomCategory[],

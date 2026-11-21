@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { categoryKeys } from '../../model';
+import { isCategory } from '../../model';
 import { dialog, errorCode, nativeFileAction, previewSource } from '../../backend';
 import { dismissAiSourceUrlCandidate } from '../../ai-backend';
-import type { FetchedProductMetadata } from '../../backend';
+import type { ProductMetadata } from '../../backend';
 import { normalizeProductUrl, sameTag } from './parts';
 import type { ListingDraft } from './useListingDraft';
 import type { DialogFrame } from './useDialogFrame';
@@ -83,12 +83,12 @@ export function useProductFetch({
       if (data.thumbnailUrl !== null && !normalizeProductUrl(data.thumbnailUrl))
         throw new Error('invalidMetadata');
       if (!thumbnailOnly) {
-        const metadata = data as FetchedProductMetadata;
+        const metadata = data as ProductMetadata;
         const normalized = normalizeProductUrl(metadata.sourceUrl);
         if (
           !normalized ||
           !metadata.title.trim() ||
-          !(categoryKeys as readonly string[]).includes(metadata.category) ||
+          !isCategory(metadata.category) ||
           !Array.isArray(metadata.tags) ||
           metadata.tags.some((tag) => typeof tag !== 'string')
         )
@@ -104,7 +104,7 @@ export function useProductFetch({
           values.filter((tag) => !metadata.tags.some((value) => sameTag(value, tag))),
         );
       }
-      const fetchedUrl = thumbnailOnly ? url : (data as FetchedProductMetadata).sourceUrl.trim();
+      const fetchedUrl = thumbnailOnly ? url : (data as ProductMetadata).sourceUrl.trim();
       lastFetched.current = { url: fetchedUrl, thumbnailUrl: data.thumbnailUrl };
       setSourceThumbnailUrl(data.thumbnailUrl ?? '');
       if (thumbnailVersion === thumbnailRequest.current) {

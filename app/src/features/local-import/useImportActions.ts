@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { isTauri } from '@tauri-apps/api/core';
-import { categoryKeys, normalizeSearch } from '../../model';
+import { isCategory, normalizeSearch } from '../../model';
 import { errorCode, nativeFileAction } from '../../backend';
 import type { Action, ActionResult, ArgsParam, LooseNativeCall, Service } from '../../backend';
 import { resolveTag } from '../../TagPicker';
@@ -153,7 +153,7 @@ export function useImportActions({
       if (
         !data ||
         typeof data.title !== 'string' ||
-        !categoryKeys.includes(data.category) ||
+        !isCategory(data.category) ||
         !Array.isArray(data.tags)
       )
         throw new Error('invalidMetadata');

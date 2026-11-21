@@ -15,9 +15,7 @@ export async function signIn(c: Ctx, name?: string, store = 'BOOTH') {
     for (let suffix = 2; used.has(label); suffix++) label = store + ' ' + suffix;
   }
   const result = await native(c, 'booth', 'account_add', { name: label, store });
-  const id = result?.account?.id ?? result?.accountId ?? result?.id;
-  if (!id) throw new Error('operationFailed');
-  await native(c, 'booth', 'account_login', { accountId: id });
+  await native(c, 'booth', 'account_login', { accountId: result.accountId });
 }
 export function AccountName({
   account,

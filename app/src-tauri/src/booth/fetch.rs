@@ -1,25 +1,14 @@
 //! Public editor suggestions only. No account session or catalogue writes.
 use super::{http, metadata, safety, BoothService};
+use crate::stores::api::{ListingPrice, ProductMetadata};
 use anyhow::{bail, Result};
-use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
 use url::Url;
 
 struct ItemUrl {
     id: String,
     source: Url,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct FetchedProductMetadata {
-    source_url: String,
-    title: String,
-    category: String,
-    tags: Vec<String>,
-    thumbnail_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    listing_price: Option<Value>,
 }
 fn item_url(raw: &str) -> Result<ItemUrl> {
     let raw = raw.trim();
@@ -68,7 +57,7 @@ fn item_url(raw: &str) -> Result<ItemUrl> {
         source,
     })
 }
-fn staged(item: &ItemUrl, payload: &Value) -> Result<FetchedProductMetadata> {
+fn staged(item: &ItemUrl, payload: &Value) -> Result<ProductMetadata> {
     let public = metadata::public_metadata(payload, &item.id)?;
     let host = item.source.host_str().unwrap();
     if !matches!(host, "booth.pm" | "www.booth.pm") {
@@ -115,8 +104,13 @@ fn staged(item: &ItemUrl, payload: &Value) -> Result<FetchedProductMetadata> {
         .filter_map(|variant| variant["price"].as_f64())
         .min_by(f64::total_cmp)
         .or_else(|| metadata::listing_starting_price(&payload["price"]))
-        .map(|price| json!({"price":price,"priceCurrency":"JPY"}));
-    Ok(FetchedProductMetadata {
+        .map(|price| ListingPrice {
+            price: serde_json::Number::from_f64(price),
+            price_currency: Some("JPY".into()),
+            price_formatted: None,
+            price_source_currency: None,
+        });
+    Ok(ProductMetadata {
         source_url: item.source.to_string(),
         title,
         category,

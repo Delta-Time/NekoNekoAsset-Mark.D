@@ -2,7 +2,7 @@
 //! each service declares one tagged enum of its actions, and `pnpm bindings` turns it
 //! into a TypeScript union with ts-rs.
 use anyhow::Result;
-use serde::{de::DeserializeOwned, Deserialize, Deserializer};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 /// Joins an action and its arguments into one request tagged by `action`.
@@ -28,6 +28,27 @@ pub(crate) fn parse<T: DeserializeOwned>(
         };
         anyhow::Error::new(error).context(code)
     })
+}
+
+/// A request's arguments without its `action`. A request whose argument structs keep every
+/// field they were sent gives them back exactly.
+pub(crate) fn args_of<T: Serialize>(request: &T) -> Value {
+    let mut value = serde_json::to_value(request).unwrap_or_default();
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("action");
+    }
+    value
+}
+
+/// Test builds check that a request gives back the arguments it was sent, byte for byte,
+/// since services keep some of them in their jobs.
+#[cfg(test)]
+pub(crate) fn assert_round_trip(kind: &str, sent: &Value, back: &Value) {
+    let empty = Value::Object(Map::new());
+    let sent = if sent.is_null() { &empty } else { sent };
+    if let Some(path) = difference(sent, back, String::new()) {
+        panic!("{kind} arguments changed through their type at {path}");
+    }
 }
 
 /// Keeps an explicit `null` apart from a missing field: `Some(Value::Null)` versus

@@ -1,5 +1,6 @@
 //! Native Gumroad buyer collector. Capability routes are transient, never persisted.
 use crate::stores::{
+    api,
     gumroad::{self, ContentObservation, FileAccess, LibraryPage, LibraryPurchase},
     http, session, DownloadTicket, StoreProvider,
 };
@@ -502,11 +503,11 @@ impl GumroadService {
                     return Err(error);
                 }
                 if let Some(job) = active {
-                    return Ok(json!({"jobId":job["id"]}));
+                    return api::StoreJob::of(&job);
                 }
                 let job = self.make_job("gumroadLogin", json!({"accountId":account}))?;
                 self.spawn(app.clone(), job.clone())?;
-                Ok(json!({"jobId":job["id"]}))
+                api::StoreJob::of(&job)
             }
             "account_remove" | "account_logout" => {
                 let account = field(&args, "accountId")?;
@@ -561,7 +562,9 @@ impl GumroadService {
                     self.inner.catalogue.put("account", account, row)?;
                 }
                 let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-                Ok(json!({"accountId":account}))
+                api::answer(api::StoreAccount {
+                    account_id: account.to_owned(),
+                })
             }
             "sync" => {
                 let account = field(&args, "accountId")?;
@@ -571,7 +574,7 @@ impl GumroadService {
                         && matches!(job["type"].as_str(), Some("gumroadSync" | "gumroadUpdate"))
                         && matches!(job["state"].as_str(), Some("queued" | "running"))
                 }) {
-                    return Ok(json!({"jobId":existing["id"]}));
+                    return api::StoreJob::of(&existing);
                 }
                 ensure!(
                     matches!(args["source"].as_str(), None | Some("all" | "library")),
@@ -589,7 +592,7 @@ impl GumroadService {
                     json!({"accountId":account,"mode":args["mode"]}),
                 )?;
                 self.spawn(app.clone(), job.clone())?;
-                Ok(json!({"jobId":job["id"]}))
+                api::StoreJob::of(&job)
             }
             "update_products" => {
                 let ids: BTreeSet<String> = args["productIds"]
@@ -657,7 +660,7 @@ impl GumroadService {
                     self.spawn(app.clone(), job.clone())?;
                     jobs.push(job["id"].clone());
                 }
-                Ok(json!({"jobId":jobs.first(),"jobIds":jobs}))
+                api::StoreJobs::of(jobs)
             }
             "cancel_sync" | "retry_sync" => {
                 let id = field(&args, "jobId")?;
@@ -720,7 +723,9 @@ impl GumroadService {
                     self.spawn(app.clone(), job)?;
                 }
                 let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
-                Ok(json!({"jobId":id}))
+                api::answer(api::StoreJob {
+                    job_id: id.to_owned(),
+                })
             }
             _ => bail!("UNKNOWN_STORE_ACTION"),
         }

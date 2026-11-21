@@ -415,6 +415,18 @@ fn gumroad_values(url: &Url, value: &Value) -> Result<Value> {
             "priceSourceCurrency":observation.price_source_currency,
         });
     }
+    metadata(result)
+}
+
+/// The metadata answer; test builds check it against its declared type.
+fn metadata(result: Value) -> Result<Value> {
+    #[cfg(test)]
+    crate::ipc::assert_view::<super::api::ProductMetadata>(
+        "product metadata",
+        &result,
+        false,
+        |_| vec![],
+    );
     Ok(result)
 }
 
@@ -472,7 +484,7 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
         if let Some(price) = product.get("listingPrice") {
             result["listingPrice"] = price.clone();
         }
-        return Ok(result);
+        return metadata(result);
     }
     let title = meta("og:title").ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
     let description = meta("og:description")
@@ -483,7 +495,7 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
         .split(',')
         .map(str::to_owned)
         .collect();
-    suggestions(
+    metadata(suggestions(
         url,
         &title,
         &description,
@@ -491,7 +503,7 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
         meta("og:image").as_deref(),
         Some(StoreProvider::Jinxxy),
         None,
-    )
+    )?)
 }
 
 async fn fetch_body(

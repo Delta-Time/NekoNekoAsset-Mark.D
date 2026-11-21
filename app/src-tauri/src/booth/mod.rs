@@ -490,7 +490,7 @@ impl BoothService {
                     .unwrap_or_else(|| "BOOTH".into());
                 self.inner.catalogue.put("account",&id,json!({"id":id,"store":"BOOTH","name":name,"label":name,"state":"needsAction","status":"disconnected","identityVerified":false,"createdAt":now()}))?;
                 self.changed(app, None);
-                Ok(json!({"accountId":id}))
+                crate::stores::api::answer(crate::stores::api::StoreAccount { account_id: id })
             }
             "login" | "account_login" => {
                 let account = field(&args, "accountId")?.to_owned();
@@ -498,7 +498,7 @@ impl BoothService {
                 auth::window(app, &self.inner.catalogue.device_dir(), &account, true).await?;
                 let job = self.make_job("boothLogin", json!({"accountId":account}))?;
                 self.spawn_job(app.clone(), job.clone())?;
-                Ok(json!({"jobId":job["id"]}))
+                crate::stores::api::StoreJob::of(&job)
             }
             "account_logout" | "account_remove" => {
                 let id = field(&args, "accountId")?;
@@ -530,7 +530,9 @@ impl BoothService {
                     self.inner.catalogue.put("account", id, a)?;
                 }
                 self.changed(app, None);
-                Ok(json!({"accountId":id}))
+                crate::stores::api::answer(crate::stores::api::StoreAccount {
+                    account_id: id.to_owned(),
+                })
             }
             "sync" => {
                 let id = field(&args, "accountId")?;
@@ -540,7 +542,7 @@ impl BoothService {
                         && matches!(job["type"].as_str(), Some("boothSync" | "boothUpdate"))
                         && matches!(job["state"].as_str(), Some("queued" | "running"))
                 }) {
-                    return Ok(json!({"jobId":existing["id"]}));
+                    return crate::stores::api::StoreJob::of(&existing);
                 }
                 let source = args["source"].as_str().unwrap_or("all");
                 if source != "all" {
@@ -555,7 +557,7 @@ impl BoothService {
                     json!({"accountId":id,"source":source,"mode":mode}),
                 )?;
                 self.spawn_job(app.clone(), job.clone())?;
-                Ok(json!({"jobId":job["id"]}))
+                crate::stores::api::StoreJob::of(&job)
             }
             "cancel_sync" => {
                 let id = field(&args, "jobId")?;
@@ -588,7 +590,9 @@ impl BoothService {
                     ensure!(attempt < 3, "CONCURRENT_UPDATE");
                 }
                 self.changed(app, Some(id));
-                Ok(json!({"jobId":id}))
+                crate::stores::api::answer(crate::stores::api::StoreJob {
+                    job_id: id.to_owned(),
+                })
             }
             "retry_sync" => {
                 let id = field(&args, "jobId")?;
@@ -637,7 +641,9 @@ impl BoothService {
                 }
                 let job = self.requeue_job(&job)?;
                 self.spawn_job(app.clone(), job)?;
-                Ok(json!({"jobId":id}))
+                crate::stores::api::answer(crate::stores::api::StoreJob {
+                    job_id: id.to_owned(),
+                })
             }
             "update_products" => {
                 let ids = args["productIds"]
@@ -665,7 +671,7 @@ impl BoothService {
                     self.spawn_job(app.clone(), job.clone())?;
                     jobs.push(job["id"].clone());
                 }
-                Ok(json!({"jobId":jobs.first(),"jobIds":jobs}))
+                crate::stores::api::StoreJobs::of(jobs)
             }
             _ => bail!("UNKNOWN_BOOTH_ACTION"),
         }

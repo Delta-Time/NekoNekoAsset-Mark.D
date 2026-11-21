@@ -1,106 +1,350 @@
-//! The actions the UI sends through `booth_action`, which serves every store.
-use serde::Deserialize;
+//! The actions the UI sends through `booth_action`, which serves every store, and what
+//! they answer.
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use ts_rs::TS;
 
-/// One store action. The store services read its arguments and keep some in their jobs
-/// exactly as sent, so they travel as they came; only the action is typed here.
-#[derive(Deserialize, TS)]
+/// One store action. The store services read the arguments they need and some jobs keep
+/// what was sent, so every argument struct keeps the other fields it was sent and gives
+/// the arguments back exactly as they came (`args`).
+#[derive(Serialize, Deserialize, TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[ts(export)]
 pub enum StoreRequest {
-    /// Adds an account of `store` (BOOTH by default), named `name`.
-    AccountAdd(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Opens the sign-in of `accountId`.
-    AccountLogin(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// The same as `account_login`.
-    Login(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    AccountLogout(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    AccountRename(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Removes `accountId`; `removeProducts` also removes its own products.
-    AccountRemove(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Reads `accountId`'s purchases: `source` and `mode` choose what and how far.
-    Sync(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    CancelSync(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    RetrySync(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Reads the listings of `productIds` again.
-    UpdateProducts(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Reads a public product page at `url`.
-    FetchProductMetadata(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    /// Debug builds only, like the other `diagnose_` actions.
-    DiagnoseOrdering(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseManifests(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseFileStructure(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseFreeItemEntry(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseFreeItemRole(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseFreeItemControls(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseFreeItemIdentity(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseReceiptTemplate(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseReceiptNoticeEnvelope(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseReceiptContactEnvelope(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
-    DiagnoseProductLineFields(#[ts(type = "Record<string, unknown>")] Map<String, Value>),
+    /// Adds an account of `store` (BOOTH by default).
+    AccountAdd(AccountAdd),
+    /// Opens the store's sign-in window for the account.
+    AccountLogin(AccountRef),
+    /// An older name of `account_login`.
+    Login(AccountRef),
+    /// Signs the account out and keeps what it synchronized.
+    AccountLogout(AccountRef),
+    AccountRename(AccountRename),
+    AccountRemove(AccountRemove),
+    Sync(SyncRequest),
+    CancelSync(SyncJob),
+    RetrySync(SyncJob),
+    /// Reads the current store pages of `productIds`.
+    UpdateProducts(UpdateProducts),
+    /// Reads a public product page for a local product's metadata.
+    FetchProductMetadata(ProductLink),
+    DiagnoseOrdering(DiagnosticSource),
+    DiagnoseManifests(DiagnosticSource),
+    DiagnoseFileStructure(DiagnosticSource),
+    DiagnoseFreeItemEntry(DiagnosticAccount),
+    DiagnoseFreeItemRole(DiagnosticAccount),
+    DiagnoseFreeItemControls(DiagnosticAccount),
+    DiagnoseFreeItemIdentity(DiagnosticAccount),
+    DiagnoseReceiptTemplate(DiagnosticAccount),
+    DiagnoseReceiptNoticeEnvelope(DiagnosticAccount),
+    DiagnoseReceiptContactEnvelope(DiagnosticAccount),
+    DiagnoseProductLineFields(ReceiptDiagnostic),
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountAdd {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// An older name of `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub store: Option<String>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRef {
+    pub account_id: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRename {
+    pub account_id: String,
+    pub name: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// Removes the account, and with `removeProducts` the products only it holds.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRemove {
+    pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remove_products: Option<bool>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// Synchronizes an account's `source` listings (every source by default).
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(
+        optional,
+        type = "\"all\" | \"library\" | \"purchase\" | \"gift\" | \"free\""
+    )]
+    pub source: Option<String>,
+    /// `incremental` stops at the first listing page it already knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"incremental\" | \"full\" | \"forced\"")]
+    pub mode: Option<String>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncJob {
+    pub job_id: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProducts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub product_ids: Option<Vec<String>>,
+    /// An older name of `productIds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ids: Option<Vec<String>>,
+    /// Limits the update to this account's view of the products.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub account_id: Option<String>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductLink {
+    pub url: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// A structure-only diagnostic of one account's `source` listing.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticSource {
+    pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"library\" | \"purchase\" | \"gift\" | \"free\"")]
+    pub source: Option<String>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// A structure-only diagnostic, which accepts no field but the account.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticAccount {
+    pub account_id: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptDiagnostic {
+    pub account_id: String,
+    pub receipt_id: String,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// The account an action added or signed out.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StoreAccount {
+    pub account_id: String,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AccountRenamed {
+    pub account_id: String,
+    pub name: String,
+}
+
+/// The job a sign-in or synchronization started, or the one already doing it.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StoreJob {
+    pub job_id: String,
+}
+
+/// The update jobs that cover the products; `jobId` is the first of them.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StoreJobs {
+    pub job_id: Option<String>,
+    pub job_ids: Vec<String>,
+}
+
+/// A public product page's metadata, for a local product.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ProductMetadata {
+    pub source_url: String,
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub listing_price: Option<ListingPrice>,
+}
+
+/// The price a public listing states; never an owned quote.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ListingPrice {
+    pub price: Option<serde_json::Number>,
+    pub price_currency: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::ipc::nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub price_formatted: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::ipc::nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub price_source_currency: Option<Option<String>>,
+}
+
+/// The answer to each store action, for the typed store calls in the UI. Diagnostics
+/// answer structure-only reports.
+#[cfg(test)]
+#[derive(Serialize, TS)]
+#[ts(export)]
+struct StoreResponses {
+    account_add: StoreAccount,
+    account_login: StoreJob,
+    login: StoreJob,
+    account_logout: StoreAccount,
+    account_rename: AccountRenamed,
+    account_remove: crate::catalogue::api::AccountRemoved,
+    sync: StoreJob,
+    cancel_sync: StoreJob,
+    retry_sync: StoreJob,
+    update_products: StoreJobs,
+    fetch_product_metadata: ProductMetadata,
+    diagnose_ordering: Value,
+    diagnose_manifests: Value,
+    diagnose_file_structure: Value,
+    diagnose_free_item_entry: Value,
+    diagnose_free_item_role: Value,
+    diagnose_free_item_controls: Value,
+    diagnose_free_item_identity: Value,
+    diagnose_receipt_template: Value,
+    diagnose_receipt_notice_envelope: Value,
+    diagnose_receipt_contact_envelope: Value,
+    diagnose_product_line_fields: Value,
 }
 
 impl StoreRequest {
     pub fn parse(action: &str, args: Value) -> anyhow::Result<Self> {
-        crate::ipc::parse(
+        #[cfg(test)]
+        let sent = args.clone();
+        let request: Self = crate::ipc::parse(
             action,
             args,
             "UNKNOWN_STORE_ACTION",
             "INVALID_STORE_REQUEST",
-        )
+        )?;
+        #[cfg(test)]
+        crate::ipc::assert_round_trip("store request", &sent, &request.args());
+        Ok(request)
     }
-    /// The arguments as sent.
-    pub fn args(&self) -> &Map<String, Value> {
+    /// The arguments exactly as they were sent.
+    pub fn args(&self) -> Value {
+        crate::ipc::args_of(self)
+    }
+    /// The job a cancel or retry names.
+    pub fn job_id(&self) -> Option<&str> {
         match self {
-            Self::AccountAdd(args)
-            | Self::AccountLogin(args)
-            | Self::Login(args)
-            | Self::AccountLogout(args)
-            | Self::AccountRename(args)
-            | Self::AccountRemove(args)
-            | Self::Sync(args)
-            | Self::CancelSync(args)
-            | Self::RetrySync(args)
-            | Self::UpdateProducts(args)
-            | Self::FetchProductMetadata(args)
-            | Self::DiagnoseOrdering(args)
-            | Self::DiagnoseManifests(args)
-            | Self::DiagnoseFileStructure(args)
-            | Self::DiagnoseFreeItemEntry(args)
-            | Self::DiagnoseFreeItemRole(args)
-            | Self::DiagnoseFreeItemControls(args)
-            | Self::DiagnoseFreeItemIdentity(args)
-            | Self::DiagnoseReceiptTemplate(args)
-            | Self::DiagnoseReceiptNoticeEnvelope(args)
-            | Self::DiagnoseReceiptContactEnvelope(args)
-            | Self::DiagnoseProductLineFields(args) => args,
+            Self::CancelSync(job) | Self::RetrySync(job) => Some(&job.job_id),
+            _ => None,
         }
     }
-    pub fn into_args(self) -> Value {
+    /// The account a sign-in names.
+    pub fn login_account(&self) -> Option<&str> {
         match self {
-            Self::AccountAdd(args)
-            | Self::AccountLogin(args)
-            | Self::Login(args)
-            | Self::AccountLogout(args)
-            | Self::AccountRename(args)
-            | Self::AccountRemove(args)
-            | Self::Sync(args)
-            | Self::CancelSync(args)
-            | Self::RetrySync(args)
-            | Self::UpdateProducts(args)
-            | Self::FetchProductMetadata(args)
-            | Self::DiagnoseOrdering(args)
-            | Self::DiagnoseManifests(args)
-            | Self::DiagnoseFileStructure(args)
-            | Self::DiagnoseFreeItemEntry(args)
-            | Self::DiagnoseFreeItemRole(args)
-            | Self::DiagnoseFreeItemControls(args)
-            | Self::DiagnoseFreeItemIdentity(args)
-            | Self::DiagnoseReceiptTemplate(args)
-            | Self::DiagnoseReceiptNoticeEnvelope(args)
-            | Self::DiagnoseReceiptContactEnvelope(args)
-            | Self::DiagnoseProductLineFields(args) => Value::Object(args),
+            Self::AccountLogin(account) | Self::Login(account) => Some(&account.account_id),
+            _ => None,
         }
     }
+}
+
+/// An answer's JSON.
+pub fn answer(value: impl Serialize) -> anyhow::Result<Value> {
+    Ok(serde_json::to_value(value)?)
+}
+
+impl StoreJob {
+    /// The answer naming a job record.
+    pub fn of(job: &Value) -> anyhow::Result<Value> {
+        answer(Self {
+            job_id: job_id(&job["id"])?,
+        })
+    }
+}
+
+impl StoreJobs {
+    /// The answer naming job ids, the first as `jobId`.
+    pub fn of(ids: Vec<Value>) -> anyhow::Result<Value> {
+        let job_ids = ids.iter().map(job_id).collect::<anyhow::Result<Vec<_>>>()?;
+        answer(Self {
+            job_id: job_ids.first().cloned(),
+            job_ids,
+        })
+    }
+}
+
+fn job_id(id: &Value) -> anyhow::Result<String> {
+    id.as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))
 }
