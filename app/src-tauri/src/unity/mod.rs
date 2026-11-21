@@ -1,12 +1,13 @@
 //! Selected-file Unity bridge. No catalogue or credentials are exposed to Editors.
+pub mod api;
 pub mod discovery;
 pub mod jobs;
 pub mod wire;
 
 use crate::{catalogue::Catalogue, storage::StorageService};
 use anyhow::{bail, ensure, Result};
+use api::UnityRequest;
 use jobs::{RequestRecord, RequestStore};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -33,25 +34,13 @@ pub struct UnityService {
     connections: Mutex<HashMap<String, wire::Registry>>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Products {
-    product_ids: Vec<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// The arguments of a submit request.
 struct Submit {
-    #[serde(default)]
     locale: Option<String>,
     product_ids: Vec<String>,
     leaf_refs: Vec<String>,
     instance_id: String,
     session_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Job {
-    job_id: String,
 }
 
 fn now() -> String {
@@ -164,23 +153,36 @@ impl UnityService {
     pub async fn command(
         self: &Arc<Self>,
         app: &tauri::AppHandle,
-        action: &str,
-        args: Value,
+        request: UnityRequest,
     ) -> Result<Value> {
         self.start(app).await?;
-        match action {
-            "list_editors" => Ok(
-                json!({"editors":discovery::discover(&self.registry_dir).await?.iter().map(|e|e.summary().clone()).collect::<Vec<_>>()}),
-            ),
-            "inventory" => {
-                let args: Products = serde_json::from_value(args)
-                    .map_err(|_| anyhow::anyhow!("UNITY_INVALID_REQUEST"))?;
-                Ok(json!({"files":self.storage.list_unity_inventory(&args.product_ids).await?}))
-            }
-            "submit" => {
+        let cancel = matches!(request, UnityRequest::Cancel { .. });
+        match request {
+            UnityRequest::ListEditors => Ok(serde_json::to_value(api::Editors {
+                editors: discovery::discover(&self.registry_dir)
+                    .await?
+                    .iter()
+                    .map(|e| e.summary().clone())
+                    .collect(),
+            })?),
+            UnityRequest::Inventory { product_ids } => Ok(serde_json::to_value(api::Inventory {
+                files: self.storage.list_unity_inventory(&product_ids).await?,
+            })?),
+            UnityRequest::Submit {
+                locale,
+                product_ids,
+                leaf_refs,
+                instance_id,
+                session_id,
+            } => {
                 let work = self.requests.begin_catalogue_work()?;
-                let args: Submit = serde_json::from_value(args)
-                    .map_err(|_| anyhow::anyhow!("UNITY_INVALID_REQUEST"))?;
+                let args = Submit {
+                    locale,
+                    product_ids,
+                    leaf_refs,
+                    instance_id,
+                    session_id,
+                };
                 ensure!(
                     !args.product_ids.is_empty() && !args.leaf_refs.is_empty(),
                     "UNITY_SELECTION_EMPTY"
@@ -225,7 +227,12 @@ impl UnityService {
                             .await
                             .map_err(|_| anyhow::anyhow!("UNITY_NO_RESPONSE"))?;
                         match response.code.as_str() {
-                            "accepted" => return Ok(json!({"native":true})),
+                            "accepted" => {
+                                return Ok(serde_json::to_value(api::Submitted {
+                                    job_id: None,
+                                    native: Some(true),
+                                })?)
+                            }
                             "busy" => bail!("UNITY_BUSY"),
                             "disabled" => bail!("UNITY_DISABLED"),
                             _ => {}
@@ -299,53 +306,55 @@ impl UnityService {
                     }
                 });
                 emit(app);
-                Ok(json!({"jobId":response_id}))
+                Ok(serde_json::to_value(api::Submitted {
+                    job_id: Some(response_id),
+                    native: None,
+                })?)
             }
-            "details" => {
-                let args: Job = serde_json::from_value(args)?;
+            UnityRequest::Details { job_id } => {
                 let record = self
                     .requests
-                    .get(&args.job_id)?
+                    .get(&job_id)?
                     .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
-                Ok(details(&record))
+                details(&record)
             }
-            "status" | "cancel" => {
+            UnityRequest::Status { job_id } | UnityRequest::Cancel { job_id } => {
                 let _work = self.requests.begin_catalogue_work()?;
-                let args: Job = serde_json::from_value(args)?;
                 let record = self
                     .requests
-                    .get(&args.job_id)?
+                    .get(&job_id)?
                     .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
                 ensure!(self.requests.is_local(&record), "UNITY_OTHER_DEVICE");
-                if action == "cancel" && !terminal(&record.phase) {
+                if cancel && !terminal(&record.phase) {
                     self.cancellations
                         .lock()
                         .await
-                        .entry(args.job_id.clone())
+                        .entry(job_id.clone())
                         .or_insert_with(|| Arc::new(AtomicBool::new(false)))
                         .store(true, Ordering::Release);
                 }
                 if !record.bytes_started {
-                    return Ok(details(&record));
+                    return details(&record);
                 }
-                self.query_once(app, &args.job_id, action == "cancel")
-                    .await?;
-                Ok(details(
+                self.query_once(app, &job_id, cancel).await?;
+                details(
                     &self
                         .requests
-                        .get(&args.job_id)?
+                        .get(&job_id)?
                         .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?,
-                ))
+                )
             }
-            "retry_inventory" => {
-                let args: Job = serde_json::from_value(args)?;
+            UnityRequest::RetryInventory { job_id } => {
                 let record = self
                     .requests
-                    .get(&args.job_id)?
+                    .get(&job_id)?
                     .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
                 ensure!(terminal(&record.phase), "UNITY_RESULT_UNRESOLVED");
                 if !record.bytes_started || record.payload_rejected {
-                    return Ok(json!({"productIds":record.product_ids,"leafRefs":[]}));
+                    return Ok(serde_json::to_value(api::RetrySelection {
+                        product_ids: record.product_ids,
+                        leaf_refs: vec![],
+                    })?);
                 }
                 let manifest: Manifest = serde_json::from_str(&record.manifest_json)
                     .map_err(|_| anyhow::anyhow!("UNITY_RETRY_UNAVAILABLE"))?;
@@ -378,9 +387,11 @@ impl UnityService {
                     .map(|leaf| leaf.leaf_ref.clone())
                     .collect();
                 ensure!(!refs.is_empty(), "UNITY_RETRY_UNAVAILABLE");
-                Ok(json!({"productIds":record.product_ids,"leafRefs":refs}))
+                Ok(serde_json::to_value(api::RetrySelection {
+                    product_ids: record.product_ids,
+                    leaf_refs: refs,
+                })?)
             }
-            _ => bail!("UNITY_INVALID_REQUEST"),
         }
     }
 
@@ -662,8 +673,16 @@ impl UnityService {
         });
     }
 }
-fn details(record: &RequestRecord) -> Value {
-    json!({"jobId":record.request_id,"projectName":record.project_name,"projectRoot":record.project_root,"unityVersion":record.unity_version,"stage":record.presented_phase(),"errorCode":record.presented_error_code(),"receipt":record.presented_receipt()})
+fn details(record: &RequestRecord) -> Result<Value> {
+    Ok(serde_json::to_value(api::UnityDetails {
+        job_id: record.request_id.clone(),
+        project_name: record.project_name.clone(),
+        project_root: record.project_root.clone(),
+        unity_version: record.unity_version.clone(),
+        stage: record.presented_phase().to_owned(),
+        error_code: record.presented_error_code().map(str::to_owned),
+        receipt: record.presented_receipt(),
+    })?)
 }
 
 fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Result<()> {

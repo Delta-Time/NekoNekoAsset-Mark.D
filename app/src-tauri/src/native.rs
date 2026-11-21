@@ -1,5 +1,6 @@
 use crate::catalogue::Catalogue;
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,6 +11,7 @@ use std::{
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+use ts_rs::TS;
 
 pub fn dialog(app: &tauri::AppHandle, kind: &str, options: Value) -> Result<Value> {
     let mut picker = app.dialog().file();
@@ -70,12 +72,8 @@ pub fn dialog(app: &tauri::AppHandle, kind: &str, options: Value) -> Result<Valu
         .map(|file| file.into_path().map(|path| json!(path)).map_err(Into::into))
         .unwrap_or(Ok(Value::Null))
 }
-fn selected_path(args: &Value) -> Result<PathBuf> {
-    let path = PathBuf::from(
-        args.get("path")
-            .and_then(Value::as_str)
-            .context("path_required")?,
-    );
+fn selected_path(path: Option<String>) -> Result<PathBuf> {
+    let path = PathBuf::from(path.context("path_required")?);
     if !path.is_absolute() {
         bail!("absolute_path_required");
     }
@@ -171,46 +169,128 @@ fn copy_clipboard_text(_: &tauri::AppHandle, _: &str) -> Result<()> {
     bail!("clipboard_unavailable")
 }
 
+/// One native file action and its arguments. Paths are absolute paths the user chose.
+#[derive(Deserialize, TS)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export)]
+pub enum FileRequest {
+    /// Copies text to the clipboard.
+    CopyText {
+        #[serde(default)]
+        #[ts(optional = false, type = "string")]
+        text: Option<String>,
+    },
+    /// Reads a text file of at most 1 MiB.
+    ReadText {
+        #[serde(default)]
+        #[ts(optional = false, type = "string")]
+        path: Option<String>,
+    },
+    /// Writes a text file of at most 1 MiB.
+    WriteText {
+        #[serde(default)]
+        #[ts(optional = false, type = "string")]
+        path: Option<String>,
+        #[serde(default)]
+        #[ts(optional = false, type = "string")]
+        text: Option<String>,
+    },
+    /// Copies an image into the library's media, named by its hash.
+    CopyImage {
+        #[serde(default)]
+        #[ts(optional = false, type = "string")]
+        path: Option<String>,
+        /// Sent by the UI; the copy does not depend on it.
+        #[serde(default, rename = "productId")]
+        #[ts(optional)]
+        _product_id: Option<String>,
+    },
+}
+
+impl FileRequest {
+    pub fn parse(action: &str, args: Value) -> Result<Self> {
+        crate::ipc::parse(action, args, "unknown_file_action", "invalid_file_request")
+    }
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct CopiedText {
+    pub copied: bool,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct TextFile {
+    pub text: String,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct WrittenFile {
+    pub path: PathBuf,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CopiedImage {
+    pub path: PathBuf,
+    /// Under the library's data folder, with `/` separators.
+    pub relative_path: String,
+    pub hash: String,
+}
+
+/// The answer to each file action, for the typed `nativeFileAction` in the UI.
+#[cfg(test)]
+#[derive(Serialize, TS)]
+#[ts(export, rename = "FileResponses")]
+struct FileResponses {
+    copy_text: CopiedText,
+    read_text: TextFile,
+    write_text: WrittenFile,
+    copy_image: CopiedImage,
+}
+
 pub fn file_action(
     app: &tauri::AppHandle,
     catalogue: &Catalogue,
-    action: &str,
-    args: Value,
+    request: FileRequest,
 ) -> Result<Value> {
-    match action {
-        "copy_text" => {
-            let text = args
-                .get("text")
-                .and_then(Value::as_str)
-                .context("text_required")?;
+    match request {
+        FileRequest::CopyText { text } => {
+            let text = text.context("text_required")?;
             if text.len() > 1024 * 1024 || text.contains('\0') {
                 bail!("invalid_clipboard_text");
             }
-            copy_clipboard_text(app, text)?;
-            Ok(json!({"copied":true}))
+            copy_clipboard_text(app, &text)?;
+            Ok(serde_json::to_value(CopiedText { copied: true })?)
         }
-        "read_text" => {
-            let path = selected_path(&args)?;
+        FileRequest::ReadText { path } => {
+            let path = selected_path(path)?;
             if fs::metadata(&path).context("file_unavailable")?.len() > 1024 * 1024 {
                 bail!("file_too_large");
             }
             let text = fs::read_to_string(path).context("invalid_text_file")?;
-            Ok(json!({"text":text.strip_prefix('\u{feff}').unwrap_or(&text)}))
+            Ok(serde_json::to_value(TextFile {
+                text: text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned(),
+            })?)
         }
-        "write_text" => {
-            let path = selected_path(&args)?;
-            let text = args
-                .get("text")
-                .and_then(Value::as_str)
-                .context("text_required")?;
+        FileRequest::WriteText { path, text } => {
+            let path = selected_path(path)?;
+            let text = text.context("text_required")?;
             if text.len() > 1024 * 1024 {
                 bail!("file_too_large");
             }
             write_atomic(&path, text.as_bytes())?;
-            Ok(json!({"path":path}))
+            Ok(serde_json::to_value(WrittenFile { path })?)
         }
-        "copy_image" => {
-            let source = selected_path(&args)?;
+        FileRequest::CopyImage { path, .. } => {
+            let source = selected_path(path)?;
             if fs::metadata(&source).context("file_unavailable")?.len() > 32 * 1024 * 1024 {
                 bail!("image_too_large");
             }
@@ -234,11 +314,12 @@ pub fn file_action(
                 write_atomic(&path, &bytes)?;
             }
             app.asset_protocol_scope().allow_file(&path)?;
-            Ok(
-                json!({"path":path,"relativePath":relative.to_string_lossy().replace('\\',"/"),"hash":hash}),
-            )
+            Ok(serde_json::to_value(CopiedImage {
+                path,
+                relative_path: relative.to_string_lossy().replace('\\', "/"),
+                hash,
+            })?)
         }
-        _ => bail!("unknown_file_action"),
     }
 }
 /// Normalize a persistent public product page without storing login or download credentials.

@@ -934,10 +934,12 @@ async fn licenses_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request =
+        licenses::api::LicensesRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     services
         .licenses
-        .command(&app, &action, args)
+        .command(&app, request)
         .await
         .map_err(UiError::from_error)
 }
@@ -950,10 +952,11 @@ async fn unity_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request = unity::api::UnityRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     services
         .unity
-        .command(&app, &action, args)
+        .command(&app, request)
         .await
         .map_err(UiError::from_error)
 }
@@ -983,10 +986,11 @@ async fn native_file_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request = native::FileRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     let catalogue = services.catalogue.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        native::file_action(&app, &catalogue, &action, args)
+        native::file_action(&app, &catalogue, request)
     })
     .await
     .map_err(|_| UiError {

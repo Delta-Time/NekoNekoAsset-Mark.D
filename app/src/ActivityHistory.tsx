@@ -282,7 +282,7 @@ export default function ActivityHistory({
       )
         throw new Error('operationFailed');
       if (isTauri()) {
-        const result = await nativeFileAction<{ copied: boolean }>('copy_text', { text });
+        const result = await nativeFileAction('copy_text', { text });
         if (result.copied !== true) throw new Error('clipboard_unavailable');
       } else await navigator.clipboard.writeText(text);
       if (current())

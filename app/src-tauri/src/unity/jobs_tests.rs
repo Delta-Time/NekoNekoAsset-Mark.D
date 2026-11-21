@@ -410,3 +410,41 @@ fn initial_payload_rejection_preserves_owned_cleanup_proof() {
     store.update(&r).unwrap();
     assert!(store.cleanup_pending().unwrap().is_empty());
 }
+
+#[test]
+fn presented_receipts_read_as_the_typed_receipt() {
+    // `apply_response` stores the wire receipt as it serializes; `details` presents it.
+    let mut r = record();
+    let receipt = super::super::wire::Receipt {
+        request_id: r.request_id.clone(),
+        fingerprint: r.fingerprint.clone(),
+        instance_id: r.instance_id.clone(),
+        session_id: r.session_id.clone(),
+        stage: "completed".into(),
+        staged: true,
+        writes_started: true,
+        updated_utc: "2026-11-22T00:00:00Z".into(),
+        preparation_phase: Some("checkTargets".into()),
+        preparation_waiting_for_editor: false,
+        preparation_bytes: Some(3),
+        preparation_total_bytes: Some(4),
+        preparation_entries: None,
+        preparation_total_entries: None,
+        error: Some("Files imported; Unity compilation reported errors.".into()),
+        compile_errors: vec!["Authored compiler line".into()],
+        results: vec![super::super::wire::FileResult {
+            entry_id: "entry".into(),
+            path: "Assets/Example.txt".into(),
+            state: "applied".into(),
+            message: None,
+        }],
+    };
+    r.receipt = Some(serde_json::to_value(&receipt).unwrap());
+    let presented = r.presented_receipt().unwrap();
+    crate::ipc::assert_view::<super::super::api::UnityReceipt>(
+        "receipt",
+        &presented,
+        true,
+        |_| vec![],
+    );
+}

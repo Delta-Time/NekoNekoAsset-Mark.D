@@ -38,8 +38,10 @@ pub struct Registry {
     pub busy: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// A running Editor whose Bridge answered.
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "UnityEditor")]
 pub struct LiveEditor {
     pub instance_id: String,
     pub session_id: String,
@@ -151,11 +153,13 @@ pub struct Receipt {
     pub results: Vec<FileResult>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "UnityFileResult")]
 pub struct FileResult {
     pub entry_id: String,
     pub path: String,
+    #[ts(type = "'applied' | 'skipped' | 'failed'")]
     pub state: String,
     #[serde(default)]
     pub message: Option<String>,

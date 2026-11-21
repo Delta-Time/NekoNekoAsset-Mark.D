@@ -49,7 +49,7 @@ export function useProductEdits({
       const patch = { ...change.patch },
         clearFields: string[] = [];
       if (patch.thumbnailSourcePath) {
-        const copied = await nativeFileAction<{ relativePath: string }>('copy_image', {
+        const copied = await nativeFileAction('copy_image', {
           path: patch.thumbnailSourcePath,
           productId: change.id,
         });

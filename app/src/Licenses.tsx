@@ -3,6 +3,7 @@ import type { ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { Locale } from './model';
 import { invokeAction, errorCode, openExternal } from './backend';
+import type { LicenseDetail } from './bindings';
 import { licenseText } from './license-i18n';
 import { editorText } from './editor-i18n';
 import { resetText } from './settings-reset-i18n';
@@ -229,15 +230,6 @@ export function LicenseFilterDialog({
   );
 }
 
-interface LicenseDetail {
-  synced: {
-    kind: string;
-    version?: string | null;
-    source?: string | null;
-    cells: LicenseCells;
-  } | null;
-  edited: LicenseCells | null;
-}
 /** Opens on the asset's current table: this Edit's draft, else the saved edit, else the synced one.
  *  Done reports `null` when the table matches the synced one, so saving removes any edit. */
 export function LicenseEditor({
@@ -266,7 +258,7 @@ export function LicenseEditor({
     void invokeAction('licenses', 'get', {
       productId,
     })
-      .then((value: { synced?: LicenseDetail['synced']; edited?: unknown }) => {
+      .then((value) => {
         if (!alive) return;
         const synced = value?.synced
             ? { ...value.synced, cells: licenseCells(value.synced.cells) }
@@ -418,7 +410,7 @@ export function LicenseSettings({
     if (!enabled) return;
     let alive = true;
     void invokeAction('licenses', 'status')
-      .then((status: { exists?: boolean }) => {
+      .then((status) => {
         if (alive) setExists(status?.exists === true);
       })
       .catch(() => {});
@@ -429,7 +421,7 @@ export function LicenseSettings({
   const syncAll = async () => {
     setPending(true);
     try {
-      const result: { jobId?: string | null } = await invokeAction('licenses', 'sync', {});
+      const result = await invokeAction('licenses', 'sync', {});
       if (!result?.jobId) onNotice(L('noLicenseWork'));
     } catch (failure) {
       onNotice(licenseError(locale, errorCode(failure)));

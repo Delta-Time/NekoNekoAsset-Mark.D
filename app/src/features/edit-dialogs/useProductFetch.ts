@@ -149,7 +149,7 @@ export function useProductFetch({
         filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
       });
       if (!chosen || !alive.current || request !== thumbnailRequest.current) return;
-      const copied = await nativeFileAction<{ path: string; relativePath: string }>('copy_image', {
+      const copied = await nativeFileAction('copy_image', {
         path: chosen.path,
       });
       if (!alive.current || request !== thumbnailRequest.current) return;

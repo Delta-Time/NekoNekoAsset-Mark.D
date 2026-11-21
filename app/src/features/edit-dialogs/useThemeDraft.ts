@@ -51,8 +51,7 @@ export function useThemeDraft({
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
       if (!chosen) return;
-      const result = await nativeFileAction('read_text', { path: chosen.path });
-      const text = typeof result === 'string' ? result : (result.text ?? result.content);
+      const { text } = await nativeFileAction('read_text', { path: chosen.path });
       if (typeof text !== 'string' || new TextEncoder().encode(text).byteLength > 32_768)
         throw new Error('invalidTheme');
       const tokens = parseThemeConfig(text);

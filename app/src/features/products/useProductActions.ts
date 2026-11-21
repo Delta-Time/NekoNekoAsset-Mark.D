@@ -131,11 +131,9 @@ export function useProductActions({
   const syncLicenses = (ids: string[]) => {
     if (ids.length)
       run(
-        invokeAction('licenses', 'sync', { productIds: ids }).then(
-          (result: { jobId?: string | null }) => {
-            if (!result?.jobId) notify(licenseText(locale, 'noLicenseWork')!);
-          },
-        ),
+        invokeAction('licenses', 'sync', { productIds: ids }).then((result) => {
+          if (!result?.jobId) notify(licenseText(locale, 'noLicenseWork')!);
+        }),
       );
   };
   const needsAttention = (ids: string[]) =>

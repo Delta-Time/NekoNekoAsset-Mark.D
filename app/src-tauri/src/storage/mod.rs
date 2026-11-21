@@ -15,6 +15,7 @@ mod shared;
 mod tests;
 mod transfer;
 mod unity_snapshot;
+pub(crate) use unity_snapshot::UnityLeaf;
 
 pub(crate) fn checked_library_root(path: &Path) -> Result<PathBuf> {
     ensure!(path.is_absolute(), "root_offline");

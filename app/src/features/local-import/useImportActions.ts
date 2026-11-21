@@ -192,7 +192,7 @@ export function useImportActions({
         }),
       );
       if (!path) return;
-      const copied = await nativeFileAction<{ relativePath: string; path: string }>('copy_image', {
+      const copied = await nativeFileAction('copy_image', {
         path,
       });
       setThumbnail({ ...copied, name: fileName(path) });

@@ -3,6 +3,7 @@
 //! untouched. Sync reads public BOOTH pages and the documents they link, plus a 0-yen
 //! license download with an account that holds the product. A failed read never replaces
 //! a result, and a user's edit always wins over a synced one.
+pub(crate) mod api;
 mod fetch;
 mod parse;
 #[cfg(test)]
@@ -360,23 +361,25 @@ impl LicenseService {
         Ok(Some(ids))
     }
 
-    pub async fn command(&self, app: &AppHandle, action: &str, args: Value) -> Result<Value> {
-        match action {
-            "status" => {
+    pub async fn command(&self, app: &AppHandle, request: api::LicensesRequest) -> Result<Value> {
+        use api::LicensesRequest as Request;
+        match request {
+            Request::Status => {
                 let counts = self.with_db(false, |conn| {
                     let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0));
-                    Ok(json!({
-                        "found": count("SELECT COUNT(*) FROM results WHERE state='found'")?,
-                        "edited": count("SELECT COUNT(*) FROM edits")?,
-                    }))
+                    Ok(api::LicenseCounts {
+                        found: count("SELECT COUNT(*) FROM results WHERE state='found'")?,
+                        edited: count("SELECT COUNT(*) FROM edits")?,
+                    })
                 })?;
-                Ok(
-                    json!({"exists": counts.is_some(), "counts": counts, "running": self.running_job()}),
-                )
+                Ok(serde_json::to_value(api::LicenseStatus {
+                    exists: counts.is_some(),
+                    counts,
+                    running: self.running_job(),
+                })?)
             }
-            "get" => {
-                let product = args["productId"]
-                    .as_str()
+            Request::Get { product_id } => {
+                let product = Some(product_id.as_str())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?;
                 let detail = self.with_db(false, |conn| {
@@ -388,23 +391,27 @@ impl LicenseService {
                         )
                         .optional()?;
                     let edited: Option<String> = conn.query_row("SELECT cells FROM edits WHERE product_id=?1", [product], |row| row.get(0)).optional()?;
-                    Ok(json!({
-                        "synced": result.as_ref().map(|(kind, version, source, answers, checked)| json!({
-                            "kind": kind, "version": version, "source": source, "checkedAt": checked,
-                            "cells": cells(kind, &serde_json::from_str(answers).unwrap_or(Value::Null)),
-                        })),
-                        "edited": edited.map(|e| valid_cells(&serde_json::from_str(&e).unwrap_or(Value::Null))),
-                    }))
+                    Ok(api::LicenseDetail {
+                        synced: result.map(|(kind, version, source, answers, checked)| {
+                            let cells = cells(&kind, &serde_json::from_str(&answers).unwrap_or(Value::Null));
+                            api::SyncedLicense { kind, version, source, checked_at: checked, cells }
+                        }),
+                        edited: edited.map(|e| valid_cells(&serde_json::from_str(&e).unwrap_or(Value::Null))),
+                    })
                 })?;
-                Ok(detail.unwrap_or(json!({"synced": null, "edited": null})))
+                Ok(serde_json::to_value(detail.unwrap_or(
+                    api::LicenseDetail {
+                        synced: None,
+                        edited: None,
+                    },
+                ))?)
             }
-            "set" => {
-                let product = args["productId"]
-                    .as_str()
+            Request::Set { product_id, cells } => {
+                let product = Some(product_id)
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?
-                    .to_owned();
-                let edited = (!args["cells"].is_null()).then(|| valid_cells(&args["cells"]));
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?;
+                // `null` and a missing table both remove the edit.
+                let edited = cells.as_ref().map(valid_cells);
                 self.with_db(edited.is_some(), |conn| {
                     match &edited {
                         Some(cells) => conn.execute(
@@ -419,29 +426,24 @@ impl LicenseService {
                     "nna:changed",
                     json!({"scope":"licenses","productIds":[product]}),
                 );
-                Ok(json!({}))
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            "sync" => {
-                let ids = args["productIds"].as_array().map(|ids| {
-                    ids.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                });
+            Request::Sync { product_ids } => {
                 let job = self
                     .sync(
                         app,
-                        ids.map(Selection::Chosen).unwrap_or(Selection::Unfinished),
+                        product_ids
+                            .map(Selection::Chosen)
+                            .unwrap_or(Selection::Unfinished),
                     )
                     .await?;
-                Ok(json!({"jobId": job}))
+                Ok(serde_json::to_value(api::LicenseJob { job_id: job })?)
             }
-            "retry" => {
-                let job_id = args["jobId"].as_str().unwrap_or_default();
+            Request::Retry { job_id } => {
                 let job = self
                     .inner
                     .catalogue
-                    .get("job", job_id)?
+                    .get("job", &job_id)?
                     .filter(|job| job["type"] == JOB_TYPE)
                     .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
                 let done: BTreeSet<&str> = job["completedProductIds"]
@@ -464,13 +466,15 @@ impl LicenseService {
                     .filter(|id| failed.contains(id) || !done.contains(id))
                     .map(str::to_owned)
                     .collect();
-                Ok(json!({"jobId": self.sync(app, Selection::Chosen(ids)).await?}))
+                Ok(serde_json::to_value(api::LicenseJob {
+                    job_id: self.sync(app, Selection::Chosen(ids)).await?,
+                })?)
             }
-            "cancel" => {
-                self.cancel(args["jobId"].as_str());
-                Ok(json!({}))
+            Request::Cancel { job_id } => {
+                self.cancel(job_id.as_deref());
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            "delete" => {
+            Request::Delete => {
                 self.cancel(None);
                 for _ in 0..600 {
                     if self.running_job().is_none() {
@@ -494,9 +498,8 @@ impl LicenseService {
                 }
                 drop(db);
                 let _ = app.emit("nna:changed", json!({"scope":"licenses"}));
-                Ok(json!({}))
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            _ => bail!("UNKNOWN_ACTION"),
         }
     }
 

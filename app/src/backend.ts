@@ -1,7 +1,19 @@
 import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Product, Locale } from './model';
-import type { AvatarDelta, Bootstrap, CatalogueRequest, CatalogueResponses, Job } from './bindings';
+import type {
+  AvatarDelta,
+  Bootstrap,
+  CatalogueRequest,
+  CatalogueResponses,
+  FileRequest,
+  FileResponses,
+  Job,
+  LicensesRequest,
+  LicensesResponses,
+  UnityRequest,
+  UnityResponses,
+} from './bindings';
 export type {
   AvatarDelta,
   AvatarOption,
@@ -10,6 +22,10 @@ export type {
   Root,
   SourceProgress,
   TagOption,
+  UnityDetails,
+  UnityEditor,
+  UnityLeaf,
+  UnityReceipt,
 } from './bindings';
 
 export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
@@ -20,16 +36,16 @@ type Requests = {
   catalogue: CatalogueRequest;
   booth: Untyped;
   storage: Untyped;
-  unity: Untyped;
-  licenses: Untyped;
+  unity: UnityRequest;
+  licenses: LicensesRequest;
 };
 /** What each typed action returns; the others return `any`. */
 type Responses = {
   catalogue: CatalogueResponses;
   booth: Record<never, never>;
   storage: Record<never, never>;
-  unity: Record<never, never>;
-  licenses: Record<never, never>;
+  unity: UnityResponses;
+  licenses: LicensesResponses;
 };
 type Typed<S extends Service> = Extract<Requests[S], { action: string }>;
 export type Action<S extends Service> = Requests[S] extends Untyped ? string : Typed<S>['action'];
@@ -76,14 +92,16 @@ export function importOnlyUnityJob(job: Job): Job {
   }
   return projected;
 }
-export interface UnityPreparation {
-  preparationPhase?: string | null;
-  preparationWaitingForEditor?: boolean;
-  preparationBytes?: number | null;
-  preparationTotalBytes?: number | null;
-  preparationEntries?: number | null;
-  preparationTotalEntries?: number | null;
-}
+/** How a Unity request's transfer is going, on its job or its receipt. */
+export type UnityPreparation = Pick<
+  Job,
+  | 'preparationPhase'
+  | 'preparationWaitingForEditor'
+  | 'preparationBytes'
+  | 'preparationTotalBytes'
+  | 'preparationEntries'
+  | 'preparationTotalEntries'
+>;
 export function progressPercent(job: Job | undefined): number | undefined {
   if (
     job?.type === 'unity:import' &&
@@ -243,12 +261,13 @@ export async function subscribeChanged(
       )
     : () => {};
 }
-export async function nativeFileAction<T = any>(
-  action: string,
-  args: Record<string, unknown>,
-): Promise<T> {
+type FileAction = FileRequest['action'];
+export async function nativeFileAction<A extends FileAction>(
+  action: A,
+  args: Omit<Extract<FileRequest, { action: A }>, 'action'>,
+): Promise<FileResponses[A]> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke<T>('native_file_action', { action, args });
+  return invoke<FileResponses[A]>('native_file_action', { action, args });
 }
 export async function nativeZoom(scale: number): Promise<{ scale: number }> {
   if (!isTauri()) throw new Error('nativeUnavailable');
@@ -319,59 +338,8 @@ export function errorCode(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9_.-]{0,80}$/.test(value) ? value : 'operationFailed';
 }
 
-export interface UnityEditor {
-  instanceId: string;
-  sessionId: string;
-  projectName: string;
-  projectRoot: string;
-  unityVersion: string;
-  bridgeVersion?: string | null;
-  busy: boolean;
-}
-export interface UnityLeaf {
-  leafRef: string;
-  productId: string;
-  productTitle: string;
-  fileId: string;
-  sourceName: string;
-  variantName: string;
-  revision: string;
-  memberPath: string;
-  displayName: string;
-  relativePath: string;
-  kind: 'unitypackage' | 'file';
-  bytes: number;
-  sha256: string;
-}
-export interface UnityReceipt extends UnityPreparation {
-  requestId: string;
-  fingerprint: string;
-  instanceId: string;
-  sessionId: string;
-  stage: string;
-  staged: boolean;
-  writesStarted: boolean;
-  updatedUtc: string;
-  error?: string | null;
-  results: {
-    entryId: string;
-    path: string;
-    state: 'applied' | 'skipped' | 'failed';
-    message?: string | null;
-  }[];
-}
-export interface UnityDetails {
-  jobId: string;
-  projectName: string;
-  projectRoot: string;
-  unityVersion: string;
-  stage: string;
-  errorCode?: string | null;
-  receipt: UnityReceipt | null;
-}
-export const listUnityEditors = (): Promise<{ editors: UnityEditor[] }> =>
-  invokeAction('unity', 'list_editors');
-export const unityInventory = (productIds: string[]): Promise<{ files: UnityLeaf[] }> =>
+export const listUnityEditors = () => invokeAction('unity', 'list_editors');
+export const unityInventory = (productIds: string[]) =>
   invokeAction('unity', 'inventory', { productIds });
 /** One package opens in Unity's own importer and leaves no job; anything else is a Bridge request. */
 export const submitUnity = (input: {
@@ -380,14 +348,9 @@ export const submitUnity = (input: {
   instanceId: string;
   sessionId: string;
   locale?: string;
-}): Promise<{ jobId?: string; native?: true }> => invokeAction('unity', 'submit', input);
-export const unityDetails = (jobId: string): Promise<UnityDetails> =>
-  invokeAction('unity', 'details', { jobId });
-export const queryUnity = (jobId: string): Promise<UnityDetails> =>
-  invokeAction('unity', 'status', { jobId });
-export const cancelUnity = (jobId: string): Promise<UnityDetails> =>
-  invokeAction('unity', 'cancel', { jobId });
-export const retryUnityInventory = (
-  jobId: string,
-): Promise<{ productIds: string[]; leafRefs: string[] }> =>
+}) => invokeAction('unity', 'submit', input);
+export const unityDetails = (jobId: string) => invokeAction('unity', 'details', { jobId });
+export const queryUnity = (jobId: string) => invokeAction('unity', 'status', { jobId });
+export const cancelUnity = (jobId: string) => invokeAction('unity', 'cancel', { jobId });
+export const retryUnityInventory = (jobId: string) =>
   invokeAction('unity', 'retry_inventory', { jobId });

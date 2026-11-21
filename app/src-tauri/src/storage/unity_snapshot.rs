@@ -13,7 +13,8 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Clone, Serialize)]
+/// A file Unity can import: a whole package, or one member of an extracted archive.
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UnityLeaf {
     pub leaf_ref: String,
@@ -26,6 +27,7 @@ pub struct UnityLeaf {
     pub member_path: String,
     pub display_name: String,
     pub relative_path: String,
+    #[ts(type = "'unitypackage' | 'file'")]
     pub kind: String,
     pub bytes: u64,
     pub sha256: String,

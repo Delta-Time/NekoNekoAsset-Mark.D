@@ -81,10 +81,7 @@ export default function AiPresetEditor({
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
       if (!chosen) return;
-      const file = await nativeFileAction<{ text?: string; content?: string }>('read_text', {
-        path: chosen.path,
-      });
-      const text = file.text ?? file.content;
+      const { text } = await nativeFileAction('read_text', { path: chosen.path });
       if (typeof text !== 'string' || new TextEncoder().encode(text).length > 65536)
         throw new Error('ai_preset_invalid');
       const value = await importAiPreset(text);
