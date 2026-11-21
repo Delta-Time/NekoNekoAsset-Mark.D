@@ -1,88 +1,58 @@
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { invokeAction } from './backend';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import type {
+  AiJobRequest,
+  AiJobResponses,
+  AiMode,
+  AiRequest,
+  AiResponses,
+  AiScopes,
+} from './bindings';
+export type {
+  AiConnectionResult,
+  AiDraftTest,
+  AiEntry,
+  AiEntryList,
+  AiKeyStatus,
+  AiMode,
+  AiProviderPreset,
+  AiScopes,
+} from './bindings';
 
-export interface AiKeyStatus {
-  entryId?: string | null;
-  configured?: boolean;
-  provider: string;
-  endpoint: string;
-  model: string;
-  keyPresent: boolean;
-  visionSupported: boolean;
-  keyRequired: boolean;
-}
-export interface AiProviderPreset {
-  id: string;
-  label: string;
-  endpoint: string;
-  model: string;
-  wire: string;
-  visionSupported: boolean;
-  keyRequired: boolean;
-}
-export interface AiConnectionResult {
-  ok: true;
-  provider: string;
-  model: string;
-}
-export interface AiEntry {
-  id: string;
-  provider: string;
-  endpoint: string;
-  model: string;
-  keyPresent: boolean;
-  visionSupported: boolean;
-  keyRequired: boolean;
-}
-export interface AiEntryList {
-  entries: AiEntry[];
-  activeEntryId: string | null;
-}
-export interface AiDraft {
-  provider: string;
-  endpoint: string;
-  model: string;
-  key: string;
-}
-export interface AiDraftTest {
-  ok: true;
-  testToken: string;
-}
-export type AiRequest =
-  | { action: 'key_status' | 'test_connection' | 'providers' | 'list_entries' }
-  | ({ action: 'test_draft' } & AiDraft)
-  | ({ action: 'save_entry'; testToken: string } & AiDraft)
-  | { action: 'select_entry' | 'remove_entry' | 'test_entry'; entryId: string };
-async function invokeAi<T>(request: AiRequest): Promise<T> {
+/** A provider entry being tested or saved. */
+export type AiDraft = Omit<Extract<AiRequest, { action: 'test_draft' }>, 'action'>;
+async function invokeAi<A extends AiRequest['action']>(
+  request: Extract<AiRequest, { action: A }>,
+): Promise<AiResponses[A]> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke<T>('ai_action', { request });
+  return invoke('ai_action', { request });
 }
-export function getAiKeyStatus(): Promise<AiKeyStatus> {
+export function getAiKeyStatus() {
   return invokeAi({ action: 'key_status' });
 }
-export function testAiConnection(): Promise<AiConnectionResult> {
+export function testAiConnection() {
   return invokeAi({ action: 'test_connection' });
 }
-export function getAiProviders(): Promise<{ presets: AiProviderPreset[] }> {
+export function getAiProviders() {
   return invokeAi({ action: 'providers' });
 }
-export function listAiEntries(): Promise<AiEntryList> {
+export function listAiEntries() {
   return invokeAi({ action: 'list_entries' });
 }
-export function testAiDraft(draft: AiDraft): Promise<AiDraftTest> {
+export function testAiDraft(draft: AiDraft) {
   return invokeAi({ action: 'test_draft', ...draft });
 }
-export function saveAiEntry(draft: AiDraft & { testToken: string }): Promise<AiEntryList> {
+export function saveAiEntry(draft: AiDraft & { testToken: string }) {
   return invokeAi({ action: 'save_entry', ...draft });
 }
-export function selectAiEntry(entryId: string): Promise<AiEntryList> {
+export function selectAiEntry(entryId: string) {
   return invokeAi({ action: 'select_entry', entryId });
 }
-export function removeAiEntry(entryId: string): Promise<AiEntryList> {
+export function removeAiEntry(entryId: string) {
   return invokeAi({ action: 'remove_entry', entryId });
 }
-export function testAiEntry(entryId: string): Promise<AiConnectionResult> {
+export function testAiEntry(entryId: string) {
   return invokeAi({ action: 'test_entry', entryId });
 }
 export interface AiImage {
@@ -132,21 +102,11 @@ export async function cancelAiSuggestion(requestId: string): Promise<unknown> {
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke('ai_suggestion_action', { request: { action: 'cancel', requestId } });
 }
-export interface AiScopes {
-  title: boolean;
-  tags: boolean;
-  description: boolean;
-  files: boolean;
-  images: boolean;
-}
-export type AiMode = 'classify' | 'organize';
-type AiAnalysisRequest =
-  | { action: 'start'; mode: AiMode; productIds: string[]; scopes: AiScopes }
-  | { action: 'cancel' | 'retry'; jobId: string }
-  | { action: 'dismiss_source_url'; productId: string; url: string };
-async function invokeAiAnalysis<T>(request: AiAnalysisRequest): Promise<T> {
+async function invokeAiAnalysis<A extends AiJobRequest['action']>(
+  request: Extract<AiJobRequest, { action: A }>,
+): Promise<AiJobResponses[A]> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke<T>('ai_analysis_action', { request });
+  return invoke('ai_analysis_action', { request });
 }
 export function startAi(request: {
   mode: AiMode;

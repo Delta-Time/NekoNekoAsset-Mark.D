@@ -13,7 +13,7 @@ pub struct AiConfig {
     pub model: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum AiWire {
     Openai,
@@ -21,7 +21,7 @@ pub enum AiWire {
     Gemini,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderPreset {
     pub id: &'static str,

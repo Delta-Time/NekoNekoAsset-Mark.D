@@ -19,7 +19,8 @@ use std::{
 use tauri::{Emitter, Listener};
 use tokio::sync::{watch, Mutex};
 
-#[derive(Clone, Deserialize, Serialize)]
+/// What an AI analysis may send to the provider.
+#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiScopes {
     pub title: bool,
@@ -39,14 +40,16 @@ impl Default for AiScopes {
         }
     }
 }
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AiMode {
     Classify,
     Organize,
 }
-#[derive(Deserialize)]
+/// One AI analysis action.
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[ts(export)]
 pub enum AiJobRequest {
     Start {
         mode: AiMode,
@@ -68,6 +71,31 @@ pub enum AiJobRequest {
         url: String,
     },
 }
+/// The job an analysis action started or touched.
+#[derive(Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AiJobStarted {
+    pub job_id: String,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct AiDone {
+    pub ok: bool,
+}
+
+/// The answer to each AI analysis action, for the typed AI calls in the UI.
+#[cfg(test)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct AiJobResponses {
+    start: AiJobStarted,
+    cancel: AiJobStarted,
+    retry: AiJobStarted,
+    dismiss_source_url: AiDone,
+}
+
 pub struct AiJobs {
     catalogue: Catalogue,
     ai: Arc<AiService>,
@@ -377,7 +405,7 @@ impl AiJobs {
                     }
                     self.save_job(app, &mut job, "cancelled", None)?;
                 }
-                Ok(json!({"jobId":job_id}))
+                Ok(serde_json::to_value(AiJobStarted { job_id })?)
             }
             AiJobRequest::Retry { job_id } => {
                 let job = self
@@ -404,7 +432,7 @@ impl AiJobs {
                 // Empty is a global-organize intent only for an explicit Start,
                 // never for a fully applied cancelled/failed batch's Retry.
                 if remaining.is_empty() {
-                    return Ok(json!({"jobId":job_id}));
+                    return Ok(serde_json::to_value(AiJobStarted { job_id })?);
                 }
                 self.enqueue(
                     app,
@@ -418,7 +446,7 @@ impl AiJobs {
                 self.catalogue
                     .dismiss_ai_source_url_candidate(&product_id, &url)?;
                 self.notify(app, "products", &[product_id]);
-                Ok(json!({"ok":true}))
+                Ok(serde_json::to_value(AiDone { ok: true })?)
             }
         }
     }
@@ -491,7 +519,7 @@ impl AiJobs {
         let (ids, covering_job) =
             enqueue_selection(&ids, &self.catalogue.list("job")?, mode, &scopes, &config);
         if let Some(id) = covering_job {
-            return Ok(json!({"jobId":id}));
+            return Ok(serde_json::to_value(AiJobStarted { job_id: id })?);
         }
         let id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = watch::channel(false);
@@ -504,7 +532,7 @@ impl AiJobs {
             let _work = work;
             service.run(&handle, job, mode, scopes, receiver).await;
         });
-        Ok(json!({"jobId":id}))
+        Ok(serde_json::to_value(AiJobStarted { job_id: id })?)
     }
     async fn run(
         self: Arc<Self>,

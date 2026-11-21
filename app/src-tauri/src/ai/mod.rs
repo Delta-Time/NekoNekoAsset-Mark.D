@@ -26,8 +26,10 @@ const MAX_KEY_BYTES: usize = 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 
 // Deliberately no Debug implementation: draft requests contain device secrets.
-#[derive(Deserialize)]
+/// One AI settings action: provider entries, their keys and connection tests.
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[ts(export)]
 pub enum AiRequest {
     #[serde(deserialize_with = "empty_request")]
     KeyStatus,
@@ -75,8 +77,9 @@ fn empty_request<'de, D: serde::Deserializer<'de>>(
     Empty::deserialize(deserializer).map(|_| ())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AiKeyStatus {
     pub entry_id: Option<String>,
     pub configured: bool,
@@ -88,20 +91,23 @@ pub struct AiKeyStatus {
     pub key_required: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AiConnectionResult {
     ok: bool,
     provider: String,
     model: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AiProviders {
     pub presets: Vec<AiProviderPreset>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AiEntry {
     id: String,
     provider: String,
@@ -111,14 +117,16 @@ pub struct AiEntry {
     vision_supported: bool,
     key_required: bool,
 }
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AiEntryList {
     entries: Vec<AiEntry>,
     active_entry_id: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AiDraftTest {
     ok: bool,
     test_token: String,
@@ -182,6 +190,22 @@ pub enum AiRole {
 pub struct AiMessage {
     pub role: AiRole,
     pub content: String,
+}
+
+/// The answer to each AI settings action, for the typed AI calls in the UI.
+#[cfg(test)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct AiResponses {
+    key_status: AiKeyStatus,
+    test_connection: AiConnectionResult,
+    providers: AiProviders,
+    list_entries: AiEntryList,
+    test_draft: AiDraftTest,
+    save_entry: AiEntryList,
+    select_entry: AiEntryList,
+    remove_entry: AiEntryList,
+    test_entry: AiConnectionResult,
 }
 
 #[derive(Serialize)]
