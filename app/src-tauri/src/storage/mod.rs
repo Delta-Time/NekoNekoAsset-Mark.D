@@ -157,7 +157,7 @@ fn fingerprint(files: &[Value]) -> String {
     io::key(&serde_json::to_string(&fields).unwrap_or_default())
 }
 /// Last download outcomes a product download leaves out. A file its store refused as
-/// no longer offered is never asked for again, and the list drops it unless it was
+/// no longer offered is skipped for that revision, and the list drops it unless it was
 /// downloaded; a closed free offer is tried again when its product is downloaded alone.
 fn skipped_failures(alone: bool) -> &'static [&'static str] {
     if alone {
@@ -446,7 +446,12 @@ impl StorageService {
             if self
                 .catalogue
                 .get("artifact", &last)?
-                .is_none_or(|artifact| !codes.iter().any(|code| artifact["errorCode"] == *code))
+                .is_none_or(|artifact| {
+                    let error = artifact["errorCode"].as_str().unwrap_or_default();
+                    !codes.contains(&error)
+                        || (error == "store_file_unavailable"
+                            && !crate::catalogue::store_file_refusal_applies(&artifact, &file))
+                })
             {
                 remaining.push(file);
             }

@@ -2959,6 +2959,60 @@ async fn product_downloads_never_ask_again_for_a_file_its_store_refused() {
 }
 
 #[tokio::test]
+async fn a_reissued_store_file_is_downloadable_after_its_revision_changes() {
+    for legacy in [false, true] {
+        let fixture = Fixture::new();
+        fixture.seed(1, true);
+        let service = &fixture.service;
+        let catalogue = &service.catalogue;
+        let file = "test-file-0";
+        let pending = format!("pending-{}", io::key(file));
+        let mut offered = catalogue.get("remote_file", file).unwrap().unwrap();
+        let old_revision = offered["revision"].clone();
+        let (whole, _) = service.remote_files("42").unwrap();
+        let mut refusal = json!({
+            "id":pending,"productId":"42","fileId":file,"revision":null,
+            "status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false
+        });
+        if !legacy {
+            refusal["attemptedRevision"] = old_revision.clone();
+        }
+        catalogue.put("artifact", &pending, refusal.clone()).unwrap();
+        catalogue.put("download_intent", "42", json!({"id":"42","wantDownload":true})).unwrap();
+        catalogue.put("job", "refused", json!({
+            "id":"refused","type":"download","productId":"42","state":"needsAction",
+            "errorCode":"store_file_unavailable","manifestFingerprint":fingerprint(&whole)
+        })).unwrap();
+        let listed = || {
+            catalogue.command("product_details", json!({"id":"42"})).unwrap()["files"]
+                .as_array().unwrap().iter().any(|row| row["id"] == file)
+        };
+
+        // A fresh observation of the same revision is still refused.
+        offered["observedAt"] = json!("2026-11-21T00:00:00Z");
+        catalogue.put("remote_file", file, offered.clone()).unwrap();
+        assert!(!listed(), "legacy={legacy}");
+        assert_eq!(service.enqueue(&json!({"productIds":["42"]})).await.unwrap()["jobIds"], json!([]));
+
+        offered["revision"] = json!("reissued");
+        catalogue.put("remote_file", file, offered).unwrap();
+        assert_eq!(
+            catalogue.get("artifact", &pending).unwrap().unwrap()["attemptedRevision"],
+            old_revision
+        );
+        if !legacy {
+            // A download attempted before the source change can record its failure afterward.
+            catalogue.put("artifact", &pending, refusal).unwrap();
+        }
+        assert!(listed(), "legacy={legacy}");
+        service.source_products_changed(&["42".into()]).await.unwrap();
+        let jobs = catalogue.queued_jobs(Some("download"), None).unwrap();
+        assert_eq!(jobs.len(), 1, "legacy={legacy}");
+        assert_eq!(jobs[0]["fileIds"], json!([file]));
+    }
+}
+
+#[tokio::test]
 async fn product_queue_includes_thirty_files_deduplicates_active_job_and_persists_intent() {
     let f = Fixture::new();
     f.seed(30, true);
