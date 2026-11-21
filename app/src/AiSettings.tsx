@@ -1,179 +1,61 @@
-import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2, UserRound } from 'lucide-react';
-import {
-  errorCode,
-  getAiProviders,
-  listAiEntries,
-  listAiWorkspace,
-  saveAiPersonalization,
-  testAiDraft,
-  saveAiEntry,
-  selectAiEntry,
-  removeAiEntry,
-  testAiEntry,
-  startAi,
-  cancelAi,
-  retryAi,
-  saveAiPreferences,
-  type AiEntryList,
-  type AiProviderPreset,
-  type AiScopes,
-  type NativeState,
-} from './backend';
+import { startAi, cancelAi, retryAi, type NativeState } from './backend';
 import type { Locale } from './model';
 import Toggle from './Toggle';
-import { aiSettingsText } from './ai-settings-i18n';
-import {
-  DEFAULT_AI_PERSONALIZATION,
-  getAiPersonalities,
-  normalizeAiAvatar,
-  type AiPersonalization,
-} from './ai-personalization';
+import { getAiPersonalities, type AiPersonalization } from './ai-personalization';
 import './AiSettings.css';
+import { useSettingsRun } from './features/ai/useSettingsRun';
+import { useAiJobs } from './features/ai/useAiJobs';
+import { usePersonalizationDraft } from './features/ai/usePersonalizationDraft';
+import { useAiEntries } from './features/ai/useAiEntries';
 
 export interface AiSettingsProps {
   locale: Locale;
   nativeState?: NativeState;
 }
-function savedScopes(value: unknown): AiScopes {
-  const saved = value && typeof value === 'object' ? (value as Partial<AiScopes>) : {};
-  return {
-    title: saved.title !== false,
-    tags: saved.tags !== false,
-    description: saved.description !== false,
-    files: saved.files !== false,
-    images: saved.images === true,
-  };
-}
 export default function AiSettings({ locale, nativeState }: AiSettingsProps) {
-  const L = (key: string) => aiSettingsText(locale, key);
-  const [list, setList] = useState<AiEntryList>({ entries: [], activeEntryId: null }),
-    [presets, setPresets] = useState<AiProviderPreset[]>([]);
-  const [loading, setLoading] = useState(true),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(''),
-    [result, setResult] = useState(''),
-    [testing, setTesting] = useState(false);
-  const [editing, setEditing] = useState(false),
-    [provider, setProvider] = useState('openai'),
-    [endpoint, setEndpoint] = useState('https://api.openai.com/v1'),
-    [model, setModel] = useState('gpt-4o-mini'),
-    [hasKey, setHasKey] = useState(false),
-    [proof, setProof] = useState(''),
-    [jobId, setJobId] = useState('');
-  const [personalization, setPersonalization] = useState<AiPersonalization>({
-      ...DEFAULT_AI_PERSONALIZATION,
-    }),
-    [savedPersonalization, setSavedPersonalization] = useState<AiPersonalization>({
-      ...DEFAULT_AI_PERSONALIZATION,
-    });
-  const [personalizationLoaded, setPersonalizationLoaded] = useState(false);
-  const avatarInput = useRef<HTMLInputElement>(null);
-  const keyInput = useRef<HTMLInputElement>(null),
-    lock = useRef(false),
-    mounted = useRef(true),
-    draftRevision = useRef(0);
-  const prefs = nativeState?.preferences,
-    scopes = savedScopes(prefs?.aiScopes),
-    auto = prefs?.aiEnabled === true,
-    featuresEnabled = prefs?.aiFeaturesEnabled === true;
-  const selected = list.entries.find((entry) => entry.id === list.activeEntryId),
-    ready = !!selected && (!selected.keyRequired || selected.keyPresent);
-  const jobsActive = (nativeState?.jobs ?? []).some(
-    (job) => job.type.startsWith('ai:') && ['queued', 'running'].includes(job.state),
-  );
-  const job = nativeState?.jobs.find((value) => value.id === jobId),
-    jobActive = !!jobId && (!job || ['queued', 'running'].includes(job.state));
-  const disabled = loading || busy;
-  const personalizationDirty =
-    JSON.stringify(personalization) !== JSON.stringify(savedPersonalization);
+  const runner = useSettingsRun({ locale });
+  const { L, loading, busy, error, result, testing, mounted, disabled, run } = runner;
+  const aiJobs = useAiJobs({ runner, nativeState });
+  const { jobId, setJobId, scopes, auto, featuresEnabled, jobsActive, job, jobActive, savePrefs } =
+    aiJobs;
+  const personal = usePersonalizationDraft({ runner });
+  const {
+    personalization,
+    personalizationLoaded,
+    avatarInput,
+    personalizationDirty,
+    updatePersonalization,
+    chooseAvatar,
+    savePersonalization,
+  } = personal;
+  const apiEntries = useAiEntries({ runner, personal, aiJobs });
+  const {
+    list,
+    presets,
+    editing,
+    provider,
+    endpoint,
+    setEndpoint,
+    model,
+    setModel,
+    setHasKey,
+    proof,
+    keyInput,
+    selected,
+    ready,
+    invalidate,
+    openEditor,
+    cancelEditor,
+    chooseProvider,
+    canTest,
+    testDraft,
+    save,
+    select,
+    remove,
+    testSaved,
+  } = apiEntries;
   const personalizationDisabled = disabled || editing || !personalizationLoaded;
-  const invalidate = () => {
-    draftRevision.current++;
-    setProof('');
-    setResult('');
-  };
-  const clearKey = () => {
-    if (keyInput.current) keyInput.current.value = '';
-    setHasKey(false);
-    invalidate();
-  };
-  useEffect(() => {
-    mounted.current = true;
-    void Promise.all([listAiEntries(), getAiProviders(), listAiWorkspace()])
-      .then(([entries, providers, workspace]) => {
-        if (mounted.current) {
-          setList(entries);
-          setPresets(providers.presets);
-          setPersonalization(workspace.personalization);
-          setSavedPersonalization(workspace.personalization);
-          setPersonalizationLoaded(true);
-        }
-      })
-      .catch((value) => {
-        if (mounted.current) setError(errorCode(value));
-      })
-      .finally(() => {
-        if (mounted.current) setLoading(false);
-      });
-    return () => {
-      mounted.current = false;
-      draftRevision.current++;
-      if (keyInput.current) keyInput.current.value = '';
-    };
-  }, []);
-  useEffect(() => {
-    const input = keyInput.current;
-    return () => {
-      if (input) input.value = '';
-    };
-  }, [editing]);
-  const run = async (action: () => Promise<void>) => {
-    if (lock.current) return;
-    lock.current = true;
-    setBusy(true);
-    setError('');
-    setResult('');
-    try {
-      await action();
-    } catch (value) {
-      if (mounted.current) setError(errorCode(value));
-    } finally {
-      lock.current = false;
-      if (mounted.current) setBusy(false);
-    }
-  };
-  const accept = (entries: AiEntryList) => {
-    if (mounted.current) {
-      setList(entries);
-      invalidate();
-    }
-  };
-  const openEditor = () => {
-    const preset = presets.find((value) => value.id === 'openai') ?? presets[0];
-    setProvider(preset?.id ?? 'openai');
-    setEndpoint(preset?.endpoint ?? 'https://api.openai.com/v1');
-    setModel(preset?.model ?? 'gpt-4o-mini');
-    clearKey();
-    setError('');
-    setEditing(true);
-  };
-  const cancelEditor = () => {
-    clearKey();
-    setEditing(false);
-    setError('');
-  };
-  const chooseProvider = (id: string) => {
-    const preset = presets.find((value) => value.id === id);
-    if (!preset) return;
-    setProvider(id);
-    setEndpoint(preset.endpoint);
-    setModel(preset.model);
-    clearKey();
-  };
-  const draft = () => ({ provider, endpoint, model, key: keyInput.current?.value ?? '' });
-  const keyRequired = presets.find((value) => value.id === provider)?.keyRequired !== false;
-  const canTest = !!endpoint.trim() && !!model.trim() && (!keyRequired || hasKey);
   const connectionStatus =
     error || result === 'draftTested' || result === 'aiConnected' || testing ? (
       <div
@@ -183,87 +65,6 @@ export default function AiSettings({ locale, nativeState }: AiSettingsProps) {
         {L(error || (testing ? 'aiTesting' : result))}
       </div>
     ) : null;
-  const testDraft = () =>
-    void run(async () => {
-      setTesting(true);
-      const revision = draftRevision.current;
-      try {
-        const value = await testAiDraft(draft());
-        if (mounted.current && revision === draftRevision.current) {
-          setProof(value.testToken);
-          setResult('draftTested');
-        }
-      } finally {
-        if (mounted.current) setTesting(false);
-      }
-    });
-  const save = () => {
-    if (!proof || !canTest) return;
-    void run(async () => {
-      try {
-        const value = await saveAiEntry({ ...draft(), testToken: proof });
-        accept(value);
-        if (mounted.current) setEditing(false);
-      } finally {
-        if (mounted.current) clearKey();
-        else if (keyInput.current) keyInput.current.value = '';
-      }
-    });
-  };
-  const select = (id: string) => {
-    if (disabled || editing || jobsActive || id === list.activeEntryId) return;
-    void run(async () => accept(await selectAiEntry(id)));
-  };
-  const remove = () => {
-    if (!selected || disabled || editing || jobsActive) return;
-    void run(async () => {
-      try {
-        accept(await removeAiEntry(selected.id));
-      } catch (value) {
-        try {
-          accept(await listAiEntries());
-        } catch {}
-        throw value;
-      }
-    });
-  };
-  const testSaved = () => {
-    if (!selected || !ready || disabled || editing) return;
-    void run(async () => {
-      setTesting(true);
-      try {
-        await testAiEntry(selected.id);
-        if (mounted.current) setResult('aiConnected');
-      } finally {
-        if (mounted.current) setTesting(false);
-      }
-    });
-  };
-  const savePrefs = (value: AiScopes, enabled = auto) =>
-    void run(async () => {
-      await saveAiPreferences({ aiEnabled: enabled, aiScopes: value });
-    });
-  const updatePersonalization = (patch: Partial<AiPersonalization>) => {
-    setPersonalization((value) => ({ ...value, ...patch }));
-    setResult('');
-  };
-  const chooseAvatar = (file: File) =>
-    void run(async () => {
-      const dataUrl = await normalizeAiAvatar(file);
-      if (mounted.current) setPersonalization((value) => ({ ...value, avatarDataUrl: dataUrl }));
-    });
-  const savePersonalization = () =>
-    void run(async () => {
-      const value = await saveAiPersonalization({
-        ...personalization,
-        userName: personalization.userName.trim(),
-      });
-      if (mounted.current) {
-        setPersonalization(value);
-        setSavedPersonalization(value);
-        setResult('personalizationSaved');
-      }
-    });
   return (
     <div className="wf-scroll ai-settings">
       <div className="ai-entry-list" role="listbox" aria-label={L('entries')} aria-busy={loading}>
