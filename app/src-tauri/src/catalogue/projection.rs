@@ -581,9 +581,10 @@ fn refresh_local(
                 .collect();
             rows.into_iter().flatten().any(|file| {
                 file["kept"] == true && changed_files.contains(text(file, "id"))
-            }) || artifacts.iter().any(|artifact| {
-                !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
-            })
+            }) || remote.iter().any(|file| !listed.contains(text(file, "id")))
+                || artifacts.iter().any(|artifact| {
+                    !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
+                })
         };
         if kept_or_unlisted {
             return Ok(false);

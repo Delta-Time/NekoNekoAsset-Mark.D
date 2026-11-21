@@ -104,7 +104,7 @@ export async function installUpdate(version:string):Promise<void>{if(!isTauri())
 export async function subscribeUpdateProgress(callback:(progress:UpdateProgress)=>void):Promise<()=>void>{return isTauri()?listen<UpdateProgress>('updates:progress',event=>callback(event.payload)):()=>{};}
 export type LocalImportProgress={jobId:string;phase:'preparing'|'copying'|'verifying'|'extracting'|'finalizing';bytes:number|null;totalBytes:number|null};
 export async function subscribeLocalImportProgress(callback:(progress:LocalImportProgress)=>void):Promise<()=>void>{return isTauri()?listen<LocalImportProgress>('local-import:progress',event=>callback(event.payload)):()=>{};}
-export async function fetchProductMetadata(url:string):Promise<FetchedProductMetadata>{return invokeAction('booth','fetch_product_metadata',{url});}
+export async function fetchProductMetadata(url:string,editedProductId?:string):Promise<FetchedProductMetadata>{return invokeAction('booth','fetch_product_metadata',{url,editedProductId});}
 export function previewSource(path:string|undefined):string|undefined{if(!path)return undefined;if(/^(https:\/\/|asset:|https?:\/\/asset\.localhost\/)/.test(path))return path;return isTauri()?convertFileSrc(path):undefined;}
 /** Only stable codes reach UI; private response text and URLs are never surfaced. */
 export function errorCode(error:unknown):string {const value=typeof error==='string'?error:error instanceof Error?error.message:error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'?error.code:'';return /^[A-Za-z][A-Za-z0-9_.-]{0,80}$/.test(value)?value:'operationFailed';}

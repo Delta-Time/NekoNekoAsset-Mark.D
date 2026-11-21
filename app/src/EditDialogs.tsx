@@ -36,7 +36,7 @@ export interface EditDialogsProps {
   avatarOptions?:AvatarOption[];
   avatarLabel?:(id:string)=>string;
   onRefreshAvatars?:()=>void|Promise<void>;
-  onFetchMetadata?:(url:string)=>Promise<FetchedProductMetadata>;
+  onFetchMetadata?:(url:string,editedProductId?:string)=>Promise<FetchedProductMetadata>;
   onLocalFiles?:(productId:string,args:{draftId:string;addSources:string[];removeFileIds:string[]})=>Promise<unknown>;
   onCreateCollection?: (name:string)=>void | Promise<void>;
   onRenameCollection?: (oldName:string,newName:string)=>void | Promise<void>;
@@ -180,7 +180,7 @@ function DialogBody(props: EditDialogsProps) {
     metadataPending.current=true;
     setFetching(thumbnailOnly?'thumbnail':'metadata');setError('');
     try{
-      const data=thumbnailOnly&&lastFetched.current?.url===url?lastFetched.current:await p.onFetchMetadata(url);
+      const data=thumbnailOnly&&lastFetched.current?.url===url?lastFetched.current:await p.onFetchMetadata(url,thumbnailOnly?undefined:active?.id);
       if(!alive.current||request!==metadataRequest.current||normalizeProductUrl(draftUrl.current)!==url||inFlight.current)return;
       if(data.thumbnailUrl!==null&&!normalizeProductUrl(data.thumbnailUrl))throw new Error('invalidMetadata');
       if(!thumbnailOnly){
