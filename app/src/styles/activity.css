@@ -1,16 +1,9 @@
-/* from styles.css */
 .activity-list {
-  overflow: auto;
-  padding: 0 18px 18px;
   flex: 1;
-  min-height: 0;
 }
 .activity-row {
   display: flex;
-  gap: 12px;
   align-items: center;
-  padding: 15px 0;
-  border-bottom: 1px solid var(--border);
 }
 .activity-row > .activity-info {
   flex: 1;
@@ -24,9 +17,6 @@
   color: var(--muted);
 }
 .activity-page {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   flex: 1;
 }
 .activity-row .activity-info strong {
@@ -40,8 +30,6 @@
 }
 .activity-row progress {
   display: block;
-  margin-top: 7px;
-  max-width: 440px;
 }
 .app .activity-page {
   min-height: 0;
@@ -52,7 +40,6 @@
   min-height: 0;
   overflow: auto;
 }
-/* from calm-studio.css */
 .app .nav-foldout::details-content,
 .app .asset-inspector-section::details-content,
 .app .activity-history details::details-content {

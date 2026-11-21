@@ -6,7 +6,6 @@
   width: min(880px, calc(100vw - 28px));
 }
 .unity-bridge-version {
-  font-size: 14px;
   white-space: nowrap;
   flex: none;
 }
@@ -79,8 +78,6 @@
   color: var(--muted);
 }
 .unity-file-list {
-  border: 1px solid var(--border);
-  border-radius: 5px;
   max-height: 42vh;
   overflow: auto;
 }
@@ -93,19 +90,12 @@
   }
 }
 .unity-file-list h3 {
-  font-size: 12px;
-  margin: 0;
-  padding: 6px 9px;
-  color: var(--muted);
-  background: var(--raised);
   overflow-wrap: anywhere;
 }
 .unity-file-row {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 9px;
-  border-top: 1px solid var(--border);
   cursor: pointer;
   min-width: 0;
 }

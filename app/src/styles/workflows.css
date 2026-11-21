@@ -1,27 +1,15 @@
-/* from styles.css */
 .sync-spinning,
 .progress-spin {
   animation: sync-rotation 1.1s linear infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-  .sync-spinning,
-  .progress-spin {
-    animation-duration: 3s;
-  }
-}
-/* from library-008.css */
 .unity-action {
   background: var(--secondary-accent) !important;
   color: var(--secondary-accent-text) !important;
   border-color: transparent !important;
 }
-.unity-action:hover {
-  filter: brightness(1.08);
-}
 .asset-inspector .detail-actions > .unity-action {
   flex: 1;
 }
-/* from calm-studio.css */
 .app .unity-action {
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.16),

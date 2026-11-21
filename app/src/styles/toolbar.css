@@ -1,4 +1,3 @@
-/* from styles.css */
 .toolbar {
   display: flex;
   align-items: center;
@@ -29,17 +28,15 @@
   }
 }
 .app .library-toolbar {
-  padding: 8px 12px;
-  min-height: 45px;
-  flex-wrap: nowrap;
   justify-content: flex-start;
-  gap: 7px;
+  position: relative;
+  overflow: visible;
+  align-items: center;
 }
 .result-total {
   margin-right: auto;
+  margin-left: 0;
   white-space: nowrap;
-  color: var(--muted);
-  font-size: 11px;
 }
 .library-toolbar select {
   max-width: 150px;
@@ -48,9 +45,6 @@
 .account-scope .popup-menu {
   left: 0;
   right: auto;
-}
-.app .library-toolbar {
-  gap: 9px;
 }
 .library-toolbar > select {
   width: 152px;
@@ -64,10 +58,6 @@
 .toolbar-spacer {
   flex: 1;
 }
-.result-total {
-  margin-left: 0;
-  white-space: nowrap;
-}
 @media (max-width: 1000px) {
   .library-toolbar .result-total {
     display: none;
@@ -78,32 +68,18 @@
   }
   .account-scope summary {
     width: 145px;
-    max-width: none;
-  }
-}
-@media (max-width: 1000px) {
-  .app .library-toolbar {
-    padding: 7px 9px;
-    gap: 5px;
-  }
-  .result-total {
-    font-size: 10px;
-  }
-  .account-scope summary {
     max-width: 138px;
     overflow: hidden;
     text-overflow: ellipsis;
     font-size: 11px;
   }
+}
+@media (max-width: 1000px) {
   .library-toolbar select {
-    font-size: 11px;
     max-width: 135px;
   }
 }
 @media (max-width: 760px) {
-  .app .library-toolbar {
-    overflow: visible;
-  }
   .library-toolbar .result-total {
     display: none;
   }
@@ -117,9 +93,6 @@
   flex-basis: 112px;
 }
 @media (max-width: 1100px) {
-  .library-toolbar {
-    gap: 5px;
-  }
   .library-toolbar > select {
     width: 126px;
     flex-basis: 126px;
@@ -132,18 +105,13 @@
     width: 120px;
   }
 }
-/* from library-008.css */
-.app .library-toolbar {
-  position: relative;
-  flex-wrap: wrap;
-  gap: 8px;
-  overflow: visible;
-  align-items: center;
-}
 .toolbar-account {
   flex: none;
   min-width: 0;
   max-width: calc(100% - 46px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .toolbar-account summary {
   max-width: 240px;
@@ -154,7 +122,6 @@
 .toolbar-control-group {
   display: flex;
   align-items: center;
-  gap: 8px;
   flex: 1;
   min-width: max-content;
 }
@@ -178,13 +145,7 @@
   margin-left: auto;
 }
 .toolbar-options > summary {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 5px 8px;
   cursor: pointer;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
 }
 .toolbar-options .popup-menu {
   right: 8px;
@@ -212,7 +173,6 @@
 .active-filter-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
   min-width: 0;
   width: 100%;
 }
@@ -222,13 +182,7 @@
 .filter-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   max-width: 100%;
-  padding: 3px 4px 3px 8px;
-  background: var(--control);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 12px;
 }
 .filter-chip span {
   overflow: hidden;
@@ -250,11 +204,6 @@
   min-width: 0;
   max-width: calc(100cqw - 16px);
 }
-.toolbar-account {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .library-toolbar .acquisition-scope .popup-menu {
   width: max-content;
 }
@@ -265,10 +214,8 @@
   .toolbar-options > summary {
     min-width: 29px;
     justify-content: center;
-    padding: 5px 6px;
   }
 }
-/* from calm-studio.css */
 
 /* ---------- results: toolbar ---------- */
 .app.app .library-toolbar {

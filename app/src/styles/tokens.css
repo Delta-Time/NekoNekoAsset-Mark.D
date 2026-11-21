@@ -1,4 +1,3 @@
-/* from calm-studio.css */
 /* Calm Studio: the visual layer for the existing shell.
    Themes still carry only the 13 exported tokens; every other value derives from them.
    Loaded last (main.tsx). Generic element rules use :where(.app) so component rules keep precedence. */

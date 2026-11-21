@@ -1,4 +1,3 @@
-/* from styles.css */
 .asset-art {
   width: 100%;
   height: 100%;
@@ -26,18 +25,12 @@ img.asset-art {
   min-width: 230px;
   border-left: 1px solid var(--border);
   background: var(--panel);
-  overflow: auto;
 }
 .inspector-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 7px;
-  padding: 8px 12px;
-  min-height: 39px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
   flex-shrink: 0;
 }
 .inspector-header button {
@@ -71,21 +64,18 @@ img.asset-art {
 @media (max-width: 900px) {
   .inspector {
     width: 245px;
-    flex-basis: 245px;
     min-width: 220px;
   }
-}
-.thumb.blurred > .asset-art {
-  filter: blur(16px);
-  transform: scale(1.13);
 }
 .inspector {
   flex-basis: auto;
   min-height: 0;
   overflow: hidden;
 }
+/* Corrections from inspected synthetic A/B/C renders. */
 .inspector .preview {
   aspect-ratio: 1.2;
+  max-height: 220px;
 }
 .inspector .preview .thumb {
   height: 100%;
@@ -93,10 +83,6 @@ img.asset-art {
 .row-thumb .thumb .asset-art {
   width: 100%;
   height: 100%;
-}
-/* Corrections from inspected synthetic A/B/C renders. */
-.inspector .preview {
-  max-height: 220px;
 }
 @media (max-width: 1000px), (max-height: 650px) {
   .inspector .preview {
@@ -124,28 +110,19 @@ img.asset-art {
 }
 .app .inspector-pane {
   min-width: 240px;
-  overflow: hidden;
-  border-left: 0;
 }
 .selection-summary {
-  padding: 15px;
   overflow: auto;
   min-height: 0;
 }
 .selection-summary h2 {
   font-size: 16px;
 }
-.selected-products {
-  margin-top: 16px;
-}
 .selected-products > div {
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
   font-size: 12px;
-}
-.selection-summary .scope-actions {
-  padding-bottom: 4px;
 }
 .selection-summary .scope-actions > button > span {
   display: none;
@@ -170,22 +147,16 @@ img.asset-art {
   }
 }
 
-/* from library-008.css */
 .selection-summary .scope-actions-right {
   margin-left: 0;
 }
 .selection-summary .scope-actions {
-  gap: 7px;
   flex-wrap: nowrap;
 }
 .card-file-count {
   flex: none;
   color: var(--muted);
 }
-.card-file-count > span {
-  font-size: 8px;
-}
-/* from calm-studio.css */
 .app.app .inspector-pane {
   position: relative;
   animation: calm-boot-up 0.75s 0.2s var(--ease) backwards;

@@ -32,12 +32,8 @@
 .workflow-content .wf-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   justify-content: flex-end;
-  border-top: 1px solid var(--border);
-  padding: 12px 20px;
   flex-shrink: 0;
-  background: var(--panel);
 }
 .workflow-content .field {
   margin-bottom: 12px;
@@ -70,7 +66,6 @@
 }
 .wf-section > small {
   display: block;
-  color: var(--muted);
   line-height: 1.5;
   margin-top: 7px;
 }
@@ -97,7 +92,6 @@
 }
 .wf-account small {
   display: block;
-  color: var(--muted);
   margin-top: 4px;
 }
 .wf-account-name {
@@ -121,7 +115,6 @@
   background: transparent;
 }
 .wf-error {
-  color: var(--danger, #e76d77);
   font-size: 12px;
   line-height: 1.5;
   margin: 9px 0;
@@ -188,7 +181,6 @@
 .wf-tag-picker {
   padding: 0 10px 8px;
   border: 1px solid var(--border);
-  border-radius: 5px;
 }
 .wf-confirm {
   z-index: 70;
@@ -206,9 +198,6 @@
   .workflow-content .wf-scroll {
     padding: 12px 16px;
   }
-  .workflow-content .wf-actions {
-    padding: 10px 16px;
-  }
 }
 .wf-import-extras {
   display: grid;
@@ -225,7 +214,6 @@
 }
 .wf-thumbnail-pick {
   min-height: 86px;
-  border-style: dashed;
   font-size: 24px;
 }
 .wf-import-extras .editor-tag-picker {
@@ -254,8 +242,6 @@
 .wf-field-label {
   display: block;
   margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 12px;
 }
 .wf-setup-themes {
   margin-bottom: 12px;
@@ -390,8 +376,6 @@
   }
 }
 .wf-account-confirm {
-  border: 1px solid var(--border);
-  border-radius: 5px;
   padding: 12px;
   margin-top: 10px;
   font-size: 12px;
@@ -420,9 +404,6 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  border-bottom: 1px solid var(--border);
-  padding: 11px 0;
   min-width: 0;
 }
 .wf-sync-identity {
@@ -431,14 +412,11 @@
 }
 .wf-sync-identity strong {
   display: block;
-  font-size: 12px;
-  font-weight: 500;
   overflow-wrap: anywhere;
 }
 .wf-sync-identity small {
   display: block;
   font-size: 11px;
-  color: var(--muted);
   margin-top: 5px;
   line-height: 1.5;
 }
@@ -455,7 +433,6 @@
 @media (max-width: 600px) {
   .wf-sync-account {
     align-items: flex-start;
-    gap: 8px;
   }
   .wf-sync-action {
     gap: 6px;
@@ -494,10 +471,8 @@
   justify-content: center;
   gap: 12px;
   font-size: 12px;
-  color: var(--muted);
 }
 .library-opening progress {
-  width: 100px;
   accent-color: var(--accent);
 }
 .wf-device-signin-message {

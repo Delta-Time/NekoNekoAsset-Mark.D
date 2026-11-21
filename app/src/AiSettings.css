@@ -4,8 +4,6 @@
   gap: 2px;
   max-height: 168px;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 5px;
   padding: 4px;
   margin-bottom: 10px;
 }
@@ -16,12 +14,6 @@
   width: 100%;
   min-width: 0;
   text-align: left;
-  background: transparent;
-  border-color: transparent;
-}
-.ai-settings .ai-entry[aria-selected="true"] {
-  background: var(--control);
-  border-color: var(--accent);
 }
 .ai-settings .ai-entry-provider {
   flex: 0 1 130px;

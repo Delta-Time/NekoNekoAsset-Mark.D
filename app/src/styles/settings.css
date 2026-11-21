@@ -1,4 +1,3 @@
-/* from styles.css */
 .theme-options {
   display: flex;
   flex-wrap: wrap;
@@ -84,21 +83,8 @@
   background: var(--control);
 }
 .embedded-settings-nav {
-  padding: 8px;
-  display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-}
-.embedded-settings-nav button {
-  font-size: 11px;
-  min-height: 27px;
-  padding: 4px 7px;
-}
-.embedded-settings-nav button.active {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 .embedded-settings-content {
   flex: 1;
@@ -114,10 +100,8 @@
   flex-direction: column;
 }
 .appearance-content {
-  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
 }
 
 @media (max-width: 639px) {
@@ -125,8 +109,6 @@
     padding: 4px;
   }
 }
-
-/* from calm-studio.css */
 
 /* ---------- settings ---------- */
 /* Three tabs per row, two when the pane is too narrow for the longest label. */

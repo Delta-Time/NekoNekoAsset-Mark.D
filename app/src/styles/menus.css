@@ -1,8 +1,6 @@
-/* from styles.css */
 .check-row {
   display: flex;
   align-items: center;
-  gap: 8px;
   margin: 9px 0;
 }
 .popup-menu {
@@ -14,25 +12,11 @@
   min-width: 170px;
   max-height: 55vh;
   overflow: auto;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
   z-index: 30;
-}
-.popup-menu > button {
-  display: flex;
-  width: 100%;
-  justify-content: flex-start;
-  border: 0;
-  background: none;
 }
 .popup-menu .check-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 4px;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -44,40 +28,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* from library-008.css */
 .library-context {
   position: fixed;
   z-index: 1100;
-  min-width: 192px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow-y: auto;
   box-shadow: var(--shadow);
-  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 5px;
 }
 .library-context button {
-  width: 100%;
-  display: flex;
-  justify-content: flex-start;
-  gap: 9px;
   white-space: nowrap;
-  padding: 7px 10px;
-  border: 0;
-  background: transparent;
-}
-.library-context button:focus,
-.library-context button:hover {
-  background: var(--control);
-  outline: none;
 }
 .library-context button:disabled {
   opacity: 0.4;
 }
-/* from calm-studio.css */
 .app .check-row {
   gap: 9px;
 }

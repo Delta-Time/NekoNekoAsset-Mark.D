@@ -2,23 +2,12 @@
   font: inherit;
   font-variant-numeric: tabular-nums;
   border: 0;
-  background: transparent;
-  color: var(--muted);
-  padding: 0 2px;
-  min-height: 20px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
-.statusbar button.app-version:hover {
-  color: var(--text);
-  text-decoration: underline;
-}
 .app-update-dot {
-  width: 5px;
-  height: 5px;
   border-radius: 50%;
-  background: var(--accent);
   flex: none;
 }
 .modal.update-modal {

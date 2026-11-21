@@ -1,14 +1,6 @@
-/* from styles.css */
 .statusbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 27px;
-  padding: 4px 13px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 10px;
   flex-shrink: 0;
 }
 .statusbar button {
@@ -38,7 +30,6 @@
 .app-version {
   font-variant-numeric: tabular-nums;
 }
-/* from calm-studio.css */
 .app.app .statusbar {
   min-height: 30px;
   height: 30px;

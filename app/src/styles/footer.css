@@ -1,4 +1,3 @@
-/* from styles.css */
 .account-scope,
 .column-menu,
 .action-menu {
@@ -25,16 +24,12 @@
   display: none;
 }
 .result-footer {
-  border-top: 1px solid var(--border);
-  background: var(--panel);
   flex-shrink: 0;
-  padding: 7px 10px;
 }
 .result-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 7px;
 }
 .result-controls > .button:last-child {
   margin-left: auto;
@@ -42,9 +37,6 @@
 .thumbnail-control {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-}
-.thumbnail-control {
   flex: 1 1 180px;
   max-width: 260px;
   min-width: 125px;
@@ -56,18 +48,12 @@
 .result-controls select {
   max-width: 118px;
 }
-.column-menu .popup-menu {
-  top: auto;
-  bottom: calc(100% + 5px);
-}
 .selection-actions {
-  display: grid;
   grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 5px;
-  padding-bottom: 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+  overflow: visible;
+  min-width: 0;
+  scroll-padding-inline: 6px;
+  flex-wrap: nowrap;
 }
 .selection-actions > strong {
   grid-column: 1;
@@ -77,10 +63,6 @@
   grid-column: 2;
   grid-row: 1;
 }
-.selection-actions > .scope-actions {
-  grid-column: 1 / -1;
-  grid-row: 2;
-}
 .selection-actions strong {
   font-size: 11px;
   white-space: nowrap;
@@ -88,28 +70,17 @@
 .scope-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 5px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 .scope-actions button {
   padding: 4px 7px;
   font-size: 11px;
 }
-.selection-actions {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  overflow: visible;
-  align-items: center;
-  padding-bottom: 6px;
-  min-width: 0;
-}
 .selection-actions > .button,
 .selection-actions > strong {
   flex-shrink: 0;
-}
-.selection-actions {
-  scroll-padding-inline: 6px;
 }
 .selection-actions .scope-actions > .button {
   scroll-margin-inline: 6px;
@@ -124,10 +95,6 @@
   overflow-x: auto;
   padding: 3px;
   scroll-padding: 3px;
-}
-.scope-actions {
-  flex-wrap: nowrap;
-  overflow-x: auto;
 }
 .scope-actions > .button {
   flex-shrink: 0;
@@ -144,7 +111,6 @@
 @container results (max-width: 420px) {
   .result-controls {
     flex-wrap: nowrap;
-    gap: 5px;
   }
   .result-controls .thumbnail-control {
     min-width: 75px;
@@ -156,7 +122,6 @@
   .result-controls select {
     width: 90px;
     min-width: 0;
-    padding: 4px;
   }
   .result-controls .column-menu summary {
     display: flex;
@@ -184,9 +149,6 @@
   }
 }
 @media (max-width: 1000px) {
-  .result-controls {
-    gap: 5px;
-  }
   .result-controls button,
   .result-controls select,
   .column-menu summary {
@@ -205,14 +167,11 @@
     max-width: none;
   }
 }
-
-/* from library-008.css */
 .selection-actions .scope-actions {
   display: flex;
   flex: 1 0 auto;
   min-width: max-content;
   flex-wrap: nowrap;
-  gap: 6px;
   overflow: visible;
 }
 .scope-actions-left,
@@ -229,12 +188,6 @@
 }
 .scope-actions-right {
   margin-left: auto;
-}
-.selection-actions {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  gap: 6px;
 }
 .selection-actions .scope-actions span {
   white-space: nowrap;
@@ -277,7 +230,6 @@
     padding: 4px;
   }
 }
-/* from calm-studio.css */
 .app .library-toolbar select,
 .app .result-controls select {
   height: 30px;
@@ -489,6 +441,8 @@
   }
 }
 .app .column-menu .popup-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
   transform-origin: bottom left;
   animation-name: calm-pop-up;
 }

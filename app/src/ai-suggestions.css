@@ -6,17 +6,12 @@
   min-height: 0;
   display: flex;
   position: relative;
-  background: var(--bg);
 }
 .ai-chat-sidebar {
   flex: 0 0 252px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
   overflow: hidden;
 }
 .ai-chat-free {
@@ -36,12 +31,8 @@
 }
 .ai-preset-choice {
   width: 100%;
-  min-height: 67px;
   justify-content: space-between;
   text-align: left;
-  padding: 10px;
-  border-color: transparent;
-  background: transparent;
   white-space: normal;
 }
 .ai-preset-choice span {
@@ -53,18 +44,10 @@
   display: block;
   overflow-wrap: anywhere;
 }
-.ai-preset-choice strong {
-  font-size: 13px;
-  font-weight: 600;
-}
 .ai-preset-choice small {
   color: var(--muted);
   margin-top: 4px;
   line-height: 1.4;
-}
-.ai-preset-choice.selected,
-.ai-history-row.selected {
-  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
 }
 .ai-preset-edit {
   position: absolute;
@@ -93,11 +76,7 @@
   position: relative;
   min-height: 65px;
   margin-bottom: 5px;
-  border-radius: var(--radius);
   overflow: hidden;
-}
-.ai-history-row:hover {
-  background: var(--raised);
 }
 .ai-history-open {
   width: 100%;
@@ -105,8 +84,6 @@
   align-items: flex-start;
   min-height: 65px;
   padding: 10px;
-  border-color: transparent;
-  background: transparent;
   text-align: left;
   white-space: normal;
 }
@@ -119,7 +96,6 @@
 }
 .ai-history-open strong {
   display: block;
-  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -136,8 +112,6 @@
   display: flex;
   gap: 3px;
   opacity: 0;
-  background: var(--raised);
-  border-radius: var(--radius);
 }
 .ai-history-row:hover .ai-history-actions,
 .ai-history-row:focus-within .ai-history-actions,
@@ -244,9 +218,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 10px 16px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
 }
 .ai-chat-options label {
   display: flex;
@@ -269,7 +240,6 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px;
 }
 .ai-preset-intro {
   min-height: 100%;
@@ -287,8 +257,6 @@
   margin-bottom: 14px;
 }
 .ai-preset-intro h2 {
-  font-size: 20px;
-  font-weight: 600;
   margin-bottom: 10px;
   overflow-wrap: anywhere;
 }

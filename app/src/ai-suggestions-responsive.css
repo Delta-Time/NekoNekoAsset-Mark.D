@@ -1,8 +1,4 @@
 @media (max-width: 1000px) {
-  .ai-chat-sidebar {
-    flex-basis: 218px;
-    padding: 10px;
-  }
   .ai-chat-composer-actions {
     flex-basis: 132px;
   }
@@ -14,30 +10,17 @@
   }
 }
 @media (max-width: 760px) {
-  .ai-chat-sidebar {
-    flex-basis: 180px;
-    padding: 8px;
-    gap: 8px;
-  }
   .ai-preset-choice {
-    padding: 8px;
     font-size: 12px;
   }
   .ai-chat-options {
     gap: 6px;
-    padding: 8px;
   }
   .ai-chat-options label {
     flex-wrap: wrap;
   }
   .ai-chat-options select {
     max-width: 145px;
-  }
-  .ai-chat-messages {
-    padding: 10px;
-  }
-  .ai-chat-composer {
-    padding: 8px;
   }
   .ai-chat-composer-row {
     gap: 6px;
@@ -47,12 +30,6 @@
   }
   .ai-chat-composer-actions {
     flex-basis: 104px;
-  }
-  .ai-chat-bubble {
-    padding: 8px;
-  }
-  .ai-chat-turn {
-    gap: 6px;
   }
   .ai-chat-avatar {
     width: 28px;
@@ -137,10 +114,6 @@
   }
 }
 @media (max-height: 350px) {
-  .ai-preset-choice {
-    min-height: 40px;
-    padding: 6px 8px;
-  }
   .ai-preset-choice small {
     display: none;
   }
@@ -156,7 +129,6 @@
     margin-bottom: 8px;
   }
   .ai-preset-intro h2 {
-    font-size: 16px;
     margin: 0 0 6px;
   }
   .ai-preset-intro p {
@@ -192,23 +164,18 @@
   justify-content: center;
   pointer-events: none;
   border: 2px dashed var(--accent);
-  border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--accent);
 }
 @media (max-width: 600px) {
   .ai-chat-images {
     width: min(250px, calc(100vw - 275px));
+    bottom: calc(100% + 6px);
   }
 }
 
 @media (min-width: 601px) and (max-width: 760px) {
   .ai-chat-images {
     width: min(300px, calc(100vw - 380px));
-  }
-}
-@media (max-width: 600px) {
-  .ai-chat-images {
-    bottom: calc(100% + 6px);
   }
 }
