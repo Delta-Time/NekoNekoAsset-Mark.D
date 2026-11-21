@@ -17,7 +17,7 @@ fn optional_chat_storage_opens_on_demand_and_retries_without_replacing_data() {
         b"authored corrupt chat database"
     );
     std::fs::remove_file(&database).unwrap();
-    assert_eq!(store.workspace().unwrap()["chats"], json!([]));
+    assert!(store.workspace().unwrap().chats.is_empty());
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -25,7 +25,7 @@ fn optional_chat_storage_opens_on_demand_and_retries_without_replacing_data() {
 fn durable_history_memory_and_delete_remove_images_and_logs() {
     let (path, store) = fixture();
     let created = store.create_chat("outfit").unwrap();
-    let id = created["chat"]["id"].as_str().unwrap();
+    let id = created.chat.id.as_str();
     let request = uuid::Uuid::new_v4().to_string();
     let image = AiImage {
         mime_type: "image/png".into(),
@@ -47,7 +47,7 @@ fn durable_history_memory_and_delete_remove_images_and_logs() {
     assert!(!memory[1].content.contains("https://"));
     drop(store);
     let store = ChatStore::new(&path).unwrap();
-    assert_eq!(store.chat(id).unwrap()["chat"]["title"], "Named chat");
+    assert_eq!(store.chat(id).unwrap().chat.title, "Named chat");
     store.delete_chat(id).unwrap();
     assert!(store.chat(id).is_err());
     assert!(store
@@ -77,14 +77,14 @@ fn durable_history_memory_and_delete_remove_images_and_logs() {
 fn interrupted_messages_do_not_become_model_memory() {
     let (path, store) = fixture();
     let c = store.create_chat("chat").unwrap();
-    let id = c["chat"]["id"].as_str().unwrap();
+    let id = c.chat.id.as_str();
     let req = uuid::Uuid::new_v4().to_string();
     store.append_user(id, &req, "Interrupted", vec![]).unwrap();
     drop(store);
     let store = ChatStore::new(&path).unwrap();
     assert_eq!(
-        store.chat(id).unwrap()["messages"][0]["status"],
-        "cancelled"
+        store.chat(id).unwrap().messages[0].status,
+        Some(TurnStatus::Cancelled)
     );
     assert!(store.context(id, "next", &[]).unwrap().0.is_empty());
     drop(store);
@@ -101,16 +101,12 @@ fn presets_exchange_only_prompt_fields_and_have_new_identity() {
             system_prompt: "Use authored style advice".into(),
         })
         .unwrap();
-    let id = p["preset"]["id"].as_str().unwrap();
-    let raw = store.export_preset(id).unwrap();
-    let raw = raw["json"].as_str().unwrap();
+    let id = p.preset.id.as_str();
+    let raw = store.export_preset(id).unwrap().json;
     assert!(!raw.contains(id));
-    let imported = store.import_preset(raw).unwrap();
-    assert_ne!(imported["preset"]["id"], id);
-    assert_eq!(
-        imported["preset"]["systemPrompt"],
-        "Use authored style advice"
-    );
+    let imported = store.import_preset(&raw).unwrap();
+    assert_ne!(imported.preset.id, id);
+    assert_eq!(imported.preset.system_prompt, "Use authored style advice");
     assert!(store
         .import_preset(&raw.replace("\"version\": 1", "\"version\": 99"))
         .is_err());
@@ -125,7 +121,7 @@ fn presets_exchange_only_prompt_fields_and_have_new_identity() {
 fn memory_is_bounded_and_current_photos_take_priority() {
     let (path, store) = fixture();
     let c = store.create_chat("chat").unwrap();
-    let id = c["chat"]["id"].as_str().unwrap();
+    let id = c.chat.id.as_str();
     for _ in 0..10 {
         let req = uuid::Uuid::new_v4().to_string();
         store
@@ -164,9 +160,9 @@ fn prompt_snapshot_and_explicit_title_survive_preset_changes() {
             system_prompt: "Original prompt".into(),
         })
         .unwrap();
-    let preset_id = saved["preset"]["id"].as_str().unwrap();
+    let preset_id = saved.preset.id.as_str();
     let created = store.create_chat(preset_id).unwrap();
-    let id = created["chat"]["id"].as_str().unwrap();
+    let id = created.chat.id.as_str();
     store.rename_chat(id, "Explicit title").unwrap();
     store
         .save_preset(CustomPreset {
@@ -183,7 +179,7 @@ fn prompt_snapshot_and_explicit_title_survive_preset_changes() {
         .append_user(id, &request, "Automatic title candidate", vec![])
         .unwrap();
     store.finish(id,&request,&Ok(json!({"answer":"Reply","recommendations":[{"title":"Authored accessory","reason":"Style","productId":"local:authored"}]}))).unwrap();
-    assert_eq!(store.chat(id).unwrap()["chat"]["title"], "Explicit title");
+    assert_eq!(store.chat(id).unwrap().chat.title, "Explicit title");
     assert_eq!(
         store.context_product_ids(id, "next").unwrap(),
         vec!["local:authored"]

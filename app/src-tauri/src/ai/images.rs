@@ -10,9 +10,11 @@ const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 1536;
 
 // Image payloads must never appear in debug output or persisted job records.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiImage {
+    /// Images are normalized to JPEG or PNG before the UI or a provider sees them.
+    #[ts(type = "\"image/jpeg\" | \"image/png\"")]
     pub mime_type: String,
     pub data_base64: String,
 }

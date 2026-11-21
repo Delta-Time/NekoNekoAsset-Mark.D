@@ -4,14 +4,14 @@ fn personalization_prompt_applies_language_and_style_without_avatar() {
     let personal = Personalization {
         avatar_data_url: Some("AUTHORED_AVATAR_MARKER".into()),
         user_name: "Authored user".into(),
-        reply_language: "zh-Hant".into(),
-        personality: "older-sister".into(),
+        reply_language: chat_store::ReplyLanguage::ZhHant,
+        personality: Personality::OlderSister,
         custom_prompt: String::new(),
     };
     let system = conversation_system(
         "Authored custom purpose",
         &personal,
-        "en",
+        Locale::En,
         &json!({"candidates":[]}),
     )
     .unwrap();
@@ -21,7 +21,7 @@ fn personalization_prompt_applies_language_and_style_without_avatar() {
     assert!(system.contains("Authored custom purpose"));
     assert!(!system.contains("AUTHORED_AVATAR_MARKER"));
     let app = Personalization::default();
-    assert!(conversation_system("chat", &app, "ja", &json!({}))
+    assert!(conversation_system("chat", &app, Locale::Ja, &json!({}))
         .unwrap()
         .contains("Reply in Japanese"));
 }
@@ -31,18 +31,22 @@ fn existing_chat_reads_current_custom_style_at_each_reply() {
     std::fs::create_dir_all(&path).unwrap();
     let store = ChatStore::new(&path).unwrap();
     let chat = store.create_chat("chat").unwrap();
-    let id = chat["chat"]["id"].as_str().unwrap();
+    let id = chat.chat.id.as_str();
     for marker in ["AUTHORED_STYLE_ONE", "AUTHORED_STYLE_TWO"] {
         let personal = Personalization {
-            personality: "custom".into(),
+            personality: Personality::Custom,
             custom_prompt: marker.into(),
             ..Default::default()
         };
         store.save_personalization(personal).unwrap();
         let (_, preset) = store.chat_preset(id).unwrap();
-        let system =
-            conversation_system(&preset, &store.personalization().unwrap(), "en", &json!({}))
-                .unwrap();
+        let system = conversation_system(
+            &preset,
+            &store.personalization().unwrap(),
+            Locale::En,
+            &json!({}),
+        )
+        .unwrap();
         assert!(system.contains(marker));
         assert!(system.contains("overrides styles in remembered answers"));
         if marker.ends_with("TWO") {
@@ -51,7 +55,7 @@ fn existing_chat_reads_current_custom_style_at_each_reply() {
     }
     assert!(store
         .save_personalization(Personalization {
-            personality: "custom".into(),
+            personality: Personality::Custom,
             ..Default::default()
         })
         .is_err());
@@ -149,8 +153,7 @@ async fn saved_library_previews_follow_moved_profile_and_current_visibility() {
             .unwrap();
         let ai = Arc::new(AiService::new(&profile).unwrap());
         let service = AiSuggestions::new(catalogue, ai).unwrap();
-        let created = service.chats.create_chat("chat").unwrap();
-        let id = created["chat"]["id"].as_str().unwrap().to_owned();
+        let id = service.chats.create_chat("chat").unwrap().chat.id;
         let request_id = uuid::Uuid::new_v4().to_string();
         service
             .chats
@@ -192,7 +195,7 @@ async fn saved_library_previews_follow_moved_profile_and_current_visibility() {
     // Rehydration is read-time presentation; the saved transcript remains untouched.
     let stored = service.chats.chat(&chat_id).unwrap();
     assert_eq!(
-        stored["messages"][1]["response"]["recommendations"][0]["thumbnailPath"],
+        stored.messages[1].response.as_ref().unwrap()["recommendations"][0]["thumbnailPath"],
         original_path
     );
     drop(service);
@@ -231,12 +234,7 @@ async fn deleting_a_pending_chat_cancels_and_cannot_resurrect_it() {
     let pending = tokio::spawn(async move { worker.command(request).await });
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if service.chats.chat(&id).unwrap()["messages"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 1
-            {
+            if service.chats.chat(&id).unwrap().messages.len() == 1 {
                 break;
             }
             tokio::task::yield_now().await;
@@ -264,7 +262,7 @@ async fn deleting_a_pending_chat_cancels_and_cannot_resurrect_it() {
 fn recommendations_require_observed_candidates_and_preserve_library_identity() {
     let candidate = Candidate {
         candidate_id: "library:local:synthetic".into(),
-        origin: "library",
+        origin: Origin::Library,
         product_id: Some("local:synthetic".into()),
         title: "Authored jacket".into(),
         provider: "local".into(),
@@ -274,14 +272,15 @@ fn recommendations_require_observed_candidates_and_preserve_library_identity() {
     };
     let good=json!({"answer":"A matching style; compatibility is unknown.","recommendations":[{"candidateId":candidate.candidate_id,"reason":"Matching style"}]}).to_string();
     let response = hydrate_reply(&good, &[candidate.clone()], vec![]).unwrap();
+    let recommendation = &response.recommendations[0];
     assert_eq!(
-        response["recommendations"][0]["productId"],
-        "local:synthetic"
+        recommendation.product_id.as_deref(),
+        Some("local:synthetic")
     );
-    assert!(response["recommendations"][0]["url"].is_null());
+    assert!(recommendation.url.is_none());
     assert_eq!(
-        response["recommendations"][0]["thumbnailUrl"],
-        "https://public-files.gumroad.com/authored.png"
+        recommendation.thumbnail_url.clone().flatten().as_deref(),
+        Some("https://public-files.gumroad.com/authored.png")
     );
     assert!(!serde_json::to_string(&candidate)
         .unwrap()

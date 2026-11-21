@@ -7,7 +7,7 @@ use crate::{
     catalogue::Catalogue,
 };
 use anyhow::{ensure, Context, Result};
-use chat_store::{ChatStore, CustomPreset, Personalization};
+use chat_store::{ChatStore, CustomPreset, Locale, Personality, Personalization};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,23 +20,27 @@ use std::{
 use tokio::sync::{watch, Mutex};
 use url::Url;
 
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "AiPreset")]
 pub enum Preset {
     Outfit,
     Similar,
     Accessories,
     Chat,
 }
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
+/// Where a reply looks for products.
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "AiScope")]
 pub enum Scope {
     Library,
     Online,
     Both,
 }
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "AiStore")]
 pub enum Store {
     Booth,
     Gumroad,
@@ -52,31 +56,43 @@ impl Store {
     }
 }
 
-#[derive(Deserialize)]
+/// A chat message to send, and where its reply may look for products.
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename = "AiSuggestionInput")]
 pub struct SuggestionSend {
     pub request_id: String,
     pub chat_id: String,
+    #[ts(optional)]
     pub entry_id: Option<String>,
-    pub app_language: String,
+    pub app_language: Locale,
     pub prompt: String,
     // Legacy callers may still supply this; the saved chat owns its preset.
     #[serde(default, rename = "preset")]
+    #[ts(optional)]
     pub _preset: Option<Preset>,
     pub scope: Scope,
     #[serde(default)]
+    #[ts(as = "Option<Vec<Store>>", optional)]
     pub stores: Vec<Store>,
+    #[ts(optional)]
     pub category: Option<String>,
+    #[ts(optional)]
     pub avatar_id: Option<String>,
     #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
     pub context_product_ids: Vec<String>,
     #[serde(default)]
+    #[ts(as = "Option<Vec<AiMessage>>", optional)]
     pub history: Vec<AiMessage>,
     #[serde(default)]
+    #[ts(as = "Option<Vec<AiImage>>", optional)]
     pub images: Vec<AiImage>,
 }
-#[derive(Deserialize)]
+/// One chat action: a message, or managing chats, presets and personalization.
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[ts(export)]
 pub enum AiSuggestionRequest {
     Send(SuggestionSend),
     ListWorkspace,
@@ -122,11 +138,107 @@ pub enum AiSuggestionRequest {
         request_id: String,
     },
 }
+/// Where a recommended product comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename = "AiOrigin")]
+pub enum Origin {
+    /// A product in the catalogue.
+    Library,
+    /// A public storefront listing.
+    Store,
+}
+/// How one store's search went.
+#[derive(Clone, Copy, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "AiSearchState")]
+pub enum SearchState {
+    Ok,
+    NoResults,
+    Unavailable,
+}
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "AiSearchStatus")]
+pub struct SearchStatus {
+    pub provider: Store,
+    pub status: SearchState,
+}
+/// A recommended product, always one of the observed candidates.
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "AiRecommendation")]
+pub struct Recommendation {
+    pub candidate_id: String,
+    pub origin: Origin,
+    pub product_id: Option<String>,
+    pub title: String,
+    pub provider: String,
+    pub url: Option<String>,
+    /// Reading a library row resolves its thumbnail again and drops this when there is none.
+    #[serde(
+        default,
+        deserialize_with = "crate::ipc::nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub thumbnail_url: Option<Option<String>>,
+    /// A library product's managed thumbnail file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thumbnail_path: Option<String>,
+    pub reason: String,
+}
+/// The assistant's answer and the products it recommends.
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "AiSuggestionResponse")]
+pub struct SuggestionReply {
+    /// The chat a sent message belongs to; saved turns leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub chat_id: Option<String>,
+    pub answer: String,
+    pub recommendations: Vec<Recommendation>,
+    pub search_status: Vec<SearchStatus>,
+}
+/// Dropped images, read and normalized for a message.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiImages")]
+pub struct Images {
+    pub images: Vec<AiImage>,
+}
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiCancelled")]
+pub struct Cancelled {
+    pub cancelled: bool,
+}
+/// The answer to each chat action, for the typed chat calls in the UI.
+#[cfg(test)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct AiSuggestionResponses {
+    send: SuggestionReply,
+    list_workspace: chat_store::Workspace,
+    create_chat: chat_store::ChatDetail,
+    get_chat: chat_store::ChatDetail,
+    rename_chat: chat_store::ChatRenamed,
+    delete_chat: chat_store::Deleted,
+    save_personalization: chat_store::PersonalizationSaved,
+    save_preset: chat_store::PresetSaved,
+    delete_preset: chat_store::Deleted,
+    import_preset: chat_store::PresetSaved,
+    export_preset: chat_store::PresetExport,
+    read_images: Images,
+    cancel: Cancelled,
+}
+fn answer(value: impl Serialize) -> Result<Value> {
+    Ok(serde_json::to_value(value)?)
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Candidate {
     candidate_id: String,
-    origin: &'static str,
+    origin: Origin,
     #[serde(skip_serializing_if = "Option::is_none")]
     product_id: Option<String>,
     title: String,
@@ -198,21 +310,21 @@ impl AiSuggestions {
     }
     pub async fn command(&self, request: AiSuggestionRequest) -> Result<Value> {
         match request {
-            AiSuggestionRequest::ListWorkspace => self.chats.workspace(),
-            AiSuggestionRequest::CreateChat { preset_id } => self.chats.create_chat(&preset_id),
+            AiSuggestionRequest::ListWorkspace => answer(self.chats.workspace()?),
+            AiSuggestionRequest::CreateChat { preset_id } => {
+                answer(self.chats.create_chat(&preset_id)?)
+            }
             AiSuggestionRequest::GetChat { chat_id } => {
                 let mut chat = self.chats.chat(&chat_id)?;
-                if let Some(messages) = chat["messages"].as_array_mut() {
-                    for message in messages {
-                        if let Some(response) = message.get_mut("response") {
-                            self.hydrate_library_previews(response);
-                        }
+                for message in &mut chat.messages {
+                    if let Some(response) = &mut message.response {
+                        self.hydrate_library_previews(response);
                     }
                 }
-                Ok(chat)
+                answer(chat)
             }
             AiSuggestionRequest::RenameChat { chat_id, title } => {
-                self.chats.rename_chat(&chat_id, &title)
+                answer(self.chats.rename_chat(&chat_id, &title)?)
             }
             AiSuggestionRequest::DeleteChat { chat_id } => {
                 self.chats.chat_preset(&chat_id)?;
@@ -226,24 +338,28 @@ impl AiSuggestions {
                 let _guard = gate.lock().await;
                 let result = self.chats.delete_chat(&chat_id);
                 self.deleting.lock().await.remove(&chat_id);
-                result
+                answer(result?)
             }
             AiSuggestionRequest::SavePersonalization {
                 mut personalization,
             } => {
                 personalization.avatar_data_url =
                     normalize_avatar(personalization.avatar_data_url)?;
-                self.chats.save_personalization(personalization)
+                answer(self.chats.save_personalization(personalization)?)
             }
-            AiSuggestionRequest::SavePreset { preset } => self.chats.save_preset(preset),
-            AiSuggestionRequest::DeletePreset { preset_id } => self.chats.delete_preset(&preset_id),
-            AiSuggestionRequest::ImportPreset { json } => self.chats.import_preset(&json),
-            AiSuggestionRequest::ExportPreset { preset_id } => self.chats.export_preset(&preset_id),
+            AiSuggestionRequest::SavePreset { preset } => answer(self.chats.save_preset(preset)?),
+            AiSuggestionRequest::DeletePreset { preset_id } => {
+                answer(self.chats.delete_preset(&preset_id)?)
+            }
+            AiSuggestionRequest::ImportPreset { json } => answer(self.chats.import_preset(&json)?),
+            AiSuggestionRequest::ExportPreset { preset_id } => {
+                answer(self.chats.export_preset(&preset_id)?)
+            }
             AiSuggestionRequest::ReadImages { paths } => {
                 let images = tokio::task::spawn_blocking(move || read_images(paths))
                     .await
                     .map_err(|_| anyhow::anyhow!("ai_image_invalid"))??;
-                Ok(json!({"images":images}))
+                answer(Images { images })
             }
             AiSuggestionRequest::Cancel { request_id } => {
                 ensure!(
@@ -253,7 +369,7 @@ impl AiSuggestions {
                 if let Some((_, sender)) = self.active.lock().await.get(&request_id) {
                     let _ = sender.send(true);
                 }
-                Ok(json!({"cancelled":true}))
+                answer(Cancelled { cancelled: true })
             }
             AiSuggestionRequest::Send(request) => {
                 ensure!(
@@ -402,7 +518,7 @@ impl AiSuggestions {
                 };
                 candidates.push(Candidate {
                     candidate_id: format!("library:{id}"),
-                    origin: "library",
+                    origin: Origin::Library,
                     product_id: Some(id.into()),
                     title: value["title"].as_str().unwrap_or("").into(),
                     provider: value["provider"].as_str().unwrap_or("local").into(),
@@ -417,10 +533,20 @@ impl AiSuggestions {
             for store in request.stores.into_iter().collect::<BTreeSet<_>>() {
                 match self.search(store, &query).await {
                     Ok(rows) => {
-                        statuses.push(json!({"provider":store,"status":if rows.is_empty(){"no_results"}else{"ok"}}));
+                        statuses.push(SearchStatus {
+                            provider: store,
+                            status: if rows.is_empty() {
+                                SearchState::NoResults
+                            } else {
+                                SearchState::Ok
+                            },
+                        });
                         candidates.extend(rows);
                     }
-                    Err(_) => statuses.push(json!({"provider":store,"status":"unavailable"})),
+                    Err(_) => statuses.push(SearchStatus {
+                        provider: store,
+                        status: SearchState::Unavailable,
+                    }),
                 }
             }
         }
@@ -433,7 +559,7 @@ impl AiSuggestions {
         while serde_json::to_vec(&candidates)?.len() > candidate_budget {
             if let Some(index) = candidates
                 .iter()
-                .rposition(|candidate| candidate.origin == "library")
+                .rposition(|candidate| candidate.origin == Origin::Library)
             {
                 candidates.remove(index);
             } else {
@@ -442,12 +568,12 @@ impl AiSuggestions {
         }
         let grounded = json!({"candidates":candidates,"searchStatus":statuses});
         let system =
-            conversation_system(&preset_prompt, &personal, &request.app_language, &grounded)?;
+            conversation_system(&preset_prompt, &personal, request.app_language, &grounded)?;
         let response = self
             .ai
             .reply_for_config(&system, &messages, &images, Some(&reply_schema()), &config)
             .await?;
-        let mut reply = hydrate_reply(&response, &candidates, statuses)?;
+        let mut reply = serde_json::to_value(hydrate_reply(&response, &candidates, statuses)?)?;
         self.hydrate_library_previews(&mut reply);
         Ok(reply)
     }
@@ -530,25 +656,18 @@ impl AiSuggestions {
 fn conversation_system(
     preset_prompt: &str,
     personal: &Personalization,
-    app_language: &str,
+    app_language: Locale,
     grounded: &Value,
 ) -> Result<String> {
-    let language = if personal.reply_language == "app" {
-        app_language
-    } else {
-        &personal.reply_language
-    };
-    let language = match language {
-        "ja" => "Japanese",
-        "ko" => "Korean",
-        "zh-Hans" => "Simplified Chinese",
-        "zh-Hant" => "Traditional Chinese",
-        _ => "English",
-    };
-    let style = if personal.personality == "custom" {
+    let language = personal
+        .reply_language
+        .locale()
+        .unwrap_or(app_language)
+        .english_name();
+    let style = if personal.personality == Personality::Custom {
         crate::storage::redact_ai_evidence_text(&personal.custom_prompt)
     } else {
-        chat_store::personality_prompt(&personal.personality).to_owned()
+        chat_store::personality_prompt(personal.personality).to_owned()
     };
     let custom = crate::storage::redact_ai_evidence_text(preset_prompt);
     let user_name = crate::storage::redact_ai_evidence_text(&personal.user_name);
@@ -655,7 +774,6 @@ fn validate_request(request: &SuggestionSend) -> Result<()> {
     ensure!(
         uuid::Uuid::parse_str(&request.request_id).is_ok()
             && uuid::Uuid::parse_str(&request.chat_id).is_ok()
-            && chat_store::LOCALES.contains(&request.app_language.as_str())
             && request
                 .entry_id
                 .as_ref()
@@ -704,7 +822,11 @@ fn validate_request(request: &SuggestionSend) -> Result<()> {
 fn reply_schema() -> Value {
     json!({"name":"asset_recommendations","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"},"recommendations":{"type":"array","items":{"type":"object","properties":{"candidateId":{"type":"string"},"reason":{"type":"string"}},"required":["candidateId","reason"],"additionalProperties":false}}},"required":["answer","recommendations"],"additionalProperties":false}})
 }
-fn hydrate_reply(raw: &str, candidates: &[Candidate], statuses: Vec<Value>) -> Result<Value> {
+fn hydrate_reply(
+    raw: &str,
+    candidates: &[Candidate],
+    statuses: Vec<SearchStatus>,
+) -> Result<SuggestionReply> {
     ensure!(raw.len() <= 32 * 1024, "ai_malformed");
     let reply: Reply = serde_json::from_str(raw).map_err(|_| anyhow::anyhow!("ai_malformed"))?;
     ensure!(
@@ -727,10 +849,25 @@ fn hydrate_reply(raw: &str, candidates: &[Candidate], statuses: Vec<Value>) -> R
             .find(|c| c.candidate_id == choice.candidate_id)
             .context("ai_malformed")?;
         if seen.insert(choice.candidate_id) {
-            recommendations.push(json!({"candidateId":candidate.candidate_id,"origin":candidate.origin,"productId":candidate.product_id,"title":candidate.title,"provider":candidate.provider,"url":candidate.url,"thumbnailUrl":candidate.thumbnail_url,"reason":choice.reason}));
+            recommendations.push(Recommendation {
+                candidate_id: candidate.candidate_id.clone(),
+                origin: candidate.origin,
+                product_id: candidate.product_id.clone(),
+                title: candidate.title.clone(),
+                provider: candidate.provider.clone(),
+                url: candidate.url.clone(),
+                thumbnail_url: Some(candidate.thumbnail_url.clone()),
+                thumbnail_path: None,
+                reason: choice.reason,
+            });
         }
     }
-    Ok(json!({"answer":reply.answer,"recommendations":recommendations,"searchStatus":statuses}))
+    Ok(SuggestionReply {
+        chat_id: None,
+        answer: reply.answer,
+        recommendations,
+        search_status: statuses,
+    })
 }
 fn add_store(
     rows: &mut Vec<Candidate>,
@@ -771,7 +908,7 @@ fn add_store(
     use sha2::{Digest, Sha256};
     rows.push(Candidate {
         candidate_id: format!("store:{}", hex::encode(Sha256::digest(url.as_bytes()))),
-        origin: "store",
+        origin: Origin::Store,
         product_id: None,
         title: title.into(),
         provider: store.name().into(),

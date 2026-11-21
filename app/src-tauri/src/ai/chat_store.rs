@@ -19,28 +19,91 @@ pub const BUILTINS: [&str; 7] = [
     "group",
     "style",
 ];
-pub const PERSONALITIES: [&str; 10] = [
-    "basic",
-    "professional",
-    "enthusiastic",
-    "playful-brat",
-    "gentle-younger-sister",
-    "older-sister",
-    "older-brother",
-    "younger-brother",
-    "yandere-girlfriend",
-    "custom",
-];
-pub const LOCALES: [&str; 5] = ["en", "ja", "ko", "zh-Hans", "zh-Hant"];
+/// The App's languages, which the assistant can reply in.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "AiLocale")]
+pub enum Locale {
+    #[serde(rename = "en")]
+    En,
+    #[serde(rename = "ja")]
+    Ja,
+    #[serde(rename = "ko")]
+    Ko,
+    #[serde(rename = "zh-Hans")]
+    ZhHans,
+    #[serde(rename = "zh-Hant")]
+    ZhHant,
+}
+impl Locale {
+    /// The language's English name, as the reply instructions give it.
+    pub fn english_name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Ja => "Japanese",
+            Self::Ko => "Korean",
+            Self::ZhHans => "Simplified Chinese",
+            Self::ZhHant => "Traditional Chinese",
+        }
+    }
+}
+/// The language the assistant replies in: the App's own, or a chosen one.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(rename = "AiReplyLanguage")]
+pub enum ReplyLanguage {
+    #[serde(rename = "app")]
+    App,
+    #[serde(rename = "en")]
+    En,
+    #[serde(rename = "ja")]
+    Ja,
+    #[serde(rename = "ko")]
+    Ko,
+    #[serde(rename = "zh-Hans")]
+    ZhHans,
+    #[serde(rename = "zh-Hant")]
+    ZhHant,
+}
+impl ReplyLanguage {
+    /// The chosen language, or `None` to follow the App's.
+    pub fn locale(self) -> Option<Locale> {
+        match self {
+            Self::App => None,
+            Self::En => Some(Locale::En),
+            Self::Ja => Some(Locale::Ja),
+            Self::Ko => Some(Locale::Ko),
+            Self::ZhHans => Some(Locale::ZhHans),
+            Self::ZhHant => Some(Locale::ZhHant),
+        }
+    }
+}
+/// The assistant's voice.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename = "AiPersonalityId")]
+pub enum Personality {
+    Basic,
+    Professional,
+    Enthusiastic,
+    PlayfulBrat,
+    GentleYoungerSister,
+    OlderSister,
+    OlderBrother,
+    YoungerBrother,
+    YandereGirlfriend,
+    /// The user's own instructions in `custom_prompt`.
+    Custom,
+}
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export, rename = "AiPersonalization")]
 pub struct Personalization {
     pub avatar_data_url: Option<String>,
     pub user_name: String,
-    pub reply_language: String,
-    pub personality: String,
+    pub reply_language: ReplyLanguage,
+    pub personality: Personality,
     #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
     pub custom_prompt: String,
 }
 impl Default for Personalization {
@@ -48,23 +111,47 @@ impl Default for Personalization {
         Self {
             avatar_data_url: None,
             user_name: String::new(),
-            reply_language: "app".into(),
-            personality: "basic".into(),
+            reply_language: ReplyLanguage::App,
+            personality: Personality::Basic,
             custom_prompt: String::new(),
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+/// A custom preset as the UI sends it; saving a new one gives it an id.
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export, rename = "AiPresetDraft")]
 pub struct CustomPreset {
     #[serde(default)]
+    #[ts(optional)]
     pub id: Option<String>,
     pub title: String,
     pub description: String,
     pub system_prompt: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+/// A saved custom preset, which always has its id.
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, rename = "AiCustomPreset")]
+pub struct SavedPreset {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub system_prompt: String,
+}
+impl From<CustomPreset> for SavedPreset {
+    fn from(preset: CustomPreset) -> Self {
+        Self {
+            id: preset.id.unwrap_or_default(),
+            title: preset.title,
+            description: preset.description,
+            system_prompt: preset.system_prompt,
+        }
+    }
+}
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "AiChatSummary")]
 pub struct Chat {
     pub id: String,
     pub title: String,
@@ -72,8 +159,19 @@ pub struct Chat {
     pub created_at: String,
     pub updated_at: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+/// Where a turn stands. Only the UI marks a turn pending, while it waits for the reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename = "AiTurnStatus")]
+pub enum TurnStatus {
+    Pending,
+    Sent,
+    Failed,
+    Cancelled,
+}
+#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, rename = "AiStoredTurn")]
 pub struct ChatMessage {
     pub id: String,
     pub role: AiRole,
@@ -81,9 +179,53 @@ pub struct ChatMessage {
     pub images: Vec<AiImage>,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    #[ts(optional)]
+    pub status: Option<TurnStatus>,
+    /// The reply as it was saved.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<super::SuggestionReply>", optional)]
     pub response: Option<Value>,
+}
+/// The chats, saved presets and personalization the chat view opens with.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiWorkspace")]
+pub struct Workspace {
+    pub chats: Vec<Chat>,
+    pub presets: Vec<SavedPreset>,
+    pub personalization: Personalization,
+}
+/// A chat and its turns, oldest first.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiChatDetail")]
+pub struct ChatDetail {
+    pub chat: Chat,
+    pub messages: Vec<ChatMessage>,
+}
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiChatRenamed")]
+pub struct ChatRenamed {
+    pub chat: Chat,
+}
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiDeleted")]
+pub struct Deleted {
+    pub deleted: bool,
+}
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiPersonalizationSaved")]
+pub struct PersonalizationSaved {
+    pub personalization: Personalization,
+}
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiPresetSaved")]
+pub struct PresetSaved {
+    pub preset: SavedPreset,
+}
+/// A preset's shareable JSON, without its id.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export, rename = "AiPresetExport")]
+pub struct PresetExport {
+    pub json: String,
 }
 pub struct ChatStore {
     owner: crate::preview::path_safety::PinnedRoot,
@@ -124,7 +266,7 @@ impl ChatStore {
         }
         Ok(ChatConnection(connection))
     }
-    pub fn workspace(&self) -> Result<Value> {
+    pub fn workspace(&self) -> Result<Workspace> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare("SELECT id,title,preset_id,created_at,updated_at FROM chats ORDER BY updated_at DESC,id")?;
         let chats = stmt
@@ -135,11 +277,15 @@ impl ChatStore {
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .map(|s| serde_json::from_str::<CustomPreset>(&s))
+            .map(|s| serde_json::from_str::<CustomPreset>(&s).map(SavedPreset::from))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(json!({"chats":chats,"presets":presets,"personalization":personalization(&conn)?}))
+        Ok(Workspace {
+            chats,
+            presets,
+            personalization: personalization(&conn)?,
+        })
     }
-    pub fn create_chat(&self, preset_id: &str) -> Result<Value> {
+    pub fn create_chat(&self, preset_id: &str) -> Result<ChatDetail> {
         let conn = self.lock()?;
         let custom = resolve_preset(&conn, preset_id)?;
         let now = chrono::Utc::now().to_rfc3339();
@@ -157,9 +303,12 @@ impl ChatStore {
             updated_at: now,
         };
         conn.execute("INSERT INTO chats(id,title,preset_id,created_at,updated_at,system_prompt) VALUES(?1,?2,?3,?4,?5,?6)",params![chat.id,chat.title,chat.preset_id,chat.created_at,chat.updated_at,system_prompt])?;
-        Ok(json!({"chat":chat,"messages":[]}))
+        Ok(ChatDetail {
+            chat,
+            messages: vec![],
+        })
     }
-    pub fn chat(&self, id: &str) -> Result<Value> {
+    pub fn chat(&self, id: &str) -> Result<ChatDetail> {
         valid_id(id)?;
         let conn = self.lock()?;
         let chat = read_chat(&conn, id)?;
@@ -171,7 +320,7 @@ impl ChatStore {
             .into_iter()
             .map(|s| serde_json::from_str::<ChatMessage>(&s))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(json!({"chat":chat,"messages":messages}))
+        Ok(ChatDetail { chat, messages })
     }
     pub fn chat_preset(&self, id: &str) -> Result<(String, String)> {
         valid_id(id)?;
@@ -182,7 +331,7 @@ impl ChatStore {
         })?;
         Ok((chat.preset_id, prompt))
     }
-    pub fn rename_chat(&self, id: &str, title: &str) -> Result<Value> {
+    pub fn rename_chat(&self, id: &str, title: &str) -> Result<ChatRenamed> {
         valid_id(id)?;
         valid_title(title, 160)?;
         let conn = self.lock()?;
@@ -193,9 +342,11 @@ impl ChatStore {
             )? == 1,
             "ai_chat_missing"
         );
-        Ok(json!({"chat":read_chat(&conn,id)?}))
+        Ok(ChatRenamed {
+            chat: read_chat(&conn, id)?,
+        })
     }
-    pub fn delete_chat(&self, id: &str) -> Result<Value> {
+    pub fn delete_chat(&self, id: &str) -> Result<Deleted> {
         valid_id(id)?;
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
@@ -204,7 +355,7 @@ impl ChatStore {
             "ai_chat_missing"
         );
         tx.commit()?;
-        Ok(json!({"deleted":true}))
+        Ok(Deleted { deleted: true })
     }
     pub fn append_user(
         &self,
@@ -238,7 +389,7 @@ impl ChatStore {
             content: content.into(),
             images,
             created_at: now.clone(),
-            status: Some("sent".into()),
+            status: Some(TurnStatus::Sent),
             response: None,
         };
         tx.execute(
@@ -449,23 +600,23 @@ impl ChatStore {
         let conn = self.lock()?;
         personalization(&conn)
     }
-    pub fn save_personalization(&self, value: Personalization) -> Result<Value> {
+    pub fn save_personalization(&self, value: Personalization) -> Result<PersonalizationSaved> {
         ensure!(
             value.user_name.chars().count() <= 80
                 && !value.user_name.chars().any(char::is_control)
-                && (value.reply_language == "app"
-                    || LOCALES.contains(&value.reply_language.as_str()))
-                && PERSONALITIES.contains(&value.personality.as_str())
                 && value.custom_prompt.chars().count() <= 4000
                 && !value.custom_prompt.contains('\0')
-                && (value.personality != "custom" || !value.custom_prompt.trim().is_empty()),
+                && (value.personality != Personality::Custom
+                    || !value.custom_prompt.trim().is_empty()),
             "ai_personalization_invalid"
         );
         let conn = self.lock()?;
         conn.execute("INSERT INTO personalization VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body",[serde_json::to_string(&value)?])?;
-        Ok(json!({"personalization":value}))
+        Ok(PersonalizationSaved {
+            personalization: value,
+        })
     }
-    pub fn save_preset(&self, mut preset: CustomPreset) -> Result<Value> {
+    pub fn save_preset(&self, mut preset: CustomPreset) -> Result<PresetSaved> {
         valid_preset(&preset)?;
         let conn = self.lock()?;
         if let Some(id) = &preset.id {
@@ -485,9 +636,11 @@ impl ChatStore {
             "INSERT INTO presets VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
             params![preset.id, serde_json::to_string(&preset)?],
         )?;
-        Ok(json!({"preset":preset}))
+        Ok(PresetSaved {
+            preset: preset.into(),
+        })
     }
-    pub fn delete_preset(&self, id: &str) -> Result<Value> {
+    pub fn delete_preset(&self, id: &str) -> Result<Deleted> {
         valid_id(id)?;
         let conn = self.lock()?;
         // Conversations retain their original prompt snapshot after preset removal.
@@ -495,16 +648,18 @@ impl ChatStore {
             conn.execute("DELETE FROM presets WHERE id=?1", [id])? == 1,
             "ai_preset_missing"
         );
-        Ok(json!({"deleted":true}))
+        Ok(Deleted { deleted: true })
     }
-    pub fn export_preset(&self, id: &str) -> Result<Value> {
+    pub fn export_preset(&self, id: &str) -> Result<PresetExport> {
         valid_id(id)?;
         let conn = self.lock()?;
         let preset = resolve_preset(&conn, id)?.context("ai_preset_missing")?;
         let value = json!({"format":"nekonekoasset-ai-preset","version":1,"preset":{"title":preset.title,"description":preset.description,"systemPrompt":preset.system_prompt}});
-        Ok(json!({"json":serde_json::to_string_pretty(&value)?}))
+        Ok(PresetExport {
+            json: serde_json::to_string_pretty(&value)?,
+        })
     }
-    pub fn import_preset(&self, raw: &str) -> Result<Value> {
+    pub fn import_preset(&self, raw: &str) -> Result<PresetSaved> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Envelope {
@@ -619,17 +774,17 @@ pub fn builtin_prompt(id: &str) -> &'static str {
     _=>"Answer the user's VRChat and digital-asset questions conversationally. Recommend products only when useful and supported by the supplied candidates."
 }
 }
-pub fn personality_prompt(id: &str) -> &'static str {
-    match id {
-    "professional"=>"Use a composed, professional tone. Prioritize precise facts, useful structure and practical next steps.",
-    "enthusiastic"=>"Use an upbeat, encouraging tone with lively but concise reactions. Keep recommendations grounded in evidence.",
-    "playful-brat"=>"Use a cheeky, confident anime-style voice with light teasing and playful challenges. Stay helpful, never demean the user, and keep teasing nonsexual.",
-    "gentle-younger-sister"=>"Use a gentle, warm younger-sister-style voice. Show attentive curiosity and softly encourage the user, while giving clear practical help.",
-    "older-sister"=>"Use a warm, capable older-sister-style voice with calm reassurance and light affectionate wit. Respect the user's choices and explain practical details clearly.",
-    "older-brother"=>"Use a steady, friendly older-brother-style voice. Offer relaxed encouragement and dependable, practical advice without being bossy.",
-    "younger-brother"=>"Use an energetic, sincere younger-brother-style voice with friendly mischief and shared enthusiasm. Keep advice useful and easy to follow.",
-    "yandere-girlfriend"=>"Use a fictional yandere-girlfriend-style voice: sweet, intensely attentive, and lightly dramatic. Keep attachment playful; never threaten, manipulate, claim exclusivity, or discourage the user's real relationships.",
-    _=>"Use a friendly, balanced tone with clear, concise answers."
+pub fn personality_prompt(personality: Personality) -> &'static str {
+    match personality {
+    Personality::Professional=>"Use a composed, professional tone. Prioritize precise facts, useful structure and practical next steps.",
+    Personality::Enthusiastic=>"Use an upbeat, encouraging tone with lively but concise reactions. Keep recommendations grounded in evidence.",
+    Personality::PlayfulBrat=>"Use a cheeky, confident anime-style voice with light teasing and playful challenges. Stay helpful, never demean the user, and keep teasing nonsexual.",
+    Personality::GentleYoungerSister=>"Use a gentle, warm younger-sister-style voice. Show attentive curiosity and softly encourage the user, while giving clear practical help.",
+    Personality::OlderSister=>"Use a warm, capable older-sister-style voice with calm reassurance and light affectionate wit. Respect the user's choices and explain practical details clearly.",
+    Personality::OlderBrother=>"Use a steady, friendly older-brother-style voice. Offer relaxed encouragement and dependable, practical advice without being bossy.",
+    Personality::YoungerBrother=>"Use an energetic, sincere younger-brother-style voice with friendly mischief and shared enthusiasm. Keep advice useful and easy to follow.",
+    Personality::YandereGirlfriend=>"Use a fictional yandere-girlfriend-style voice: sweet, intensely attentive, and lightly dramatic. Keep attachment playful; never threaten, manipulate, claim exclusivity, or discourage the user's real relationships.",
+    Personality::Basic | Personality::Custom=>"Use a friendly, balanced tone with clear, concise answers."
 }
 }
 

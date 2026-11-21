@@ -5,19 +5,33 @@ import type {
   AiJobRequest,
   AiJobResponses,
   AiMode,
+  AiPersonalization,
+  AiPresetDraft,
   AiRequest,
   AiResponses,
   AiScopes,
+  AiSuggestionInput,
+  AiSuggestionRequest,
+  AiSuggestionResponses,
 } from './bindings';
 export type {
+  AiChatDetail,
+  AiChatSummary,
   AiConnectionResult,
+  AiCustomPreset,
   AiDraftTest,
   AiEntry,
   AiEntryList,
+  AiImage,
   AiKeyStatus,
   AiMode,
+  AiPresetDraft,
   AiProviderPreset,
   AiScopes,
+  AiStoredTurn,
+  AiSuggestionInput,
+  AiSuggestionResponse,
+  AiWorkspace,
 } from './bindings';
 
 /** A provider entry being tested or saved. */
@@ -55,52 +69,17 @@ export function removeAiEntry(entryId: string) {
 export function testAiEntry(entryId: string) {
   return invokeAi({ action: 'test_entry', entryId });
 }
-export interface AiImage {
-  mimeType: 'image/jpeg' | 'image/png';
-  dataBase64: string;
-}
-export interface AiChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-export interface AiSuggestionResponse {
-  chatId?: string;
-  answer: string;
-  recommendations: {
-    candidateId: string;
-    origin: 'library' | 'store';
-    productId?: string;
-    title: string;
-    provider: string;
-    url?: string;
-    thumbnailUrl?: string;
-    thumbnailPath?: string;
-    reason: string;
-  }[];
-  searchStatus: { provider: string; status: 'ok' | 'unavailable' | 'no_results' }[];
-}
-export interface AiSuggestionInput {
-  requestId: string;
-  chatId: string;
-  entryId?: string;
-  appLanguage: import('./model').Locale;
-  prompt: string;
-  preset: 'outfit' | 'similar' | 'accessories' | 'chat';
-  scope: 'library' | 'online' | 'both';
-  stores: ('booth' | 'gumroad' | 'jinxxy')[];
-  category?: string;
-  avatarId?: string;
-  contextProductIds?: string[];
-  history?: AiChatMessage[];
-  images: AiImage[];
-}
-export async function sendAiSuggestion(input: AiSuggestionInput): Promise<AiSuggestionResponse> {
+async function invokeAiSuggestion<A extends AiSuggestionRequest['action']>(
+  request: Extract<AiSuggestionRequest, { action: A }>,
+): Promise<AiSuggestionResponses[A]> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke('ai_suggestion_action', { request: { action: 'send', ...input } });
+  return invoke('ai_suggestion_action', { request });
 }
-export async function cancelAiSuggestion(requestId: string): Promise<unknown> {
-  if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke('ai_suggestion_action', { request: { action: 'cancel', requestId } });
+export function sendAiSuggestion(input: AiSuggestionInput) {
+  return invokeAiSuggestion({ action: 'send', ...input });
+}
+export function cancelAiSuggestion(requestId: string) {
+  return invokeAiSuggestion({ action: 'cancel', requestId });
 }
 async function invokeAiAnalysis<A extends AiJobRequest['action']>(
   request: Extract<AiJobRequest, { action: A }>,
@@ -133,90 +112,42 @@ export function saveAiPreferences(patch: {
 }): Promise<unknown> {
   return invokeAction('catalogue', 'preferences', { patch });
 }
-export interface AiChatSummary {
-  id: string;
-  title: string;
-  presetId: string;
-  createdAt: string;
-  updatedAt: string;
+export function listAiWorkspace() {
+  return invokeAiSuggestion({ action: 'list_workspace' });
 }
-export interface AiStoredTurn {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  images: AiImage[];
-  createdAt: string;
-  status?: 'pending' | 'sent' | 'failed' | 'cancelled';
-  response?: AiSuggestionResponse;
+export function createAiChat(presetId: string) {
+  return invokeAiSuggestion({ action: 'create_chat', presetId });
 }
-export interface AiChatDetail {
-  chat: AiChatSummary;
-  messages: AiStoredTurn[];
+export function getAiChat(chatId: string) {
+  return invokeAiSuggestion({ action: 'get_chat', chatId });
 }
-export interface AiCustomPreset {
-  id: string;
-  title: string;
-  description: string;
-  systemPrompt: string;
-}
-export interface AiPresetDraft {
-  id?: string;
-  title: string;
-  description: string;
-  systemPrompt: string;
-}
-export interface AiWorkspace {
-  chats: AiChatSummary[];
-  presets: AiCustomPreset[];
-  personalization: import('./ai-personalization').AiPersonalization;
-}
-async function invokeAiWorkspace<T>(
-  action: string,
-  args: Record<string, unknown> = {},
-): Promise<T> {
-  if (!isTauri()) throw new Error('nativeUnavailable');
-  return invoke<T>('ai_suggestion_action', { request: { action, ...args } });
-}
-export function listAiWorkspace(): Promise<AiWorkspace> {
-  return invokeAiWorkspace('list_workspace');
-}
-export function createAiChat(presetId: string): Promise<AiChatDetail> {
-  return invokeAiWorkspace('create_chat', { presetId });
-}
-export function getAiChat(chatId: string): Promise<AiChatDetail> {
-  return invokeAiWorkspace('get_chat', { chatId });
-}
-export async function renameAiChat(chatId: string, title: string): Promise<AiChatSummary> {
-  const result = await invokeAiWorkspace<{ chat: AiChatSummary }>('rename_chat', { chatId, title });
+export async function renameAiChat(chatId: string, title: string) {
+  const result = await invokeAiSuggestion({ action: 'rename_chat', chatId, title });
   return result.chat;
 }
-export function deleteAiChat(chatId: string): Promise<unknown> {
-  return invokeAiWorkspace('delete_chat', { chatId });
+export function deleteAiChat(chatId: string) {
+  return invokeAiSuggestion({ action: 'delete_chat', chatId });
 }
-export async function saveAiPersonalization(
-  personalization: import('./ai-personalization').AiPersonalization,
-): Promise<import('./ai-personalization').AiPersonalization> {
-  const result = await invokeAiWorkspace<{
-    personalization: import('./ai-personalization').AiPersonalization;
-  }>('save_personalization', { personalization });
+export async function saveAiPersonalization(personalization: AiPersonalization) {
+  const result = await invokeAiSuggestion({ action: 'save_personalization', personalization });
   return result.personalization;
 }
-export async function saveAiPreset(preset: AiPresetDraft): Promise<AiCustomPreset> {
-  const result = await invokeAiWorkspace<{ preset: AiCustomPreset }>('save_preset', { preset });
+export async function saveAiPreset(preset: AiPresetDraft) {
+  const result = await invokeAiSuggestion({ action: 'save_preset', preset });
   return result.preset;
 }
-export function deleteAiPreset(presetId: string): Promise<unknown> {
-  return invokeAiWorkspace('delete_preset', { presetId });
+export function deleteAiPreset(presetId: string) {
+  return invokeAiSuggestion({ action: 'delete_preset', presetId });
 }
-export async function importAiPreset(json: string): Promise<AiCustomPreset> {
-  const result = await invokeAiWorkspace<{ preset: AiCustomPreset }>('import_preset', { json });
+export async function importAiPreset(json: string) {
+  const result = await invokeAiSuggestion({ action: 'import_preset', json });
   return result.preset;
 }
-export function exportAiPreset(presetId: string): Promise<{ json: string }> {
-  return invokeAiWorkspace('export_preset', { presetId });
+export function exportAiPreset(presetId: string) {
+  return invokeAiSuggestion({ action: 'export_preset', presetId });
 }
-export async function readAiDroppedImages(paths: string[]): Promise<AiImage[]> {
-  const result = await invokeAiWorkspace<{ images: AiImage[] }>('read_images', { paths });
+export async function readAiDroppedImages(paths: string[]) {
+  const result = await invokeAiSuggestion({ action: 'read_images', paths });
   return result.images;
 }
 export async function subscribeAiImageDrop(

@@ -1,26 +1,9 @@
 import { table } from './messages';
 import type { Locale } from './model';
 
-export const AI_PERSONALITY_IDS = [
-  'basic',
-  'professional',
-  'enthusiastic',
-  'playful-brat',
-  'gentle-younger-sister',
-  'older-sister',
-  'older-brother',
-  'younger-brother',
-  'yandere-girlfriend',
-  'custom',
-] as const;
-export type AiPersonalityId = (typeof AI_PERSONALITY_IDS)[number];
-export interface AiPersonalization {
-  avatarDataUrl: string | null;
-  userName: string;
-  replyLanguage: 'app' | Locale;
-  personality: AiPersonalityId;
-  customPrompt?: string;
-}
+import type { AiPersonalityId, AiPersonalization } from './bindings';
+export type { AiPersonalityId, AiPersonalization } from './bindings';
+
 export const DEFAULT_AI_PERSONALIZATION: AiPersonalization = {
   avatarDataUrl: null,
   userName: '',
