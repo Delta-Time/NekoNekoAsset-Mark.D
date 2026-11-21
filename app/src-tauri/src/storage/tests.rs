@@ -2909,6 +2909,56 @@ async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_fo
 }
 
 #[tokio::test]
+async fn product_downloads_never_ask_again_for_a_file_its_store_refused() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let c = &f.service.catalogue;
+    let refuse = |file: &str| {
+        let id = format!("pending-{}", io::key(file));
+        c.put("artifact",&id,json!({"id":id,"productId":"42","fileId":file,"revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+    };
+    let settle = || {
+        for mut job in c.list("job").unwrap() {
+            f.service.put_job(&mut job, "cancelled", None).unwrap();
+        }
+    };
+    let queued = || {
+        c.related("job", "42")
+            .unwrap()
+            .into_iter()
+            .filter(|job| job["state"] == "queued")
+            .collect::<Vec<_>>()
+    };
+    let (whole, _) = f.service.remote_files("42").unwrap();
+    refuse("test-file-0");
+    // Alone or automatically, a product download asks only for the rest.
+    for args in [json!({"productIds":["42"]}), json!({"productIds":["42"],"automatic":true})] {
+        f.service.enqueue(&args).await.unwrap();
+        let job = queued().remove(0);
+        assert_eq!(job["fileIds"], json!(["test-file-1"]));
+        assert_eq!(f.service.job_files(&job, whole.clone()).unwrap().len(), 1);
+        settle();
+    }
+    // That one file can still be asked for by itself.
+    f.service.enqueue(&json!({"productIds":["42"],"selectedFileIds":["test-file-0"]})).await.unwrap();
+    assert_eq!(queued().remove(0)["fileIds"], json!(["test-file-0"]));
+    settle();
+    // The job that was refused held the whole list, so no automatic job follows it.
+    for job in c.list("job").unwrap() {
+        c.delete("job", job["id"].as_str().unwrap()).unwrap();
+    }
+    c.put("job","refused",json!({"id":"refused","type":"download","productId":"42","state":"needsAction","errorCode":"store_file_unavailable","selectedFileIds":null,"manifestFingerprint":fingerprint(&whole)})).unwrap();
+    c.command("preferences", json!({"patch":{"autoDownloadAll":true}})).unwrap();
+    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    assert!(queued().is_empty());
+    // With every file refused there is nothing to ask for, and no job says the list is unknown.
+    refuse("test-file-1");
+    let alone = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    assert_eq!(alone["jobIds"], json!([]));
+    assert!(queued().is_empty());
+}
+
+#[tokio::test]
 async fn product_queue_includes_thirty_files_deduplicates_active_job_and_persists_intent() {
     let f = Fixture::new();
     f.seed(30, true);
@@ -3236,6 +3286,17 @@ fn kept_file_whose_extraction_failed_still_exports_its_original() {
     let result = f.service.disk_operation(
         "export_zip",
         &json!({"productIds":["42"],"path":f.path.join("kept.zip")}),
+        &AtomicBool::new(false),
+    ).unwrap();
+    assert_eq!(result["fileCount"], 2);
+    // A file its store refused counts the same while a grant still names it.
+    f.service.catalogue.put("entitlement","test-entitlement",json!({"id":"test-entitlement","productId":"42","accountId":"test-account","fileIds":["test-file-0","test-file-1"],"manifestComplete":true})).unwrap();
+    // The record a refused download leaves, as the transfer writes it.
+    let pending = format!("pending-{}", io::key("test-file-1"));
+    f.service.catalogue.put("artifact",&pending,json!({"id":pending,"productId":"42","fileId":"test-file-1","rootId":"test-root","relativePath":"assets/refused/fixture-1.unitypackage","productDirectory":"assets/refused","revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+    let result = f.service.disk_operation(
+        "export_zip",
+        &json!({"productIds":["42"],"path":f.path.join("refused.zip")}),
         &AtomicBool::new(false),
     ).unwrap();
     assert_eq!(result["fileCount"], 2);

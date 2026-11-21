@@ -304,3 +304,62 @@ fn exact_avatar_tags_add_compatibility_evidence_without_entitlement_and_honor_ov
         .iter()
         .all(|v| v["source"] == "user"));
 }
+
+#[test]
+fn a_file_its_store_refused_counts_as_dropped_and_raises_no_attention() {
+    // The record a download leaves when the store answers that a file is no longer offered.
+    fn refuse(conn: &Connection, index: usize) {
+        let id = format!("pending-f{index}");
+        set_raw(conn,"artifact",&id,&json!({"id":id,"productId":"p","fileId":format!("f{index}"),"revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
+    }
+    fn failed(conn: &Connection, failures: Value) {
+        set_raw(conn,"job","latest",&json!({"id":"latest","productId":"p","type":"download","state":"needsAction","updatedAt":"2026-01-02T00:00:00Z","errorCode":"store_file_unavailable","failures":failures})).unwrap();
+    }
+    fn listed(product: &Value) -> Vec<String> {
+        product["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| text(file, "id").to_owned())
+            .collect()
+    }
+    let refusal = json!({"fileId":"f1","errorCode":"store_file_unavailable"});
+    let conn = fixture(3, true);
+    artifact(&conn, 0, "ready", None);
+    refuse(&conn, 1);
+    failed(&conn, json!({"f1":refusal}));
+    // The grant still names f1, as an update can leave it, but nothing of it was downloaded.
+    let product = projected(&conn);
+    assert_eq!(listed(&product), ["f0", "f2"]);
+    assert_eq!(
+        (product["total"].clone(), product["knownFileCount"].clone(), product["downloaded"].clone()),
+        (json!(2), json!(2), json!(1))
+    );
+    assert_eq!(product["manifestComplete"], true);
+    assert_eq!(product["status"], "partial");
+    // Any other failure in the same download is still Attention.
+    failed(&conn, json!({"f1":refusal,"f2":{"fileId":"f2","errorCode":"network_failed"}}));
+    assert_eq!(projected(&conn)["status"], "attention");
+    failed(&conn, json!({"f1":refusal}));
+    artifact(&conn, 2, "ready", None);
+    assert_eq!(projected(&conn)["status"], "ready");
+    // A file downloaded before stays as a kept row, usable even while a sync asks to
+    // verify the store's files: there is nothing left to verify it against.
+    artifact(&conn, 1, "ready", None);
+    let mut file = raw(&conn, "remote_file", "f1").unwrap().unwrap();
+    file["requiresContentVerification"] = json!(true);
+    set_raw(&conn, "remote_file", "f1", &file).unwrap();
+    let product = projected(&conn);
+    assert_eq!(listed(&product), ["f0", "f1", "f2"]);
+    assert_eq!(
+        (product["files"][1]["kept"].clone(), product["files"][1]["status"].clone(), product["keptFiles"].clone()),
+        (json!(true), json!("ready"), json!(1))
+    );
+    assert_eq!(product["status"], "ready");
+    // A new attempt replaces the refusal, so the file is listed again.
+    conn.execute("DELETE FROM entities WHERE kind='artifact' AND id='f1'", [])
+        .unwrap();
+    assert_eq!(listed(&projected(&conn)), ["f0", "f2"]);
+    set_raw(&conn,"artifact","pending-f1",&json!({"id":"pending-f1","productId":"p","fileId":"f1","revision":null,"status":"downloading","originalAvailable":false})).unwrap();
+    assert_eq!(listed(&projected(&conn)), ["f0", "f1", "f2"]);
+}

@@ -313,6 +313,22 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
+/// Store products whose projection predates refused files counting as dropped: a
+/// file the store refused as no longer offered is still an ordinary row.
+pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT a.product_id FROM entities a
+         JOIN products p ON p.id=a.product_id, json_each(p.body,'$.files') f
+         WHERE a.kind='artifact'
+           AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
+           AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
+           AND COALESCE(json_extract(f.value,'$.kept'),0)=0",
+    )?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
 fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
     values.collect::<BTreeSet<_>>().into_iter().collect()
 }
@@ -348,6 +364,10 @@ fn offered_sources(
         .filter(|file| file["originKind"] != "local" && !text(file, "sourceFileId").is_empty())
         .map(source_key)
         .collect()
+}
+/// The store refused this file as no longer offered on its last download.
+fn refused_download(artifact: &Value) -> bool {
+    text(artifact, "errorCode") == "store_file_unavailable"
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     artifact["attentionDismissed"] != true && artifact_failed(artifact)
@@ -446,6 +466,15 @@ fn job_needs_attention(job: &Value, product: &str) -> bool {
     matches!(text(job, "state"), "failed" | "needsAction")
         && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
         && !strings(&job["attentionDismissed"]).iter().any(|id| id == product)
+        && !only_refused(job)
+}
+
+/// A download that failed only on files its store no longer offers leaves nothing
+/// to retry: a product download never asks for them again.
+fn only_refused(job: &Value) -> bool {
+    job["failures"].as_object().is_some_and(|failures| {
+        !failures.is_empty() && failures.values().all(refused_download)
+    })
 }
 
 /// Records to rewrite so one product's current failures stop raising Attention. No
@@ -541,8 +570,8 @@ fn refresh_local(
                 remote.push(file);
             }
         }
-        // A store file outside the current list, listed or not, changes rows,
-        // search and evidence; the full refresh rebuilds them consistently.
+        // A store file outside the current list, listed or not, or one its store
+        // refused changes rows, search and evidence; the full refresh rebuilds them.
         let kept_or_unlisted = product["provider"] != "local" && {
             let rows = product["files"].as_array();
             let listed: BTreeSet<&str> = rows
@@ -552,9 +581,9 @@ fn refresh_local(
                 .collect();
             rows.into_iter().flatten().any(|file| {
                 file["kept"] == true && changed_files.contains(text(file, "id"))
-            }) || artifacts
-                .iter()
-                .any(|artifact| !listed.contains(text(artifact, "fileId")))
+            }) || artifacts.iter().any(|artifact| {
+                !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
+            })
         };
         if kept_or_unlisted {
             return Ok(false);
@@ -780,6 +809,11 @@ fn effective_with_jobs(
             *entry = artifact;
         }
     }
+    let refused: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|artifact| refused_download(artifact))
+        .map(|artifact| text(artifact, "fileId"))
+        .collect();
     let mut roots = BTreeMap::new();
     for root in artifacts
         .iter()
@@ -1046,9 +1080,14 @@ fn effective_with_jobs(
     let mut evidence = vec![];
     let mut known_file_count = 0;
     let mut kept_count = 0;
+    // A file its store refused as no longer offered counts as dropped, however long
+    // a grant still names it.
     for (fid, retained) in file_ids
         .into_iter()
-        .map(|fid| (fid, false))
+        .map(|fid| {
+            let dropped = refused.contains(fid.as_str());
+            (fid, dropped)
+        })
         .chain(kept.into_iter().map(|fid| (fid, true)))
     {
         let known = remote_map.contains_key(&fid);
