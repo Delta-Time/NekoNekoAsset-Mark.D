@@ -23,7 +23,7 @@ import Toggle from './Toggle';
 import {contentLang} from './content-lang';
 import {StatusIcon,CategoryIcon} from './LibraryIcons';
 import UpdatePrompt from './UpdatePrompt';
-import {displayAppVersion,resumesAfterRestart,updateJobBlocker,updateText} from './update-i18n';
+import {resumesAfterRestart,updateJobBlocker,updateText} from './update-i18n';
 import {resetText,resetErrorText} from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
@@ -81,7 +81,7 @@ import {nativeErrorText} from './error-i18n';
 import {nativeWorkflowText} from './native-workflow-i18n';
 export default function App(){
  const [appVersion,setAppVersion]=useState(packageVersion);
- useEffect(()=>{if(isTauri())void getVersion().then(version=>setAppVersion(displayAppVersion(version))).catch(()=>{});},[]);
+ useEffect(()=>{if(isTauri())void getVersion().then(setAppVersion).catch(()=>{});},[]);
  const [nativeState,setNativeState]=useState<NativeState>(emptyState),[loaded,setLoaded]=useState(false),[loadingError,setLoadingError]=useState('');
  const [libraryState,setLibraryState]=useState<LibraryStatus|null>(null),[libraryOpening,setLibraryOpening]=useState(false),libraryStateRef=useRef<LibraryStatus|null>(null),credentialsPromptSeen=useRef(false),libraryRefreshPending=useRef(false),libraryEpoch=useRef(0);
  const blockedLibraryRequest=useRef<{path:string;newLibrary:boolean}|null>(null);
@@ -109,8 +109,8 @@ export default function App(){
  const [snapshotVersion,setSnapshotVersion]=useState(0),[collectionBusy,setCollectionBusy]=useState(false),[committedCollections,setCommittedCollections]=useState<NativeCollection[]>([]);
  const [libraryReady,setLibraryReady]=useState(false),[context,setContext]=useState<{x:number;y:number;ids:string[]}|null>(null),[licenseOpen,setLicenseOpen]=useState(false),licenseActive=useRef(false),licenseButton=useRef<HTMLButtonElement>(null);
  const [deleteLocalSelection,setDeleteLocalSelection]=useState<{ids:string[];names:string[]}|null>(null);
- const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads'|'staleDownload';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
- const watchedDownloads=useRef(new Set<string>()),[staleDownloads,setStaleDownloads]=useState<string[]>([]);
+ const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
+ const watchedDownloads=useRef(new Set<string>()),staleProducts=useRef(new Set<string>());
  const localProgress=useRef<LocalImportProgress|null>(null);
  const latestLocalProgress=useCallback(()=>localProgress.current,[]);
  useEffect(()=>{
@@ -260,26 +260,36 @@ export default function App(){
  const hasDownloadedFiles=(ids:string[])=>ids.some(id=>{const product=productMap.get(id);return !product||product.downloaded>(product.keptFiles??0)||product.status==='attention';});
  const requestDeleteDownloads=(ids:string[])=>{const unique=[...new Set(ids)];if(onlineSelection(unique))setProductConfirm({kind:'deleteDownloads',ids:unique,names:unique.map(id=>productMap.get(id)?.title??'').filter(Boolean)});};
  const deleteDownloads=async(args:Record<string,unknown>,ids:string[])=>{setDeletingDownloads(old=>new Set([...old,...ids]));try{await invokeAction('storage','delete_downloads',args);}finally{setDeletingDownloads(old=>new Set([...old].filter(id=>!ids.includes(id))));}};
- /** Downloads started here offer an update when the store no longer offers a file. */
+ /** Downloads started here update their product when the store no longer offers a file. */
  const watchDownloads=(result:unknown)=>{for(const id of (result as {jobIds?:unknown[]}|undefined)?.jobIds??[])if(typeof id==='string')watchedDownloads.current.add(id);};
+ // One update per store covers every such product once those downloads settle, because a
+ // store update slows that store's transfers to one. An asset downloaded whole then gets
+ // its updated list through the download request it already holds.
  useEffect(()=>{
-  const stale=new Set<string>();
+  let active=false;
   for(const job of nativeState.jobs as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})[]){
-   if(!watchedDownloads.current.has(job.id)||['queued','running'].includes(job.state))continue;
+   if(!watchedDownloads.current.has(job.id))continue;
+   // A download waiting for its account's sign-in holds up no other update.
+   if(['queued','running'].includes(job.state)){if(job.errorCode!=='auth_required')active=true;continue;}
    watchedDownloads.current.delete(job.id);
-   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))stale.add(job.productId);
+   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))staleProducts.current.add(job.productId);
   }
-  if(stale.size)setStaleDownloads(old=>[...new Set([...old,...stale])]);
+  if(active||!staleProducts.current.size)return;
+  // Store IDs carry their store (BOOTH's are bare numbers), so a busy or signed-out
+  // account of one store cannot fail another store's update.
+  const stores=new Map<string,string[]>();
+  for(const id of staleProducts.current){const store=id.includes(':')?id.slice(0,id.indexOf(':')):'booth';stores.set(store,[...stores.get(store)??[],id]);}
+  staleProducts.current.clear();
+  for(const productIds of stores.values())run(onNative('booth','update_products',{productIds}));
  },[nativeState.jobs]);
- useEffect(()=>{if(staleDownloads.length&&!productConfirm){setProductConfirm({kind:'staleDownload',ids:staleDownloads,names:staleDownloads.map(id=>productMap.get(id)?.title??'').filter(Boolean)});setStaleDownloads([]);}},[staleDownloads,productConfirm,productMap]);
  const download=(ids:string[])=>{if(ids.length)run(onNative('storage','enqueue_products',{productIds:ids}).then(watchDownloads));};
  const downloadFile=(fileId:string,redownload:boolean)=>run(onNative('storage','enqueue_file',{fileId,redownload}).then(watchDownloads));
  const update=(ids:string[])=>{if(ids.length)run(onNative('booth','update_products',{productIds:ids}));};
  const syncLicenses=(ids:string[])=>{if(ids.length)run(invokeAction<{jobId?:string|null}>('licenses','sync',{productIds:ids}).then(result=>{if(!result?.jobId)notify(licenseText(locale,'noLicenseWork')!);}));};
  const needsAttention=(ids:string[])=>ids.some(id=>productMap.get(id)?.status==='attention');
  const dismissAttention=(ids:string[])=>{const targets=ids.filter(id=>productMap.get(id)?.status==='attention');if(targets.length)run(onNative('catalogue','dismiss_attention',{productIds:targets}));};
- /** Files the latest finished download of a product found the store no longer offers. */
- const refusedFiles=(productId:string)=>{const job=nativeState.jobs.filter(job=>job.type==='download'&&job.productId===productId&&!['queued','running'].includes(job.state)).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''))[0] as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})|undefined;return Object.entries(job?.failures??{}).filter(([,failure])=>['store_file_unavailable','free_offer_unavailable'].includes(failure?.errorCode??'')).map(([id])=>id);};
+ /** Closed free offers can stay listed after a download. */
+ const refusedFiles=(productId:string)=>{const job=nativeState.jobs.filter(job=>job.type==='download'&&job.productId===productId&&!['queued','running'].includes(job.state)).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''))[0] as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})|undefined;return Object.entries(job?.failures??{}).filter(([,failure])=>failure?.errorCode==='free_offer_unavailable').map(([id])=>id);};
  const exportZip=async(ids:string[])=>{if(!ids.length)return;try{const destination=await nativeDialog('save_file',{defaultName:'NekoNekoAsset.zip',filters:[{name:'ZIP',extensions:['zip']}]});if(destination)await onNative('storage','export_zip',{productIds:ids,path:destination.path});}catch(error){notify(q(errorCode(error)));}};
  const edit=()=>setDialog(visibleSelected.length>1?'batch':'edit');
  const select=(p:Product,e?:Pick<MouseEvent,'shiftKey'|'ctrlKey'|'metaKey'>)=>{if(view==='settings'){setView('library');setTab('details');setInspector(true);}else if(view==='activity')setView('library');setFocusId(p.id);if(e?.shiftKey&&anchor.current){const a=filtered.findIndex(p=>p.id===anchor.current),b=filtered.findIndex(item=>item.id===p.id);setSelected(filtered.slice(Math.max(0,Math.min(a,b)),Math.max(a,b)+1).map(p=>p.id));}else if(e?.ctrlKey||e?.metaKey){setSelected(ids=>ids.includes(p.id)?ids.filter(id=>id!==p.id):[...ids,p.id]);anchor.current=p.id;}else{setSelected([p.id]);anchor.current=p.id;}};
@@ -369,7 +379,7 @@ export default function App(){
  {dialog==='spending'&&<SpendingDialog locale={locale} productIds={chosen} accountIds={query.accountIds??undefined} onClose={()=>setDialog(null)}/>}
  {themeDeleteTarget&&<ConfirmDelete locale={locale} kind="theme" name={themeDeleteTarget.name} onDelete={()=>deleteTheme(themeDeleteTarget.id)} onClose={()=>setThemeDeleteTarget(null)}/>}
  {deleteLocalSelection&&<DeleteLocalProducts locale={locale} {...deleteLocalSelection} onDelete={deleteLocalProducts} onClose={()=>setDeleteLocalSelection(null)}/>}
- {productConfirm&&<ConfirmProducts locale={locale} {...(productConfirm.kind==='downloadAll'?{title:q('downloadAll'),message:q('confirmDownloadAll'),confirm:q('download')}:productConfirm.kind==='staleDownload'?{title:q('staleDownloadTitle'),message:q('confirmStaleDownload'),confirm:q('updateAndDownload')}:{title:q('deleteDownloads'),message:q('confirmDeleteDownloads'),confirm:q('delete'),danger:true})} count={productConfirm.ids.length} names={productConfirm.names} onConfirm={async()=>{if(productConfirm.kind==='downloadAll')watchDownloads(await invokeAction('storage','enqueue_products',{productIds:productConfirm.ids}));else if(productConfirm.kind==='staleDownload'){await invokeAction('storage','want_download',{productIds:productConfirm.ids});await invokeAction('booth','update_products',{productIds:productConfirm.ids});}else await deleteDownloads({productIds:productConfirm.ids},productConfirm.ids);}} onClose={()=>setProductConfirm(null)}/>}
+ {productConfirm&&<ConfirmProducts locale={locale} {...(productConfirm.kind==='downloadAll'?{title:q('downloadAll'),message:q('confirmDownloadAll'),confirm:q('download')}:{title:q('deleteDownloads'),message:q('confirmDeleteDownloads'),confirm:q('delete'),danger:true})} count={productConfirm.ids.length} names={productConfirm.names} onConfirm={async()=>{if(productConfirm.kind==='downloadAll')watchDownloads(await invokeAction('storage','enqueue_products',{productIds:productConfirm.ids}));else await deleteDownloads({productIds:productConfirm.ids},productConfirm.ids);}} onClose={()=>setProductConfirm(null)}/>}
  {context&&<LibraryContextMenu {...context} actions={contextActions} onClose={()=>setContext(null)}/>}{licenseOpen&&licenseEnabled&&<LicenseFilterDialog locale={locale} value={query.license??{}} onChange={cells=>updateQuery({license:Object.keys(cells).length?cells:null})} onClose={()=>{setLicenseOpen(false);requestAnimationFrame(()=>licenseButton.current?.focus({preventScroll:true}));}}/>}
  {dialog==='avatars'&&<SmallDialog className="avatar-dialog" label={q('manageAvatars')} close={()=>setDialog(null)} q={q}><AvatarManager options={avatarOptions} enabled={avatarEnabled} label={avatarLabel} onChange={changeAvatars} onEdit={changeAvatarDetails} q={q}/></SmallDialog>}
  {libraryOpening&&<div className="modal-backdrop"><LibraryAccess locale={locale} status={libraryState} busy onChoose={()=>{}} onRetry={()=>{}}/></div>}

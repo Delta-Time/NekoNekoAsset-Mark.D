@@ -22,7 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "com.yank.nekonekoasset.bridge"
 REPOSITORY = "Yan-K/NekoNekoAsset-Public"
 PAGES = "https://yan-k.github.io/NekoNekoAsset-Public"
-VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
+CORE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+APP_VERSION = CORE_VERSION + r"(?:\+D[1-9][0-9]*)?"
+VERSION = re.compile(CORE_VERSION)
 BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_bridge.py",
                   "scripts/", ".github/workflows/", "rust-toolchain.toml", "release/config.json",
                   ".gitattributes", "changelog.md")
@@ -68,8 +70,8 @@ def version() -> str:
     cargo = (ROOT / "app/src-tauri/Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'^version\s*=\s*"([^"]+)"', cargo.split("[lib]", 1)[0], re.MULTILINE)
     versions.append(match.group(1) if match else "")
-    if len(set(versions)) != 1 or not VERSION.fullmatch(versions[0]):
-        raise ValueError("App, Cargo and Tauri versions must equal one numeric SemVer")
+    if len(set(versions)) != 1 or not re.fullmatch(APP_VERSION, versions[0]):
+        raise ValueError("App, Cargo and Tauri versions must match, with an optional +D revision")
     return versions[0]
 
 
@@ -80,7 +82,7 @@ def numeric(value: str) -> tuple[int, ...]:
 def bridge_version(current: str) -> str:
     # The Bridge keeps the version of the release that last changed it; a changed Bridge takes the App's.
     bridge = read_json(f"unity/Packages/{PACKAGE}/package.json")["version"]
-    if not VERSION.fullmatch(bridge) or numeric(bridge) > numeric(current):
+    if not VERSION.fullmatch(bridge) or numeric(bridge) > numeric(current.partition("+")[0]):
         raise ValueError("The Bridge version must be numeric SemVer and no newer than the App")
     return bridge
 
@@ -107,10 +109,10 @@ def release_notes(current: str) -> str:
     headings = list(re.finditer(r"^##[ \t]+(.+)$", text, re.MULTILINE))
     versions = []
     for heading in headings:
-        match = re.fullmatch(r"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:[ \t]+.+)?",
+        match = re.fullmatch(rf"({APP_VERSION})(?:[ \t]+.+)?",
                              heading.group(1).strip())
         if not match:
-            raise ValueError("Changelog release headings must start with a numeric version: ## 0.2.1 Beta - YYYY-MM-DD")
+            raise ValueError("Changelog release headings must start with an App version")
         versions.append(match.group(1))
     if not versions or versions[0] != current:
         raise ValueError("The newest changelog.md section must match the App version")

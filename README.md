@@ -15,16 +15,16 @@
 
 ## Fork and support
 
-**NekoNekoAsset Mark.D** is a fork of [NekoNekoAsset by Yan-K](https://github.com/Yan-K/NekoNekoAsset-Public). Mark.D generally follows the upstream version number and appends a revision suffix such as `.D1`, `.D2`, or `.D3`. For example, revision 3 based on upstream `0.1.2` is displayed as `0.1.2.D3`.
+**NekoNekoAsset Mark.D** is a fork of [NekoNekoAsset by Yan-K](https://github.com/Yan-K/NekoNekoAsset-Public). Mark.D generally follows the upstream version number and appends a revision suffix such as `+D1`, `+D2`, or `+D3`. For example, revision 3 based on upstream `0.1.2` is displayed as `0.1.2+D3`. Earlier builds can display the suffix as `.D` instead of `+D`.
 
 For support or bug reports, check the version shown in the **bottom-right corner of the app** and include the full version in the issue. If you are unsure where the bug originates, use the displayed version to choose a tracker.
 
 | Version shown in the app | Where to report |
 | --- | --- |
-| Ends in `.D` followed by a number, for example `0.1.2.D3` | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
-| Has no numbered `.D` suffix, for example `0.1.2` | [Upstream Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+| Ends in a numbered `+D` or legacy `.D` suffix, for example `0.1.2+D3` | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| Plain version number, for example `0.1.2` | [Upstream Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
 
-Mark.D Issues accepts reports only for versions with a numbered `.D` suffix. To avoid adding to the upstream maintainers’ workload, report Mark.D issues in the Mark.D tracker and use one tracker per report.
+Mark.D Issues accepts reports for Mark.D builds with either suffix. To avoid adding to the upstream maintainers’ workload, report Mark.D issues in the Mark.D tracker and use one tracker per report.
 
 Compatibility with upstream is maintained on a best-effort basis. Compatibility across versions is not guaranteed.
 

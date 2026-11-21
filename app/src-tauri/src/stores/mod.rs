@@ -362,10 +362,10 @@ impl StoreService {
         Ok(())
     }
 
-    /// A public listing's facts. No session, gate or catalogue write.
-    async fn public_product(&self, raw: &str) -> Result<Value> {
+    /// Public listing facts, with optional availability reconciliation for an edited BOOTH asset.
+    async fn public_product(&self, raw: &str, edited: Option<(&AppHandle, &str)>) -> Result<Value> {
         let Some((provider, url)) = public_metadata::product_url(raw)? else {
-            return self.booth.fetch_product_metadata(raw).await;
+            return self.booth.fetch_product_metadata(raw, edited).await;
         };
         let transport = match provider {
             StoreProvider::Gumroad => &self.public_gumroad,
@@ -377,7 +377,7 @@ impl StoreService {
 
     /// What a pasted store link asks now. Any other link never reaches the network.
     pub(crate) async fn listing_price(&self, raw: &str) -> Result<Option<Value>> {
-        let product = self.public_product(&public_metadata::bare_url(raw)?).await?;
+        let product = self.public_product(&public_metadata::bare_url(raw)?, None).await?;
         Ok(product.get("listingPrice").cloned())
     }
 
@@ -386,7 +386,8 @@ impl StoreService {
             let raw = args["url"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_URL"))?;
-            return self.public_product(raw).await;
+            let edited = args["editedProductId"].as_str().map(|id| (app, id));
+            return self.public_product(raw, edited).await;
         }
         // Finish interrupted-job recovery before accepting a new login/sync.
         // Provider start is idempotent; the same gate prevents startup from

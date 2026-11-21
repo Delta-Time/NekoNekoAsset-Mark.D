@@ -162,7 +162,7 @@ namespace NekoNekoAsset.Bridge
                     using (new EditorGUILayout.VerticalScope(hasLooseFiles
                         ? GUILayout.Width((position.width - 14f) * .5f) : GUILayout.ExpandWidth(true)))
                     {
-                        GUILayout.Label(".unitypackage", EditorStyles.boldLabel);
+                        GUILayout.Label(L("assetPackages"), EditorStyles.boldLabel);
                         importerScroll = EditorGUILayout.BeginScrollView(importerScroll);
                         foreach (LoadedPackage package in loadedPackages)
                             if (!package.IsLooseFiles) DrawPackageCard(package);
@@ -221,7 +221,9 @@ namespace NekoNekoAsset.Bridge
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label(L("destination"), GUILayout.Width(65f));
+                string label = L("destination");
+                float labelWidth = Mathf.Max(65f, EditorStyles.label.CalcSize(new GUIContent(label)).x);
+                GUILayout.Label(label, GUILayout.Width(labelWidth));
                 string draft = single == null ? destinationDraft : individualDestinationDrafts[single];
                 Rect field = EditorGUILayout.GetControlRect(false, EditorGUIUtility.singleLineHeight);
                 string controlName = single == null ? "NNA.UnifiedDestination"

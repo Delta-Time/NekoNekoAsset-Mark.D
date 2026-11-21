@@ -29,7 +29,7 @@ export const defaultThemeOptions:ThemeOption[] = [
 // Display order; the seeded Mint/Violet/Sky/Amber/Rose/Silver presets join their tone group while they exist.
 const groupOrder={dark:['dark','noir','silver','midnight','ocean','forest','amber','sakura','violet','neon'],light:['light','ink','contrast','sky','aqua','mint','lemon','peach','rose','lilac']};
 const labels:Record<string,Record<Locale,string>>={
- contrast:{en:'High contrast',ja:'ハイコントラスト',ko:'고대비','zh-Hans':'高对比度','zh-Hant':'高對比'},
+ contrast:{en:'High contrast',ja:'高コントラスト',ko:'고대비','zh-Hans':'高对比度','zh-Hant':'高對比'},
  custom:{en:'Custom',ja:'カスタム',ko:'사용자 지정','zh-Hans':'自定义','zh-Hant':'自訂'}
 };
 export function themeDisplayName(locale:Locale,option:ThemeOption):string{return ['dark','light'].includes(option.id)?wf(locale,option.id):labels[option.id]?.[locale]??option.name;}

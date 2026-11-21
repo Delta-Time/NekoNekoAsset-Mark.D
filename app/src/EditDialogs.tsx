@@ -36,7 +36,7 @@ export interface EditDialogsProps {
   avatarOptions?:AvatarOption[];
   avatarLabel?:(id:string)=>string;
   onRefreshAvatars?:()=>void|Promise<void>;
-  onFetchMetadata?:(url:string)=>Promise<FetchedProductMetadata>;
+  onFetchMetadata?:(url:string,editedProductId?:string)=>Promise<FetchedProductMetadata>;
   onLocalFiles?:(productId:string,args:{draftId:string;addSources:string[];removeFileIds:string[]})=>Promise<unknown>;
   onCreateCollection?: (name:string)=>void | Promise<void>;
   onRenameCollection?: (oldName:string,newName:string)=>void | Promise<void>;
@@ -74,7 +74,7 @@ export async function exportThemeConfig(tokens: Record<string,string>, name = ''
   await nativeFileAction('write_text',{path:chosen.path,text:JSON.stringify(config,null,2)});
   return true;
 }
-const operationLabels:Record<Locale,string>={en:'Could not complete this action. Your changes are retained.',ja:'操作を完了できませんでした。変更は保持されています。',ko:'작업을 완료하지 못했습니다. 변경 사항은 유지됩니다.','zh-Hans':'无法完成操作。更改已保留。','zh-Hant':'無法完成操作。變更已保留。'};
+const operationLabels:Record<Locale,string>={en:'Could not complete this action. Your changes are retained.',ja:'操作を完了できませんでした。編集内容は残っています。',ko:'작업을 완료하지 못했습니다. 변경 사항은 유지됩니다.','zh-Hans':'无法完成操作。更改已保留。','zh-Hant':'無法完成操作。變更已保留。'};
 const nativeLabels:Record<Locale,string>={en:'This action requires the desktop app.',ja:'この操作にはデスクトップアプリが必要です。',ko:'이 작업은 데스크톱 앱에서 사용할 수 있습니다.','zh-Hans':'此操作需要桌面应用。','zh-Hant':'此操作需要桌面應用程式。'};
 const operationMessage=(locale:Locale,code:string)=>code==='nativeUnavailable'?nativeLabels[locale]:operationLabels[locale];
 export function normalizeProductUrl(value:string):string|null {
@@ -180,7 +180,7 @@ function DialogBody(props: EditDialogsProps) {
     metadataPending.current=true;
     setFetching(thumbnailOnly?'thumbnail':'metadata');setError('');
     try{
-      const data=thumbnailOnly&&lastFetched.current?.url===url?lastFetched.current:await p.onFetchMetadata(url);
+      const data=thumbnailOnly&&lastFetched.current?.url===url?lastFetched.current:await p.onFetchMetadata(url,thumbnailOnly?undefined:active?.id);
       if(!alive.current||request!==metadataRequest.current||normalizeProductUrl(draftUrl.current)!==url||inFlight.current)return;
       if(data.thumbnailUrl!==null&&!normalizeProductUrl(data.thumbnailUrl))throw new Error('invalidMetadata');
       if(!thumbnailOnly){

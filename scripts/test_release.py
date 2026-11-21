@@ -88,6 +88,19 @@ class ReleaseChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.version()
 
+    def test_mark_d_revision_matches_manifests_and_changelog(self):
+        version = "0.3.13+D1"
+        self.write_json("app/package.json", {"version": version})
+        self.write_json("app/src-tauri/tauri.conf.json", {"version": version})
+        (self.root / "app/src-tauri/Cargo.toml").write_text(
+            f'[package]\nversion = "{version}"\n[lib]\n', encoding="utf-8")
+        self.write_bridge_version("0.3.13")
+        expected = self.write_changelog(version)
+
+        self.assertEqual(release.version(), version)
+        self.assertEqual(release.bridge_version(version), "0.3.13")
+        self.assertEqual(release.release_notes(version), expected)
+
     def test_unbumped_bridge_must_match_the_release_that_published_it(self):
         source = self.root / f"unity/Packages/{release.PACKAGE}/Editor/Bridge.cs"
         source.parent.mkdir(parents=True)

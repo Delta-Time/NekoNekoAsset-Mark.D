@@ -15,16 +15,16 @@
 
 ## このフォークとサポート
 
-**NekoNekoAsset Mark.D** は、[Yan-K さんの NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) のフォークです。原則として本家のバージョン番号に合わせ、Mark.D 版では末尾に `.D1`、`.D2`、`.D3` のように `.D` と数字を付けます。たとえば、本家の `0.1.2` をベースにした Mark.D の第3版は `0.1.2.D3` と表示されます。
+**NekoNekoAsset Mark.D** は、[Yan-K さんの NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) のフォークです。原則として本家のバージョン番号に合わせ、Mark.D 版では末尾に `+D1`、`+D2`、`+D3` のように `+D` と数字を付けます。たとえば、本家の `0.1.2` をベースにした Mark.D の第3版は `0.1.2+D3` と表示されます。以前のビルドでは、末尾が `+D` ではなく `.D` と表示される場合があります。
 
 質問や不具合の報告は GitHub Issues へお願いします。本家とフォークのどちらに原因があるか分からない場合も、**アプリ画面右下のバージョン表示**で報告先を選び、Issue には表示されたバージョンを末尾まで記載してください。
 
 | 画面右下のバージョン表示 | 報告先 |
 | --- | --- |
-| 末尾に `.D` と数字がある（例 `0.1.2.D3`） | [Mark.D の Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
-| 末尾に `.D` と数字がない（例 `0.1.2`） | [本家の Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+| 末尾に `+D` または旧表記の `.D` と数字がある（例 `0.1.2+D3`） | [Mark.D の Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| バージョン番号のみ（例 `0.1.2`） | [本家の Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
 
-Mark.D の Issues では、末尾に `.D` と数字が付くバージョンの報告のみ受け付けます。本家のメンテナーへの負担を避けるため、Mark.D 版で見つかった不具合の報告は、Mark.D の Issues に一本化してください。
+Mark.D の Issues では、どちらの表記の Mark.D 版も報告できます。本家のメンテナーへの負担を避けるため、Mark.D 版で見つかった不具合の報告は、Mark.D の Issues に一本化してください。
 
 本家との互換性は可能な限り維持します。バージョン間の互換性は保証の対象外です。
 

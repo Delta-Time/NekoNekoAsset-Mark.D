@@ -117,13 +117,14 @@ namespace NekoNekoAsset.Bridge
             if (!string.IsNullOrEmpty(request.receipt.error)
                 && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(request.receipt.error)))
                 EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
+            float statusWidth = Mathf.Max(65f, EditorStyles.label.CalcSize(new GUIContent(labels.Text("applied"))).x);
             scroll = EditorGUILayout.BeginScrollView(scroll);
             foreach (BridgeFileResult result in request.receipt.results)
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     EditorGUILayout.SelectableLabel(result.path, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-                    GUILayout.Label(labels.Text(result.state), GUILayout.Width(65));
+                    GUILayout.Label(labels.Text(result.state), GUILayout.Width(statusWidth));
                 }
                 if (!string.IsNullOrEmpty(result.message)) GUILayout.Label(result.message, EditorStyles.wordWrappedMiniLabel);
             }
