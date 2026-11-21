@@ -1,4 +1,5 @@
 //! Small store dispatch boundary. Provider collectors retain their own source contracts.
+pub(crate) mod api;
 pub mod gumroad;
 pub mod http;
 pub mod jinxxy;

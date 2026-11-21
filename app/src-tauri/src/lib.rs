@@ -687,7 +687,10 @@ async fn booth_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use stores::api::StoreRequest as Request;
     let _operation = trusted(&window)?;
+    let request = Request::parse(&action, args).map_err(UiError::from_error)?;
+    let text = |name: &str| request.args().get(name).and_then(Value::as_str);
     if let Some(setup) = services.active_setup()? {
         if services.opening.load(Ordering::Acquire) {
             return Err(UiError {
@@ -695,24 +698,24 @@ async fn booth_action(
             });
         }
         if !matches!(
-            action.as_str(),
-            "account_add"
-                | "account_login"
-                | "login"
-                | "account_rename"
-                | "account_remove"
-                | "account_logout"
-                | "cancel_sync"
-                | "retry_sync"
+            request,
+            Request::AccountAdd(_)
+                | Request::AccountLogin(_)
+                | Request::Login(_)
+                | Request::AccountRename(_)
+                | Request::AccountRemove(_)
+                | Request::AccountLogout(_)
+                | Request::CancelSync(_)
+                | Request::RetrySync(_)
         ) {
             return Err(UiError {
                 code: "library_not_open".into(),
             });
         }
-        if matches!(action.as_str(), "cancel_sync" | "retry_sync") {
+        if matches!(request, Request::CancelSync(_) | Request::RetrySync(_)) {
             let job = setup
                 .catalogue
-                .get("job", args["jobId"].as_str().unwrap_or(""))
+                .get("job", text("jobId").unwrap_or(""))
                 .map_err(UiError::from_error)?;
             if !job.is_some_and(|job| {
                 job["type"]
@@ -724,15 +727,18 @@ async fn booth_action(
                 });
             }
         }
-        if matches!(action.as_str(), "account_login" | "login" | "retry_sync") {
-            let account_id = if action == "retry_sync" {
+        if matches!(
+            request,
+            Request::AccountLogin(_) | Request::Login(_) | Request::RetrySync(_)
+        ) {
+            let account_id = if matches!(request, Request::RetrySync(_)) {
                 setup
                     .catalogue
-                    .get("job", args["jobId"].as_str().unwrap_or(""))
+                    .get("job", text("jobId").unwrap_or(""))
                     .map_err(UiError::from_error)?
                     .and_then(|job| job["accountId"].as_str().map(str::to_owned))
             } else {
-                args["accountId"].as_str().map(str::to_owned)
+                text("accountId").map(str::to_owned)
             };
             if let Some(account_id) = account_id {
                 let provider = setup
@@ -750,56 +756,56 @@ async fn booth_action(
         }
         let result = setup
             .stores
-            .command(&app, &action, args)
+            .command(&app, &action, request.into_args())
             .await
             .map_err(UiError::from_error)?;
         changed(&app, "booth");
         return Ok(result);
     }
     let services = services.services()?;
+    let quiet = matches!(
+        request,
+        Request::FetchProductMetadata(_)
+            | Request::DiagnoseOrdering(_)
+            | Request::DiagnoseManifests(_)
+            | Request::DiagnoseFileStructure(_)
+            | Request::DiagnoseFreeItemEntry(_)
+            | Request::DiagnoseFreeItemIdentity(_)
+            | Request::DiagnoseReceiptTemplate(_)
+            | Request::DiagnoseReceiptNoticeEnvelope(_)
+            | Request::DiagnoseReceiptContactEnvelope(_)
+            | Request::DiagnoseProductLineFields(_)
+    );
+    let job_change = matches!(
+        request,
+        Request::Sync(_)
+            | Request::CancelSync(_)
+            | Request::RetrySync(_)
+            | Request::UpdateProducts(_)
+    );
+    let account_change = matches!(
+        request,
+        Request::AccountAdd(_) | Request::AccountRemove(_) | Request::AccountLogout(_)
+    );
     let result = {
         // Keep new downloads out between the idle check and session clearing.
-        let _queue = if matches!(action.as_str(), "account_logout" | "account_remove") {
+        let _queue = if matches!(
+            request,
+            Request::AccountLogout(_) | Request::AccountRemove(_)
+        ) {
             Some(services.storage.pause_download_queue().await)
         } else {
             None
         };
         services
             .stores
-            .command(&app, &action, args)
+            .command(&app, &action, request.into_args())
             .await
             .map_err(UiError::from_error)?
     };
-    if !matches!(
-        action.as_str(),
-        "fetch_product_metadata"
-            | "diagnose_ordering"
-            | "diagnose_manifests"
-            | "diagnose_file_structure"
-            | "diagnose_free_item_entry"
-            | "diagnose_free_item_identity"
-            | "diagnose_receipt_template"
-            | "diagnose_receipt_notice_envelope"
-            | "diagnose_receipt_contact_envelope"
-            | "diagnose_product_line_fields"
-    ) {
-        changed(
-            &app,
-            if matches!(
-                action.as_str(),
-                "sync" | "cancel_sync" | "retry_sync" | "update_products"
-            ) {
-                "jobs"
-            } else {
-                "booth"
-            },
-        );
-        if !services.setup_only
-            && matches!(
-                action.as_str(),
-                "account_add" | "account_remove" | "account_logout"
-            )
-        {
+    if !quiet {
+        changed(&app, if job_change { "jobs" } else { "booth" });
+        if !services.setup_only && account_change {
             let storage = services.storage.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = storage.reevaluate_automatic().await;
@@ -816,12 +822,17 @@ async fn storage_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use storage::api::StorageRequest as Request;
     let _operation = trusted(&window)?;
+    let request = Request::parse(&action, args).map_err(UiError::from_error)?;
     let device_dir = services.device_dir.clone();
-    if action == "reset_app" {
-        let delete_library = args["deleteLibrary"].as_bool().ok_or_else(|| UiError {
-            code: "reset_invalid_request".into(),
-        })?;
+    if let Request::ResetApp(args) = &request {
+        let delete_library = args
+            .get("deleteLibrary")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| UiError {
+                code: "reset_invalid_request".into(),
+            })?;
         let active = services.services()?;
         if services.opening.swap(true, Ordering::AcqRel) {
             return Err(UiError {
@@ -852,8 +863,9 @@ async fn storage_action(
         return Ok(json!({"restartRequired":true}));
     }
     let services = services.services()?;
-    if action == "migrate_root" && services.catalogue.library_root().is_some() {
+    if matches!(request, Request::MigrateRoot(_)) && services.catalogue.library_root().is_some() {
         let storage = services.storage.clone();
+        let args = request.into_args();
         let result = tauri::async_runtime::spawn_blocking(move || {
             storage.move_library(&args, &AtomicBool::new(false))
         })
@@ -892,31 +904,31 @@ async fn storage_action(
         restart_for_library(app);
         return Ok(result);
     }
+    let quiet = matches!(
+        request,
+        Request::ProductAvailability(_)
+            | Request::RootUsage(_)
+            | Request::OpenFile(_)
+            | Request::OpenProductFolder(_)
+            | Request::OpenRootFolder(_)
+    );
+    let job_change = matches!(
+        request,
+        Request::EnqueueProducts(_)
+            | Request::EnqueueFile(_)
+            | Request::CancelJob(_)
+            | Request::RetryJob(_)
+            | Request::RetryFile(_)
+    );
+    let root_change = matches!(request, Request::ConfigureRoot(_) | Request::RemapRoot(_));
     let result = services
         .storage
-        .command(&app, &action, args)
+        .command(&app, &action, request.into_args())
         .await
         .map_err(UiError::from_error)?;
-    if !matches!(
-        action.as_str(),
-        "product_availability"
-            | "root_usage"
-            | "open_file"
-            | "open_product_folder"
-            | "open_root_folder"
-    ) {
-        changed(
-            &app,
-            if matches!(
-                action.as_str(),
-                "enqueue_products" | "enqueue_file" | "cancel_job" | "retry_job" | "retry_file"
-            ) {
-                "jobs"
-            } else {
-                "storage"
-            },
-        );
-        if matches!(action.as_str(), "configure_root" | "remap_root") {
+    if !quiet {
+        changed(&app, if job_change { "jobs" } else { "storage" });
+        if root_change {
             let storage = services.storage.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = storage.reevaluate_automatic().await;

@@ -1,5 +1,6 @@
 //! Durable product-level downloads and guarded, verified local storage.
 mod ai_evidence;
+pub(crate) mod api;
 pub(crate) use ai_evidence::{
     ai_public_urls_in_text, redact_ai_evidence_text, safe_ai_evidence_name,
 };

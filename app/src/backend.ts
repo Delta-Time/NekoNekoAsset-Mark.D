@@ -11,6 +11,8 @@ import type {
   Job,
   LicensesRequest,
   LicensesResponses,
+  StorageRequest,
+  StoreRequest,
   UnityRequest,
   UnityResponses,
 } from './bindings';
@@ -29,13 +31,11 @@ export type {
 } from './bindings';
 
 export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
-/** A service whose actions are not typed yet takes any action and arguments. */
-type Untyped = { untyped: true };
 /** Each service's actions, generated from its Rust request enum. */
 type Requests = {
   catalogue: CatalogueRequest;
-  booth: Untyped;
-  storage: Untyped;
+  booth: StoreRequest;
+  storage: StorageRequest;
   unity: UnityRequest;
   licenses: LicensesRequest;
 };
@@ -47,11 +47,11 @@ type Responses = {
   unity: UnityResponses;
   licenses: LicensesResponses;
 };
-type Typed<S extends Service> = Extract<Requests[S], { action: string }>;
-export type Action<S extends Service> = Requests[S] extends Untyped ? string : Typed<S>['action'];
-export type ActionArgs<S extends Service, A extends string> = Requests[S] extends Untyped
-  ? Record<string, unknown>
-  : Omit<Extract<Typed<S>, { action: A }>, 'action'>;
+export type Action<S extends Service> = Requests[S]['action'];
+export type ActionArgs<S extends Service, A extends string> = Omit<
+  Extract<Requests[S], { action: A }>,
+  'action'
+>;
 /** Arguments may be left out when every one of them is optional. */
 export type ArgsParam<S extends Service, A extends string> =
   Partial<ActionArgs<S, A>> extends ActionArgs<S, A>

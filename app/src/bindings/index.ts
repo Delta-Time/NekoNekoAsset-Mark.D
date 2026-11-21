@@ -64,6 +64,8 @@ export type { SpendingRequest } from './SpendingRequest';
 export type { SpendingSummary } from './SpendingSummary';
 export type { SpendingTotal } from './SpendingTotal';
 export type { StateSnapshot } from './StateSnapshot';
+export type { StorageRequest } from './StorageRequest';
+export type { StoreRequest } from './StoreRequest';
 export type { SyncedLicense } from './SyncedLicense';
 export type { TagOption } from './TagOption';
 export type { TagSuggestion } from './TagSuggestion';
