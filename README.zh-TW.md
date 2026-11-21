@@ -15,16 +15,16 @@
 
 ## 此分支與支援
 
-**NekoNekoAsset Mark.D** 是 [Yan-K 的 NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) 的分支（fork）。Mark.D 原則上沿用上游的版本號碼，並在結尾加上 `.D` 和數字，例如 `.D1`、`.D2` 或 `.D3`。以原版 `0.1.2` 為基礎的 Mark.D 第 3 版會顯示為 `0.1.2.D3`。
+**NekoNekoAsset Mark.D** 是 [Yan-K 的 NekoNekoAsset](https://github.com/Yan-K/NekoNekoAsset-Public) 的分支（fork）。Mark.D 原則上沿用上游的版本號碼，並在結尾加上 `+D` 和數字，例如 `+D1`、`+D2` 或 `+D3`。以原版 `0.1.2` 為基礎的 Mark.D 第 3 版會顯示為 `0.1.2+D3`。較早的建置版本可能會以 `.D` 顯示此後綴。
 
 需要支援或回報問題時，請查看 **App 畫面右下角的版本**，並在 Issue 中填寫完整版本。即使無法判斷問題源自原版或 Mark.D，也請依畫面顯示的版本選擇回報位置。
 
 | 畫面右下角顯示的版本 | 回報位置 |
 | --- | --- |
-| 結尾有 `.D` 和數字（例如 `0.1.2.D3`） | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
-| 結尾沒有帶數字的 `.D` 後綴（例如 `0.1.2`） | [原專案 Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
+| 結尾有 `+D` 或舊版的 `.D`，再接數字（例如 `0.1.2+D3`） | [Mark.D Issues](https://github.com/Delta-Time/NekoNekoAsset-Mark.D/issues) |
+| 只有版號（例如 `0.1.2`） | [原專案 Issues](https://github.com/Yan-K/NekoNekoAsset-Public/issues) |
 
-Mark.D Issues 僅受理結尾有 `.D` 和數字的版本。為了避免增加上游維護者的負擔，請統一在 Mark.D Issues 回報使用 Mark.D 版時發現的問題。
+Mark.D Issues 受理使用上述任一後綴的 Mark.D 版本。為了避免增加上游維護者的負擔，請統一在 Mark.D Issues 回報使用 Mark.D 版時發現的問題。
 
 我們會盡可能維持與原版的相容性，各版本之間的相容性不在保證範圍內。
 

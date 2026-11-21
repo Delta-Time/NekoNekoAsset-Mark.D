@@ -23,7 +23,7 @@ import Toggle from './Toggle';
 import {contentLang} from './content-lang';
 import {StatusIcon,CategoryIcon} from './LibraryIcons';
 import UpdatePrompt from './UpdatePrompt';
-import {displayAppVersion,resumesAfterRestart,updateJobBlocker,updateText} from './update-i18n';
+import {resumesAfterRestart,updateJobBlocker,updateText} from './update-i18n';
 import {resetText,resetErrorText} from './settings-reset-i18n';
 import './settings-reset.css';
 import AiSuggestions from './AiSuggestions';
@@ -81,7 +81,7 @@ import {nativeErrorText} from './error-i18n';
 import {nativeWorkflowText} from './native-workflow-i18n';
 export default function App(){
  const [appVersion,setAppVersion]=useState(packageVersion);
- useEffect(()=>{if(isTauri())void getVersion().then(version=>setAppVersion(displayAppVersion(version))).catch(()=>{});},[]);
+ useEffect(()=>{if(isTauri())void getVersion().then(setAppVersion).catch(()=>{});},[]);
  const [nativeState,setNativeState]=useState<NativeState>(emptyState),[loaded,setLoaded]=useState(false),[loadingError,setLoadingError]=useState('');
  const [libraryState,setLibraryState]=useState<LibraryStatus|null>(null),[libraryOpening,setLibraryOpening]=useState(false),libraryStateRef=useRef<LibraryStatus|null>(null),credentialsPromptSeen=useRef(false),libraryRefreshPending=useRef(false),libraryEpoch=useRef(0);
  const blockedLibraryRequest=useRef<{path:string;newLibrary:boolean}|null>(null);
