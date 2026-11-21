@@ -210,3 +210,21 @@ fn shared_open_rejects_newer_schema_without_upgrade_and_releases_lock() {
     drop(LibraryLock::acquire(&fixture).unwrap());
     std::fs::remove_dir_all(fixture).unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn setup_probe_uri_accepts_unc_without_a_sqlite_uri_authority() {
+    let mut uri =
+        setup_probe_uri(Path::new(r"\\?\UNC\nna-probe\share\catalogue #%.sqlite3")).unwrap();
+    assert_eq!(
+        uri,
+        "file:////nna-probe/share/catalogue%20%23%25.sqlite3?immutable=1"
+    );
+    // Exercise SQLite's URI parser without opening a network connection.
+    uri.push_str("&mode=memory");
+    Connection::open_with_flags(
+        uri,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .unwrap();
+}

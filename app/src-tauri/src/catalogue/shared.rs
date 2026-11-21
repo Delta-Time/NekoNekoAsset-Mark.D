@@ -14,8 +14,8 @@ pub(super) fn device_id(profile: &Path) -> Result<String> {
 }
 
 fn setup_probe_uri(database: &Path) -> Result<String> {
-    let mut uri = url::Url::from_file_path(database)
-        .map_err(|_| anyhow::anyhow!("root_not_absolute"))?;
+    let mut uri =
+        url::Url::from_file_path(database).map_err(|_| anyhow::anyhow!("root_not_absolute"))?;
     uri.query_pairs_mut().append_pair("immutable", "1");
     if uri.has_host() {
         // SQLite rejects a non-local URI authority. Put the UNC server in
@@ -24,26 +24,6 @@ fn setup_probe_uri(database: &Path) -> Result<String> {
     } else {
         Ok(uri.into())
     }
-}
-
-#[cfg(all(test, windows))]
-#[test]
-fn setup_probe_uri_accepts_unc_without_a_sqlite_uri_authority() {
-    let mut uri = setup_probe_uri(Path::new(
-        r"\\?\UNC\nna-probe\share\catalogue #%.sqlite3",
-    ))
-    .unwrap();
-    assert_eq!(
-        uri,
-        "file:////nna-probe/share/catalogue%20%23%25.sqlite3?immutable=1"
-    );
-    // Exercise SQLite's URI parser without opening a network connection.
-    uri.push_str("&mode=memory");
-    Connection::open_with_flags(
-        uri,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    )
-    .unwrap();
 }
 
 impl Catalogue {
