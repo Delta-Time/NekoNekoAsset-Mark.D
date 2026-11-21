@@ -65,9 +65,12 @@ impl StorageService {
         let result = portable::copy_into_locked_root(&source, &destination, &payload, cancel)?;
         io::check_cancel(cancel)?;
         self.catalogue.retain_move_lock(destination_lock, permit)?;
-        Ok(
-            json!({"libraryPath":destination,"restartRequired":true,"fileCount":result.file_count,"totalBytes":result.total_bytes}),
-        )
+        Ok(serde_json::to_value(super::api::LibraryMoved {
+            library_path: destination.to_string_lossy().into_owned(),
+            restart_required: true,
+            file_count: result.file_count,
+            total_bytes: result.total_bytes,
+        })?)
     }
 
     fn complete_library_payload(

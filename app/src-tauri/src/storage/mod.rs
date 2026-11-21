@@ -316,7 +316,9 @@ impl StorageService {
                 "invalid_job"
             );
             if !matches!(before["state"].as_str(), Some("queued" | "running")) {
-                return Ok(json!({"cancelRequested":false}));
+                return api::answer(api::CancelRequested {
+                    cancel_requested: false,
+                });
             }
             let mut job = before.clone();
             job["cancelRequested"] = json!(true);
@@ -330,7 +332,9 @@ impl StorageService {
                 vec![("job".into(), id.to_owned(), Some(before))],
             )? {
                 self.cancellation(id).store(true, Ordering::Release);
-                return Ok(json!({"cancelRequested":true}));
+                return api::answer(api::CancelRequested {
+                    cancel_requested: true,
+                });
             }
         }
     }
@@ -372,7 +376,9 @@ impl StorageService {
                     self.cancellation(job["id"].as_str().unwrap_or(""))
                         .store(true, Ordering::Release);
                 }
-                return Ok(json!({"cancelled":active.len()}));
+                return api::answer(api::DownloadsCancelled {
+                    cancelled: active.len(),
+                });
             }
         }
     }
@@ -908,7 +914,13 @@ impl StorageService {
             result.push(json!(job_id));
         }
         self.catalogue.put_many(writes)?;
-        Ok(json!({"jobIds":result}))
+        api::answer(api::DownloadJobs {
+            job_ids: result
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        })
     }
     #[cfg(test)]
     pub(crate) async fn enqueue_for_test(&self, args: &Value) -> Result<Value> {

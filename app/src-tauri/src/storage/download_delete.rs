@@ -289,7 +289,9 @@ impl StorageService {
             .filter_map(|artifact| artifact["fileId"].as_str())
             .filter(|id| !incomplete.contains(id))
             .collect();
-        Ok(json!({"deletedFileIds":deleted}))
+        super::api::answer(super::api::DeletedFiles {
+            deleted_file_ids: deleted.into_iter().map(str::to_owned).collect(),
+        })
     }
 }
 

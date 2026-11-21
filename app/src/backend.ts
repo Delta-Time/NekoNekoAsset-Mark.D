@@ -11,8 +11,10 @@ import type {
   Job,
   LicensesRequest,
   LicensesResponses,
+  LocalFiles,
   ProductMetadata,
   StorageRequest,
+  StorageResponses,
   StoreRequest,
   StoreResponses,
   UnityRequest,
@@ -46,7 +48,7 @@ type Requests = {
 type Responses = {
   catalogue: CatalogueResponses;
   booth: StoreResponses;
-  storage: Record<never, never>;
+  storage: StorageResponses;
   unity: UnityResponses;
   licenses: LicensesResponses;
 };
@@ -137,15 +139,9 @@ export interface ProductOverlayChange {
   patch: Partial<Product>;
   ownedAvatarsDelta?: AvatarDelta;
 }
-export interface LocalFileChanges {
-  draftId: string;
-  addSources: string[];
-  removeFileIds: string[];
-}
-export async function updateLocalFiles(
-  productId: string,
-  changes: LocalFileChanges,
-): Promise<{ jobId: string; productIds: string[]; state: string }> {
+/** Files added to and removed from a product's own copies. */
+export type LocalFileChanges = Omit<LocalFiles, 'productId'>;
+export function updateLocalFiles(productId: string, changes: LocalFileChanges) {
   return invokeAction('storage', 'local_files', { productId, ...changes });
 }
 export interface LibraryCredential {

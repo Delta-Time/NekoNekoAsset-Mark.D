@@ -825,13 +825,8 @@ async fn storage_action(
     let _operation = trusted(&window)?;
     let request = Request::parse(&action, args).map_err(UiError::from_error)?;
     let device_dir = services.device_dir.clone();
-    if let Request::ResetApp(args) = &request {
-        let delete_library = args
-            .get("deleteLibrary")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| UiError {
-                code: "reset_invalid_request".into(),
-            })?;
+    if let Request::ResetApp(reset) = &request {
+        let delete_library = reset.delete_library;
         let active = services.services()?;
         if services.opening.swap(true, Ordering::AcqRel) {
             return Err(UiError {
@@ -859,12 +854,15 @@ async fn storage_action(
             return Err(UiError::from_error(error));
         }
         restart_for_library(app);
-        return Ok(json!({"restartRequired":true}));
+        return storage::api::answer(storage::api::RestartRequired {
+            restart_required: true,
+        })
+        .map_err(UiError::from_error);
     }
     let services = services.services()?;
     if matches!(request, Request::MigrateRoot(_)) && services.catalogue.library_root().is_some() {
         let storage = services.storage.clone();
-        let args = request.into_args();
+        let args = request.args();
         let result = tauri::async_runtime::spawn_blocking(move || {
             storage.move_library(&args, &AtomicBool::new(false))
         })
@@ -922,7 +920,7 @@ async fn storage_action(
     let root_change = matches!(request, Request::ConfigureRoot(_) | Request::RemapRoot(_));
     let result = services
         .storage
-        .command(&app, &action, request.into_args())
+        .command(&app, &action, request.args())
         .await
         .map_err(UiError::from_error)?;
     if !quiet {

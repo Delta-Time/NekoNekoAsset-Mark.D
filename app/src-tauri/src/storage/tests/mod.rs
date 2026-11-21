@@ -227,3 +227,51 @@ fn local_job(f: &Fixture, sources: &[PathBuf], mode: &str) -> Value {
         .unwrap()
         .unwrap()
 }
+
+#[test]
+fn storage_requests_give_back_the_arguments_they_were_sent() {
+    // Downloads keep selectedFileIds and a local import fingerprints its arguments, so
+    // null stays apart from missing; parsing checks the round trip in test builds.
+    let draft = uuid::Uuid::new_v4().to_string();
+    for (action, args) in [
+        (
+            "import_local",
+            json!({"draftId":draft,"mode":"single","sources":["C:/Authored/a.zip"],"name":"Authored","category":"Clothes","categoryManual":true,"tags":["VRChat"],"thumbnailUrl":null}),
+        ),
+        (
+            "import_local",
+            json!({"draftId":draft,"mode":"batch","sources":["C:/Authored/a.zip"],"rootId":"r","name":"","category":"Hair","categoryManual":false,"tags":[],"sourceUrl":"https://booth.pm/ja/items/1","thumbnailPath":"a.png","thumbnailUrl":"https://booth.pximg.net/a.png","products":[{"source":"C:/Authored/a.zip","name":"A","category":"Hair","categoryManual":false,"tags":[],"sourceUrl":"","thumbnailUrl":null}]}),
+        ),
+        (
+            "local_files",
+            json!({"productId":"local","draftId":draft,"addSources":["C:/Authored/b.png"],"removeFileIds":[]}),
+        ),
+        ("delete_local_products", json!({"productIds":["local"]})),
+        ("enqueue_products", json!({"productIds":["1"]})),
+        (
+            "enqueue_products",
+            json!({"productIds":["1"],"rootId":"r","selectedFileIds":null,"redownload":true}),
+        ),
+        ("enqueue_file", json!({"fileId":"f","redownload":false})),
+        ("cancel_job", json!({"jobId":"j"})),
+        ("cancel_downloads", json!({})),
+        ("delete_downloads", json!({"productIds":["1"],"fileId":"f"})),
+        ("retry_job", json!({"jobId":"j"})),
+        ("retry_file", json!({"fileId":"f"})),
+        ("configure_root", json!({"path":"D:/Authored"})),
+        ("migrate_root", json!({"rootId":"r","path":"D:/Moved"})),
+        ("cleanup_old_root", json!({"rootId":"r"})),
+        ("export_zip", json!({"productIds":["1"],"path":"D:/a.zip"})),
+        ("product_availability", json!({"productId":"1","extra":1.5})),
+        ("root_usage", json!({})),
+        ("open_file", json!({"fileId":"f"})),
+        ("reset_app", json!({"deleteLibrary":false})),
+    ] {
+        assert_eq!(
+            api::StorageRequest::parse(action, args.clone())
+                .unwrap()
+                .args(),
+            args
+        );
+    }
+}

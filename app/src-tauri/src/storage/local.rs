@@ -308,7 +308,11 @@ impl StorageService {
                 job["requestFingerprint"] == fingerprint,
                 "local_draft_changed"
             );
-            return Ok(json!({"jobId":id,"productIds":[product_id],"state":job["state"]}));
+            return super::api::answer(super::api::LocalJob {
+                job_id: id,
+                product_ids: vec![product_id.to_owned()],
+                state: job["state"].as_str().map(str::to_owned),
+            });
         }
         ensure!(
             !self.catalogue.list("job")?.iter().any(|job| matches!(
@@ -414,7 +418,11 @@ impl StorageService {
         };
         let job = json!({"id":id,"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"rootId":root["id"],"requestFingerprint":fingerprint,"productIds":[product_id],"completedProductIds":[],"localPlan":plan,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
         self.catalogue.put("job", &id, job)?;
-        Ok(json!({"jobId":id,"productIds":[product_id],"state":"queued"}))
+        super::api::answer(super::api::LocalJob {
+            job_id: id,
+            product_ids: vec![product_id.to_owned()],
+            state: Some("queued".into()),
+        })
     }
     fn local_metadata(&self, args: &Value) -> Result<Value> {
         ensure!(
@@ -478,7 +486,11 @@ impl StorageService {
                 job["requestFingerprint"] == io::key(&serde_json::to_string(args)?),
                 "local_draft_changed"
             );
-            return Ok(json!({"jobId":id,"productIds":job["productIds"],"state":job["state"]}));
+            return super::api::answer(super::api::LocalJob {
+                job_id: id,
+                product_ids: super::api::ids(&job["productIds"]),
+                state: job["state"].as_str().map(str::to_owned),
+            });
         }
         let mode = args["mode"].as_str().unwrap_or("single");
         ensure!(matches!(mode, "single" | "batch"), "invalid_arguments");
@@ -630,7 +642,11 @@ impl StorageService {
         let product_ids: Vec<_> = plan.groups.iter().map(|g| g.product_id.clone()).collect();
         let job = json!({"id":id,"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"rootId":root["id"],"requestFingerprint":io::key(&serde_json::to_string(args)?),"productIds":product_ids,"completedProductIds":[],"mode":mode,"localPlan":plan,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
         self.catalogue.put("job", &id, job)?;
-        Ok(json!({"jobId":id,"productIds":product_ids}))
+        super::api::answer(super::api::LocalJob {
+            job_id: id,
+            product_ids,
+            state: None,
+        })
     }
 
     pub(super) async fn retry_local_import(&self, id: &str) -> Result<Value> {
@@ -660,7 +676,11 @@ impl StorageService {
             self.cancellation(id).store(false, Ordering::Release);
             self.put_job(&mut job, "queued", None)?;
         }
-        Ok(json!({"jobId":id,"productIds":job["productIds"]}))
+        super::api::answer(super::api::LocalJob {
+            job_id: id.to_owned(),
+            product_ids: super::api::ids(&job["productIds"]),
+            state: None,
+        })
     }
 
     /// Called under the existing queue gate; local products never request store tickets.

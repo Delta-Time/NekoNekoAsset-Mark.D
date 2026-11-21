@@ -437,7 +437,9 @@ impl StorageService {
         }
         job["result"] = json!({"deletedProductIds":ids});
         self.put_job(&mut job, "completed", None)?;
-        Ok(json!({"deletedProductIds":ids}))
+        super::api::answer(super::api::DeletedProducts {
+            deleted_product_ids: ids,
+        })
     }
 }
 

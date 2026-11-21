@@ -79,7 +79,7 @@ impl StorageService {
             service.cancellations.lock().unwrap().remove(&task_id);
             service.changed(&app, Some(&task_id));
         });
-        Ok(json!({"jobId":id}))
+        super::api::answer(super::api::OperationJob { job_id: id })
     }
     pub(super) fn payload(
         &self,
@@ -751,12 +751,15 @@ impl StorageService {
     pub(super) fn open_artifact(&self, action: &str, args: &Value) -> Result<Value> {
         let path = self.resolve_open_target(action, args)?;
         io::open_path(&path)?;
-        Ok(json!({"opened":true}))
+        super::api::answer(super::api::Opened { opened: true })
     }
     /// Measured on request so Settings always shows the folder's and drive's current state.
     pub(super) fn root_usage(&self, args: &Value) -> Result<Value> {
         let path = self.root_path(&self.root(args["rootId"].as_str())?)?;
-        Ok(json!({"usedBytes":io::tree_bytes(&path)?,"freeBytes":fs2::available_space(&path)?}))
+        super::api::answer(super::api::RootUsage {
+            used_bytes: io::tree_bytes(&path)?,
+            free_bytes: fs2::available_space(&path)?,
+        })
     }
     /// Resolve a completed target without launching a shell; regression tests are inert.
     pub(super) fn resolve_open_target(&self, action: &str, args: &Value) -> Result<PathBuf> {
@@ -931,9 +934,21 @@ impl StorageService {
                 }
             }
         }
-        Ok(
-            json!({"folderAvailable":folder,"openableFileIds":openable,"rootStatus":if online{"online"}else if offline{"offline"}else{"unconfigured"}}),
-        )
+        super::api::answer(super::api::ProductAvailability {
+            folder_available: folder,
+            openable_file_ids: openable
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            root_status: if online {
+                "online"
+            } else if offline {
+                "offline"
+            } else {
+                "unconfigured"
+            },
+        })
     }
     pub(super) fn restore(
         &self,
