@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { errorCode, invokeAction } from '../../backend';
+import { errorCode, invokeAction, type Preferences } from '../../backend';
 import { changedPreferences } from '../../refresh';
 import type { Library } from '../library/useLibrary';
 import type { Notices } from '../shell/useNotice';
@@ -45,10 +45,10 @@ export function usePreferenceSync({
     bundledFonts,
     oneHandedDrag,
   } = uiPrefs;
-  const displayedPreferences = useRef<Record<string, unknown> | null>(null),
-    pendingPreferences = useRef<Record<string, unknown>>({}),
+  const displayedPreferences = useRef<Preferences | null>(null),
+    pendingPreferences = useRef<Preferences>({}),
     preferenceSaves = useRef(new Set<Promise<void>>());
-  const onPreferences = (patch: Record<string, unknown>) => {
+  const onPreferences = (patch: Preferences) => {
     const save = (async () => {
       try {
         if (

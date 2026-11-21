@@ -8,6 +8,7 @@ import type { Collections } from './Collections';
 import type { Conflict } from './Conflict';
 import type { CustomCategories } from './CustomCategories';
 import type { EditResult } from './EditResult';
+import type { PreferencesSaved } from './PreferencesSaved';
 import type { Product } from './Product';
 import type { QueryResult } from './QueryResult';
 import type { SpendingSummary } from './SpendingSummary';
@@ -35,4 +36,5 @@ export type CatalogueResponses = {
   undo: EditResult;
   custom_category: CustomCategories;
   conflicts: Array<Conflict>;
+  preferences: PreferencesSaved;
 };

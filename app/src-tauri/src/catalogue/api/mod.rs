@@ -10,8 +10,10 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+mod preferences;
 mod product;
 mod records;
+pub use preferences::*;
 pub use product::*;
 pub use records::*;
 
@@ -67,7 +69,7 @@ pub enum CatalogueRequest {
     CustomCategory(CustomCategoryRequest),
     /// Changes the listed preferences; the rest keep their values.
     Preferences {
-        #[ts(type = "Record<string, unknown>")]
+        #[ts(as = "Preferences")]
         patch: Map<String, Value>,
     },
     ResolveConflict(ConflictChoice),
@@ -434,7 +436,7 @@ pub struct StateSnapshot {
     #[ts(as = "Vec<Job>")]
     pub jobs: Vec<Value>,
     /// The stored preferences; `null` before any were saved.
-    #[ts(type = "Record<string, unknown> | null")]
+    #[ts(as = "Option<Preferences>")]
     pub preferences: Option<Value>,
     #[ts(as = "Vec<SourceCoverage>")]
     pub source_coverage: Vec<Value>,
@@ -604,4 +606,5 @@ struct Responses {
     undo: EditResult,
     custom_category: CustomCategories,
     conflicts: Vec<Conflict>,
+    preferences: preferences::PreferencesSaved,
 }

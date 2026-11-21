@@ -12,6 +12,7 @@ import type {
   LicensesRequest,
   LicensesResponses,
   LocalFiles,
+  Preferences,
   ProductMetadata,
   StorageRequest,
   StorageResponses,
@@ -23,8 +24,10 @@ import type {
 export type {
   AvatarDelta,
   AvatarOption,
+  AvatarSetting,
   Collection,
   Job,
+  Preferences,
   ProductMetadata,
   Root,
   SourceProgress,
@@ -126,14 +129,6 @@ export function progressPercent(job: Job | undefined): number | undefined {
     ? Math.min(100, (100 * done) / total)
     : undefined;
 }
-export interface AvatarSetting {
-  enabled?: boolean;
-  originalName?: string;
-  englishName?: string;
-  displayName?: string;
-  shopName?: string;
-  aliases?: string[];
-}
 export interface ProductOverlayChange {
   id: string;
   patch: Partial<Product>;
@@ -182,7 +177,7 @@ type LaterParts =
 export type NativeState = Omit<Bootstrap, LaterParts | 'products' | 'preferences'> &
   Partial<Pick<Bootstrap, LaterParts>> & {
     products: Product[];
-    preferences: Record<string, unknown>;
+    preferences: Preferences;
   };
 export const emptyState: NativeState = {
   version: 1,

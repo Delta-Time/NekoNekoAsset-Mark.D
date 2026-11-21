@@ -1,6 +1,7 @@
+import type { ThemePreset } from '../../bindings';
 import { builtInTheme } from './themeConfig';
 
-export type Preset = { id: string; name: string; tokens: Record<string, string> };
+export type Preset = ThemePreset;
 
 /** Every theme token, with the built-in theme's colors. */
 export const neutralTokens = Object.fromEntries(

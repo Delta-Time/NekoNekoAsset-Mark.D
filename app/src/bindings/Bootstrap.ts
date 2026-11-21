@@ -6,6 +6,7 @@ import type { Conflict } from './Conflict';
 import type { CustomCategory } from './CustomCategory';
 import type { Job } from './Job';
 import type { ListCounts } from './ListCounts';
+import type { Preferences } from './Preferences';
 import type { Product } from './Product';
 import type { Root } from './Root';
 import type { SavedSearch } from './SavedSearch';
@@ -41,7 +42,7 @@ export type Bootstrap = {
   /**
    * The stored preferences; `null` before any were saved.
    */
-  preferences: Record<string, unknown> | null;
+  preferences: Preferences | null;
   sourceCoverage: Array<SourceCoverage>;
   conflicts: Array<Conflict>;
 };

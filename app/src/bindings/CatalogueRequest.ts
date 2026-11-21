@@ -5,6 +5,7 @@ import type { CustomCategoryRequest } from './CustomCategoryRequest';
 import type { ManifestRestore } from './ManifestRestore';
 import type { MembershipRequest } from './MembershipRequest';
 import type { OverlayRequest } from './OverlayRequest';
+import type { Preferences } from './Preferences';
 import type { QueryRequest } from './QueryRequest';
 import type { SpendingRequest } from './SpendingRequest';
 
@@ -31,7 +32,7 @@ export type CatalogueRequest =
   | ({ action: 'save_search' } & MembershipRequest)
   | ({ action: 'saved_search' } & MembershipRequest)
   | ({ action: 'custom_category' } & CustomCategoryRequest)
-  | { action: 'preferences'; patch: Record<string, unknown> }
+  | { action: 'preferences'; patch: Preferences }
   | ({ action: 'resolve_conflict' } & ConflictChoice)
   | { action: 'exchange'; folder: string }
   | ({ action: 'export_csv' } & CsvExport)

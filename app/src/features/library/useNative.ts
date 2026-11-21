@@ -10,7 +10,7 @@ import {
   openLibrary,
   subscribeChanged,
 } from '../../backend';
-import type { NativeCall, Collection, NativeState, Service } from '../../backend';
+import type { NativeCall, Collection, NativeState, Preferences, Service } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
 import { libraryAvailable } from './library-root';
 import { restoreQuery } from '../filters/query';
@@ -29,7 +29,7 @@ type LooseInvoke = (
   args: Record<string, unknown>,
 ) => Promise<any>;
 /** A library without stored preferences reads as having none. */
-const withPreferences = <T extends { preferences: Record<string, unknown> | null }>(state: T) => ({
+const withPreferences = <T extends { preferences: Preferences | null }>(state: T) => ({
   ...state,
   preferences: state.preferences ?? {},
 });

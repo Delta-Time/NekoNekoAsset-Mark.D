@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Product, Locale, Account } from './model';
 import { nativeWorkflowText } from './native-workflow-i18n';
-import type { NativeState, LibraryStatus, LibraryCredential, NativeCall } from './backend';
+import type {
+  NativeState,
+  LibraryStatus,
+  LibraryCredential,
+  NativeCall,
+  Preferences,
+} from './backend';
 import './workflow-panels.css';
 import type { ThemeOption } from './ThemePicker';
 import AiSettings from './AiSettings';
@@ -60,7 +66,7 @@ export type Props = {
   nativeState?: NativeState;
   catalogueVersion?: number;
   onNative?: NativeCall;
-  onPreferences?: (patch: Record<string, unknown>) => Promise<void>;
+  onPreferences?: (patch: Preferences) => Promise<void>;
 };
 const aliases: Record<string, string> = {
   downloads: 'download',

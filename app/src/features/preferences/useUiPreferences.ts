@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { thumbnailSizes } from '../../model';
 import type { Locale } from '../../model';
 import { localeNames } from '../../i18n';
-import type { AvatarSetting } from '../../backend';
+import type { AvatarSetting, Preferences } from '../../backend';
 import { initialPresets, safeTokens } from '../appearance/themes';
 import type { Preset } from '../appearance/themes';
 
@@ -39,7 +39,7 @@ export function useUiPreferences() {
     [bundledFonts, setBundledFonts] = useState(true),
     [oneHandedDrag, setOneHandedDrag] = useState(false);
   /** Applies the preferences stored in the library; its first load calls this once. */
-  const hydrate = (p: Record<string, unknown>) => {
+  const hydrate = (p: Preferences) => {
     if (Object.hasOwn(localeNames, String(p.locale))) setLocale(p.locale as Locale);
     if (typeof p.theme === 'string') setTheme(p.theme);
     if (Array.isArray(p.presets))

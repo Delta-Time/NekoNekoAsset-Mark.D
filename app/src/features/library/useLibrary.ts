@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { emptyState } from '../../backend';
-import type { LibraryStatus, NativeState } from '../../backend';
+import type { LibraryStatus, NativeState, Preferences } from '../../backend';
 import type { Account, CustomCategory } from '../../model';
 import { batchActionPreferences } from '../../FeaturesSettings';
 import { isStoreSyncJob } from '../workflows/jobs';
@@ -24,7 +24,7 @@ export function useLibrary() {
     libraryStateRef.current = status;
     setLibraryState(status);
   };
-  const preferencesRef = useRef<Record<string, unknown>>({}),
+  const preferencesRef = useRef<Preferences>({}),
     initialLoad = useRef(false),
     reloadSequence = useRef(0),
     reloadTask = useRef<(() => Promise<void>) | null>(null);

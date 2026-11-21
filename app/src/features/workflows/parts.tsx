@@ -1,7 +1,14 @@
 import type { Props } from '../../Workflows';
 import { type ReactNode, useRef, useState } from 'react';
 import { errorCode } from '../../backend';
-import type { Action, ActionResult, ArgsParam, LooseNativeCall, Service } from '../../backend';
+import type {
+  Action,
+  ActionResult,
+  ArgsParam,
+  LooseNativeCall,
+  Preferences,
+  Service,
+} from '../../backend';
 
 export type Ctx = Props & { L: (key: string) => string };
 export function Panel({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
@@ -82,7 +89,7 @@ export async function native(
   if (!c.onNative) throw new Error('nativeUnavailable');
   return (c.onNative as LooseNativeCall)(service, action, args);
 }
-export async function savePreferences(c: Ctx, patch: Record<string, unknown>) {
+export async function savePreferences(c: Ctx, patch: Preferences) {
   if (c.onPreferences) return c.onPreferences(patch);
   await native(c, 'catalogue', 'preferences', { patch });
 }

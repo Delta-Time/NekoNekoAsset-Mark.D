@@ -2,6 +2,7 @@
 import type { Account } from './Account';
 import type { Conflict } from './Conflict';
 import type { Job } from './Job';
+import type { Preferences } from './Preferences';
 import type { Root } from './Root';
 import type { SourceCoverage } from './SourceCoverage';
 
@@ -15,7 +16,7 @@ export type StateSnapshot = {
   /**
    * The stored preferences; `null` before any were saved.
    */
-  preferences: Record<string, unknown> | null;
+  preferences: Preferences | null;
   sourceCoverage: Array<SourceCoverage>;
   conflicts: Array<Conflict>;
 };

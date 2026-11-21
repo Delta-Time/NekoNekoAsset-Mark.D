@@ -529,6 +529,9 @@ pub(crate) fn assert_record(kind: &str, value: &Value) {
         "collection" => assert_view::<Collection>(kind, value, true, none),
         "saved_search" => assert_view::<SavedSearch>(kind, value, false, none),
         "custom_category" => assert_view::<CustomCategory>(kind, value, true, none),
+        "preferences" => assert_view::<super::Preferences>(kind, value, true, |p| {
+            p.rest.keys().cloned().collect()
+        }),
         _ => {}
     }
 }

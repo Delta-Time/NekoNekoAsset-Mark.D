@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Locale, SensitiveMode } from './model';
+import type { Preferences } from './backend';
 import { t } from './i18n';
 import { uxText } from './ux-i18n';
 import { shellText } from './shell-i18n';
@@ -56,8 +57,8 @@ export default function FeaturesSettings({
   onNotice,
 }: {
   locale: Locale;
-  preferences: Record<string, unknown>;
-  onPreferences: (patch: Record<string, unknown>) => Promise<void>;
+  preferences: Preferences;
+  onPreferences: (patch: Preferences) => Promise<void>;
   licenseJob?: { state: string; progress?: unknown };
   onNotice: (text: string) => void;
 }) {
@@ -66,7 +67,7 @@ export default function FeaturesSettings({
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const batch = batchActionPreferences(preferences.batchActions);
-  const save = async (patch: Record<string, unknown>) => {
+  const save = async (patch: Preferences) => {
     setBusy(true);
     setError('');
     try {
