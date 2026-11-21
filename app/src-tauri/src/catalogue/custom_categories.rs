@@ -60,7 +60,10 @@ impl Catalogue {
                 validate("custom_category", &id, &value)?;
                 Self::write(tx, projections, "custom_category", &id, Some(value))?;
             }
-            Ok(json!({"ok":true,"customCategories":rows(tx, "custom_category")?}))
+            Ok(serde_json::to_value(api::CustomCategories {
+                ok: true,
+                custom_categories: rows(tx, "custom_category")?,
+            })?)
         })
     }
 }

@@ -5,23 +5,8 @@ import { table } from './messages';
 import { isTauri } from '@tauri-apps/api/core';
 import './SpendingDialog.css';
 import { contentLang } from './content-lang';
+import type { SpendingSummary, SpendingTotal } from './bindings';
 
-export interface SpendingTotal {
-  currency: string;
-  amount: string;
-  minorUnits: string;
-  fractionDigits: number;
-}
-export interface SpendingSummary {
-  totals: SpendingTotal[];
-  products: {
-    productId: string;
-    title: string;
-    totals: SpendingTotal[];
-    unknownPaymentCount: number;
-  }[];
-  skippedCount: number;
-}
 export interface SpendingDialogProps {
   locale: Locale;
   productIds: string[];
@@ -246,7 +231,7 @@ export default function SpendingDialog({
     setShareState('');
     const args = JSON.parse(selection) as { productIds: string[]; accountIds?: string[] };
     void invokeAction('catalogue', 'spending_summary', args).then(
-      (result: SpendingSummary) => {
+      (result) => {
         if (active) setSummary(result);
       },
       () => {

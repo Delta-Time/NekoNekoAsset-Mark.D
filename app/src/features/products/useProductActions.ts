@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { dialog as nativeDialog, errorCode, invokeAction } from '../../backend';
-import type { NativeJob } from '../../backend';
+import type { Job } from '../../backend';
 import { licenseText } from '../../license-i18n';
 import type { Library } from '../library/useLibrary';
 import type { Notices } from '../shell/useNotice';
@@ -88,7 +88,7 @@ export function useProductActions({
   // its updated list through the download request it already holds.
   useEffect(() => {
     let active = false;
-    for (const job of nativeState.jobs as (NativeJob & {
+    for (const job of nativeState.jobs as (Job & {
       failures?: Record<string, { errorCode?: string } | undefined>;
     })[]) {
       if (!watchedDownloads.current.has(job.id)) continue;
@@ -154,7 +154,7 @@ export function useProductActions({
           !['queued', 'running'].includes(job.state),
       )
       .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0] as
-      | (NativeJob & { failures?: Record<string, { errorCode?: string } | undefined> })
+      | (Job & { failures?: Record<string, { errorCode?: string } | undefined> })
       | undefined;
     return Object.entries(job?.failures ?? {})
       .filter(([, failure]) =>

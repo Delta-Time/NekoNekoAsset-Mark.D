@@ -4,6 +4,7 @@ import { isStoreJob, isActive, needsStoreSignIn, isStoreSyncJob, syncProgressLab
 import type { WorkflowAccount } from '../../Workflows';
 import { useState, useRef, useEffect } from 'react';
 import { errorCode } from '../../backend';
+import type { Job } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
 
 export function Sync(c: Ctx) {
@@ -152,7 +153,7 @@ export function Sync(c: Ctx) {
           return (
             <div className="wf-sync-account" key={a.id}>
               <div className="wf-sync-identity">
-                <strong title={a.name}>
+                <strong title={a.name ?? undefined}>
                   {a.store} · {a.name}
                 </strong>
                 <small>
@@ -168,7 +169,12 @@ export function Sync(c: Ctx) {
                 {a.status !== 'connected' && <small>{L(a.status)}</small>}
                 {error && (
                   <small>
-                    {L(String(error.errorCode ?? ('status' in error ? error.status : error.state)))}
+                    {L(
+                      String(
+                        error.errorCode ??
+                          ('status' in error ? error.status : (error as Job).state),
+                      ),
+                    )}
                   </small>
                 )}
                 {left > 0 && (

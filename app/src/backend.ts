@@ -1,7 +1,16 @@
 import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Product, Account, Locale, CustomCategory } from './model';
-import type { CatalogueRequest, CatalogueResponses, Conflict } from './bindings';
+import type { Product, Locale } from './model';
+import type { AvatarDelta, Bootstrap, CatalogueRequest, CatalogueResponses, Job } from './bindings';
+export type {
+  AvatarDelta,
+  AvatarOption,
+  Collection,
+  Job,
+  Root,
+  SourceProgress,
+  TagOption,
+} from './bindings';
 
 export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
 /** A service whose actions are not typed yet takes any action and arguments. */
@@ -51,43 +60,7 @@ export type LooseNativeCall = (
   action: string,
   args?: Record<string, unknown>,
 ) => Promise<any>;
-export interface SourceProgress {
-  stage?: string;
-  source?: string;
-  pages?: number;
-  detailsCompleted?: number;
-  requestsCompleted?: number;
-  products?: number;
-  published?: number;
-  metadataCompleted?: number;
-  metadataTotal?: number;
-  availabilityWarnings?: number;
-  incompleteProducts?: number;
-}
-export interface NativeJob extends UnityPreparation {
-  id: string;
-  type: string;
-  productId?: string;
-  productIds?: string[];
-  completedProductIds?: string[];
-  fileIds?: string[];
-  selectedFileIds?: string[] | null;
-  accountId?: string;
-  accountName?: string;
-  state: string;
-  progress?: number | SourceProgress;
-  errorCode?: string;
-  cancelRequested?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-  completedAt?: string;
-  projectName?: string;
-  unityVersion?: string;
-  stage?: string;
-  writesStarted?: boolean;
-  resultCounts?: { applied: number; skipped: number; failed: number };
-}
-export function importOnlyUnityJob(job: NativeJob): NativeJob {
+export function importOnlyUnityJob(job: Job): Job {
   if (job.type !== 'unity:import') return job;
   const projected = { ...job };
   Reflect.deleteProperty(projected, 'compileErrorCount');
@@ -111,9 +84,7 @@ export interface UnityPreparation {
   preparationEntries?: number | null;
   preparationTotalEntries?: number | null;
 }
-export function progressPercent(
-  job: (NativeJob & UnityPreparation) | undefined,
-): number | undefined {
+export function progressPercent(job: Job | undefined): number | undefined {
   if (
     job?.type === 'unity:import' &&
     ['waitingForUser', 'importing', 'refreshing', 'compiling', 'completed'].includes(
@@ -132,32 +103,6 @@ export function progressPercent(
     ? Math.min(100, (100 * done) / total)
     : undefined;
 }
-export interface NativeRoot {
-  id: string;
-  path: string;
-  label?: string;
-  status: string;
-}
-export interface AvatarOption {
-  id: string;
-  productId?: string;
-  displayName?: string;
-  sourceDisplayName?: string;
-  sourceIdentityValue?: string;
-  officialName: string;
-  englishName?: string;
-  labelStatus?: string;
-  nameKind?: 'single' | 'bundle' | 'fallback';
-  labelQualifiers?: string[];
-  shopName?: string;
-  sourceShopName?: string;
-  shopId?: string;
-  aliases: string[];
-  matchingProductCount?: number;
-  baseProductIds?: string[];
-  enabled?: boolean;
-  explicitEnabled?: boolean;
-}
 export interface AvatarSetting {
   enabled?: boolean;
   originalName?: string;
@@ -166,20 +111,10 @@ export interface AvatarSetting {
   shopName?: string;
   aliases?: string[];
 }
-export interface AvatarDelta {
-  add: string[];
-  remove: string[];
-}
 export interface ProductOverlayChange {
   id: string;
   patch: Partial<Product>;
   ownedAvatarsDelta?: AvatarDelta;
-}
-export interface TagOption {
-  id: string;
-  label: string;
-  kind: string;
-  aliases: string[];
 }
 export interface FetchedProductMetadata {
   sourceUrl: string;
@@ -198,11 +133,6 @@ export async function updateLocalFiles(
   changes: LocalFileChanges,
 ): Promise<{ jobId: string; productIds: string[]; state: string }> {
   return invokeAction('storage', 'local_files', { productId, ...changes });
-}
-export interface NativeCollection {
-  id: string;
-  name: string;
-  productIds: string[];
 }
 export interface LibraryCredential {
   id: string;
@@ -229,24 +159,21 @@ export async function openLibrary(
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke('library_open', { path, locale, newLibrary });
 }
-export interface NativeState {
-  version: number;
-  products: Product[];
-  accounts: Account[];
-  roots: NativeRoot[];
-  jobs: NativeJob[];
-  preferences: Record<string, unknown>;
-  collections: Record<string, unknown>[];
-  savedSearches: Record<string, unknown>[];
-  customCategories?: CustomCategory[];
-  sourceCoverage: Record<string, unknown>[];
-  conflicts: Conflict[];
-  avatarOptions?: AvatarOption[];
-  ownedBaseOptions?: AvatarOption[];
-  tagOptions?: TagOption[];
-  total?: number;
-  counts?: { all: number; downloaded: number; attention: number; hidden?: number };
-}
+/** The parts of `bootstrap` the shell may not have loaded yet. */
+type LaterParts =
+  | 'customCategories'
+  | 'avatarOptions'
+  | 'ownedBaseOptions'
+  | 'tagOptions'
+  | 'total'
+  | 'counts';
+/** The open library as the shell holds it: `bootstrap`, refreshed by `state` and list queries.
+ * Preferences missing from the library read as none. */
+export type NativeState = Omit<Bootstrap, LaterParts | 'products' | 'preferences'> &
+  Partial<Pick<Bootstrap, LaterParts>> & {
+    products: Product[];
+    preferences: Record<string, unknown>;
+  };
 export const emptyState: NativeState = {
   version: 1,
   products: [],

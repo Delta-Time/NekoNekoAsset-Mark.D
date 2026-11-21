@@ -68,15 +68,29 @@ fn minor_units(value: &Value, currency: &str) -> Option<i128> {
     }
 }
 
-fn totals(rows: &BTreeMap<String, i128>) -> Vec<Value> {
-    rows.iter().map(|(currency,minor)| {
-        let fraction = fraction_digits(currency).unwrap();
-        let scale = 10i128.pow(fraction);
-        let amount = if fraction == 0 { minor.to_string() } else {
-            format!("{}.{:0width$}",minor/scale,minor%scale,width=fraction as usize)
-        };
-        json!({"currency":currency,"amount":amount,"minorUnits":minor.to_string(),"fractionDigits":fraction})
-    }).collect()
+fn totals(rows: &BTreeMap<String, i128>) -> Vec<api::SpendingTotal> {
+    rows.iter()
+        .map(|(currency, minor)| {
+            let fraction = fraction_digits(currency).unwrap();
+            let scale = 10i128.pow(fraction);
+            let amount = if fraction == 0 {
+                minor.to_string()
+            } else {
+                format!(
+                    "{}.{:0width$}",
+                    minor / scale,
+                    minor % scale,
+                    width = fraction as usize
+                )
+            };
+            api::SpendingTotal {
+                currency: currency.clone(),
+                amount,
+                minor_units: minor.to_string(),
+                fraction_digits: fraction,
+            }
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -173,7 +187,16 @@ pub(super) fn summary(conn: &Connection, request: &api::SpendingRequest) -> Resu
                 .checked_add(*minor)
                 .context("catalogue.spending_overflow")?;
         }
-        output.push(json!({"productId":id,"title":title,"totals":totals(&paid),"unknownPaymentCount":unknown}));
+        output.push(api::ProductSpending {
+            product_id: id,
+            title,
+            totals: totals(&paid),
+            unknown_payment_count: unknown,
+        });
     }
-    Ok(json!({"totals":totals(&aggregate),"products":output,"skippedCount":skipped}))
+    Ok(serde_json::to_value(api::SpendingSummary {
+        totals: totals(&aggregate),
+        products: output,
+        skipped_count: skipped,
+    })?)
 }

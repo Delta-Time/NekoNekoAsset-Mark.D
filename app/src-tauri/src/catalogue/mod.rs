@@ -893,6 +893,8 @@ pub(super) fn effective_entitlements(conn: &Connection, product: &str) -> Result
     related(conn, "entitlement", product)
 }
 pub(super) fn set_raw(conn: &Connection, kind: &str, id: &str, value: &Value) -> Result<()> {
+    #[cfg(test)]
+    api::assert_record(kind, value);
     conn.execute("INSERT INTO entities(kind,id,product_id,body) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET product_id=excluded.product_id,body=excluded.body",params![kind,id,text(value,"productId"),serde_json::to_string(value)?])?;
     Ok(())
 }
@@ -2097,6 +2099,17 @@ impl Catalogue {
             // and locking. Retry against its unchanged durable history.
         }
     }
+    /// Accounts, roots, jobs, preferences, coverage and conflicts, as stored.
+    fn state_snapshot(&self, conn: &Connection) -> Result<api::StateSnapshot> {
+        Ok(api::StateSnapshot {
+            accounts: rows(conn, "account")?,
+            roots: self.display_roots(conn)?,
+            jobs: rows(conn, "job")?,
+            preferences: raw(conn, "preferences", "app")?,
+            source_coverage: rows(conn, "source_coverage")?,
+            conflicts: self.current_conflicts(conn)?,
+        })
+    }
     fn current_conflicts(&self, conn: &Connection) -> Result<Vec<Value>> {
         if let Some(body) = conn
             .query_row(
@@ -2509,7 +2522,10 @@ impl Catalogue {
                         _ => {}
                     }
                 }
-                Ok(json!({"cleared":cleared,"remainingActive":active}))
+                Ok(serde_json::to_value(api::ActivityCleared {
+                    cleared,
+                    remaining_active: active,
+                })?)
             }),
             Request::AccountCounts => query::account_counts(
                 &*self
@@ -2522,9 +2538,7 @@ impl Catalogue {
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(
-                    json!({"accounts":rows(&conn,"account")?,"roots":self.display_roots(&conn)?,"jobs":rows(&conn,"job")?,"preferences":raw(&conn,"preferences","app")?,"sourceCoverage":rows(&conn,"source_coverage")?,"conflicts":self.current_conflicts(&conn)?}),
-                )
+                Ok(serde_json::to_value(self.state_snapshot(&conn)?)?)
             }
             Request::Bootstrap { include_products } => {
                 let mut conn = self
@@ -2552,16 +2566,36 @@ impl Catalogue {
                 let bases = projection::bases(&tx)?;
                 let owned = crate::taxonomy::owned_base_options(&bases);
                 let avatar_options = avatars::options(&tx, &bases, &owned)?;
-                let result = json!({"version":1,"total":total,"counts":counts,"products":products,"accounts":rows(&tx,"account")?,"roots":self.display_roots(&tx)?,"jobs":rows(&tx,"job")?,"preferences":raw(&tx,"preferences","app")?,"collections":rows(&tx,"collection")?,"savedSearches":rows(&tx,"saved_search")?,"customCategories":rows(&tx,"custom_category")?,"sourceCoverage":rows(&tx,"source_coverage")?,"conflicts":self.current_conflicts(&tx)?,"tagOptions":dictionary["tags"],"avatars":dictionary,"avatarOptions":avatar_options,"ownedBaseOptions":owned});
+                #[cfg(test)]
+                api::assert_options(&dictionary["tags"], &[&avatar_options, &owned]);
+                let result = api::Bootstrap {
+                    version: 1,
+                    total,
+                    counts,
+                    products,
+                    state: self.state_snapshot(&tx)?,
+                    collections: rows(&tx, "collection")?,
+                    saved_searches: rows(&tx, "saved_search")?,
+                    custom_categories: rows(&tx, "custom_category")?,
+                    tag_options: dictionary["tags"].clone(),
+                    avatars: Some(dictionary),
+                    avatar_options,
+                    owned_base_options: owned,
+                };
                 tx.commit()?;
-                Ok(result)
+                Ok(serde_json::to_value(result)?)
             }
             Request::AvatarOptions => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
+                let options = avatars::option_snapshot(&conn)?;
+                #[cfg(test)]
+                api::assert_options(&json!([]), &[&options]);
+                Ok(serde_json::to_value(api::AvatarOptions {
+                    avatar_options: options,
+                })?)
             }
             Request::JobDiagnostics { job_id } => {
                 let conn = self
@@ -2595,7 +2629,9 @@ impl Catalogue {
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!({"collections": rows(&conn, "collection")?}))
+                Ok(serde_json::to_value(api::Collections {
+                    collections: rows(&conn, "collection")?,
+                })?)
             }
             Request::Query(request) => query::query(
                 &*self
@@ -2803,7 +2839,14 @@ impl Catalogue {
             }
             projections.prepared_resolver = tag_resolver;
             if entries.is_empty() {
-                return Ok(json!({"ok":true,"changed":0}));
+                return Ok(serde_json::to_value(api::EditResult {
+                    ok: true,
+                    changed: 0,
+                    token: None,
+                    undo_token: None,
+                    conflicts: None,
+                    changed_links: None,
+                })?);
             }
             let token = Uuid::new_v4().to_string();
             tx.execute(
@@ -2811,7 +2854,14 @@ impl Catalogue {
                 params![token, serde_json::to_string(&entries)?],
             )?;
             tx.execute("DELETE FROM undo WHERE rowid NOT IN(SELECT rowid FROM undo ORDER BY rowid DESC LIMIT 100)", [])?;
-            Ok(json!({"ok":true,"token":token,"undoToken":token,"changed":entries.len(),"changedLinks":changed_links}))
+            Ok(serde_json::to_value(api::EditResult {
+                ok: true,
+                changed: entries.len(),
+                undo_token: Some(token.clone()),
+                token: Some(token),
+                conflicts: None,
+                changed_links: Some(changed_links),
+            })?)
         })
     }
     fn undo(&self, token: &str) -> Result<Value> {
@@ -2868,7 +2918,14 @@ impl Catalogue {
                 changed += 1;
             }
             tx.execute("DELETE FROM undo WHERE token=?1", [token])?;
-            Ok(json!({"ok":conflicts.is_empty(),"changed":changed,"conflicts":conflicts,"changedLinks":changed_links}))
+            Ok(serde_json::to_value(api::EditResult {
+                ok: conflicts.is_empty(),
+                changed,
+                token: None,
+                undo_token: None,
+                conflicts: Some(conflicts),
+                changed_links: Some(changed_links),
+            })?)
         })
     }
     /// `kind` is `collection` or `saved_search`.

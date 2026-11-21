@@ -537,9 +537,30 @@ async fn catalogue_action(
         && matches!(request, Request::Bootstrap { .. } | Request::State)
     {
         let locale = status.locale;
-        return Ok(
-            json!({"version":1,"products":[],"accounts":[],"roots":[],"jobs":[],"preferences":{"locale":locale,"setupComplete":false,"autoDownloadAll":false},"collections":[],"savedSearches":[],"customCategories":[],"sourceCoverage":[],"conflicts":[],"avatarOptions":[],"ownedBaseOptions":[],"tagOptions":[],"total":0,"counts":{"all":0,"downloaded":0,"attention":0}}),
-        );
+        let empty = catalogue::api::Bootstrap {
+            version: 1,
+            total: 0,
+            counts: Default::default(),
+            products: vec![],
+            state: catalogue::api::StateSnapshot {
+                accounts: vec![],
+                roots: vec![],
+                jobs: vec![],
+                preferences: Some(
+                    json!({"locale":locale,"setupComplete":false,"autoDownloadAll":false}),
+                ),
+                source_coverage: vec![],
+                conflicts: vec![],
+            },
+            collections: vec![],
+            saved_searches: vec![],
+            custom_categories: vec![],
+            tag_options: json!([]),
+            avatars: None,
+            avatar_options: vec![],
+            owned_base_options: vec![],
+        };
+        return serde_json::to_value(empty).map_err(|error| UiError::from_error(error.into()));
     }
     let host = services;
     let services = host.services()?;

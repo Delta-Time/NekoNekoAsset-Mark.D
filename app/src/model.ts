@@ -2,30 +2,24 @@ import { t } from './i18n';
 import type {
   AcquisitionProvenance,
   AssetFile,
+  CustomCategory,
   Product as NativeProduct,
   SourceCategory,
   SourceCategoryValue,
 } from './bindings';
 export type {
+  Account,
   AcquisitionProvenance,
   AssetFile,
   AvatarEvidence,
   CategoryInference,
+  CustomCategory,
   FileProvenance,
   SourceCategory,
 } from './bindings';
 /** A product as the native catalogue sends it, with a session-only thumbnail. */
 export type Product = NativeProduct & { thumbnailOverrideUrl?: string };
 export type Locale = 'en' | 'ja' | 'ko' | 'zh-Hans' | 'zh-Hant';
-export interface Account {
-  id: string;
-  name: string;
-  store: string;
-  status: string;
-  lastSync?: string;
-  lastSyncAt?: string;
-  authenticatedAt?: string;
-}
 /** Native item-line evidence supplies paid amount/currency; listing price never supplies paid facts. */
 export function priceLabel(
   locale: Locale,
@@ -244,11 +238,6 @@ export const categoryKeys = [
   'Udon',
   'NonVRChat',
 ] as const;
-/** User-defined categories; only explicit edits assign their `custom:` IDs. */
-export interface CustomCategory {
-  id: string;
-  name: string;
-}
 export function categoryName(
   category: string,
   custom: readonly CustomCategory[],

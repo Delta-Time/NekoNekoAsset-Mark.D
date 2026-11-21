@@ -123,9 +123,9 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
                 all,
                 downloaded,
                 attention,
-                hidden,
-                categories: categories.clone(),
-                statuses: statuses.clone(),
+                hidden: Some(hidden),
+                categories: Some(categories.clone()),
+                statuses: Some(statuses.clone()),
             })
         });
         Ok(next)
@@ -538,10 +538,10 @@ fn list_preferences(conn: &Connection) -> Result<(bool, bool)> {
 
 /// Visible account totals are independent of query filters and visited pages.
 pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
-    let mut accounts = Map::new();
+    let mut accounts = BTreeMap::new();
     let mut known = conn.prepare("SELECT id FROM entities WHERE kind='account'")?;
     for id in known.query_map([], |row| row.get::<_, String>(0))? {
-        accounts.insert(id?, json!(0));
+        accounts.insert(id?, 0);
     }
     let visible = if list_preferences(conn)?.0 {
         concat!(
@@ -556,10 +556,13 @@ pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })? {
         let (account, count) = row?;
-        accounts.insert(account, json!(count));
+        accounts.insert(account, count);
     }
     let unassigned: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM products p WHERE {visible} AND COALESCE(json_extract(p.summary,'$.custom'),0)<>1 AND NOT EXISTS(SELECT 1 FROM json_each(p.summary,'$.accountIds') a JOIN entities e ON e.kind='account' AND e.id=a.value)"), [], |row| row.get(0))?;
-    Ok(json!({"accounts":accounts,"unassigned":unassigned}))
+    Ok(serde_json::to_value(api::AccountCounts {
+        accounts,
+        unassigned,
+    })?)
 }
 
 pub(super) fn counts(

@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import type { Account, AssetFile, Locale, Product } from './model';
-import {
-  errorCode,
-  invokeAction,
-  nativeFileAction,
-  progressPercent,
-  type NativeJob,
-} from './backend';
+import { errorCode, invokeAction, nativeFileAction, progressPercent, type Job } from './backend';
 import {
   isStoreJob,
   isStoreSyncJob,
@@ -27,20 +21,20 @@ import { licenseText } from './license-i18n';
 
 export interface ActivityHistoryProps {
   locale: Locale;
-  jobs: NativeJob[];
+  jobs: Job[];
   accounts: Account[];
   products: Product[];
   aiEnabled: boolean;
   onClear: () => Promise<void>;
-  onCancel: (job: NativeJob) => void;
-  onRetry: (job: NativeJob) => void;
-  onSignIn: (job: NativeJob) => void;
+  onCancel: (job: Job) => void;
+  onRetry: (job: Job) => void;
+  onSignIn: (job: Job) => void;
   onOpenStorage: () => void;
-  onUnityResults: (job: NativeJob) => void;
-  onUnityRetry: (job: NativeJob) => void;
+  onUnityResults: (job: Job) => void;
+  onUnityRetry: (job: Job) => void;
   onCancelDownloads?: () => void;
 }
-type ActivityJob = NativeJob & {
+type ActivityJob = Job & {
   store?: string;
   fileIds?: string[];
   selectedFileIds?: string[];
@@ -49,11 +43,11 @@ type ActivityJob = NativeJob & {
 };
 type Detail = { stamp: string; product?: Product };
 type CopyState = { stamp: string; status: 'copying' | 'copied' | 'copyFailed' };
-const active = (job: NativeJob) => ['queued', 'running'].includes(job.state);
-const failed = (job: NativeJob) => ['failed', 'needsAction'].includes(job.state);
-const diagnosable = (job: NativeJob) =>
+const active = (job: Job) => ['queued', 'running'].includes(job.state);
+const failed = (job: Job) => ['failed', 'needsAction'].includes(job.state);
+const diagnosable = (job: Job) =>
   failed(job) || (job.state === 'completed' && isStoreSyncJob(job.type));
-const terminal = (job: NativeJob) =>
+const terminal = (job: Job) =>
   ['completed', 'failed', 'needsAction', 'cancelled'].includes(job.state);
 // BOOTH and Gumroad updates keep their assets in their arguments.
 const productIds = (job: ActivityJob) => [
@@ -65,10 +59,10 @@ const productIds = (job: ActivityJob) => [
     ].filter((id): id is string => typeof id === 'string' && !!id),
   ),
 ];
-const jobTime = (job: NativeJob) => Date.parse(job.createdAt ?? job.updatedAt ?? '') || 0;
+const jobTime = (job: Job) => Date.parse(job.createdAt ?? job.updatedAt ?? '') || 0;
 const basename = (value: string) =>
   value.replaceAll('\\', '/').split('/').at(-1)?.slice(0, 512) || '';
-const jobStamp = (job: NativeJob) =>
+const jobStamp = (job: Job) =>
   [job.id, job.state, job.updatedAt, job.completedAt, job.errorCode].join('\0');
 
 export default function ActivityHistory({
@@ -175,7 +169,7 @@ export default function ActivityHistory({
   const product = (id: string) => details[id]?.product ?? knownProducts.get(id);
   const title = (id: string) =>
     knownProducts.get(id)?.title || product(id)?.title || t(locale, 'unknown');
-  const jobLabel = (job: NativeJob) =>
+  const jobLabel = (job: Job) =>
     job.type === 'licenses:sync'
       ? licenseText(locale, 'licenseSync')!
       : job.type === 'storage:delete_local_products'
@@ -266,7 +260,7 @@ export default function ActivityHistory({
       setClearing(false);
     }
   }
-  async function copyDiagnostics(job: NativeJob, button: HTMLButtonElement) {
+  async function copyDiagnostics(job: Job, button: HTMLButtonElement) {
     if (copying.current.has(job.id)) return;
     const focused = document.activeElement === button;
     const stamp = jobStamp(job),
@@ -279,7 +273,7 @@ export default function ActivityHistory({
     setCopyStates((values) => ({ ...values, [job.id]: { stamp, status: 'copying' } }));
     try {
       // The server owns the allowlist. Never build a report from rendered job data.
-      const text: string = await invokeAction('catalogue', 'job_diagnostics', { jobId: job.id });
+      const text = await invokeAction('catalogue', 'job_diagnostics', { jobId: job.id });
       if (!current()) return;
       if (
         typeof text !== 'string' ||

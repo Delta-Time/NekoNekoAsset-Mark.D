@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { errorCode, invokeAction } from '../../backend';
-import type { NativeCollection } from '../../backend';
+import type { Collection } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
 import {
   collectionMutationQueue,
@@ -25,21 +25,20 @@ export function useCollections({
   const { notify } = notices;
   const { setCollection, collection } = filters;
   const [collections, setCollections] = useState<Record<string, string[]>>({});
-  const reconciledCollections = useRef<NativeCollection[]>([]),
-    collectionRows = useRef<NativeCollection[]>([]),
+  const reconciledCollections = useRef<Collection[]>([]),
+    collectionRows = useRef<Collection[]>([]),
     collectionPending = useRef(false),
     collectionEpoch = useRef(0),
     collectionRefreshNeeded = useRef(false),
     collectionTask = useRef<(() => Promise<void>) | null>(null);
   const [collectionBusy, setCollectionBusy] = useState(false),
-    [committedCollections, setCommittedCollections] = useState<NativeCollection[]>([]);
+    [committedCollections, setCommittedCollections] = useState<Collection[]>([]);
   const collectionError = useRef<(error: unknown) => void>(() => {});
   collectionError.current = (error) => notify(q(errorCode(error)));
   const collectionQueue = useRef<ReturnType<typeof collectionMutationQueue> | null>(null);
   if (!collectionQueue.current)
     collectionQueue.current = collectionMutationQueue(
-      (args): Promise<{ collections: NativeCollection[] }> =>
-        invokeAction('catalogue', 'collection', args),
+      (args) => invokeAction('catalogue', 'collection', args),
       (rows, committed, busy) => {
         collectionEpoch.current++;
         collectionPending.current = busy;
@@ -66,15 +65,11 @@ export function useCollections({
       (error) => collectionError.current(error),
       () => crypto.randomUUID(),
     );
-  const applyCollections = (rows: NativeCollection[]) =>
-    collectionQueue.current!.setCommitted(rows);
+  const applyCollections = (rows: Collection[]) => collectionQueue.current!.setCommitted(rows);
   const reconcileCollections = async () => {
     if (collectionPending.current) return;
     const epoch = collectionEpoch.current;
-    const result: { collections: NativeCollection[] } = await invokeAction(
-      'catalogue',
-      'collections',
-    );
+    const result = await invokeAction('catalogue', 'collections');
     if (!collectionPending.current && epoch === collectionEpoch.current)
       applyCollections(result.collections);
   };

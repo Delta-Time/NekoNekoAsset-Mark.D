@@ -32,12 +32,12 @@ export function AccountName({
 }) {
   const { L } = c;
   const [editing, setEditing] = useState(false),
-    [name, setName] = useState(account.name);
+    [name, setName] = useState(account.name ?? '');
   useEffect(() => {
-    if (!editing) setName(account.name);
+    if (!editing) setName(account.name ?? '');
   }, [account.name, editing]);
   const cancel = () => {
-    setName(account.name);
+    setName(account.name ?? '');
     setEditing(false);
   };
   const save = () =>
@@ -89,7 +89,7 @@ export function AccountName({
         </>
       ) : (
         <>
-          <strong title={account.name}>{account.name}</strong>
+          <strong title={account.name ?? undefined}>{account.name}</strong>
           <button
             type="button"
             title={L('renameAccount')}
@@ -198,7 +198,7 @@ export function AccountRows({ c, task }: { c: Ctx; task: ActionTask }) {
             }
           }}
         >
-          <strong>{L('removeAccountQuestion').replace('{name}', target.name)}</strong>
+          <strong>{L('removeAccountQuestion').replace('{name}', target.name ?? '')}</strong>
           <label className="wf-check">
             <input
               type="checkbox"

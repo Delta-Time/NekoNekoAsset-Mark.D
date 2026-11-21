@@ -1,13 +1,13 @@
-import type { NativeJob } from '../../backend';
+import type { Job } from '../../backend';
 import type { Account, Locale } from '../../model';
 import { nativeWorkflowText } from '../../native-workflow-i18n';
 
-export const isActive = (job: NativeJob) => ['queued', 'running'].includes(job.state);
+export const isActive = (job: Job) => ['queued', 'running'].includes(job.state);
 export const isStoreJob = (type: string) => /^(booth|gumroad|jinxxy)/.test(type.toLowerCase());
 export const isStoreSyncJob = (type: string) =>
   /^(booth|gumroad|jinxxy).*(sync|update)/i.test(type);
 export function needsStoreSignIn(
-  job: NativeJob | undefined,
+  job: Job | undefined,
   account: Pick<Account, 'status' | 'authenticatedAt'> | undefined,
 ): boolean {
   if (
@@ -25,7 +25,7 @@ export function needsStoreSignIn(
     authenticated <= failedAt
   );
 }
-export function syncProgressLabel(locale: Locale, job: NativeJob): string {
+export function syncProgressLabel(locale: Locale, job: Job): string {
   const L = (key: string) => nativeWorkflowText(locale, key),
     progress = job.progress;
   if (job.state === 'queued') return L('queued');
@@ -71,6 +71,6 @@ export function syncProgressLabel(locale: Locale, job: NativeJob): string {
       : '';
   return [stage, source, ...counts, warning, incomplete].filter(Boolean).join(' · ');
 }
-export const unfinishedLocalImport = (job: NativeJob) =>
+export const unfinishedLocalImport = (job: Job) =>
   job.type === 'storage:import_local' &&
   (!job.productIds?.length || job.productIds.some((id) => !job.completedProductIds?.includes(id)));

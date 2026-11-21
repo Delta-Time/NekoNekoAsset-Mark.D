@@ -10,7 +10,7 @@ import {
   openLibrary,
   subscribeChanged,
 } from '../../backend';
-import type { NativeCall, NativeCollection, NativeState, Service } from '../../backend';
+import type { NativeCall, Collection, NativeState, Service } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
 import { libraryAvailable } from './library-root';
 import { restoreQuery } from '../filters/query';
@@ -28,6 +28,11 @@ type LooseInvoke = (
   action: string,
   args: Record<string, unknown>,
 ) => Promise<any>;
+/** A library without stored preferences reads as having none. */
+const withPreferences = <T extends { preferences: Record<string, unknown> | null }>(state: T) => ({
+  ...state,
+  preferences: state.preferences ?? {},
+});
 /** Native calls for the open library: load and reload it, open another one, refresh its state
  * and avatar options, run actions, and follow `nna:changed` events and preference changes.
  * `reload`, `refreshState` and `refreshAvatarOptions` keep the closure of their first call, so
@@ -118,9 +123,9 @@ export function useNative({
         setLoaded(true);
         return;
       }
-      const state: NativeState = await invokeAction('catalogue', 'bootstrap', {
-        includeProducts: false,
-      });
+      const state: NativeState = withPreferences(
+        await invokeAction('catalogue', 'bootstrap', { includeProducts: false }),
+      );
       if (sequence !== reloadSequence.current) return;
       if (status.state === 'unconfigured') {
         setNativeState(state);
@@ -136,7 +141,7 @@ export function useNative({
       setAccounts(state.accounts);
       preferencesRef.current = state.preferences ?? {};
       if (!collectionPending.current && collectionsAtStart === collectionEpoch.current)
-        applyCollections((state.collections ?? []) as unknown as NativeCollection[]);
+        applyCollections((state.collections ?? []) as unknown as Collection[]);
       else collectionRefreshNeeded.current = true;
       setSnapshotVersion((version) => version + 1);
       setSaved(
@@ -259,10 +264,7 @@ export function useNative({
         if (sequence !== reloadSequence.current) return;
         applyLibraryStatus(status);
         if (status.state !== 'ready' && status.state !== 'setup') return;
-        const state: Pick<
-          NativeState,
-          'accounts' | 'roots' | 'jobs' | 'preferences' | 'sourceCoverage' | 'conflicts'
-        > = await invokeAction('catalogue', 'state');
+        const state = withPreferences(await invokeAction('catalogue', 'state'));
         if (sequence !== reloadSequence.current) return;
         setNativeState((old) => ({ ...old, ...state }));
         setAccounts(state.accounts);
@@ -278,10 +280,7 @@ export function useNative({
         if (libraryRefreshPending.current || libraryStateRef.current?.state !== 'ready') return;
         const epoch = libraryEpoch.current,
           sequence = reloadSequence.current;
-        const state: Pick<NativeState, 'avatarOptions'> = await invokeAction(
-          'catalogue',
-          'avatar_options',
-        );
+        const state = await invokeAction('catalogue', 'avatar_options');
         if (
           epoch !== libraryEpoch.current ||
           sequence !== reloadSequence.current ||

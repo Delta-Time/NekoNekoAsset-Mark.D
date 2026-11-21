@@ -1,4 +1,4 @@
-import type { NativeCollection } from './backend';
+import type { Collection } from './backend';
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 /** Membership for the captured selection; unrelated products never affect the checkbox. */
@@ -12,10 +12,10 @@ export function collectionMembership(
 }
 /** Presentation while an atomic native write is pending; never changes persisted membership. */
 export function pendingCollections(
-  rows: readonly NativeCollection[],
+  rows: readonly Collection[],
   args: Record<string, unknown>,
   newId: (name: string) => string,
-): NativeCollection[] {
+): Collection[] {
   const next = rows.map((row) => ({ ...row, productIds: [...row.productIds] })),
     op = args.op ?? args.operation ?? 'create';
   if (op === 'create') {
@@ -52,13 +52,13 @@ export function pendingCollections(
 }
 
 /** Only the selected collection membership can change the product query. */
-export function collectionQueryKey(rows: readonly NativeCollection[], name: string): string {
+export function collectionQueryKey(rows: readonly Collection[], name: string): string {
   if (!name) return '';
   const row = rows.find((row) => row.name === name);
   return JSON.stringify(row ? [row.id, [...new Set(row.productIds)].sort()] : [null, []]);
 }
 /** Ignore transport order and duplicate memberships when reconciling repeated events. */
-export function collectionSnapshotKey(rows: readonly NativeCollection[]): string {
+export function collectionSnapshotKey(rows: readonly Collection[]): string {
   return JSON.stringify(
     rows
       .map((row) => [row.id, row.name, [...new Set(row.productIds)].sort()])
@@ -67,8 +67,8 @@ export function collectionSnapshotKey(rows: readonly NativeCollection[]): string
 }
 
 export function reconciledCollectionName(
-  before: readonly NativeCollection[],
-  after: readonly NativeCollection[],
+  before: readonly Collection[],
+  after: readonly Collection[],
   name: string,
 ): string {
   const id = before.find((row) => row.name === name)?.id;
@@ -77,8 +77,8 @@ export function reconciledCollectionName(
 
 /** Session-local ordered writes; presentation is always rebased over committed rows. */
 export function collectionMutationQueue(
-  send: (args: Record<string, unknown>) => Promise<{ collections: NativeCollection[] }>,
-  publish: (rows: NativeCollection[], committed: NativeCollection[], busy: boolean) => void,
+  send: (args: Record<string, unknown>) => Promise<{ collections: Collection[] }>,
+  publish: (rows: Collection[], committed: Collection[], busy: boolean) => void,
   failed: (error: unknown) => void,
   newId: () => string,
 ) {
@@ -88,7 +88,7 @@ export function collectionMutationQueue(
     resolve: () => void;
     reject: (error: unknown) => void;
   };
-  let committed: NativeCollection[] = [],
+  let committed: Collection[] = [],
     running = false;
   const pending: Operation[] = [];
   // Names created by add use stable provisional IDs until the native atomic add returns.
@@ -140,7 +140,7 @@ export function collectionMutationQueue(
     }
   };
   return {
-    setCommitted(rows: NativeCollection[]) {
+    setCommitted(rows: Collection[]) {
       committed = rows;
       update();
     },
