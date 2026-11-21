@@ -4,7 +4,7 @@ import { resetText } from '../../settings-reset-i18n';
 import ScaleControl from '../../ScaleControl';
 import Toggle from '../../Toggle';
 import ThemePicker from '../../ThemePicker';
-import { exportThemeConfig } from '../../EditDialogs';
+import { exportThemeConfig } from './themeConfig';
 import Button from '../../shared/Button';
 import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Appearance } from './useAppearance';

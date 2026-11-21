@@ -1,4 +1,4 @@
-import { builtInTheme } from '../../EditDialogs';
+import { builtInTheme } from './themeConfig';
 
 export type Preset = { id: string; name: string; tokens: Record<string, string> };
 
