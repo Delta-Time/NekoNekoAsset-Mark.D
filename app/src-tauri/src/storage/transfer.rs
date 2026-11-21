@@ -948,7 +948,7 @@ impl StorageService {
             std::fs::remove_file(&part)?;
         }
         let _partial = io::PartialGuard::new(part.clone());
-        let mut artifact = json!({"id":id,"productId":product,"fileId":file["id"],"rootId":root["id"],"relativePath":relative,"productDirectory":product_directory,"revision":null,"attemptedRevision":crate::catalogue::known_file_revision(file),"initialCategory":category,"status":"downloading","originalAvailable":false});
+        let mut artifact = json!({"id":id,"productId":product,"fileId":file["id"],"rootId":root["id"],"relativePath":relative,"productDirectory":product_directory,"revision":null,"initialCategory":category,"status":"downloading","originalAvailable":false});
         self.catalogue.put("artifact", &id, artifact.clone())?;
         let result = self
             .stream_download(app, job_id, file, &part, &root_path, cancel)

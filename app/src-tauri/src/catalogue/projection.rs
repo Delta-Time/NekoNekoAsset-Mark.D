@@ -318,14 +318,9 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
 pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT a.product_id FROM entities a
-         JOIN products p ON p.id=a.product_id
-         LEFT JOIN entities r ON r.kind='remote_file' AND r.id=json_extract(a.body,'$.fileId'),
-         json_each(p.body,'$.files') f
+         JOIN products p ON p.id=a.product_id, json_each(p.body,'$.files') f
          WHERE a.kind='artifact'
            AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
-           AND (json_extract(a.body,'$.attemptedRevision') IS NULL
-                OR COALESCE(json_extract(r.body,'$.revision'),'') IN ('','unknown')
-                OR json_extract(r.body,'$.revision')=json_extract(a.body,'$.attemptedRevision'))
            AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
            AND COALESCE(json_extract(f.value,'$.kept'),0)=0",
     )?;
@@ -814,6 +809,11 @@ fn effective_with_jobs(
             *entry = artifact;
         }
     }
+    let refused: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|artifact| refused_download(artifact))
+        .map(|artifact| text(artifact, "fileId"))
+        .collect();
     let mut roots = BTreeMap::new();
     for root in artifacts
         .iter()
@@ -1080,16 +1080,8 @@ fn effective_with_jobs(
     let mut evidence = vec![];
     let mut known_file_count = 0;
     let mut kept_count = 0;
-    // An obsolete grant can still name a refused revision, but a newer revision
-    // should appear in the list and be available to download.
-    let refused: BTreeSet<&str> = artifacts
-        .iter()
-        .filter_map(|artifact| {
-            let file_id = text(artifact, "fileId");
-            let file = remote_map.get(file_id).unwrap_or(&Value::Null);
-            store_file_refusal_applies(artifact, file).then_some(file_id)
-        })
-        .collect();
+    // A file its store refused as no longer offered counts as dropped, however long
+    // a grant still names it.
     for (fid, retained) in file_ids
         .into_iter()
         .map(|fid| {

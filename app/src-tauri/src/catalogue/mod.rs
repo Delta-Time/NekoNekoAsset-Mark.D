@@ -1463,38 +1463,7 @@ pub(super) fn related(conn: &Connection, kind: &str, product: &str) -> Result<Ve
 pub(super) fn effective_entitlements(conn: &Connection, product: &str) -> Result<Vec<Value>> {
     related(conn, "entitlement", product)
 }
-pub(crate) fn known_file_revision(file: &Value) -> Option<&str> {
-    file["revision"]
-        .as_str()
-        .filter(|revision| !revision.is_empty() && *revision != "unknown")
-}
-
-pub(crate) fn store_file_refusal_applies(artifact: &Value, file: &Value) -> bool {
-    artifact["errorCode"] == "store_file_unavailable"
-        && artifact["attemptedRevision"]
-            .as_str()
-            .zip(known_file_revision(file))
-            .is_none_or(|(attempted, current)| attempted == current)
-}
-
 pub(super) fn set_raw(conn: &Connection, kind: &str, id: &str, value: &Value) -> Result<()> {
-    if let ("remote_file", Some(revision)) = (kind, known_file_revision(value)) {
-        // Old refusals lack an attempted revision. Preserve their meaning against the
-        // previous known revision before ingesting a confirmed change.
-        conn.prepare_cached(
-            "UPDATE entities AS artifact
-             SET body=json_set(artifact.body,'$.attemptedRevision',json_extract(previous.body,'$.revision'))
-             FROM entities AS previous
-             WHERE previous.kind='remote_file' AND previous.id=?1
-               AND previous.product_id=?2 AND artifact.product_id=?2 AND artifact.kind='artifact'
-               AND json_extract(artifact.body,'$.fileId')=?1
-               AND json_extract(artifact.body,'$.errorCode')='store_file_unavailable'
-               AND json_extract(artifact.body,'$.attemptedRevision') IS NULL
-               AND json_type(previous.body,'$.revision')='text'
-               AND json_extract(previous.body,'$.revision') NOT IN ('','unknown',?3)",
-        )?
-        .execute(params![id, text(value, "productId"), revision])?;
-    }
     conn.execute("INSERT INTO entities(kind,id,product_id,body) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET product_id=excluded.product_id,body=excluded.body",params![kind,id,text(value,"productId"),serde_json::to_string(value)?])?;
     Ok(())
 }
