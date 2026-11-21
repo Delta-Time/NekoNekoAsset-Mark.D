@@ -71,6 +71,15 @@ jobs:
           # Step logs need sign-in; name failed tests in public annotations.
           $output | Select-String -Pattern '^test (\S+) \.\.\. FAILED' | ForEach-Object { Write-Output "::error title=Rust test failed::$($_.Matches[0].Groups[1].Value)" }
           exit $code
+      - name: Check generated TypeScript bindings
+        run: |
+          node scripts/bindings.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $stale = git status --porcelain -- app/src/bindings
+          if ($stale) {
+            Write-Output "::error title=Stale TypeScript bindings::Run pnpm --dir app bindings and commit: $($stale -join '; ')"
+            exit 1
+          }
 
   bridge:
     runs-on: ubuntu-24.04

@@ -20,6 +20,7 @@ pnpm --dir app build
 cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
+pnpm --dir app bindings
 python scripts/test_release.py
 python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/bridge
 ```
@@ -53,7 +54,8 @@ actions are one tagged enum (such as `catalogue::api::CatalogueRequest`) and the
 records the UI reads are structs (such as `catalogue::api::Product`).
 `pnpm --dir app bindings` regenerates their TypeScript in `app/src/bindings`;
 commit it with the Rust change, so `pnpm build` fails wherever the UI still uses
-an old action or field name.
+an old action or field name. CI regenerates it and fails when the result differs
+from what is committed.
 
 Use synthetic catalogues and authored assets when developing or reporting bugs.
 Do not commit or attach personal catalogue records, account/order information,
