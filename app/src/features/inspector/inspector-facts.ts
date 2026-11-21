@@ -60,7 +60,7 @@ export function provenanceLines(
   locale: Locale,
   rows: readonly {
     source?: string;
-    accountId?: string;
+    accountId?: string | null;
     acquisitionKind?: string | null;
     acquiredDateText?: string | null;
     variantName?: string | null;

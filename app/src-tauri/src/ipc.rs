@@ -1,0 +1,91 @@
+//! Typed requests behind the `*_action` commands. The UI still sends `{action, args}`;
+//! each service declares one tagged enum of its actions, and `pnpm bindings` turns it
+//! into a TypeScript union with ts-rs.
+use anyhow::Result;
+use serde::{de::DeserializeOwned, Deserialize, Deserializer};
+use serde_json::{Map, Value};
+
+/// Joins an action and its arguments into one request tagged by `action`.
+/// `unknown` is the error code for an action the service lacks, `invalid` for
+/// arguments of the wrong shape.
+pub(crate) fn parse<T: DeserializeOwned>(
+    action: &str,
+    args: Value,
+    unknown: &'static str,
+    invalid: &'static str,
+) -> Result<T> {
+    let mut request = match args {
+        Value::Object(fields) => fields,
+        Value::Null => Map::new(),
+        _ => anyhow::bail!(invalid),
+    };
+    request.insert("action".into(), Value::String(action.into()));
+    serde_json::from_value(Value::Object(request)).map_err(|error| {
+        let code = if error.to_string().starts_with("unknown variant") {
+            unknown
+        } else {
+            invalid
+        };
+        anyhow::Error::new(error).context(code)
+    })
+}
+
+/// Keeps an explicit `null` apart from a missing field: `Some(Value::Null)` versus
+/// `None`. Use with `#[serde(default, deserialize_with = "crate::ipc::present")]`.
+pub(crate) fn present<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+/// A field that may be missing, `null` or a value: `None`, `Some(None)` or
+/// `Some(Some(value))`. Use with `#[serde(default, deserialize_with =
+/// "crate::ipc::nullable", skip_serializing_if = "Option::is_none")]`.
+pub(crate) fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Test builds check that what the catalogue writes still reads back as its declared
+/// view type, byte for byte, so the generated TypeScript cannot drift from it.
+/// `closed` views list every field; the others may carry a source record's own fields.
+#[cfg(test)]
+pub(crate) fn assert_view<T: DeserializeOwned + serde::Serialize>(
+    kind: &str,
+    value: &Value,
+    closed: bool,
+    unknown: impl Fn(&T) -> Vec<String>,
+) {
+    let view: T = serde_json::from_value(value.clone())
+        .unwrap_or_else(|error| panic!("{kind} no longer reads as its view type: {error}"));
+    let extra = unknown(&view);
+    assert!(
+        !closed || extra.is_empty(),
+        "{kind} has fields its view type lacks: {extra:?}"
+    );
+    let back = serde_json::to_value(&view).unwrap();
+    if let Some(path) = difference(value, &back, String::new()) {
+        panic!("{kind} changed through its view type at {path}");
+    }
+}
+
+/// The first path where two values differ, with both sides.
+#[cfg(test)]
+fn difference(left: &Value, right: &Value, path: String) -> Option<String> {
+    match (left, right) {
+        (Value::Object(a), Value::Object(b)) => a.keys().chain(b.keys()).find_map(|key| {
+            let path = format!("{path}.{key}");
+            match (a.get(key), b.get(key)) {
+                (Some(x), Some(y)) => difference(x, y, path),
+                (x, y) => Some(format!("{path}: {x:?} became {y:?}")),
+            }
+        }),
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => a
+            .iter()
+            .zip(b)
+            .enumerate()
+            .find_map(|(index, (x, y))| difference(x, y, format!("{path}[{index}]"))),
+        _ => (left != right).then(|| format!("{path}: {left} became {right}")),
+    }
+}

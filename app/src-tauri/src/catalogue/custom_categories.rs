@@ -16,11 +16,12 @@ pub(super) fn missing(conn: &Connection, category: &str) -> Result<bool> {
 }
 
 impl Catalogue {
-    pub(super) fn custom_category(&self, args: Value) -> Result<Value> {
-        let op = text(&args, "op").to_owned();
+    pub(super) fn custom_category(&self, request: api::CustomCategoryRequest) -> Result<Value> {
+        let op = request.op.as_str();
+        let requested_id = request.id.as_deref().unwrap_or("");
         self.mutate(|tx, projections| {
             if op == "delete" {
-                let id = text(&args, "id");
+                let id = requested_id;
                 ensure!(
                     raw(tx, "custom_category", id)?.is_some(),
                     "catalogue.entity_missing"
@@ -41,13 +42,13 @@ impl Catalogue {
                 let id = if op == "create" {
                     format!("{PREFIX}{}", Uuid::new_v4())
                 } else {
-                    text(&args, "id").to_owned()
+                    requested_id.to_owned()
                 };
                 ensure!(
                     op == "create" || raw(tx, "custom_category", &id)?.is_some(),
                     "catalogue.entity_missing"
                 );
-                let name = text(&args, "name").trim().to_owned();
+                let name = request.name.as_deref().unwrap_or("").trim().to_owned();
                 ensure!(!name.is_empty(), "catalogue.name_required");
                 let key = crate::taxonomy::normalize(&name);
                 ensure!(

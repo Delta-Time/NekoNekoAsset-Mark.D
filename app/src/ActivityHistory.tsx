@@ -159,7 +159,7 @@ export default function ActivityHistory({
         const [id, stamp] = pending[index++];
         let product: Product | undefined;
         try {
-          product = await invokeAction<Product>('catalogue', 'product_details', { id });
+          product = await invokeAction('catalogue', 'product_details', { id });
         } catch {
           /* A removed product must not hide its job. */
         }
@@ -279,7 +279,7 @@ export default function ActivityHistory({
     setCopyStates((values) => ({ ...values, [job.id]: { stamp, status: 'copying' } }));
     try {
       // The server owns the allowlist. Never build a report from rendered job data.
-      const text = await invokeAction<string>('catalogue', 'job_diagnostics', { jobId: job.id });
+      const text: string = await invokeAction('catalogue', 'job_diagnostics', { jobId: job.id });
       if (!current()) return;
       if (
         typeof text !== 'string' ||

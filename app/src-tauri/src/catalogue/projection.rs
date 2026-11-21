@@ -1359,6 +1359,8 @@ fn refresh_with_jobs(
         }
         changes.record_source_aliases(&p);
     }
+    #[cfg(test)]
+    api::assert_product(&p);
     store_projection(conn, &p)?;
     Ok(changes)
 }

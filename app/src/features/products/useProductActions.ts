@@ -131,8 +131,8 @@ export function useProductActions({
   const syncLicenses = (ids: string[]) => {
     if (ids.length)
       run(
-        invokeAction<{ jobId?: string | null }>('licenses', 'sync', { productIds: ids }).then(
-          (result) => {
+        invokeAction('licenses', 'sync', { productIds: ids }).then(
+          (result: { jobId?: string | null }) => {
             if (!result?.jobId) notify(licenseText(locale, 'noLicenseWork')!);
           },
         ),

@@ -46,6 +46,8 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 regex = "1"
 # License filter: text of VN3 generator PDFs, through its own ToUnicode maps. Pure Rust, MIT.
 lopdf = { version = "0.36", default-features = false }
+# TypeScript declarations of what the UI sends and reads, written by `pnpm bindings`. MIT.
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
 [lints.clippy]
 # Long signatures and nested types are left until the largest functions are split.

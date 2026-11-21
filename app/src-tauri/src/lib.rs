@@ -2,6 +2,7 @@ mod ai;
 mod app_reset;
 mod booth;
 mod catalogue;
+mod ipc;
 mod library_lock;
 mod licenses;
 mod native;
@@ -482,34 +483,46 @@ async fn catalogue_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use catalogue::api::CatalogueRequest as Request;
     let _operation = trusted(&window)?;
+    let mut request = Request::parse(&action, args).map_err(UiError::from_error)?;
+    // A preference change, and whether it finishes setup.
+    let patch = match &request {
+        Request::Preferences { patch } => Some(patch.clone()),
+        _ => None,
+    };
+    let finishing = patch
+        .as_ref()
+        .is_some_and(|patch| patch.get("setupComplete") == Some(&Value::Bool(true)));
     if let Some(setup) = services.active_setup()? {
         if services.opening.load(Ordering::Acquire) {
             return Err(UiError {
                 code: "library_opening".into(),
             });
         }
-        if action == "preferences" && args["patch"]["setupComplete"] == true {
-            return finish_staged_setup(app, &services, setup, args).await;
+        if finishing {
+            return finish_staged_setup(app, &services, setup, json!({"patch":patch})).await;
         }
-        if !matches!(action.as_str(), "bootstrap" | "state" | "preferences") {
+        if !matches!(
+            request,
+            Request::Bootstrap { .. } | Request::State | Request::Preferences { .. }
+        ) {
             return Err(UiError {
                 code: "library_not_open".into(),
             });
         }
         let catalogue = setup.catalogue.clone();
-        let mutation = action == "preferences";
+        let mutation = patch.is_some();
         let _work = mutation
             .then(|| setup.catalogue.begin_catalogue_work())
             .transpose()
             .map_err(UiError::from_error)?;
-        let mut result =
-            tauri::async_runtime::spawn_blocking(move || catalogue.command(&action, args))
-                .await
-                .map_err(|_| UiError {
-                    code: "worker_failed".into(),
-                })?
-                .map_err(UiError::from_error)?;
+        let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.execute(request))
+            .await
+            .map_err(|_| UiError {
+                code: "worker_failed".into(),
+            })?
+            .map_err(UiError::from_error)?;
         if let Some(accounts) = result["accounts"].as_array() {
             result["accounts"] = json!(setup.stores.account_views(accounts.clone()));
         }
@@ -521,7 +534,7 @@ async fn catalogue_action(
     let status = services.status_snapshot()?;
     if status.state == "unconfigured"
         && services.active_services()?.is_none()
-        && matches!(action.as_str(), "bootstrap" | "state")
+        && matches!(request, Request::Bootstrap { .. } | Request::State)
     {
         let locale = status.locale;
         return Ok(
@@ -530,26 +543,12 @@ async fn catalogue_action(
     }
     let host = services;
     let services = host.services()?;
-    if services.setup_only && action == "preferences" && args["patch"]["setupComplete"] == true {
-        return finish_setup(app, &host, services, args).await;
+    if services.setup_only && finishing {
+        return finish_setup(app, &host, services, json!({"patch":patch})).await;
     }
     let catalogue = services.catalogue.clone();
-    let invalidates = !matches!(
-        action.as_str(),
-        "bootstrap"
-            | "avatar_options"
-            | "job_diagnostics"
-            | "query"
-            | "conflicts"
-            | "product_details"
-            | "account_counts"
-            | "manifest"
-            | "export_csv"
-            | "collections"
-            | "state"
-            | "spending_summary"
-    );
-    let _work = if action == "restore_manifest" {
+    let invalidates = !request.reads_only();
+    let _work = if matches!(request, Request::RestoreManifest(_)) {
         Some(
             services
                 .catalogue
@@ -566,7 +565,7 @@ async fn catalogue_action(
     } else {
         None
     };
-    let previous_preferences = if action == "preferences" {
+    let previous_preferences = if patch.is_some() {
         catalogue
             .get("preferences", "app")
             .map_err(UiError::from_error)?
@@ -574,41 +573,36 @@ async fn catalogue_action(
     } else {
         Value::Null
     };
-    let mut reevaluate_automatic = action == "preferences"
-        && args["patch"]["autoDownloadAll"]
-            .as_bool()
-            .is_some_and(|next| {
-                next != previous_preferences["autoDownloadAll"]
-                    .as_bool()
-                    .unwrap_or(false)
-            });
-    let completes_setup = action == "preferences"
-        && args["patch"]["setupComplete"] == true
-        && previous_preferences["setupComplete"] != true;
-    let avatar_settings_changed = action == "preferences"
-        && args["patch"]
-            .get("avatarSettings")
-            .is_some_and(|next| *next != previous_preferences["avatarSettings"]);
-    let mutation_scope = match action.as_str() {
-        "collection" => "collections",
-        "clear_activity" => "catalogue",
-        "preferences" if !avatar_settings_changed => "state",
+    let patched = |key: &str| patch.as_ref().and_then(|patch| patch.get(key));
+    let mut reevaluate_automatic = patched("autoDownloadAll")
+        .and_then(Value::as_bool)
+        .is_some_and(|next| {
+            next != previous_preferences["autoDownloadAll"]
+                .as_bool()
+                .unwrap_or(false)
+        });
+    let completes_setup = finishing && previous_preferences["setupComplete"] != true;
+    let avatar_settings_changed = patched("avatarSettings")
+        .is_some_and(|next| *next != previous_preferences["avatarSettings"]);
+    let mutation_scope = match request {
+        Request::Collection(_) => "collections",
+        Request::ClearActivity => "catalogue",
+        Request::Preferences { .. } if !avatar_settings_changed => "state",
         _ => "catalogue",
     };
-    let is_exchange = action == "exchange";
-    let account_view = matches!(action.as_str(), "bootstrap" | "state");
-    let mut args = args;
-    if action == "query" {
+    let is_exchange = matches!(request, Request::Exchange { .. });
+    let account_view = matches!(request, Request::Bootstrap { .. } | Request::State);
+    if let Request::Query(query) = &mut request {
         // The license database answers which products a license filter keeps.
         if let Some(ids) = services
             .licenses
-            .matching(&args["license"])
+            .matching(&json!(query.license))
             .map_err(UiError::from_error)?
         {
-            args["licenseIds"] = json!(ids);
+            query.license_ids = Some(ids);
         }
     }
-    let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.command(&action, args))
+    let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.execute(request))
         .await
         .map_err(|_| UiError {
             code: "worker_failed".into(),

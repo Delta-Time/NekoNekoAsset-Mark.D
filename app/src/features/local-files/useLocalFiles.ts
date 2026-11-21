@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { categoryKeys } from '../../model';
-import type { Product } from '../../model';
 import { dialog as nativeDialog, errorCode, invokeAction, updateLocalFiles } from '../../backend';
 import type { LocalFileChanges } from '../../backend';
 import { fresh } from '../filters/query';
@@ -140,7 +139,7 @@ export function useLocalFiles({
     const reusedId = job.productIds?.find((id) => !accepted.plannedIds.includes(id));
     if (!reusedId) return;
     notify(q('assetExists'));
-    void invokeAction<Product>('catalogue', 'product_details', { id: reusedId })
+    void invokeAction('catalogue', 'product_details', { id: reusedId })
       .then((product) => {
         const current = importNavigation.current;
         if (

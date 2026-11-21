@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Product, Locale, Account } from './model';
 import { nativeWorkflowText } from './native-workflow-i18n';
-import type { NativeState, LibraryStatus, LibraryCredential } from './backend';
+import type { NativeState, LibraryStatus, LibraryCredential, NativeCall } from './backend';
 import './workflow-panels.css';
 import type { ThemeOption } from './ThemePicker';
 import AiSettings from './AiSettings';
@@ -59,11 +59,7 @@ export type Props = {
   missingCredentials?: LibraryCredential[];
   nativeState?: NativeState;
   catalogueVersion?: number;
-  onNative?: (
-    service: 'catalogue' | 'booth' | 'storage' | 'unity' | 'dialog',
-    action: string,
-    args?: Record<string, unknown>,
-  ) => Promise<any>;
+  onNative?: NativeCall;
   onPreferences?: (patch: Record<string, unknown>) => Promise<void>;
 };
 const aliases: Record<string, string> = {

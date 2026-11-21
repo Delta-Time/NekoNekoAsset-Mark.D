@@ -71,7 +71,7 @@ const categoryRules: {
   },
 ];
 export function inferCategoryEvidence(
-  sourceCategory: SourceCategory | string | undefined,
+  sourceCategory: SourceCategory | string | null | undefined,
   tags: readonly string[] = [],
 ): CategoryInference {
   const leaf = typeof sourceCategory === 'string' ? sourceCategory : (sourceCategory?.name ?? '');
@@ -97,7 +97,7 @@ export function inferCategoryEvidence(
 }
 /** Inferred classification never establishes VRChat compatibility or avatar ownership. */
 export function inferCategory(
-  sourceCategory: SourceCategory | string | undefined,
+  sourceCategory: SourceCategory | string | null | undefined,
   tags: readonly string[] = [],
 ): (typeof categoryKeys)[number] {
   return inferCategoryEvidence(sourceCategory, tags).category as (typeof categoryKeys)[number];

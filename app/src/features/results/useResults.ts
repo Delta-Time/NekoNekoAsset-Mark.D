@@ -154,14 +154,10 @@ export function useResults({
         const knownSummaries = Object.fromEntries(
           Array.from(summaryCache.current, ([id, entry]) => [id, entry.fingerprint]),
         );
-        const result = await invokeAction<{
-          products: Product[];
-          fingerprints?: Record<string, string>;
-          matchedIds: string[];
-          total: number;
-          allDownloaded: boolean;
-          counts: { all: number; downloaded: number; attention: number; hidden?: number };
-        }>('catalogue', 'query', { ...request.args, knownSummaries });
+        const result = await invokeAction('catalogue', 'query', {
+          ...request.args,
+          knownSummaries,
+        });
         if (epoch !== libraryEpoch.current) return;
         for (const product of result.products)
           summaryCache.current.set(product.id, {

@@ -429,12 +429,15 @@ fn csv_cell(value: &str) -> String {
     };
     format!("\"{}\"", safe.replace('"', "\"\""))
 }
-pub(super) fn csv(catalogue: &Catalogue, args: Value) -> Result<Value> {
+pub(super) fn csv(catalogue: &Catalogue, request: api::CsvExport) -> Result<Value> {
     let conn = catalogue
         .inner
         .lock()
         .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-    let selected: Option<BTreeSet<_>> = args.get("ids").map(|v| strings(v).into_iter().collect());
+    // `ids: null` selects nothing, as a missing list selects everything.
+    let selected: Option<BTreeSet<_>> = request
+        .ids
+        .map(|ids| ids.unwrap_or_default().into_iter().collect());
     let custom: std::collections::BTreeMap<_, _> = rows(&conn, "custom_category")?
         .iter()
         .map(|row| (text(row, "id").to_owned(), text(row, "name").to_owned()))
@@ -487,7 +490,7 @@ pub(super) fn csv(catalogue: &Catalogue, args: Value) -> Result<Value> {
         count += 1;
     }
     drop(conn);
-    if let Some(path) = args["path"].as_str() {
+    if let Some(path) = request.path.as_deref() {
         let path = Path::new(path);
         ensure!(path.is_absolute(), "catalogue.absolute_path_required");
         let mut file = std::fs::OpenOptions::new()

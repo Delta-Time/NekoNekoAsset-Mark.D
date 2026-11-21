@@ -3,6 +3,7 @@ import type { Library } from '../library/useLibrary';
 import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Native } from '../library/useNative';
 import type { Filters } from '../filters/useFilters';
+import type { CustomCategoryRequest } from '../../bindings';
 
 /** Category names for any key, the sorted custom categories, and creating, renaming and deleting
  * them. Deleting the listed category lists all categories again. */
@@ -27,7 +28,7 @@ export function useCategories({
     categoryList = [...customCategories].sort((a, b) =>
       a.name.localeCompare(b.name, locale, { numeric: true }),
     );
-  const changeCategories = async (args: Record<string, unknown>) => {
+  const changeCategories = async (args: CustomCategoryRequest) => {
     const result = await onNative('catalogue', 'custom_category', args);
     if (Array.isArray(result?.customCategories)) setCustomCategories(result.customCategories);
     if (args.op === 'delete')

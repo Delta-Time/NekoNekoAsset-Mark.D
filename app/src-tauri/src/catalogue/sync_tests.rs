@@ -1,5 +1,10 @@
 use super::*;
 
+/// A conflict choice as the UI sends it.
+fn choice(value: Value) -> super::super::api::ConflictChoice {
+    serde_json::from_value(value).unwrap()
+}
+
 #[test]
 fn fetched_source_thumbnail_register_rejects_unsafe_history_and_retains_empty() -> Result<()> {
     let safe = "https://booth.pximg.net/synthetic-fetched.png";
@@ -149,7 +154,7 @@ fn two_devices_offline_fields_conflicts_restart_and_resolution() -> Result<()> {
         .clone();
     resolve(
         &mut a,
-        &json!({"kind":"overlay","id":"p1","field":"name","opId":op}),
+        &choice(json!({"kind":"overlay","id":"p1","field":"name","opId":op})),
     )?;
     exchange(&mut a, &folder.0)?;
     exchange(&mut b, &folder.0)?;
@@ -187,7 +192,7 @@ fn collections_independent_additions_and_delete_vs_edit_survive_restart() -> Res
     assert!(entity(&a, "collection", "c").is_none());
     resolve(
         &mut a,
-        &json!({"kind":"collection","id":"c","field":DELETED,"value":false}),
+        &choice(json!({"kind":"collection","id":"c","field":DELETED,"value":false})),
     )?;
     assert_eq!(
         entity(&a, "collection", "c").unwrap()["name"],
@@ -300,7 +305,7 @@ fn concurrent_field_clear_is_retained_and_can_be_selected() -> Result<()> {
         .clone();
     resolve(
         &mut a,
-        &json!({"kind":"overlay","id":"p","field":"notes","opId":missing}),
+        &choice(json!({"kind":"overlay","id":"p","field":"notes","opId":missing})),
     )?;
     assert!(entity(&a, "overlay", "p").unwrap().get("notes").is_none());
     Ok(())
@@ -383,7 +388,7 @@ fn existing_winner_resolution_native_delete_survives_validation_and_restart() ->
     let heads = a.get_heads();
     resolve(
         &mut a,
-        &json!({"kind":"overlay","id":"p","field":"name","opId":winner["opId"]}),
+        &choice(json!({"kind":"overlay","id":"p","field":"name","opId":winner["opId"]})),
     )?;
     let changes = a.get_changes(&heads);
     assert!(changes.iter().any(
@@ -546,7 +551,7 @@ fn incremental_projection_matches_full_merge_delete_and_collection_changes() -> 
     let heads = a.get_heads();
     resolve(
         &mut a,
-        &json!({"kind":"collection","id":"c","field":DELETED,"value":false}),
+        &choice(json!({"kind":"collection","id":"c","field":DELETED,"value":false})),
     )?;
     a.commit();
     let before = entity(&a, "collection", "c").unwrap();
@@ -607,7 +612,7 @@ fn snapshot_restores_conflicts_fresh_and_causally_preserves_modified_field_inten
         .unwrap();
     resolve(
         &mut fresh,
-        &json!({"kind":"overlay","id":"p","field":"name","opId":alternative["opId"]}),
+        &choice(json!({"kind":"overlay","id":"p","field":"name","opId":alternative["opId"]})),
     )?;
     assert_eq!(
         entity(&fresh, "overlay", "p").unwrap()["name"],
@@ -659,7 +664,7 @@ fn snapshot_restores_conflicts_fresh_and_causally_preserves_modified_field_inten
     assert_eq!(old_choices, new_choices);
     resolve(
         &mut existing,
-        &json!({"kind":"collection","id":"hidden","field":DELETED,"value":false}),
+        &choice(json!({"kind":"collection","id":"hidden","field":DELETED,"value":false})),
     )?;
     assert_eq!(entity(&existing, "collection", "hidden").unwrap(), hidden);
     let before = existing.save();

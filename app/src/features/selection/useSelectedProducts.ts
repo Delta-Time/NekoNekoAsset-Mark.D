@@ -145,7 +145,7 @@ export function useSelectedProducts({
       return;
     }
     let current = true;
-    void invokeAction<Product>('catalogue', 'product_details', {
+    void invokeAction('catalogue', 'product_details', {
       id: activeSummary.id,
       accountIds: JSON.parse(accountScopeKey),
     })
@@ -165,12 +165,8 @@ export function useSelectedProducts({
       return;
     }
     let current = true;
-    void invokeAction<{ folderAvailable: boolean; openableFileIds: string[] }>(
-      'storage',
-      'product_availability',
-      { productId: active.id },
-    )
-      .then((result) => {
+    void invokeAction('storage', 'product_availability', { productId: active.id })
+      .then((result: { folderAvailable: boolean; openableFileIds: string[] }) => {
         if (current) setAvailability({ ...result, key: availabilityKey });
       })
       .catch(() => {

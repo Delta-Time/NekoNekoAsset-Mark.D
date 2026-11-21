@@ -51,8 +51,8 @@
     },
     {
       "resourcePath": "licenses/dependency-ledger.json",
-      "bytes": 848165,
-      "sha256": "b1f3c2cc921e434a80e1c8238231ff9bf38397d04a76733665ce12dbdd53352c"
+      "bytes": 852125,
+      "sha256": "d0284f63f7f0d2dd785fd65a05be2e130cba47ee7d7624cb359b1e0f999f38e0"
     },
     {
       "resourcePath": "licenses/frontend/NOTICES.txt",
@@ -166,8 +166,8 @@
     },
     {
       "resourcePath": "licenses/rust/NOTICES.txt",
-      "bytes": 5326097,
-      "sha256": "349fe81c2cfe691912ff58e28efc8aa3c15e4a4424892eaf18d8db249a03f9c5"
+      "bytes": 5329755,
+      "sha256": "1fc60d25b725a7d8a321f08edaceaa79f022c142c7445715ceb9397955ec6ff7"
     },
     {
       "resourcePath": "licenses/rust-standard-library/COPYRIGHT-library.html",
@@ -395,6 +395,16 @@
       "sha256": "1140cf34a3b3b836a13103dcab17f18831d5cc3534cbd435dc01a5c6daa65aa2"
     },
     {
+      "resourcePath": "licenses/sources/cargo/ts-rs-12.0.1.crate",
+      "bytes": 57231,
+      "sha256": "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+    },
+    {
+      "resourcePath": "licenses/sources/cargo/ts-rs-macros-12.0.1.crate",
+      "bytes": 21085,
+      "sha256": "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
+    },
+    {
       "resourcePath": "licenses/sources/cargo/webview2-com-0.39.1.crate",
       "bytes": 19283,
       "sha256": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6"
@@ -446,8 +456,8 @@
     },
     {
       "resourcePath": "licenses/supplemental/index.json",
-      "bytes": 95336,
-      "sha256": "52973d6775a90f2e6654244ae6765f5c9450deebe10fb5becec2e2b4a22bf273"
+      "bytes": 97652,
+      "sha256": "9a6d4af83d039bbf683c4e8af5199c7f45aa7bcefa3ee171a4bc9671db3cfff1"
     },
     {
       "resourcePath": "licenses/supplemental/published/fxhash-0.2.1/LEGAL-HEADER.txt",
@@ -498,6 +508,11 @@
       "resourcePath": "licenses/supplemental/terms/Zlib.txt",
       "bytes": 838,
       "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d"
+    },
+    {
+      "resourcePath": "licenses/supplemental/upstream/Aleph-Alpha_ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+      "bytes": 1073,
+      "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1"
     },
     {
       "resourcePath": "licenses/supplemental/upstream/automerge_automerge/a5ae49519094e86356834bb55506abf24bf2fb44/LICENSE",

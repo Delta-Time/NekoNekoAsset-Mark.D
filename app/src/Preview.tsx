@@ -36,7 +36,7 @@ export default function Preview({
   className,
   lazy = false,
 }: {
-  src?: string;
+  src?: string | null;
   title: string;
   placeholderTitle?: string;
   className?: string;

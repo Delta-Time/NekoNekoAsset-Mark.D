@@ -3,6 +3,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { isTauri } from '@tauri-apps/api/core';
 import { categoryKeys, normalizeSearch } from '../../model';
 import { errorCode, nativeFileAction } from '../../backend';
+import type { Action, ActionResult, ArgsParam, LooseNativeCall, Service } from '../../backend';
 import { resolveTag } from '../../TagPicker';
 import { absolutePath, emptyDraft, fileName, selectedPaths } from './import-parts';
 import type { Source } from './import-parts';
@@ -60,13 +61,23 @@ export function useImportActions({
       mounted.current = false;
     };
   }, []);
+  function native<S extends Service, A extends Action<S>>(
+    service: S,
+    action: A,
+    ...args: ArgsParam<S, A>
+  ): Promise<ActionResult<S, A>>;
+  function native(
+    service: 'dialog',
+    action: 'folder' | 'open_file' | 'save_file',
+    options?: Record<string, unknown>,
+  ): Promise<any>;
   async function native(
-    service: 'storage' | 'dialog' | 'booth',
+    service: Service | 'dialog',
     action: string,
     args: Record<string, unknown> = {},
   ) {
     if (!c.onNative) throw new Error('nativeUnavailable');
-    return c.onNative(service, action, args);
+    return (c.onNative as LooseNativeCall)(service, action, args);
   }
   async function run(action: () => Promise<void>) {
     if (lock.current) return;

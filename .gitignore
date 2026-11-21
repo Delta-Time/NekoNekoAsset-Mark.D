@@ -1,6 +1,8 @@
 # Build/runtime output
 node_modules/
 target/
+# ts-rs writes here during `cargo test`; `pnpm bindings` copies the result into app/src/bindings.
+/app/src-tauri/bindings/
 dist/
 build/
 coverage/

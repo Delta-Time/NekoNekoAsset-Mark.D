@@ -10,7 +10,7 @@ import {
   openLibrary,
   subscribeChanged,
 } from '../../backend';
-import type { NativeCollection, NativeState, Service } from '../../backend';
+import type { NativeCall, NativeCollection, NativeState, Service } from '../../backend';
 import { coalescedRefresh } from '../../refresh';
 import { libraryAvailable } from './library-root';
 import { restoreQuery } from '../filters/query';
@@ -23,6 +23,11 @@ import type { Navigation } from '../shell/useNavigation';
 import type { Results } from '../results/useResults';
 import type { Notices } from '../shell/useNotice';
 
+type LooseInvoke = (
+  service: Service,
+  action: string,
+  args: Record<string, unknown>,
+) => Promise<any>;
 /** Native calls for the open library: load and reload it, open another one, refresh its state
  * and avatar options, run actions, and follow `nna:changed` events and preference changes.
  * `reload`, `refreshState` and `refreshAvatarOptions` keep the closure of their first call, so
@@ -113,7 +118,7 @@ export function useNative({
         setLoaded(true);
         return;
       }
-      const state = await invokeAction<NativeState>('catalogue', 'bootstrap', {
+      const state: NativeState = await invokeAction('catalogue', 'bootstrap', {
         includeProducts: false,
       });
       if (sequence !== reloadSequence.current) return;
@@ -254,12 +259,10 @@ export function useNative({
         if (sequence !== reloadSequence.current) return;
         applyLibraryStatus(status);
         if (status.state !== 'ready' && status.state !== 'setup') return;
-        const state = await invokeAction<
-          Pick<
-            NativeState,
-            'accounts' | 'roots' | 'jobs' | 'preferences' | 'sourceCoverage' | 'conflicts'
-          >
-        >('catalogue', 'state');
+        const state: Pick<
+          NativeState,
+          'accounts' | 'roots' | 'jobs' | 'preferences' | 'sourceCoverage' | 'conflicts'
+        > = await invokeAction('catalogue', 'state');
         if (sequence !== reloadSequence.current) return;
         setNativeState((old) => ({ ...old, ...state }));
         setAccounts(state.accounts);
@@ -275,7 +278,7 @@ export function useNative({
         if (libraryRefreshPending.current || libraryStateRef.current?.state !== 'ready') return;
         const epoch = libraryEpoch.current,
           sequence = reloadSequence.current;
-        const state = await invokeAction<Pick<NativeState, 'avatarOptions'>>(
+        const state: Pick<NativeState, 'avatarOptions'> = await invokeAction(
           'catalogue',
           'avatar_options',
         );
@@ -289,7 +292,8 @@ export function useNative({
       });
     return avatarOptionsTask.current();
   };
-  const onNative = async (
+  /** Typed by `NativeCall`; the body serves every service and the native dialogs. */
+  const onNative = (async (
     service: Service | 'dialog',
     action: string,
     args: Record<string, unknown> = {},
@@ -318,7 +322,7 @@ export function useNative({
           ? await changeCollection(args)
           : service === 'dialog'
             ? await nativeDialog(action as 'folder' | 'open_file' | 'save_file', args)
-            : await invokeAction(service, action, args);
+            : await (invokeAction as LooseInvoke)(service, action, args);
       if (result?.restartRequired === true) {
         setLibraryOpening(true);
         return result;
@@ -330,7 +334,7 @@ export function useNative({
       notify(q(errorCode(error)));
       throw error;
     }
-  };
+  }) as NativeCall;
   // A refresh refused while the update installer launches reruns on the next change; nothing failed.
   useEffect(() => {
     let dispose: (() => void) | undefined;

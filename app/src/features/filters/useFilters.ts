@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { defaultSortDirection } from '../../model';
-import type { Product, SortDirection } from '../../model';
+import type { SortDirection } from '../../model';
 import { invokeAction } from '../../backend';
 import { fresh, leavingHidden } from './query';
 import type { Query } from './query';
@@ -43,7 +43,7 @@ export function useFilters({
   };
   const openSuggestedProduct = (id: string) =>
     run(
-      invokeAction<Product>('catalogue', 'product_details', { id }).then((product) => {
+      invokeAction('catalogue', 'product_details', { id }).then((product) => {
         pendingSuggestionProduct.current = id;
         setQuery({
           ...fresh,

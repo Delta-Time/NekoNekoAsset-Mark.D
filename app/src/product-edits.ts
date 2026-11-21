@@ -1,8 +1,13 @@
-import type { Product } from './model';
+import type { Product as NativeProduct } from './model';
 import { inferCategoryEvidence } from './category-inference';
 
 // The App does not call these: product edits, undo and source refreshes go through the native
 // catalogue.
+/** These helpers predate the native catalogue; their products may lack the override flags. */
+type Product = Omit<NativeProduct, 'titleOverride' | 'categoryOverride'> & {
+  titleOverride?: boolean;
+  categoryOverride?: boolean;
+};
 export type EditableField =
   | 'title'
   | 'category'

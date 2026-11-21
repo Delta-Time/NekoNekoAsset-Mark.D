@@ -1,8 +1,56 @@
 import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Product, Account, Locale, CustomCategory } from './model';
+import type { CatalogueRequest, CatalogueResponses, Conflict } from './bindings';
 
 export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
+/** A service whose actions are not typed yet takes any action and arguments. */
+type Untyped = { untyped: true };
+/** Each service's actions, generated from its Rust request enum. */
+type Requests = {
+  catalogue: CatalogueRequest;
+  booth: Untyped;
+  storage: Untyped;
+  unity: Untyped;
+  licenses: Untyped;
+};
+/** What each typed action returns; the others return `any`. */
+type Responses = {
+  catalogue: CatalogueResponses;
+  booth: Record<never, never>;
+  storage: Record<never, never>;
+  unity: Record<never, never>;
+  licenses: Record<never, never>;
+};
+type Typed<S extends Service> = Extract<Requests[S], { action: string }>;
+export type Action<S extends Service> = Requests[S] extends Untyped ? string : Typed<S>['action'];
+export type ActionArgs<S extends Service, A extends string> = Requests[S] extends Untyped
+  ? Record<string, unknown>
+  : Omit<Extract<Typed<S>, { action: A }>, 'action'>;
+/** Arguments may be left out when every one of them is optional. */
+export type ArgsParam<S extends Service, A extends string> =
+  Partial<ActionArgs<S, A>> extends ActionArgs<S, A>
+    ? [args?: ActionArgs<S, A>]
+    : [args: ActionArgs<S, A>];
+export type ActionResult<S extends Service, A extends string> = A extends keyof Responses[S]
+  ? Responses[S][A]
+  : any;
+type DialogKind = 'folder' | 'open_file' | 'save_file';
+/** A native action, or a native file dialog through the `dialog` service. */
+export type NativeCall = {
+  <S extends Service, A extends Action<S>>(
+    service: S,
+    action: A,
+    ...args: ArgsParam<S, A>
+  ): Promise<ActionResult<S, A>>;
+  (service: 'dialog', action: DialogKind, options?: Record<string, unknown>): Promise<any>;
+};
+/** The untyped form of `NativeCall`, for wrappers that declare its overloads themselves. */
+export type LooseNativeCall = (
+  service: Service | 'dialog',
+  action: string,
+  args?: Record<string, unknown>,
+) => Promise<any>;
 export interface SourceProgress {
   stage?: string;
   source?: string;
@@ -192,7 +240,7 @@ export interface NativeState {
   savedSearches: Record<string, unknown>[];
   customCategories?: CustomCategory[];
   sourceCoverage: Record<string, unknown>[];
-  conflicts: Record<string, unknown>[];
+  conflicts: Conflict[];
   avatarOptions?: AvatarOption[];
   ownedBaseOptions?: AvatarOption[];
   tagOptions?: TagOption[];
@@ -216,13 +264,14 @@ export interface DialogResult {
   content?: string;
   paths?: string[];
 }
-export async function invokeAction<T = any>(
-  service: Service,
-  action: string,
-  args: Record<string, unknown> = {},
-): Promise<T> {
+export async function invokeAction<S extends Service, A extends Action<S>>(
+  service: S,
+  action: A,
+  ...rest: ArgsParam<S, A>
+): Promise<ActionResult<S, A>> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  const value = await invoke<T>(`${service}_action`, { action, args });
+  const args = rest[0] ?? {};
+  const value = await invoke<ActionResult<S, A>>(`${service}_action`, { action, args });
   if (
     service === 'catalogue' &&
     ['bootstrap', 'state'].includes(action) &&
@@ -325,7 +374,7 @@ export async function subscribeUpdateProgress(
 export async function fetchProductMetadata(url: string): Promise<FetchedProductMetadata> {
   return invokeAction('booth', 'fetch_product_metadata', { url });
 }
-export function previewSource(path: string | undefined): string | undefined {
+export function previewSource(path: string | null | undefined): string | undefined {
   if (!path) return undefined;
   if (/^(https:\/\/|asset:|https?:\/\/asset\.localhost\/)/.test(path)) return path;
   return isTauri() ? convertFileSrc(path) : undefined;
@@ -393,10 +442,10 @@ export interface UnityDetails {
   errorCode?: string | null;
   receipt: UnityReceipt | null;
 }
-export const listUnityEditors = () =>
-  invokeAction<{ editors: UnityEditor[] }>('unity', 'list_editors');
-export const unityInventory = (productIds: string[]) =>
-  invokeAction<{ files: UnityLeaf[] }>('unity', 'inventory', { productIds });
+export const listUnityEditors = (): Promise<{ editors: UnityEditor[] }> =>
+  invokeAction('unity', 'list_editors');
+export const unityInventory = (productIds: string[]): Promise<{ files: UnityLeaf[] }> =>
+  invokeAction('unity', 'inventory', { productIds });
 /** One package opens in Unity's own importer and leaves no job; anything else is a Bridge request. */
 export const submitUnity = (input: {
   productIds: string[];
@@ -404,12 +453,14 @@ export const submitUnity = (input: {
   instanceId: string;
   sessionId: string;
   locale?: string;
-}) => invokeAction<{ jobId?: string; native?: true }>('unity', 'submit', input);
-export const unityDetails = (jobId: string) =>
-  invokeAction<UnityDetails>('unity', 'details', { jobId });
-export const queryUnity = (jobId: string) =>
-  invokeAction<UnityDetails>('unity', 'status', { jobId });
-export const cancelUnity = (jobId: string) =>
-  invokeAction<UnityDetails>('unity', 'cancel', { jobId });
-export const retryUnityInventory = (jobId: string) =>
-  invokeAction<{ productIds: string[]; leafRefs: string[] }>('unity', 'retry_inventory', { jobId });
+}): Promise<{ jobId?: string; native?: true }> => invokeAction('unity', 'submit', input);
+export const unityDetails = (jobId: string): Promise<UnityDetails> =>
+  invokeAction('unity', 'details', { jobId });
+export const queryUnity = (jobId: string): Promise<UnityDetails> =>
+  invokeAction('unity', 'status', { jobId });
+export const cancelUnity = (jobId: string): Promise<UnityDetails> =>
+  invokeAction('unity', 'cancel', { jobId });
+export const retryUnityInventory = (
+  jobId: string,
+): Promise<{ productIds: string[]; leafRefs: string[] }> =>
+  invokeAction('unity', 'retry_inventory', { jobId });

@@ -34,7 +34,7 @@ function matchingOptions(value: string, options: ProductAvatarOption[]): Product
 }
 /** An item link names the exact Base it cites, whatever label its seller gave it. */
 function evidenceOption(
-  avatarId: string | undefined,
+  avatarId: string | null | undefined,
   options: ProductAvatarOption[],
 ): ProductAvatarOption | undefined {
   const cited = avatarId?.startsWith('booth:') ? avatarId.slice(6) : undefined;

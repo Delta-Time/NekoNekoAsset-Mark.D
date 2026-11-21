@@ -38,7 +38,8 @@ export function useCollections({
   const collectionQueue = useRef<ReturnType<typeof collectionMutationQueue> | null>(null);
   if (!collectionQueue.current)
     collectionQueue.current = collectionMutationQueue(
-      (args) => invokeAction<{ collections: NativeCollection[] }>('catalogue', 'collection', args),
+      (args): Promise<{ collections: NativeCollection[] }> =>
+        invokeAction('catalogue', 'collection', args),
       (rows, committed, busy) => {
         collectionEpoch.current++;
         collectionPending.current = busy;
@@ -70,7 +71,7 @@ export function useCollections({
   const reconcileCollections = async () => {
     if (collectionPending.current) return;
     const epoch = collectionEpoch.current;
-    const result = await invokeAction<{ collections: NativeCollection[] }>(
+    const result: { collections: NativeCollection[] } = await invokeAction(
       'catalogue',
       'collections',
     );

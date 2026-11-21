@@ -1,6 +1,7 @@
 //! Local SQLite catalogue. Edits, projections and durable sync intents commit together.
 mod accounts;
 mod acquisition;
+pub(crate) mod api;
 mod avatars;
 mod custom_categories;
 #[cfg(test)]
@@ -27,7 +28,7 @@ mod worker;
 #[cfg(test)]
 mod ai_overlay_tests;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
 use std::{
@@ -2110,6 +2111,10 @@ impl Catalogue {
         Ok(vec![])
     }
     fn save_conflicts(conn: &Connection, conflicts: &[Value]) -> Result<()> {
+        #[cfg(test)]
+        for conflict in conflicts {
+            crate::ipc::assert_view::<api::Conflict>("conflict", conflict, true, |_| vec![]);
+        }
         conn.execute("INSERT INTO meta(key,value) VALUES('conflicts',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(conflicts)?])?;
         Ok(())
     }
@@ -2469,16 +2474,21 @@ impl Catalogue {
             portable::restore(catalogue, manifest, Some(root_mappings), Some(&job_id))
         })
     }
+    /// Runs one action from its name and JSON arguments, as the UI sends them.
     pub fn command(&self, action: &str, args: Value) -> Result<Value> {
-        let mut result = match action {
-            "spending_summary" => spending::summary(
+        self.execute(api::CatalogueRequest::parse(action, args)?)
+    }
+    pub fn execute(&self, request: api::CatalogueRequest) -> Result<Value> {
+        use api::CatalogueRequest as Request;
+        let mut result = match request {
+            Request::SpendingSummary(request) => spending::summary(
                 &*self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                &args,
+                &request,
             ),
-            "clear_activity" => self.mutate(|tx, projections| {
+            Request::ClearActivity => self.mutate(|tx, projections| {
                 let jobs = rows(tx, "job")?;
                 let mut cleared = 0usize;
                 let mut active = 0usize;
@@ -2501,13 +2511,13 @@ impl Catalogue {
                 }
                 Ok(json!({"cleared":cleared,"remainingActive":active}))
             }),
-            "account_counts" => query::account_counts(
+            Request::AccountCounts => query::account_counts(
                 &*self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),
-            "state" => {
+            Request::State => {
                 let conn = self
                     .inner
                     .lock()
@@ -2516,7 +2526,7 @@ impl Catalogue {
                     json!({"accounts":rows(&conn,"account")?,"roots":self.display_roots(&conn)?,"jobs":rows(&conn,"job")?,"preferences":raw(&conn,"preferences","app")?,"sourceCoverage":rows(&conn,"source_coverage")?,"conflicts":self.current_conflicts(&conn)?}),
                 )
             }
-            "bootstrap" => {
+            Request::Bootstrap { include_products } => {
                 let mut conn = self
                     .inner
                     .lock()
@@ -2530,7 +2540,7 @@ impl Catalogue {
                         .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
                 )?;
                 let tx = conn.transaction()?;
-                let products = if args["includeProducts"] == false {
+                let products = if include_products == Some(false) {
                     vec![]
                 } else {
                     projection::all(&tx)?
@@ -2546,61 +2556,60 @@ impl Catalogue {
                 tx.commit()?;
                 Ok(result)
             }
-            "avatar_options" => {
+            Request::AvatarOptions => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
             }
-            "job_diagnostics" => {
+            Request::JobDiagnostics { job_id } => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                let job = raw(&conn, "job", text(&args, "jobId"))?.context("JOB_UNAVAILABLE")?;
+                let job = raw(&conn, "job", &job_id)?.context("JOB_UNAVAILABLE")?;
                 // A later account checkpoint can belong to a different attempt.
                 // Export only facts retained by this job; never recollect sources.
                 Ok(json!(crate::support::report(&job, &[], &[])))
             }
-            "product_details" => {
+            Request::ProductDetails { id, account_ids } => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 let body: Option<String> = conn
-                    .query_row(
-                        "SELECT body FROM products WHERE id=?1",
-                        [text(&args, "id")],
-                        |row| row.get(0),
-                    )
+                    .query_row("SELECT body FROM products WHERE id=?1", [&id], |row| {
+                        row.get(0)
+                    })
                     .optional()?;
                 let mut product: Value =
                     serde_json::from_str(&body.context("catalogue.product_missing")?)?;
-                acquisition::apply_scope(&mut product, args["accountIds"].as_array());
+                let accounts: Option<Vec<Value>> =
+                    account_ids.map(|ids| ids.into_iter().map(Value::String).collect());
+                acquisition::apply_scope(&mut product, accounts.as_ref());
                 Ok(product)
             }
-            "collections" => {
+            Request::Collections => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(json!({"collections": rows(&conn, "collection")?}))
             }
-            "query" => query::query(
+            Request::Query(request) => query::query(
                 &*self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                &args,
+                &request,
                 &mut *self
                     .list_snapshot
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),
-            "overlay" => self.edit_overlay(args),
-            "dismiss_attention" => {
-                let ids = strings(&args["productIds"]);
+            Request::Overlay(request) => self.edit_overlay(request.changes()),
+            Request::DismissAttention { product_ids: ids } => {
                 ensure!(!ids.is_empty(), "catalogue.empty_selection");
                 self.mutate(|tx, projections| {
                     let local_import_jobs = projection::local_import_jobs(tx)?;
@@ -2615,54 +2624,40 @@ impl Catalogue {
                     Ok(json!({}))
                 })
             }
-            "undo" => self.undo(
-                args["token"]
-                    .as_str()
-                    .or(args["undoToken"].as_str())
-                    .unwrap_or(""),
-            ),
-            "collection" | "save_search" | "saved_search" => self.manage(action, args),
-            "custom_category" => self.custom_category(args),
-            "preferences" => self.preferences(args),
-            "conflicts" => {
+            Request::Undo { token } => self.undo(&token),
+            Request::Collection(request) => self.manage("collection", request),
+            Request::SaveSearch(request) | Request::SavedSearch(request) => {
+                self.manage("saved_search", request)
+            }
+            Request::CustomCategory(request) => self.custom_category(request),
+            Request::Preferences { patch } => self.preferences(Value::Object(patch)),
+            Request::Conflicts => {
                 let conn = self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(json!(self.current_conflicts(&conn)?))
             }
-            "resolve_conflict" => self.on_sync_worker(move |catalogue| {
+            Request::ResolveConflict(choice) => self.on_sync_worker(move |catalogue| {
                 catalogue.mutate_sync(|tx, doc, projections| {
                     let heads = doc.get_heads();
-                    sync::resolve(doc, &args)?;
+                    sync::resolve(doc, &choice)?;
                     Self::project_document(tx, doc, projections, &heads)?;
                     Ok(json!({"ok":true}))
                 })
             }),
-            "exchange" => self.exchange(Path::new(text(&args, "folder"))),
-            "export_csv" => portable::csv(self, args),
-            "manifest" => self.manifest(),
-            "restore_manifest" => {
-                self.restore_manifest(args.get("manifest").cloned().unwrap_or(args))?;
+            Request::Exchange { folder } => self.exchange(Path::new(&folder)),
+            Request::ExportCsv(request) => portable::csv(self, request),
+            Request::Manifest => self.manifest(),
+            Request::RestoreManifest(request) => {
+                self.restore_manifest(request.into_manifest())?;
                 Ok(json!({"ok":true}))
             }
-            _ => bail!("catalogue.unknown_action"),
         }?;
         self.resolve_previews(&mut result)?;
         Ok(result)
     }
-    fn edit_overlay(&self, args: Value) -> Result<Value> {
-        let changes = if let Some(changes) = args["changes"].as_array() {
-            changes.clone()
-        } else {
-            strings(&args["ids"]).into_iter().collect::<BTreeSet<_>>().into_iter().map(|id| {
-                let mut change = json!({"id":id,"patch":args.get("patch").cloned().unwrap_or(json!({})),"clearFields":args["clearFields"]});
-                if let Some(delta) = args.get("ownedAvatarsDelta") {
-                    change["ownedAvatarsDelta"] = delta.clone();
-                }
-                change
-            }).collect()
-        };
+    fn edit_overlay(&self, changes: Vec<Value>) -> Result<Value> {
         ensure!(!changes.is_empty(), "catalogue.empty_selection");
         let mut seen = BTreeSet::new();
         for change in &changes {
@@ -2876,22 +2871,15 @@ impl Catalogue {
             Ok(json!({"ok":conflicts.is_empty(),"changed":changed,"conflicts":conflicts,"changedLinks":changed_links}))
         })
     }
-    fn manage(&self, action: &str, args: Value) -> Result<Value> {
-        let kind = if action == "collection" {
-            "collection"
-        } else {
-            "saved_search"
-        };
-        let op = args["operation"]
-            .as_str()
-            .or(args["op"].as_str())
-            .unwrap_or("create");
+    /// `kind` is `collection` or `saved_search`.
+    fn manage(&self, kind: &str, request: api::MembershipRequest) -> Result<Value> {
+        let op = request.op.as_deref().unwrap_or("create");
         self.mutate_scoped(kind == "collection", |tx, projections| {
             if op == "add" || op == "add_members" {
                 ensure!(kind == "collection", "catalogue.invalid_operation");
-                let ids = strings(&args["ids"]);
-                let mut collections = strings(&args["collectionIds"]);
-                for name in strings(&args["names"]) {
+                let ids = request.ids.clone().unwrap_or_default();
+                let mut collections = request.collection_ids.clone().unwrap_or_default();
+                for name in request.names.clone().unwrap_or_default() {
                     let name = name.trim();
                     ensure!(!name.is_empty(), "catalogue.name_required");
                     let existing: Option<String> = tx.query_row(
@@ -2930,9 +2918,9 @@ impl Catalogue {
                 }
                 return Ok(json!({"ok":true,"collections":rows(tx, "collection")?}));
             }
-            let id = args["id"]
-                .as_str()
-                .map(str::to_owned)
+            let id = request
+                .id
+                .clone()
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
             if op == "delete" {
                 Self::write(tx, projections, kind, &id, None)?;
@@ -2950,7 +2938,7 @@ impl Catalogue {
                 ensure!(before.is_none(), "catalogue.already_exists");
             }
             let mut value = before.unwrap_or(json!({"id":id,"productIds":[]}));
-            let patch = args.get("value").or(args.get("patch")).unwrap_or(&args);
+            let patch = request.record_fields();
             for field in if kind == "collection" {
                 vec!["name", "productIds"]
             } else {
@@ -2976,7 +2964,7 @@ impl Catalogue {
                 }
             }
             if op == "remove_members" {
-                let remove: BTreeSet<_> = strings(&args["ids"]).into_iter().collect();
+                let remove: BTreeSet<_> = request.ids.clone().unwrap_or_default().into_iter().collect();
                 value["productIds"] = json!(strings(&value["productIds"])
                     .into_iter()
                     .filter(|i| !remove.contains(i))
@@ -2996,18 +2984,17 @@ impl Catalogue {
             Ok(value)
         })
     }
-    fn preferences(&self, args: Value) -> Result<Value> {
-        self.mutate(|tx, projections| self.apply_preferences(tx, projections, &args))
+    fn preferences(&self, patch: Value) -> Result<Value> {
+        self.mutate(|tx, projections| self.apply_preferences(tx, projections, &patch))
     }
     fn apply_preferences(
         &self,
         tx: &Transaction<'_>,
         projections: &mut projection::ProjectionChanges,
-        args: &Value,
+        patch: &Value,
     ) -> Result<Value> {
         let mut value = raw(tx, "preferences", "app")?.unwrap_or(json!({"id":"app"}));
         let was_complete = value["setupComplete"] == true;
-        let patch = args.get("patch").unwrap_or(args);
         ensure!(patch.is_object(), "catalogue.invalid_preferences");
         validate_ui_preferences(patch)?;
         for (k, v) in patch.as_object().unwrap() {
@@ -3075,7 +3062,7 @@ impl Catalogue {
                 validate("account", id, &account)?;
                 Self::write(tx, projections, "account", id, Some(account.clone()))?;
             }
-            let preferences = self.apply_preferences(tx, projections, &json!({"patch":patch}))?;
+            let preferences = self.apply_preferences(tx, projections, &patch)?;
             // Locator failure rolls back the same SQL transaction, including
             // newly attached accounts. No initial sync starts before restart.
             select()?;

@@ -1,7 +1,7 @@
 {
   "format": "NekoNekoAsset.ThirdPartyLicenseLedger",
   "formatVersion": 1,
-  "cargoLockSha256": "e5d6a185b36693eeb085b921a6f7ce7df1e913038b583f08281bed4e9152691a",
+  "cargoLockSha256": "e3212d16ae736d27e6b98bf920995322e18fde6aa0130d8351b84eea832b84b8",
   "pnpmLockSha256": "35616ec56ec141eae8f5374a5e76e516196931fcb6b1145c917dfdcd0e9ee256",
   "scopeNotes": [
     "Rust entries conservatively cover every exact current Cargo.lock package, including build-only and conditional-platform crates, and retain previously recorded original legal documents; they are not a claim that every entry ships in the Windows executable.",
@@ -17252,6 +17252,45 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "termcolor",
+      "version": "1.4.1",
+      "declaredLicense": "Unlicense OR MIT",
+      "licenseFile": null,
+      "authors": [
+        "Andrew Gallant <jamslam@gmail.com>"
+      ],
+      "repository": "https://github.com/BurntSushi/termcolor",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "sourceUrl": "https://static.crates.io/crates/termcolor/termcolor-1.4.1.crate",
+      "crateSha256": "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755",
+      "vcs": {
+        "git": {
+          "sha1": "71f0921f1eeceda85487098588a1602979d52493"
+        },
+        "path_in_vcs": ""
+      },
+      "scope": "lockfile-superset including conditional-platform and build dependencies",
+      "notices": [
+        {
+          "origin": "published-crate",
+          "path": "COPYING",
+          "aggregate": "rust/NOTICES.txt",
+          "offset": 5326137,
+          "bytes": 126,
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f"
+        },
+        {
+          "origin": "published-crate",
+          "path": "LICENSE-MIT",
+          "aggregate": "rust/NOTICES.txt",
+          "offset": 5326308,
+          "bytes": 1081,
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f"
+        }
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "thiserror",
       "version": "1.0.69",
       "declaredLicense": "MIT OR Apache-2.0",
@@ -18380,6 +18419,72 @@
           "sha256": "c816a0749cdc6bf062a5111c159723de51b2bfac66a1dac2655abd9e6b1583eb"
         }
       ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "ts-rs",
+      "version": "12.0.1",
+      "declaredLicense": "MIT",
+      "licenseFile": null,
+      "authors": [
+        "Moritz Bischof <moritz.bischof1@gmail.com>"
+      ],
+      "repository": "https://github.com/Aleph-Alpha/ts-rs",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "sourceUrl": "https://static.crates.io/crates/ts-rs/ts-rs-12.0.1.crate",
+      "crateSha256": "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8",
+      "vcs": {
+        "git": {
+          "sha1": "7182ad8289596097235406b715fa04506443b4ad"
+        },
+        "path_in_vcs": "ts-rs"
+      },
+      "scope": "lockfile-superset including conditional-platform and build dependencies",
+      "notices": [
+        {
+          "origin": "original-upstream-root-legal-file",
+          "path": "upstream/Aleph-Alpha_ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "aggregate": "rust/NOTICES.txt",
+          "offset": 5327495,
+          "bytes": 1073,
+          "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1"
+        }
+      ],
+      "publishedPackageOmitsStandaloneNotices": true,
+      "includedSource": "sources/cargo/ts-rs-12.0.1.crate"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "ts-rs-macros",
+      "version": "12.0.1",
+      "declaredLicense": "MIT",
+      "licenseFile": null,
+      "authors": [
+        "Moritz Bischof <moritz.bischof1@gmail.com>"
+      ],
+      "repository": "https://github.com/Aleph-Alpha/ts-rs",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "sourceUrl": "https://static.crates.io/crates/ts-rs-macros/ts-rs-macros-12.0.1.crate",
+      "crateSha256": "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa",
+      "vcs": {
+        "git": {
+          "sha1": "7182ad8289596097235406b715fa04506443b4ad"
+        },
+        "path_in_vcs": "macros"
+      },
+      "scope": "lockfile-superset including conditional-platform and build dependencies",
+      "notices": [
+        {
+          "origin": "original-upstream-root-legal-file",
+          "path": "upstream/Aleph-Alpha_ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "aggregate": "rust/NOTICES.txt",
+          "offset": 5328681,
+          "bytes": 1073,
+          "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1"
+        }
+      ],
+      "publishedPackageOmitsStandaloneNotices": true,
+      "includedSource": "sources/cargo/ts-rs-macros-12.0.1.crate"
     },
     {
       "ecosystem": "cargo",
@@ -22977,7 +23082,9 @@
     "jni-0.22.4",
     "jni-macros-0.22.4",
     "objc2-osa-kit-0.3.2",
-    "rustls-platform-verifier-android-0.2.0"
+    "rustls-platform-verifier-android-0.2.0",
+    "ts-rs-12.0.1",
+    "ts-rs-macros-12.0.1"
   ],
   "supplementalIndex": "supplemental/index.json",
   "frontend": [
@@ -23263,7 +23370,7 @@
     "provenance": "Original standard-library copyright document from the installed rustup component identified by its local official distribution manifest; the binary component archive was not downloaded or revalidated in this notice task.",
     "scope": "Attribution for the Rust standard library linked into the application, not redistribution of Rust compiler, cargo or other toolchain executables."
   },
-  "supplementalIndexSha256": "52973d6775a90f2e6654244ae6765f5c9450deebe10fb5becec2e2b4a22bf273",
+  "supplementalIndexSha256": "9a6d4af83d039bbf683c4e8af5199c7f45aa7bcefa3ee171a4bc9671db3cfff1",
   "supplementalProvenanceLimits": [
     {
       "name": "fxhash",

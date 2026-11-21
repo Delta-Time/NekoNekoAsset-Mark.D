@@ -263,10 +263,10 @@ export function LicenseEditor({
     [error, setError] = useState('');
   useEffect(() => {
     let alive = true;
-    void invokeAction<{ synced?: LicenseDetail['synced']; edited?: unknown }>('licenses', 'get', {
+    void invokeAction('licenses', 'get', {
       productId,
     })
-      .then((value) => {
+      .then((value: { synced?: LicenseDetail['synced']; edited?: unknown }) => {
         if (!alive) return;
         const synced = value?.synced
             ? { ...value.synced, cells: licenseCells(value.synced.cells) }
@@ -417,8 +417,8 @@ export function LicenseSettings({
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    void invokeAction<{ exists?: boolean }>('licenses', 'status')
-      .then((status) => {
+    void invokeAction('licenses', 'status')
+      .then((status: { exists?: boolean }) => {
         if (alive) setExists(status?.exists === true);
       })
       .catch(() => {});
@@ -429,7 +429,7 @@ export function LicenseSettings({
   const syncAll = async () => {
     setPending(true);
     try {
-      const result = await invokeAction<{ jobId?: string | null }>('licenses', 'sync', {});
+      const result: { jobId?: string | null } = await invokeAction('licenses', 'sync', {});
       if (!result?.jobId) onNotice(L('noLicenseWork'));
     } catch (failure) {
       onNotice(licenseError(locale, errorCode(failure)));

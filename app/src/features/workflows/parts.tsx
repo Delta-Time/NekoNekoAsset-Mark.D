@@ -1,6 +1,7 @@
 import type { Props } from '../../Workflows';
 import { type ReactNode, useRef, useState } from 'react';
 import { errorCode } from '../../backend';
+import type { Action, ActionResult, ArgsParam, LooseNativeCall, Service } from '../../backend';
 
 export type Ctx = Props & { L: (key: string) => string };
 export function Panel({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
@@ -60,14 +61,26 @@ export const validPath = (s: string) => {
     !/[?*<>|]/.test(display)
   );
 };
+export function native<S extends Service, A extends Action<S>>(
+  c: Ctx,
+  service: S,
+  action: A,
+  ...args: ArgsParam<S, A>
+): Promise<ActionResult<S, A>>;
+export function native(
+  c: Ctx,
+  service: 'dialog',
+  action: 'folder' | 'open_file' | 'save_file',
+  options?: Record<string, unknown>,
+): Promise<any>;
 export async function native(
   c: Ctx,
-  service: 'catalogue' | 'booth' | 'storage' | 'unity' | 'dialog',
+  service: Service | 'dialog',
   action: string,
   args: Record<string, unknown> = {},
 ) {
   if (!c.onNative) throw new Error('nativeUnavailable');
-  return c.onNative(service, action, args);
+  return (c.onNative as LooseNativeCall)(service, action, args);
 }
 export async function savePreferences(c: Ctx, patch: Record<string, unknown>) {
   if (c.onPreferences) return c.onPreferences(patch);

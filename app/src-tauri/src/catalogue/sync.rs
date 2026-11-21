@@ -657,27 +657,34 @@ fn field_conflict(doc: &AutoCommit, field_key: &str) -> Result<Option<Value>> {
     } else {
         effective(doc, field_key)?
     };
-    Ok(Some(
-        json!({"kind":kind,"id":id,"field":field,"values":values.into_iter().map(|(op_id,value)| json!({"opId":op_id,"value":value})).collect::<Vec<_>>(),"effectiveValue":current}),
-    ))
+    Ok(Some(serde_json::to_value(super::api::Conflict {
+        kind,
+        id,
+        field,
+        values: values
+            .into_iter()
+            .map(|(op_id, value)| super::api::ConflictValue { op_id, value })
+            .collect(),
+        effective_value: current.unwrap_or(Value::Null),
+    })?))
 }
 
 /// Choose a retained opId, or explicitly set a register value. Regular field values
 /// use {present:true,value:...}/{present:false}; @deleted and member fields are bool.
-pub fn resolve(doc: &mut AutoCommit, args: &Value) -> Result<()> {
-    let kind = args["kind"].as_str().context("sync_kind_required")?;
-    let id = args["id"].as_str().context("sync_id_required")?;
-    let field = args["field"].as_str().context("sync_field_required")?;
+pub fn resolve(doc: &mut AutoCommit, choice: &super::api::ConflictChoice) -> Result<()> {
+    let kind = choice.kind.as_deref().context("sync_kind_required")?;
+    let id = choice.id.as_deref().context("sync_id_required")?;
+    let field = choice.field.as_deref().context("sync_field_required")?;
     check_identity(kind, id)?;
     let field_key = key(kind, id, field);
-    let value = if let Some(op) = args["opId"].as_str() {
+    let value = if let Some(op) = choice.op_id.as_deref() {
         register_values(doc, &field_key)?
             .into_iter()
             .find(|(id, _)| id == op)
             .map(|(_, value)| value)
             .context("sync_conflict_changed")?
     } else {
-        args.get("value").cloned().context("sync_value_required")?
+        choice.value.clone().context("sync_value_required")?
     };
     validate_register(kind, field, &value)?;
     doc.put(ROOT, field_key, value.to_string())?;

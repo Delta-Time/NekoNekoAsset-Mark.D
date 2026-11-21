@@ -245,8 +245,8 @@ export default function SpendingDialog({
     setFailed(false);
     setShareState('');
     const args = JSON.parse(selection) as { productIds: string[]; accountIds?: string[] };
-    void invokeAction<SpendingSummary>('catalogue', 'spending_summary', args).then(
-      (result) => {
+    void invokeAction('catalogue', 'spending_summary', args).then(
+      (result: SpendingSummary) => {
         if (active) setSummary(result);
       },
       () => {

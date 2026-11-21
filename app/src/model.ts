@@ -1,47 +1,22 @@
 import { t } from './i18n';
+import type {
+  AcquisitionProvenance,
+  AssetFile,
+  Product as NativeProduct,
+  SourceCategory,
+  SourceCategoryValue,
+} from './bindings';
+export type {
+  AcquisitionProvenance,
+  AssetFile,
+  AvatarEvidence,
+  CategoryInference,
+  FileProvenance,
+  SourceCategory,
+} from './bindings';
+/** A product as the native catalogue sends it, with a session-only thumbnail. */
+export type Product = NativeProduct & { thumbnailOverrideUrl?: string };
 export type Locale = 'en' | 'ja' | 'ko' | 'zh-Hans' | 'zh-Hant';
-export interface AcquisitionProvenance {
-  rowId: string;
-  source: string;
-  acquisitionKey: string | null;
-  acquiredDateText: string | null;
-  acquisitionKind: string | null;
-  variantName: string | null;
-  accountId?: string;
-  variantId?: string | null;
-  variantIds?: string[];
-}
-export interface FileProvenance {
-  rowId: string;
-  source: string;
-  acquisitionKey: string | null;
-  variantId: string | null;
-  variantName: string | null;
-  accountId?: string;
-}
-export interface AssetFile {
-  id: string;
-  name: string;
-  type: string;
-  size: string;
-  status: string;
-  provenance?: FileProvenance[];
-  sizeBytes?: number;
-  rootId?: string;
-  relativePath?: string;
-  originalAvailable?: boolean;
-  verifiedHash?: string;
-  errorCode?: string;
-  /** A store product's file outside the store's current list: a download it stopped offering, or one the user added. */
-  kept?: boolean;
-  userAdded?: boolean;
-}
-export interface SourceCategory {
-  id: string | null;
-  name: string | null;
-  parentId: string | null;
-  parentName: string | null;
-}
 export interface Account {
   id: string;
   name: string;
@@ -50,107 +25,6 @@ export interface Account {
   lastSync?: string;
   lastSyncAt?: string;
   authenticatedAt?: string;
-}
-export interface AvatarEvidence {
-  avatar: string;
-  source: 'accountVariant' | 'accountFilename' | 'user' | 'sourceTag' | 'userTag';
-  accountId?: string;
-  fileId?: string;
-  avatarId?: string;
-  entitlementEstablished?: false;
-}
-export interface CategoryInference {
-  category: string;
-  basis: 'sourceCategory' | 'tags' | 'fallback';
-}
-export interface Product {
-  id: string;
-  title: string;
-  shop: string;
-  category: string;
-  tags: string[];
-  provider?: string;
-  hidden?: boolean;
-  avatar: string;
-  listingAvatars: string[];
-  ownedAvatars: string[];
-  files: AssetFile[];
-  status: string;
-  downloaded: number;
-  total: number;
-  price: number | null;
-  filesLoaded?: boolean;
-  fullyDownloaded?: boolean;
-  unavailable?: boolean;
-  priceCurrency?: string | null;
-  currentPriceText?: string | null;
-  listingStartingPrice?: number | null;
-  paidPrice?: number | null;
-  paidCurrency?: string | null;
-  knownFileCount?: number;
-  keptFiles?: number;
-  ownedCurrentPrices?: {
-    variantId: string;
-    name: string;
-    price: number | null;
-    currency: string | null;
-    accountIds: string[];
-  }[];
-  ownedPaidPrices?: {
-    variantId: string;
-    name: string;
-    price: number | null;
-    currency: string | null;
-    accountId?: string;
-    acquisitionKey?: string;
-    quantity?: number;
-  }[];
-  acquired: string;
-  note: string;
-  sensitive: boolean;
-  kind?: number;
-  accountIds?: string[];
-  categoryOverride?: boolean;
-  categoryInference?: CategoryInference;
-  ownedAvatarEvidence?: AvatarEvidence[];
-  sourceTags?: string[];
-  importSource?: {
-    kind: 'local' | 'remote';
-    location: string;
-    files: string[];
-    productUrl?: string;
-    thumbnailName?: string;
-  };
-  thumbnailOverrideUrl?: string;
-  sourcePreviewUrl?: string;
-  thumbnailSourcePath?: string | null;
-  thumbnailPath?: string;
-  thumbnailHidden?: boolean;
-  newlyDiscovered?: boolean;
-  sourceCategory?: SourceCategory;
-  custom?: boolean;
-  sourceTitle?: string;
-  titleOverride?: boolean;
-  manifestComplete?: boolean;
-  rejectedTags?: string[];
-  sourceKind?: number;
-  previewUrl?: string;
-  provenance?: AcquisitionProvenance[];
-  tagSuggestions?: { id: string; label: string; kind: string; basis: string; inferred: boolean }[];
-  sourceUrl?: string;
-  sourceUrlAvailable?: boolean;
-  publicPageAvailability?: 'available' | 'unavailable' | 'unknown';
-  sourceOriginUrl?: string;
-  sourceUrlOverride?: boolean;
-  sourceThumbnailUrl?: string;
-  aiSourceUrlCandidates?: {
-    url: string;
-    basis: string;
-    confidence: number;
-    evidenceRefs: string[];
-    status: 'supported' | 'uncertain';
-  }[];
-  sources?: { provider: string; accountId?: string; accountName?: string; label: string }[];
 }
 /** Native item-line evidence supplies paid amount/currency; listing price never supplies paid facts. */
 export function priceLabel(
@@ -390,7 +264,9 @@ export function sourceCategoryKey(category: SourceCategory | undefined): string 
     ? `booth-category:${JSON.stringify([category.id, category.parentId, category.parentName, category.name])}`
     : null;
 }
-export function sourceCategoryLabel(category: SourceCategory): string {
+/** A bare category name, as some records keep it, has no label. */
+export function sourceCategoryLabel(category: SourceCategoryValue): string {
+  if (typeof category === 'string') return '';
   return [category.parentName, category.name].filter((value) => value?.trim()).join(' / ');
 }
 export function categoryChoices(
@@ -456,7 +332,7 @@ export function getEffectiveAvatarTags(
       evidence.some(
         (item) =>
           ['user', 'sourceTag', 'userTag'].includes(item.source) ||
-          (item.accountId !== undefined && accountIds.includes(item.accountId)),
+          (item.accountId != null && accountIds.includes(item.accountId)),
       )
     );
   });
@@ -531,7 +407,9 @@ export function isProductDownloaded(product: Product): boolean {
   return product.files.length > 0 && product.files.every(isFileDownloaded);
 }
 /** Browser object URLs and their reset source exist only for the current session. */
-export function stripEphemeralThumbnail(product: Product): Product {
+export function stripEphemeralThumbnail(
+  product: Product,
+): Omit<Product, 'thumbnailOverrideUrl' | 'sourcePreviewUrl'> {
   const { thumbnailOverrideUrl: _override, sourcePreviewUrl: _source, ...safe } = product;
   if (safe.previewUrl?.startsWith('blob:')) delete safe.previewUrl;
   return safe;

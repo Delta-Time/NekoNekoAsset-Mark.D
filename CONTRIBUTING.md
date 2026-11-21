@@ -48,6 +48,13 @@ so a translation fix touches only its language's file. Keys are `<table>.<key>`;
 `app/src/messages.ts` lists which lookup function reads each table. A new key goes
 into every language file: `pnpm build` fails when one lacks it.
 
+Data that crosses between Rust and the UI is declared once, in Rust: a service's
+actions are one tagged enum (such as `catalogue::api::CatalogueRequest`) and the
+records the UI reads are structs (such as `catalogue::api::Product`).
+`pnpm --dir app bindings` regenerates their TypeScript in `app/src/bindings`;
+commit it with the Rust change, so `pnpm build` fails wherever the UI still uses
+an old action or field name.
+
 Use synthetic catalogues and authored assets when developing or reporting bugs.
 Do not commit or attach personal catalogue records, account/order information,
 cookies, tokens, keys, browser profiles or acquired asset files. Keep diagnostics

@@ -34,10 +34,10 @@ export function Storage(c: Ctx) {
   useEffect(() => {
     if (!current) return;
     let live = true;
-    void invokeAction<{ usedBytes: number; freeBytes: number }>('storage', 'root_usage', {
+    void invokeAction('storage', 'root_usage', {
       rootId: current.id,
     }).then(
-      (result) => {
+      (result: { usedBytes: number; freeBytes: number }) => {
         if (live) setUsage({ rootId: current.id, ...result });
       },
       () => {
