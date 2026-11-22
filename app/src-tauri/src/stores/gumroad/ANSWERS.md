@@ -19,7 +19,8 @@ with the date and how you saw it.
   saved session signed out.
 - 2026-11-23, download check: three products downloaded (several files, a single file,
   and a cancelled then retried download), every file through its file link's
-  redirect, with matching hashes.
+  redirect, with matching hashes. Instrumented runs recorded every final GET (14 per
+  run for 11 files) answering 200 and passing `validate_download_response`.
 
 ## How the code reads answers
 

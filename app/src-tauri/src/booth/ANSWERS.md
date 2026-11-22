@@ -8,7 +8,7 @@ with the date and how you saw it.
 | --- | --- | --- | --- | --- |
 | Account list: Library, gifts, free history, orders (`accounts.booth.pm`) | 200 HTML. An empty list is one lone text panel; a one-page list has an empty `.pager` | Unknown | A delisted Library row has a faded thumbnail and no item link | Ends on BOOTH's sign-in page |
 | Public item page or JSON (`booth.pm/ja/items/<id>`, `.json`) | 200. Signed in, a gift's `.json` holds `gift: {accepted_at, url}` | Unknown | 404 | 200, with `gift: null` in the `.json` |
-| File (`/downloadables/<id>` route) | Redirects to a file host, then 200 with the bytes | Unknown | Refused like a signed-out request, not 404 | Unknown |
+| File (`/downloadables/<id>` route) | 200 with the bytes; whether a redirect came first was not recorded | Unknown | Refused like a signed-out request, not 404 | Unknown |
 
 The removed-file answer is one of the three the code reads as a refusal (401, BOOTH's
 sign-in page, or 403 from a BOOTH host); which one was not recorded.
@@ -25,8 +25,9 @@ sign-in page, or 403 from a BOOTH host); which one was not recorded.
   locale is 404 for a client without BOOTH's cookies.
 - 2026-11-22 (`db730d7`), from a user's report: two old files of paid items, replaced
   by newer versions, were refused the way a signed-out request is, instead of 404.
-- 2026-11-23, download check: a zip downloaded through the ticket and matched its
-  hash. BOOTH lists no file sizes.
+- 2026-11-23, download check with instrumented runs (final responses only): the zip's
+  GET answered 200 and passed `validate_download_response` in three runs, and its hash
+  matched. BOOTH lists no file sizes.
 
 ## How the code reads answers
 
