@@ -5,6 +5,7 @@ mod acquisition_diagnostics;
 mod checkpoints;
 mod free_history;
 mod publication;
+mod records;
 mod routes;
 use super::{
     field, free_item, http,
@@ -34,6 +35,9 @@ use publication::{
     remember_product_context, set_collecting_totals, source_incomplete_product_count,
     EarlyPublications, ProductPublication, Publications,
 };
+#[cfg(test)]
+pub(crate) use records::assert_declared;
+use records::{Acquisition, Entitlement, RemoteFile};
 use routes::{
     available_routes, detail_route, limit_listing_pages, overlap_changed, read_every_page,
     selected_purchase_routes,
@@ -3670,7 +3674,17 @@ impl BoothService {
                 } else {
                     "completeObservedGrants"
                 };
-                batch.stage("entitlement",&entitlement,json!({"id":entitlement,"productId":product,"accountId":entry.account,"source":entry.source,"fileIds":files,"variantIds":variant_ids,"manifestComplete":complete,"currentManifest":true,"manifestBasis":basis,"observedAt":now()}))?;
+                let record = Entitlement::certified(
+                    entitlement.clone(),
+                    &entry.account,
+                    &entry.source,
+                    product,
+                    files,
+                    variant_ids,
+                    complete,
+                    basis,
+                );
+                records::stage(&mut batch, "entitlement", &entitlement, &record)?;
                 if !authoritative {
                     continue;
                 }
@@ -3991,55 +4005,33 @@ impl BoothService {
                         && saved["productId"] == product_id.as_str()
                 })
             });
-            let (revision, basis, verify) =
+            let revision =
                 revision_observation(existing.as_ref(), f, force_verify && !already_observed);
-            let name = f.name.clone().or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|e| e["name"].as_str())
-                    .map(str::to_owned)
-            });
-            let size = f
-                .size_bytes
-                .or_else(|| existing.as_ref().and_then(|e| e["sizeBytes"].as_u64()));
-            let mut remote = json!({"id":file_id,"productId":product_id,"accountId":account,"sourceFileId":f.id,"variantId":f.variant_id,"variantName":row.variant_name,"name":name,"sizeBytes":size,"revision":revision,"revisionBasis":basis,"requiresContentVerification":verify,"sourceUrl":format!("https://booth.pm/downloadables/{}",f.id),"resolverPage":route,"source":source,"observedAt":now()});
-            if let Some(token) = observation {
-                remote["sourceObservationToken"] = json!(token);
-            }
-            if let Some(format) = &f.format {
-                remote["downloadFormat"] = json!(format);
-            }
-            // The Library and a receipt can list the same downloadable. Keep the
-            // page that last changed its facts; another listing is not a change.
-            if let Some(saved) = existing
-                .as_ref()
-                .filter(|saved| saved["resolverPage"].is_string() && saved["source"].is_string())
-            {
-                let mut moved = saved.clone();
-                moved["resolverPage"] = remote["resolverPage"].clone();
-                moved["source"] = remote["source"].clone();
-                if super::batch::same_except_observed_at(&moved, &remote) {
-                    remote["resolverPage"] = saved["resolverPage"].clone();
-                    remote["source"] = saved["source"].clone();
-                }
-            }
-            batch.stage("remote_file", &file_id, remote)?;
+            let remote = RemoteFile::observe(
+                file_id.clone(),
+                account,
+                product_id,
+                source,
+                row,
+                f,
+                route,
+                existing.as_ref(),
+                revision,
+                observation,
+            )?;
+            records::stage(batch, "remote_file", &file_id, &remote)?;
         }
         let existing = batch.get("entitlement", &entitlement_id)?;
-        let mut all: BTreeSet<String> = existing
-            .iter()
-            .flat_map(|e| e["fileIds"].as_array().into_iter().flatten())
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        all.extend(file_ids);
-        let fresh = json!({"id":entitlement_id,"productId":product_id,"accountId":account,"source":source,"fileIds":all,"manifestComplete":false,"currentManifest":true,"observedAt":now(),"unavailable":row.unavailable});
-        let mut entitlement = existing.unwrap_or_else(|| json!({}));
-        entitlement
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("ENTITLEMENT_INVALID"))?
-            .extend(fresh.as_object().unwrap().clone());
-        batch.stage("entitlement", &entitlement_id, entitlement)
+        let entitlement = Entitlement::listed(
+            entitlement_id.clone(),
+            account,
+            source,
+            product_id,
+            file_ids,
+            row.unavailable,
+            existing.as_ref(),
+        );
+        records::stage(batch, "entitlement", &entitlement_id, &entitlement)
     }
 
     /// The row's acquisition record, keeping what a sparser listing no longer shows.
@@ -4050,79 +4042,11 @@ impl BoothService {
         row: &parser::Row,
         route: &str,
     ) -> Result<()> {
-        let acquisition_id = format!("{account}:{}", row.source_record_id);
-        let previous_acquisition = batch.get("acquisition", &acquisition_id)?;
-        let digital_product_id = if source == "purchase" && row.files.is_empty() {
-            None
-        } else {
-            row.product_id.as_ref()
-        };
-        {
-            let mut acquisition = json!({"id":acquisition_id,"sourceRecordId":row.source_record_id,"productId":digital_product_id,"observedProductId":row.product_id,"accountId":account,"source":source,"orderId":row.order_id,"acquiredDateText":row.acquired_date_text,"paidAmountText":row.paid_amount_text,"variantName":row.variant_name,"unavailable":row.unavailable,"errorCode":row.error_code,"observedAt":now()});
-            let variant_ids: BTreeSet<_> = row
-                .files
-                .iter()
-                .filter_map(|f| f.variant_id.as_deref())
-                .filter(|id| safety::numeric(id))
-                .collect();
-            acquisition["variantIds"] = json!(variant_ids);
-            if let Some(previous) = previous_acquisition
-                .as_ref()
-                .filter(|previous| same_acquisition_binding(previous, account, source, row))
-            {
-                // Sparse refreshes do not erase historical facts or their binding.
-                for key in [
-                    "acquiredDateText",
-                    "paidAmountText",
-                    "orderId",
-                    "observedProductId",
-                    "freeHistoryOrder",
-                ] {
-                    if acquisition[key]
-                        .as_str()
-                        .is_none_or(|value| value.trim().is_empty())
-                        && previous[key]
-                            .as_str()
-                            .is_some_and(|value| !value.trim().is_empty())
-                    {
-                        acquisition[key] = previous[key].clone();
-                    }
-                }
-                if source == "purchase"
-                    && row.files.is_empty()
-                    && previous["productId"].as_str().is_some_and(safety::numeric)
-                {
-                    acquisition["productId"] = previous["productId"].clone();
-                }
-                if previous["paidCurrency"] == "JPY"
-                    && previous["paidPriceBasis"] == "productLineTotal"
-                    && previous["paidPrice"].is_number()
-                    && metadata::parse_jpy_price(&previous["paidPrice"]).is_some()
-                {
-                    for key in ["paidPrice", "paidCurrency", "paidPriceBasis"] {
-                        acquisition[key] = previous[key].clone();
-                    }
-                }
-                if variant_ids.is_empty() && row.files.is_empty() {
-                    acquisition["variantIds"] = previous["variantIds"].clone();
-                    acquisition["variantPayments"] = previous["variantPayments"].clone();
-                } else if previous["variantIds"] == acquisition["variantIds"] {
-                    if let Some(payments) = previous.get("variantPayments") {
-                        acquisition["variantPayments"] = payments.clone();
-                    }
-                }
-            }
-            if let Some(amount) = native_product_line_total(row, source, route) {
-                acquisition["paidPrice"] = json!(amount);
-                acquisition["paidCurrency"] = json!("JPY");
-                acquisition["paidPriceBasis"] = json!("productLineTotal");
-                if variant_ids.len() == 1 && row.files.iter().all(|f| f.variant_id.is_some()) {
-                    acquisition["variantPayments"] = json!([{"variantId":variant_ids.iter().next().unwrap(),"name":row.variant_name,"price":amount,"currency":"JPY"}]);
-                }
-            }
-            batch.stage("acquisition", &acquisition_id, acquisition)?;
-        }
-        Ok(())
+        let id = format!("{account}:{}", row.source_record_id);
+        let previous = batch.get("acquisition", &id)?;
+        let acquisition =
+            Acquisition::observe(id.clone(), account, source, row, route, previous.as_ref());
+        records::stage(batch, "acquisition", &id, &acquisition)
     }
     async fn enrich(&self, client: &reqwest::Client, id: &str) -> Result<()> {
         let mut product = self

@@ -2536,7 +2536,7 @@ fn targeted_paid_patch_preserves_all_other_fields_and_records() {
     };
     let existing = json!({"id":"synthetic-account:purchase:authored-product", "accountId":"synthetic-account", "source":"purchase",
         "sourceRecordId":row.source_record_id, "orderId":"910001", "productId":"900001", "observedProductId":"900001",
-        "acquiredDateText":"authored-prior-date", "paidAmountText":"authored-prior-text", "note":"authored-overlay", "observedAt":"authored-time", "extra":{"keep":true}});
+        "acquiredDateText":"authored-prior-date", "paidAmountText":"authored-prior-text", "variantName":"authored-variant", "observedAt":"authored-time", "freeHistoryOrder":"authored-order"});
     catalogue
         .put(
             "acquisition",

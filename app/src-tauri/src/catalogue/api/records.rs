@@ -532,6 +532,9 @@ pub(crate) fn assert_record(kind: &str, value: &Value) {
         "preferences" => assert_view::<super::Preferences>(kind, value, true, |p| {
             p.rest.keys().cloned().collect()
         }),
+        "acquisition" | "remote_file" | "entitlement" => {
+            crate::booth::assert_sync_record(kind, value)
+        }
         _ => {}
     }
 }

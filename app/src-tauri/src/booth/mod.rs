@@ -13,6 +13,8 @@ mod parser;
 mod safety;
 mod sync;
 #[cfg(test)]
+pub(crate) use sync::assert_declared as assert_sync_record;
+#[cfg(test)]
 mod tests;
 
 use crate::catalogue::Catalogue;

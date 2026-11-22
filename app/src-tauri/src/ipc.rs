@@ -138,6 +138,49 @@ pub(crate) fn assert_view<T: DeserializeOwned + serde::Serialize>(
     }
 }
 
+/// The field names a derived struct declares, as serde describes them.
+#[cfg(test)]
+pub(crate) fn declared_fields<T: DeserializeOwned>() -> &'static [&'static str] {
+    use serde::de::{self, Visitor};
+    #[derive(Debug)]
+    struct Stop;
+    impl std::fmt::Display for Stop {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("stop")
+        }
+    }
+    impl std::error::Error for Stop {}
+    impl de::Error for Stop {
+        fn custom<M: std::fmt::Display>(_: M) -> Self {
+            Stop
+        }
+    }
+    struct Probe<'a>(&'a mut &'static [&'static str]);
+    impl<'de> Deserializer<'de> for Probe<'_> {
+        type Error = Stop;
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> std::result::Result<V::Value, Stop> {
+            Err(Stop)
+        }
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> std::result::Result<V::Value, Stop> {
+            *self.0 = fields;
+            Err(Stop)
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+            byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map enum
+            identifier ignored_any
+        }
+    }
+    let mut fields: &'static [&'static str] = &[];
+    let _ = T::deserialize(Probe(&mut fields));
+    fields
+}
+
 /// The first path where two values differ, with both sides.
 #[cfg(test)]
 fn difference(left: &Value, right: &Value, path: String) -> Option<String> {
