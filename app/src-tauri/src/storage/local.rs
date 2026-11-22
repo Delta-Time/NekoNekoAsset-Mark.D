@@ -969,319 +969,9 @@ impl StorageService {
             if completed && !group.membership && plan.groups.len() > 1 {
                 continue;
             }
-            let outcome = (|| -> Result<()> {
-                if let Some(product) = self.catalogue.get("product", &group.product_id)? {
-                    let current = product["localManifest"]["lastMutationId"].as_str();
-                    if group.membership {
-                        ensure!(
-                            current == group.expected_mutation.as_deref()
-                                || current == Some(plan.draft_id.as_str()),
-                            "local_membership_changed"
-                        );
-                    } else {
-                        ensure!(current.is_none(), "local_membership_changed");
-                    }
-                }
-                if completed {
-                    // Membership cleanup must still be bound to its captured
-                    // mutation. A later membership edit invalidates this replay.
-                    if group.membership {
-                        self.cleanup_removed_local(group)?;
-                    }
-                    return Ok(());
-                }
-                io::check_cancel(cancel)?;
-                for directory in &group.directories {
-                    fs::create_dir_all(io::safe_join(
-                        &root_path,
-                        &format!("{}/{directory}", group.prefix),
-                    )?)?;
-                }
-                let copies = group
-                    .files
-                    .iter()
-                    .map(|file| {
-                        self.copy_local_file(&root_path, &plan.draft_id, group, file, cancel)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let facts: Vec<_> = group
-                    .files
-                    .iter()
-                    .zip(&copies)
-                    .map(|(file, copy)| json!([file.relative, copy["hash"], copy["sizeBytes"]]))
-                    .collect();
-                let fingerprint = io::key(&serde_json::to_string(
-                    &json!({"files":facts,"directories":group.directories}),
-                )?);
-                let marker_id = format!("local-import-fingerprint:{fingerprint}");
-                let duplicate = self
-                    .catalogue
-                    .get("acquisition", &marker_id)?
-                    .and_then(|v| v["productId"].as_str().map(str::to_owned));
-                let duplicate = if let Some(id) =
-                    duplicate.filter(|id| id != &group.product_id && !group.membership)
-                {
-                    self.catalogue
-                        .get("product", &id)?
-                        .filter(|p| p["provider"] == "local")
-                        .map(|_| id)
-                } else {
-                    None
-                };
-                let mut writes = Vec::new();
-                let mut error = None;
-                let product_id = if let Some(existing) = duplicate {
-                    existing
-                } else {
-                    let file_ids: Vec<_> = group
-                        .files
-                        .iter()
-                        .map(|f| file_id(&group.product_id, &f.relative))
-                        .collect();
-                    let metadata = group.metadata.as_ref().unwrap_or(&plan.metadata);
-                    let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":added_date(job),"importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
-                    product["previewUrl"] = metadata["sourceThumbnailUrl"].clone();
-                    let mut store_product = false;
-                    if group.membership {
-                        product = self
-                            .catalogue
-                            .get("product", &group.product_id)?
-                            .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
-                        // Added files join a store product through their own
-                        // records; its store-observed record stays unchanged.
-                        store_product = product["provider"] != "local";
-                    }
-                    if group.membership && !store_product {
-                        let mut ids = strings(&product["localManifest"]["fileIds"]);
-                        ids.retain(|id| !group.remove_file_ids.contains(id));
-                        ids.extend(file_ids.iter().cloned());
-                        ids.sort();
-                        ids.dedup();
-                        product["localManifest"]["complete"] = json!(!ids.is_empty());
-                        product["localManifest"]["fileIds"] = json!(ids);
-                        product["localManifest"]["lastMutationId"] = json!(plan.draft_id);
-                        let mut dirs = strings(&product["localManifest"]["directories"]);
-                        dirs.extend(
-                            group
-                                .directories
-                                .iter()
-                                .map(|d| format!("{}/{d}", group.prefix)),
-                        );
-                        dirs.sort();
-                        dirs.dedup();
-                        product["localManifest"]["directories"] = json!(dirs);
-                        product["localManifest"]["rootId"] = root["id"].clone();
-                        product["localManifest"]["productDirectory"] = json!(group.prefix);
-                    }
-                    if self.catalogue.get("product", &group.product_id)?.is_none() {
-                        let mut overlay = self
-                            .catalogue
-                            .get("overlay", &group.product_id)?
-                            .unwrap_or(json!({"id":group.product_id}));
-                        apply_initial_category(&mut overlay, metadata);
-                        if metadata["thumbnailPath"].is_string()
-                            && ["thumbnailPath", "sourceThumbnailUrl", "thumbnailHidden"]
-                                .iter()
-                                .all(|key| overlay.get(*key).is_none())
-                        {
-                            overlay["thumbnailPath"] = metadata["thumbnailPath"].clone();
-                        }
-                        writes.push(("overlay".into(), group.product_id.clone(), overlay));
-                    }
-                    if !store_product {
-                        writes.push(("product".into(), group.product_id.clone(), product));
-                    }
-                    let mut artifacts = Vec::new();
-                    for ((file, copy), id) in group.files.iter().zip(&copies).zip(&file_ids) {
-                        let revision = format!("sha256:{}", io::required_string(copy, "hash")?);
-                        let descriptor = json!({"id":id,"productId":group.product_id,"provider":"local","originKind":"local","name":file.relative,"revision":revision,"sizeBytes":copy["sizeBytes"]});
-                        let artifact_id = artifact_id(&descriptor);
-                        let artifact = json!({"id":artifact_id,"fileId":id,"productId":group.product_id,"rootId":root["id"],"relativePath":copy["relativePath"],"productDirectory":group.prefix,"revision":revision,"hash":copy["hash"],"sizeBytes":copy["sizeBytes"],"status":"ready","originalAvailable":true});
-                        writes.push(("remote_file".into(), id.clone(), descriptor));
-                        artifacts.push(artifact);
-                    }
-                    // Expand only supplied managed archive files, never nested extraction output.
-                    let mut extracted = HashSet::new();
-                    for n in 0..artifacts.len() {
-                        if extracted.contains(&n) {
-                            continue;
-                        }
-                        let path = io::safe_join(
-                            &root_path,
-                            io::required_string(&artifacts[n], "relativePath")?,
-                        )?;
-                        if !archive::is_supported_archive(&path) {
-                            continue;
-                        }
-                        // Explicitly selected split files can occupy separate selection containers.
-                        // Match only entries from the same original directory, never unrelated trees.
-                        let available = artifacts
-                            .iter()
-                            .zip(&group.files)
-                            .filter(|(_, file)| {
-                                file.source.parent() == group.files[n].source.parent()
-                            })
-                            .map(|(a, _)| {
-                                io::safe_join(&root_path, io::required_string(a, "relativePath")?)
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        let prior = self
-                            .catalogue
-                            .get("artifact", io::required_string(&artifacts[n], "id")?)?;
-                        let prior = prior.as_ref().filter(|a| {
-                            a["rootId"] == root["id"]
-                                && a["relativePath"] == artifacts[n]["relativePath"]
-                        });
-                        let result = self.extract_local_archive(
-                            &root_path, group, &path, &available, prior, &artifacts, seven_zip,
-                            cancel,
-                        );
-                        match result {
-                            Ok((relative, inventory, volumes)) => {
-                                let unchanged = artifacts
-                                    .iter()
-                                    .filter(|a| {
-                                        a["relativePath"]
-                                            .as_str()
-                                            .and_then(|r| io::safe_join(&root_path, r).ok())
-                                            .is_some_and(|p| volumes.contains(&p))
-                                    })
-                                    .try_for_each(|a| {
-                                        io::check_cancel(cancel)?;
-                                        io::verify(
-                                            &io::safe_join(
-                                                &root_path,
-                                                io::required_string(a, "relativePath")?,
-                                            )?,
-                                            io::required_string(a, "hash")?,
-                                            a["sizeBytes"].as_u64().ok_or_else(|| {
-                                                anyhow::anyhow!("file_integrity_failed")
-                                            })?,
-                                        )
-                                    });
-                                if let Err(e) = unchanged {
-                                    if local_error(&e) == "cancelled" {
-                                        return Err(e);
-                                    }
-                                    artifacts[n]["status"] = json!("extractionFailed");
-                                    artifacts[n]["errorCode"] = json!(local_error(&e));
-                                    error.get_or_insert(local_error(&e));
-                                    continue;
-                                }
-                                for (peer, artifact) in artifacts.iter_mut().enumerate() {
-                                    let peer_path = io::safe_join(
-                                        &root_path,
-                                        io::required_string(artifact, "relativePath")?,
-                                    )?;
-                                    if volumes.contains(&peer_path) {
-                                        if inventory
-                                            .as_array()
-                                            .is_some_and(|entries| !entries.is_empty())
-                                        {
-                                            artifact["extractedPath"] = json!(relative);
-                                            artifact["extractedInventory"] = inventory.clone();
-                                        }
-                                        extracted.insert(peer);
-                                    }
-                                }
-                            }
-                            Err(e) if local_error(&e) == "cancelled" => return Err(e),
-                            Err(e) => {
-                                let code = local_error(&e);
-                                artifacts[n]["status"] = json!("extractionFailed");
-                                artifacts[n]["errorCode"] = json!(code);
-                                error.get_or_insert(code);
-                            }
-                        }
-                    }
-                    writes.extend(
-                        artifacts
-                            .into_iter()
-                            .map(|a| ("artifact".into(), a["id"].as_str().unwrap().to_owned(), a)),
-                    );
-                    if !group.membership {
-                        writes.push(("acquisition".into(), marker_id.clone(), json!({"id":marker_id,"productId":group.product_id,"observationKind":"localImport","provider":"local","source":"local","importedAt":now()})));
-                    }
-                    group.product_id.clone()
-                };
-                let mut next_job = job.clone();
-                next_job["productIds"][index] = json!(product_id);
-                if error.is_none() {
-                    let mut completed = strings(&next_job["completedProductIds"]);
-                    if !completed.contains(&product_id) {
-                        completed.push(product_id.clone());
-                    }
-                    next_job["completedProductIds"] = json!(completed);
-                    let mut indexes = next_job["completedGroupIndexes"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    indexes.push(json!(index));
-                    next_job["completedGroupIndexes"] = json!(indexes);
-                    next_job["progress"] =
-                        json!(100.0 * (index + 1) as f64 / plan.groups.len() as f64);
-                }
-                next_job["updatedAt"] = json!(now());
-                writes.push((
-                    "job".into(),
-                    io::required_string(job, "id")?.to_owned(),
-                    next_job.clone(),
-                ));
-                // The record was built before its files were copied. What an earlier run of a retry
-                // recorded, or a price read meanwhile, stays.
-                for (kind, id, value) in &mut writes {
-                    if kind == "product" {
-                        if let Some(latest) = self.catalogue.get("product", id)? {
-                            for key in ["acquired", "priceObservedAt", "priceSourceUrl"]
-                                .iter()
-                                .chain(&PRICE_FIELDS)
-                            {
-                                if let Some(recorded) = latest.get(*key) {
-                                    value[*key] = recorded.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-                self.catalogue.put_many(writes)?;
-                // The terminal worker must only persist completion facts that committed.
-                *job = next_job;
-                if let Some(app) = app {
-                    self.changed(app, job["id"].as_str());
-                }
-                if group.membership {
-                    self.cleanup_removed_local(group)?;
-                }
-                if let Some(code) = error {
-                    anyhow::bail!(code);
-                }
-                // Publication is durable before removing no-longer-needed checkpoints.
-                for file in &group.files {
-                    // Cleanup cannot undo or fail a durably published/reused group.
-                    let _ = self
-                        .catalogue
-                        .delete("checkpoint", &checkpoint_id(&plan.draft_id, group, file));
-                }
-                if product_id != group.product_id {
-                    // Duplicate staging is ours; originals and the reused product are untouched.
-                    for copy in &copies {
-                        let _ = fs::remove_file(io::safe_join(
-                            &root_path,
-                            io::required_string(copy, "relativePath")?,
-                        )?);
-                    }
-                    let mut dirs = group.directories.clone();
-                    dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
-                    for dir in dirs {
-                        let _ = fs::remove_dir(io::safe_join(
-                            &root_path,
-                            &format!("{}/{dir}", group.prefix),
-                        )?);
-                    }
-                    let _ = fs::remove_dir(io::safe_join(&root_path, &group.prefix)?);
-                }
-                Ok(())
-            })();
+            let outcome = self.import_local_group(
+                job, &plan, group, index, completed, &root, &root_path, seven_zip, cancel, app,
+            );
             if let Err(error) = outcome {
                 let code = local_error(&error);
                 if code == "cancelled" {
@@ -1296,6 +986,373 @@ impl StorageService {
         job["result"] = json!({"productIds":job["productIds"],"completedProductIds":job["completedProductIds"],"failedGroups":failures});
         if let Some(error) = first_error {
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Copies one group's files, records or reuses its product and commits the job's progress.
+    fn import_local_group(
+        &self,
+        job: &mut Value,
+        plan: &LocalPlan,
+        group: &LocalGroup,
+        index: usize,
+        completed: bool,
+        root: &Value,
+        root_path: &Path,
+        seven_zip: &Path,
+        cancel: &AtomicBool,
+        app: Option<&tauri::AppHandle>,
+    ) -> Result<()> {
+        if let Some(product) = self.catalogue.get("product", &group.product_id)? {
+            let current = product["localManifest"]["lastMutationId"].as_str();
+            if group.membership {
+                ensure!(
+                    current == group.expected_mutation.as_deref()
+                        || current == Some(plan.draft_id.as_str()),
+                    "local_membership_changed"
+                );
+            } else {
+                ensure!(current.is_none(), "local_membership_changed");
+            }
+        }
+        if completed {
+            // Membership cleanup must still be bound to its captured
+            // mutation. A later membership edit invalidates this replay.
+            if group.membership {
+                self.cleanup_removed_local(group)?;
+            }
+            return Ok(());
+        }
+        io::check_cancel(cancel)?;
+        for directory in &group.directories {
+            fs::create_dir_all(io::safe_join(
+                root_path,
+                &format!("{}/{directory}", group.prefix),
+            )?)?;
+        }
+        let copies = group
+            .files
+            .iter()
+            .map(|file| self.copy_local_file(root_path, &plan.draft_id, group, file, cancel))
+            .collect::<Result<Vec<_>>>()?;
+        let facts: Vec<_> = group
+            .files
+            .iter()
+            .zip(&copies)
+            .map(|(file, copy)| json!([file.relative, copy["hash"], copy["sizeBytes"]]))
+            .collect();
+        let fingerprint = io::key(&serde_json::to_string(
+            &json!({"files":facts,"directories":group.directories}),
+        )?);
+        let marker_id = format!("local-import-fingerprint:{fingerprint}");
+        let duplicate = self
+            .catalogue
+            .get("acquisition", &marker_id)?
+            .and_then(|v| v["productId"].as_str().map(str::to_owned));
+        let duplicate =
+            if let Some(id) = duplicate.filter(|id| id != &group.product_id && !group.membership) {
+                self.catalogue
+                    .get("product", &id)?
+                    .filter(|p| p["provider"] == "local")
+                    .map(|_| id)
+            } else {
+                None
+            };
+        let mut writes = Vec::new();
+        let mut error = None;
+        let product_id = if let Some(existing) = duplicate {
+            existing
+        } else {
+            self.record_local_group(
+                group,
+                plan,
+                job,
+                root,
+                root_path,
+                &copies,
+                marker_id,
+                &mut writes,
+                &mut error,
+                seven_zip,
+                cancel,
+            )?
+        };
+        let mut next_job = job.clone();
+        next_job["productIds"][index] = json!(product_id);
+        if error.is_none() {
+            let mut completed = strings(&next_job["completedProductIds"]);
+            if !completed.contains(&product_id) {
+                completed.push(product_id.clone());
+            }
+            next_job["completedProductIds"] = json!(completed);
+            let mut indexes = next_job["completedGroupIndexes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            indexes.push(json!(index));
+            next_job["completedGroupIndexes"] = json!(indexes);
+            next_job["progress"] = json!(100.0 * (index + 1) as f64 / plan.groups.len() as f64);
+        }
+        next_job["updatedAt"] = json!(now());
+        writes.push((
+            "job".into(),
+            io::required_string(job, "id")?.to_owned(),
+            next_job.clone(),
+        ));
+        // The record was built before its files were copied. What an earlier run of a retry
+        // recorded, or a price read meanwhile, stays.
+        for (kind, id, value) in &mut writes {
+            if kind == "product" {
+                if let Some(latest) = self.catalogue.get("product", id)? {
+                    for key in ["acquired", "priceObservedAt", "priceSourceUrl"]
+                        .iter()
+                        .chain(&PRICE_FIELDS)
+                    {
+                        if let Some(recorded) = latest.get(*key) {
+                            value[*key] = recorded.clone();
+                        }
+                    }
+                }
+            }
+        }
+        self.catalogue.put_many(writes)?;
+        // The terminal worker must only persist completion facts that committed.
+        *job = next_job;
+        if let Some(app) = app {
+            self.changed(app, job["id"].as_str());
+        }
+        if group.membership {
+            self.cleanup_removed_local(group)?;
+        }
+        if let Some(code) = error {
+            anyhow::bail!(code);
+        }
+        // Publication is durable before removing no-longer-needed checkpoints.
+        for file in &group.files {
+            // Cleanup cannot undo or fail a durably published/reused group.
+            let _ = self
+                .catalogue
+                .delete("checkpoint", &checkpoint_id(&plan.draft_id, group, file));
+        }
+        if product_id != group.product_id {
+            // Duplicate staging is ours; originals and the reused product are untouched.
+            for copy in &copies {
+                let _ = fs::remove_file(io::safe_join(
+                    root_path,
+                    io::required_string(copy, "relativePath")?,
+                )?);
+            }
+            let mut dirs = group.directories.clone();
+            dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
+            for dir in dirs {
+                let _ = fs::remove_dir(io::safe_join(
+                    root_path,
+                    &format!("{}/{dir}", group.prefix),
+                )?);
+            }
+            let _ = fs::remove_dir(io::safe_join(root_path, &group.prefix)?);
+        }
+        Ok(())
+    }
+
+    /// Builds the group's product, overlay and file records when no duplicate is reused.
+    fn record_local_group(
+        &self,
+        group: &LocalGroup,
+        plan: &LocalPlan,
+        job: &Value,
+        root: &Value,
+        root_path: &Path,
+        copies: &[Value],
+        marker_id: String,
+        writes: &mut Vec<(String, String, Value)>,
+        error: &mut Option<&'static str>,
+        seven_zip: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String> {
+        let file_ids: Vec<_> = group
+            .files
+            .iter()
+            .map(|f| file_id(&group.product_id, &f.relative))
+            .collect();
+        let metadata = group.metadata.as_ref().unwrap_or(&plan.metadata);
+        let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":added_date(job),"importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
+        product["previewUrl"] = metadata["sourceThumbnailUrl"].clone();
+        let mut store_product = false;
+        if group.membership {
+            product = self
+                .catalogue
+                .get("product", &group.product_id)?
+                .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
+            // Added files join a store product through their own
+            // records; its store-observed record stays unchanged.
+            store_product = product["provider"] != "local";
+        }
+        if group.membership && !store_product {
+            let mut ids = strings(&product["localManifest"]["fileIds"]);
+            ids.retain(|id| !group.remove_file_ids.contains(id));
+            ids.extend(file_ids.iter().cloned());
+            ids.sort();
+            ids.dedup();
+            product["localManifest"]["complete"] = json!(!ids.is_empty());
+            product["localManifest"]["fileIds"] = json!(ids);
+            product["localManifest"]["lastMutationId"] = json!(plan.draft_id);
+            let mut dirs = strings(&product["localManifest"]["directories"]);
+            dirs.extend(
+                group
+                    .directories
+                    .iter()
+                    .map(|d| format!("{}/{d}", group.prefix)),
+            );
+            dirs.sort();
+            dirs.dedup();
+            product["localManifest"]["directories"] = json!(dirs);
+            product["localManifest"]["rootId"] = root["id"].clone();
+            product["localManifest"]["productDirectory"] = json!(group.prefix);
+        }
+        if self.catalogue.get("product", &group.product_id)?.is_none() {
+            let mut overlay = self
+                .catalogue
+                .get("overlay", &group.product_id)?
+                .unwrap_or(json!({"id":group.product_id}));
+            apply_initial_category(&mut overlay, metadata);
+            if metadata["thumbnailPath"].is_string()
+                && ["thumbnailPath", "sourceThumbnailUrl", "thumbnailHidden"]
+                    .iter()
+                    .all(|key| overlay.get(*key).is_none())
+            {
+                overlay["thumbnailPath"] = metadata["thumbnailPath"].clone();
+            }
+            writes.push(("overlay".into(), group.product_id.clone(), overlay));
+        }
+        if !store_product {
+            writes.push(("product".into(), group.product_id.clone(), product));
+        }
+        let mut artifacts = Vec::new();
+        for ((file, copy), id) in group.files.iter().zip(copies).zip(&file_ids) {
+            let revision = format!("sha256:{}", io::required_string(copy, "hash")?);
+            let descriptor = json!({"id":id,"productId":group.product_id,"provider":"local","originKind":"local","name":file.relative,"revision":revision,"sizeBytes":copy["sizeBytes"]});
+            let artifact_id = artifact_id(&descriptor);
+            let artifact = json!({"id":artifact_id,"fileId":id,"productId":group.product_id,"rootId":root["id"],"relativePath":copy["relativePath"],"productDirectory":group.prefix,"revision":revision,"hash":copy["hash"],"sizeBytes":copy["sizeBytes"],"status":"ready","originalAvailable":true});
+            writes.push(("remote_file".into(), id.clone(), descriptor));
+            artifacts.push(artifact);
+        }
+        self.extract_group_archives(
+            root,
+            root_path,
+            group,
+            &mut artifacts,
+            seven_zip,
+            cancel,
+            error,
+        )?;
+        writes.extend(
+            artifacts
+                .into_iter()
+                .map(|a| ("artifact".into(), a["id"].as_str().unwrap().to_owned(), a)),
+        );
+        if !group.membership {
+            writes.push(("acquisition".into(), marker_id.clone(), json!({"id":marker_id,"productId":group.product_id,"observationKind":"localImport","provider":"local","source":"local","importedAt":now()})));
+        }
+        Ok(group.product_id.clone())
+    }
+
+    /// Extracts each archive among the group's files; a failure is marked on its artifact.
+    fn extract_group_archives(
+        &self,
+        root: &Value,
+        root_path: &Path,
+        group: &LocalGroup,
+        artifacts: &mut [Value],
+        seven_zip: &Path,
+        cancel: &AtomicBool,
+        error: &mut Option<&'static str>,
+    ) -> Result<()> {
+        // Expand only supplied managed archive files, never nested extraction output.
+        let mut extracted = HashSet::new();
+        for n in 0..artifacts.len() {
+            if extracted.contains(&n) {
+                continue;
+            }
+            let path = io::safe_join(
+                root_path,
+                io::required_string(&artifacts[n], "relativePath")?,
+            )?;
+            if !archive::is_supported_archive(&path) {
+                continue;
+            }
+            // Explicitly selected split files can occupy separate selection containers.
+            // Match only entries from the same original directory, never unrelated trees.
+            let available = artifacts
+                .iter()
+                .zip(&group.files)
+                .filter(|(_, file)| file.source.parent() == group.files[n].source.parent())
+                .map(|(a, _)| io::safe_join(root_path, io::required_string(a, "relativePath")?))
+                .collect::<Result<Vec<_>>>()?;
+            let prior = self
+                .catalogue
+                .get("artifact", io::required_string(&artifacts[n], "id")?)?;
+            let prior = prior.as_ref().filter(|a| {
+                a["rootId"] == root["id"] && a["relativePath"] == artifacts[n]["relativePath"]
+            });
+            let result = self.extract_local_archive(
+                root_path, group, &path, &available, prior, artifacts, seven_zip, cancel,
+            );
+            match result {
+                Ok((relative, inventory, volumes)) => {
+                    let unchanged = artifacts
+                        .iter()
+                        .filter(|a| {
+                            a["relativePath"]
+                                .as_str()
+                                .and_then(|r| io::safe_join(root_path, r).ok())
+                                .is_some_and(|p| volumes.contains(&p))
+                        })
+                        .try_for_each(|a| {
+                            io::check_cancel(cancel)?;
+                            io::verify(
+                                &io::safe_join(root_path, io::required_string(a, "relativePath")?)?,
+                                io::required_string(a, "hash")?,
+                                a["sizeBytes"]
+                                    .as_u64()
+                                    .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?,
+                            )
+                        });
+                    if let Err(e) = unchanged {
+                        if local_error(&e) == "cancelled" {
+                            return Err(e);
+                        }
+                        artifacts[n]["status"] = json!("extractionFailed");
+                        artifacts[n]["errorCode"] = json!(local_error(&e));
+                        error.get_or_insert(local_error(&e));
+                        continue;
+                    }
+                    for (peer, artifact) in artifacts.iter_mut().enumerate() {
+                        let peer_path = io::safe_join(
+                            root_path,
+                            io::required_string(artifact, "relativePath")?,
+                        )?;
+                        if volumes.contains(&peer_path) {
+                            if inventory
+                                .as_array()
+                                .is_some_and(|entries| !entries.is_empty())
+                            {
+                                artifact["extractedPath"] = json!(relative);
+                                artifact["extractedInventory"] = inventory.clone();
+                            }
+                            extracted.insert(peer);
+                        }
+                    }
+                }
+                Err(e) if local_error(&e) == "cancelled" => return Err(e),
+                Err(e) => {
+                    let code = local_error(&e);
+                    artifacts[n]["status"] = json!("extractionFailed");
+                    artifacts[n]["errorCode"] = json!(code);
+                    error.get_or_insert(code);
+                }
+            }
         }
         Ok(())
     }
