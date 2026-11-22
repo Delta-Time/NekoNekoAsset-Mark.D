@@ -9,6 +9,7 @@
     "bindings": "node ../scripts/bindings.mjs",
     "format": "biome format --write",
     "lint": "biome lint",
+    "check": "node checks/run.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
     "tauri": "tauri",
     "native:test": "cargo test --manifest-path src-tauri/Cargo.toml --lib --locked",

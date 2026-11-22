@@ -240,8 +240,9 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - **Privacy.** Cookies, tokens, order details, page bodies and downloaded files
   never reach logs, Git or the support report. Store sessions are protected per
   account with Windows DPAPI.
-- **Testing.** Rust tests run on authored data. Real-account checks are the
-  maintainer's and never run in CI. Look at the rendered App for UI changes; a
-  passing build says nothing about how it looks.
+- **Testing.** Rust tests and `pnpm --dir app check` (the UI logic checks in
+  `app/checks`) run on authored data. Real-account checks are the maintainer's and
+  never run in CI. Look at the rendered App for UI changes; a passing build says
+  nothing about how it looks.
 - **Platform.** Windows is the verified platform. macOS and Linux builds are
   untested.

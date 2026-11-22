@@ -1,0 +1,41 @@
+# Rust core rules
+
+These cover the whole core. Folders below add their own `AGENTS.md`.
+
+## Library, profiles and setup
+
+- A selected library contains SQLite, media and managed files. One instance holds
+  an OS/SMB lifetime lock (`library_lock.rs`) before opening SQLite; devices take
+  turns, never concurrent NAS writes. No timeout or forced lock takeover.
+- Device profiles keep the selected-library locator, protected credentials and AI
+  chats.
+- Setup confirms a default library candidate immediately, so account login or
+  Offline does not require a manual chooser. Keep the candidate, accounts and
+  preferences in memory; create library folders, SQLite and the locator only at
+  Finish, then restart once before the initial metadata sync. Existing completed
+  libraries keep their normal Open behavior. Recommend a spacious drive;
+  auto-download defaults OFF.
+
+## Stores
+
+`booth/` is BOOTH; `stores/` holds Gumroad, Jinxxy and what all three share. What
+each store has been seen to answer is in `booth/ANSWERS.md`,
+`stores/gumroad/ANSWERS.md` and `stores/jinxxy/ANSWERS.md`; add new observations
+there with their date.
+
+- BOOTH, Gumroad and Jinxxy have isolated multi-account sessions. Preserve protected
+  device sessions across restart; reauthenticate only when needed. Names are
+  editable; logout and deletion are distinct. A failed first login leaves no
+  unusable account. Close verified login windows.
+- Publish complete observed grants while later listing pages remain pending;
+  associate available metadata, owned variants, paid facts and file descriptors
+  before each commit. Later grants merge into the same product. Certify new or
+  changed membership only after source closure; Ready depends on every currently
+  attached file being usable, even while source coverage remains incomplete. Keep
+  unchanged usable snapshots during refresh.
+- Different providers run concurrently; accounts of the same provider queue. Show
+  actual stages, separate listing and detail counts, useful errors and terminal
+  results. Unknown fields remain unknown.
+- Jinxxy's approved compiled `.3b` flow uses only its freshly issued memory-only
+  token at the HTTPS endpoint from that same response, without redirects or
+  logging.

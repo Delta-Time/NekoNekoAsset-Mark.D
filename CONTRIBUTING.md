@@ -75,7 +75,7 @@ unsigned local build.
 - **Tests.** Keep meaningful existing tests and never weaken a check to make it
   pass. Add focused tests for deterministic logic with real regression risk; Rust
   tests sit beside the code (`foo_tests.rs` or a `tests/` folder). No new test
-  framework is needed.
+  framework is needed; UI logic checks go into `app/checks`.
 - **UI.** Look at the rendered App: relevant widths, scales, languages, light and
   dark themes, keyboard focus, loading and error states. A passing build is no proof
   of how it looks.
@@ -95,6 +95,7 @@ From the repository root:
 ```powershell
 pnpm --dir app exec biome ci
 pnpm --dir app build
+pnpm --dir app check
 cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
@@ -105,6 +106,8 @@ python scripts/test_release.py
 python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/bridge
 ```
 
+`pnpm --dir app check` runs every `*-check.mjs` in `app/checks`: plain Node
+assertions over the UI's model, refresh and collection logic, on authored data.
 After `pnpm --dir app bindings`, `git status app/src/bindings` must show nothing.
 
 ## What CI enforces
