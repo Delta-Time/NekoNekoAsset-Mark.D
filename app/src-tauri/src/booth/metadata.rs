@@ -131,6 +131,39 @@ pub(crate) fn effective_public_page_availability(source: &Value) -> &'static str
         _ => "unknown",
     }
 }
+/// The product fields public metadata owns: publication copies exactly these from an
+/// enriched draft. A test checks that the writers here write no other field.
+pub(super) const PUBLIC_FIELDS: [&str; 29] = [
+    "store",
+    "title",
+    "sourceTitle",
+    "name",
+    "description",
+    "sourceDescription",
+    "publicPageAvailability",
+    "publishedAt",
+    "listingPriceText",
+    "price",
+    "isAdult",
+    "sensitive",
+    "sourceShop",
+    "shop",
+    "author",
+    "sourceCategory",
+    "sourceTags",
+    "tags",
+    "publicVariants",
+    "previews",
+    "previewUrl",
+    "sourceUrl",
+    "metadataUnavailable",
+    "observedAt",
+    "publicMetadataObservedAt",
+    "publicMetadataState",
+    "publicMetadataErrorCode",
+    "publicSupportAvatars",
+    "publicSupportObservedAt",
+];
 pub(super) fn ensure_source_fields(product: &mut Value) -> Result<()> {
     if product["sourceDescription"]
         .as_str()

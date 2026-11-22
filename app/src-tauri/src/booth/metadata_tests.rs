@@ -449,3 +449,46 @@ fn failed_or_malformed_public_response_never_claims_deleted_or_erases_metadata()
         json!({"id":8,"name":"Motion","parentId":3,"parentName":"Animation"})
     );
 }
+/// Publication copies only `PUBLIC_FIELDS` from an enriched draft, so a field these writers
+/// add without listing it would never reach the product.
+#[test]
+fn public_metadata_writes_only_fields_publication_copies() {
+    let written = |before: &Value, after: &Value| -> Vec<String> {
+        let (before, after) = (before.as_object().unwrap(), after.as_object().unwrap());
+        before
+            .keys()
+            .chain(after.keys())
+            .filter(|key| before.get(*key) != after.get(*key))
+            .filter(|key| *key != "id" && !PUBLIC_FIELDS.contains(&key.as_str()))
+            .cloned()
+            .collect()
+    };
+    let payload = json!({"id":900001,"name":"Authored outfit","description":"Authored text",
+        "published_at":"2026-01-02T03:04:05+09:00","price":"¥ 500","is_adult":false,
+        "shop":{"name":"Authored shop","url":"https://authored.booth.pm/","uuid":"authored-uuid"},
+        "category":{"id":208,"name":"3D衣装","parent":{"id":200,"name":"3Dモデル"}},
+        "tags":[{"name":"VRChat"}],"images":[{"original":"https://booth.pximg.net/authored.png"}],
+        "variations":[{"id":900010,"name":"Full","type":"digital","price":500}]});
+    let fresh = public_metadata(&payload, "900001").unwrap();
+    let keys: Vec<_> = fresh.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        written(&json!({}), &fresh),
+        Vec::<String>::new(),
+        "{keys:?}"
+    );
+    let stored =
+        json!({"id":"900001","store":"BOOTH","acquired":"2026/01/01","categoryOverride":"Hair"});
+    for status in [200, 404] {
+        let mut product = stored.clone();
+        apply_public_response(&mut product, "900001", status, Some(&payload)).unwrap();
+        assert_eq!(written(&stored, &product), Vec::<String>::new(), "{status}");
+    }
+    let mut product = stored.clone();
+    apply_public_support_html(
+        &mut product,
+        "<section><h2>対応アバター</h2><p>しなの https://ponderogen.booth.pm/items/6106863</p></section>",
+    )
+    .unwrap();
+    assert!(product["publicSupportAvatars"].is_array());
+    assert_eq!(written(&stored, &product), Vec::<String>::new());
+}

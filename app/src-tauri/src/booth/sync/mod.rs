@@ -92,8 +92,9 @@ impl SupportPages {
         let Some(observation) = self.observations.get(id) else {
             return false;
         };
-        for key in ["publicSupportAvatars", "publicSupportObservedAt"] {
-            product[key] = observation[key].clone();
+        // The observation holds only what the support section wrote.
+        for (key, value) in observation.as_object().into_iter().flatten() {
+            product[key] = value.clone();
         }
         self.reused += 1;
         true
@@ -4444,47 +4445,13 @@ fn public_patch(_before: &Value, after: &Value) -> Value {
         .as_object()
         .expect("product object")
         .iter()
-        .filter(|(key, _)| public_field(key))
+        .filter(|(key, _)| metadata::PUBLIC_FIELDS.contains(&key.as_str()))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     if after.get("publicMetadataErrorCode").is_none() {
         patch.insert("publicMetadataErrorCode".into(), Value::Null);
     }
     Value::Object(patch)
-}
-fn public_field(key: &str) -> bool {
-    matches!(
-        key,
-        "store"
-            | "title"
-            | "sourceTitle"
-            | "name"
-            | "description"
-            | "sourceDescription"
-            | "publicPageAvailability"
-            | "publishedAt"
-            | "listingPriceText"
-            | "price"
-            | "isAdult"
-            | "sensitive"
-            | "sourceShop"
-            | "shop"
-            | "author"
-            | "sourceCategory"
-            | "sourceTags"
-            | "tags"
-            | "publicVariants"
-            | "previews"
-            | "previewUrl"
-            | "sourceUrl"
-            | "metadataUnavailable"
-            | "observedAt"
-            | "publicMetadataObservedAt"
-            | "publicMetadataState"
-            | "publicMetadataErrorCode"
-            | "publicSupportAvatars"
-            | "publicSupportObservedAt"
-    )
 }
 fn source_file_observation(
     job: &str,
