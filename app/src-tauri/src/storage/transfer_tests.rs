@@ -132,6 +132,14 @@ async fn selected_source_sibling_reuses_actual_extraction_after_archive_original
 
 #[test]
 fn only_transient_resolution_errors_retry_and_actionable_failures_remain_terminal() {
+    // Stores raise capitalized codes, which reach storage classified at the store boundary.
+    let raised = |code: &'static str| {
+        if code.bytes().any(|b| b.is_ascii_lowercase()) {
+            anyhow::anyhow!(code)
+        } else {
+            crate::stores::StoreError::classify(anyhow::anyhow!(code))
+        }
+    };
     for code in [
         "NETWORK_UNAVAILABLE",
         "network_failed",
@@ -139,10 +147,7 @@ fn only_transient_resolution_errors_retry_and_actionable_failures_remain_termina
         "DOWNLOAD_RESOLVER_FAILED",
         "SIGNED_LINK_EXPIRED",
     ] {
-        assert!(
-            retryable_download_resolution(&anyhow::anyhow!(code)),
-            "{code}"
-        );
+        assert!(retryable_download_resolution(&raised(code)), "{code}");
     }
     for code in [
         "AUTH_REQUIRED",
@@ -155,10 +160,7 @@ fn only_transient_resolution_errors_retry_and_actionable_failures_remain_termina
         "low_space",
         "invalid_resolver",
     ] {
-        assert!(
-            !retryable_download_resolution(&anyhow::anyhow!(code)),
-            "{code}"
-        );
+        assert!(!retryable_download_resolution(&raised(code)), "{code}");
     }
 }
 

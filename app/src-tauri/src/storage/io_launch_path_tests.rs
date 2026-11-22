@@ -78,12 +78,22 @@ fn provider_identity_and_missing_file_errors_preserve_existing_action_codes() {
         ("download_failed", "download_http_failed"),
         ("manifest_changed", "manifest_changed"),
     ] {
-        assert_eq!(stable_error(&anyhow::anyhow!(error)), expected);
+        // Stores raise capitalized codes, which reach storage classified at the store boundary.
+        let raised = if error.bytes().any(|b| b.is_ascii_lowercase()) {
+            anyhow::anyhow!(error)
+        } else {
+            store_error(error)
+        };
+        assert_eq!(stable_error(&raised), expected, "{error}");
     }
     assert_eq!(
-        stable_error(&anyhow::anyhow!("UNRECOGNIZED_PROVIDER_FAILURE")),
+        stable_error(&store_error("UNRECOGNIZED_PROVIDER_FAILURE")),
         "storage_failed"
     );
+}
+
+fn store_error(code: &'static str) -> anyhow::Error {
+    crate::stores::StoreError::classify(anyhow::anyhow!(code))
 }
 
 #[cfg(windows)]

@@ -90,7 +90,7 @@ pub(super) fn remove_checked_tree(path: &Path) -> Result<()> {
 impl StorageService {
     pub(super) fn delete_root(&self, id: Option<&str>) -> Result<PathBuf> {
         let path = self.root_path(&self.root(id)?).map_err(|error| {
-            if error.to_string().contains("unsafe_link") {
+            if error.to_string() == "unsafe_link" {
                 anyhow::anyhow!("local_delete_unsafe_path")
             } else {
                 error

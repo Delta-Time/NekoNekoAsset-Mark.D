@@ -173,19 +173,18 @@ fn listing_to_read(product: &Value) -> Option<&str> {
         .filter(|_| added && product["priceObservedAt"].is_null())
 }
 fn local_error(error: &anyhow::Error) -> &'static str {
-    for code in [
+    let raised = error.to_string();
+    [
         "no_import_files",
         "local_source_changed",
         "local_import_too_many_files",
         "local_batch_requires_folder_or_zip",
         "local_membership_changed",
         "unsafe_link",
-    ] {
-        if error.to_string().contains(code) {
-            return code;
-        }
-    }
-    io::stable_error(error)
+    ]
+    .into_iter()
+    .find(|code| *code == raised)
+    .unwrap_or_else(|| io::stable_error(error))
 }
 
 impl StorageService {

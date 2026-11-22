@@ -75,6 +75,107 @@ pub fn validate_download_response(
         StoreProvider::Gumroad => gumroad::service::validate_download_response(response),
         StoreProvider::Jinxxy => jinxxy::validate_download_response(response, expected_origin),
     }
+    .map_err(StoreError::classify)
+}
+
+/// What storage records when a store gives no download. Each store error is classified once,
+/// where it leaves `download_ticket` or `validate_download_response`, and storage reads only
+/// this class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadError {
+    AuthRequired,
+    /// The store refused this file to the signed-in account.
+    AccessDenied,
+    /// The store no longer offers the file.
+    FileUnavailable,
+    FreeOfferUnavailable,
+    /// A signed link expired; a fresh ticket may work.
+    LinkExpired,
+    RateLimited,
+    /// The store gave no download link; a fresh ticket may work.
+    ResolverFailed,
+    /// The download server answered with an error.
+    HttpFailed,
+    NetworkFailed,
+    /// The file's facts changed under the download.
+    SourceChanged,
+    ManifestIncomplete,
+    Cancelled,
+    /// Any other store error.
+    Failed,
+}
+
+impl DownloadError {
+    /// The class of each store code; every code not named is `Failed`.
+    fn of(code: &str) -> Self {
+        match code {
+            "AUTH_REQUIRED"
+            | "ACCOUNT_UNAVAILABLE"
+            | "ACCOUNT_IDENTITY_MISMATCH"
+            | "STORE_IDENTITY_CHANGED"
+            | "AUTH_CHALLENGE"
+            | "AUTH_ISOLATION_UNAVAILABLE"
+            | "AUTH_SESSION_STORAGE_FAILED"
+            | "AUTH_TIMEOUT"
+            | "AUTH_WINDOW_FAILED"
+            | "INVALID_AUTH_URL" => Self::AuthRequired,
+            "PERMISSION_DENIED" => Self::AccessDenied,
+            "FILE_UNAVAILABLE" => Self::FileUnavailable,
+            "FREE_OFFER_UNAVAILABLE" => Self::FreeOfferUnavailable,
+            "SIGNED_LINK_EXPIRED" => Self::LinkExpired,
+            "RATE_LIMITED" => Self::RateLimited,
+            "DOWNLOAD_RESOLVER_FAILED" => Self::ResolverFailed,
+            "DOWNLOAD_HTTP_FAILED" => Self::HttpFailed,
+            "NETWORK_UNAVAILABLE" => Self::NetworkFailed,
+            "SOURCE_CHANGED" => Self::SourceChanged,
+            "JINXXY_MANIFEST_INCOMPLETE" | "SOURCE_MANIFEST_INCOMPLETE" => Self::ManifestIncomplete,
+            "CANCELLED" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+
+    /// The stable code storage records and the UI translates.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "auth_required",
+            Self::AccessDenied => "store_access_denied",
+            Self::FileUnavailable => "store_file_unavailable",
+            Self::FreeOfferUnavailable => "free_offer_unavailable",
+            Self::LinkExpired => "link_expired",
+            Self::RateLimited => "rate_limited",
+            Self::ResolverFailed => "download_resolver_failed",
+            Self::HttpFailed => "download_http_failed",
+            Self::NetworkFailed => "network_failed",
+            Self::SourceChanged => "source_changed",
+            Self::ManifestIncomplete => "manifest_incomplete",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "storage_failed",
+        }
+    }
+}
+
+/// A store's download error: the store's own code, shown as before, and its class.
+#[derive(Debug)]
+pub struct StoreError {
+    pub class: DownloadError,
+    code: String,
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.code)
+    }
+}
+
+impl StoreError {
+    pub(crate) fn classify(error: anyhow::Error) -> anyhow::Error {
+        if error.downcast_ref::<Self>().is_some() {
+            return error;
+        }
+        let code = error.to_string();
+        let class = DownloadError::of(&code);
+        error.context(Self { class, code })
+    }
 }
 
 pub(super) fn active_bound_account(account: &Value) -> bool {
@@ -537,6 +638,12 @@ impl StoreService {
     }
 
     pub async fn download_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
+        self.provider_ticket(app, file_id)
+            .await
+            .map_err(StoreError::classify)
+    }
+
+    async fn provider_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
         let file = self
             .catalogue
             .get("remote_file", file_id)?

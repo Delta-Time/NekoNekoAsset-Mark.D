@@ -341,71 +341,17 @@ pub fn absolute_dir(path: &Path, create: bool) -> Result<PathBuf> {
     fs::remove_file(probe)?;
     Ok(path)
 }
+/// The stable code of an error, which jobs record and the UI translates. A store's error
+/// carries the class it was given where it left the store (`stores::DownloadError`); storage's
+/// own errors are code constants, matched whole; anything else is read by its io error kind.
 pub fn stable_error(err: &anyhow::Error) -> &'static str {
-    let message = err.to_string().to_ascii_lowercase();
-    match message.as_str() {
-        "account_identity_mismatch" | "store_identity_changed" => return "auth_required",
-        // The store no longer offers this file to the account; an update
-        // replaces the saved list. Local bytes stay `file_missing`, and other
-        // FILE_UNAVAILABLE callers outside downloads keep their own mapping.
-        "file_unavailable" => return "store_file_unavailable",
-        // A free offer that ended stays listed, so an update cannot help.
-        "free_offer_unavailable" => return "free_offer_unavailable",
-        // The store answering no; a disk refusing a write is an io error below.
-        "permission_denied" => return "store_access_denied",
-        "source_tree_incomplete" => return "source_tree_incomplete",
-        "network_unavailable" => return "network_failed",
-        "download_failed" => return "download_http_failed",
-        _ => {}
-    }
-    if message.contains("auth") || message.contains("account_unavailable") {
-        return "auth_required";
-    }
-    if message.contains("archive_link_forbidden") || message.contains("storage_link_forbidden") {
-        return "archive_unsafe_link";
-    }
-    for code in [
-        "cancelled",
-        "root_offline",
-        "low_space",
-        "auth_required",
-        "permission_denied",
-        "storage_source_locked",
-        "link_expired",
-        "rate_limited",
-        "network_failed",
-        "network_timeout",
-        "source_changed",
-        "download_size_mismatch",
-        "download_resolver_failed",
-        "download_http_failed",
-        "manifest_changed",
-        "manifest_incomplete",
-        "file_missing",
-        "file_integrity_failed",
-        "archive_password_required",
-        "archive_missing_volume",
-        "archive_corrupt",
-        "archive_listing_invalid",
-        "archive_inventory_mismatch",
-        "archive_unsafe_path",
-        "archive_unsafe_link",
-        "archive_path_collision",
-        "archive_tool_unavailable",
-        "revision_unknown",
-        "unsupported_backup_version",
-        "backup_payload_missing",
-        "destination_not_empty",
-        "destination_not_fresh",
-        "local_delete_unsafe_path",
-        "local_delete_shared_path",
-        "local_delete_cleanup_failed",
-        "local_delete_rollback_failed",
-        "local_delete_retry_required",
-    ] {
-        if message.contains(code) {
-            return code;
+    if let Some(store) = err.downcast_ref::<crate::stores::StoreError>() {
+        if store.class != crate::stores::DownloadError::Failed {
+            return store.class.code();
         }
+    }
+    if let Some(code) = raised_code(&err.to_string()) {
+        return code;
     }
     if let Some(e) = err.downcast_ref::<std::io::Error>() {
         // Another program or a scanner still held the file after the retries.
@@ -426,6 +372,66 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
         }
     }
     "storage_failed"
+}
+
+/// The codes storage records as they were raised.
+const CODES: [&str; 38] = [
+    "cancelled",
+    "root_offline",
+    "low_space",
+    "auth_required",
+    "permission_denied",
+    "storage_source_locked",
+    "link_expired",
+    "rate_limited",
+    "network_failed",
+    "network_timeout",
+    "source_changed",
+    "source_tree_incomplete",
+    "download_size_mismatch",
+    "download_resolver_failed",
+    "download_http_failed",
+    "manifest_changed",
+    "manifest_incomplete",
+    "file_missing",
+    "file_integrity_failed",
+    "archive_password_required",
+    "archive_missing_volume",
+    "archive_corrupt",
+    "archive_listing_invalid",
+    "archive_inventory_mismatch",
+    "archive_unsafe_path",
+    "archive_unsafe_link",
+    "archive_path_collision",
+    "archive_tool_unavailable",
+    "revision_unknown",
+    "unsupported_backup_version",
+    "backup_payload_missing",
+    "destination_not_empty",
+    "destination_not_fresh",
+    "local_delete_unsafe_path",
+    "local_delete_shared_path",
+    "local_delete_cleanup_failed",
+    "local_delete_rollback_failed",
+    "local_delete_retry_required",
+];
+
+/// A code storage raised, matched whole: one of `CODES`, or another name storage raises for
+/// one of them.
+fn raised_code(raised: &str) -> Option<&'static str> {
+    Some(match raised {
+        "archive_link_forbidden" | "storage_link_forbidden" => "archive_unsafe_link",
+        "download_failed" => "download_http_failed",
+        "storage.backup_payload_missing" => "backup_payload_missing",
+        "storage.cancelled" => "cancelled",
+        "storage.destination_not_fresh" => "destination_not_fresh",
+        "storage.file_missing" => "file_missing",
+        "storage.low_space" | "storage_low_space" => "low_space",
+        "storage.source_changed" | "storage_source_changed" | "local_source_changed" => {
+            "source_changed"
+        }
+        _ => return CODES.into_iter().find(|code| *code == raised),
+    })
 }
 pub fn open_path(path: &Path) -> Result<()> {
     ensure!(path.is_absolute(), "root_not_absolute");
