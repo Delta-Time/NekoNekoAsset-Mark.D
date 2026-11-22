@@ -2501,32 +2501,7 @@ impl Catalogue {
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
                 &request,
             ),
-            Request::ClearActivity => self.mutate(|tx, projections| {
-                let jobs = rows(tx, "job")?;
-                let mut cleared = 0usize;
-                let mut active = 0usize;
-                for job in jobs {
-                    // This job owns staged folders until deletion or rollback
-                    // finishes; clearing history must not discard its recovery.
-                    if job["type"] == "storage:delete_local_products" && job["state"] != "completed"
-                    {
-                        active += 1;
-                        continue;
-                    }
-                    match text(&job, "state") {
-                        "completed" | "failed" | "needsAction" | "cancelled" => {
-                            Self::write(tx, projections, "job", text(&job, "id"), None)?;
-                            cleared += 1;
-                        }
-                        "queued" | "running" => active += 1,
-                        _ => {}
-                    }
-                }
-                Ok(serde_json::to_value(api::ActivityCleared {
-                    cleared,
-                    remaining_active: active,
-                })?)
-            }),
+            Request::ClearActivity => self.clear_activity(),
             Request::AccountCounts => query::account_counts(
                 &*self
                     .inner
@@ -2540,51 +2515,7 @@ impl Catalogue {
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(serde_json::to_value(self.state_snapshot(&conn)?)?)
             }
-            Request::Bootstrap { include_products } => {
-                let mut conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                // The list snapshot refreshes outside transactions; this lock keeps it consistent.
-                let (total, counts) = query::counts(
-                    &conn,
-                    &mut *self
-                        .list_snapshot
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                )?;
-                let tx = conn.transaction()?;
-                let products = if include_products == Some(false) {
-                    vec![]
-                } else {
-                    projection::all(&tx)?
-                        .into_iter()
-                        .filter(|product| product["hidden"] != true)
-                        .collect()
-                };
-                let dictionary = crate::taxonomy::dictionary();
-                let bases = projection::bases(&tx)?;
-                let owned = crate::taxonomy::owned_base_options(&bases);
-                let avatar_options = avatars::options(&tx, &bases, &owned)?;
-                #[cfg(test)]
-                api::assert_options(&dictionary["tags"], &[&avatar_options, &owned]);
-                let result = api::Bootstrap {
-                    version: 1,
-                    total,
-                    counts,
-                    products,
-                    state: self.state_snapshot(&tx)?,
-                    collections: rows(&tx, "collection")?,
-                    saved_searches: rows(&tx, "saved_search")?,
-                    custom_categories: rows(&tx, "custom_category")?,
-                    tag_options: dictionary["tags"].clone(),
-                    avatars: Some(dictionary),
-                    avatar_options,
-                    owned_base_options: owned,
-                };
-                tx.commit()?;
-                Ok(serde_json::to_value(result)?)
-            }
+            Request::Bootstrap { include_products } => self.bootstrap(include_products),
             Request::AvatarOptions => {
                 let conn = self
                     .inner
@@ -2692,6 +2623,82 @@ impl Catalogue {
         }?;
         self.resolve_previews(&mut result)?;
         Ok(result)
+    }
+
+    /// Removes finished jobs from the activity history; running ones stay.
+    fn clear_activity(&self) -> Result<Value> {
+        self.mutate(|tx, projections| {
+            let jobs = rows(tx, "job")?;
+            let mut cleared = 0usize;
+            let mut active = 0usize;
+            for job in jobs {
+                // This job owns staged folders until deletion or rollback
+                // finishes; clearing history must not discard its recovery.
+                if job["type"] == "storage:delete_local_products" && job["state"] != "completed" {
+                    active += 1;
+                    continue;
+                }
+                match text(&job, "state") {
+                    "completed" | "failed" | "needsAction" | "cancelled" => {
+                        Self::write(tx, projections, "job", text(&job, "id"), None)?;
+                        cleared += 1;
+                    }
+                    "queued" | "running" => active += 1,
+                    _ => {}
+                }
+            }
+            Ok(serde_json::to_value(api::ActivityCleared {
+                cleared,
+                remaining_active: active,
+            })?)
+        })
+    }
+
+    /// Everything the App shows when it opens, read in one transaction.
+    fn bootstrap(&self, include_products: Option<bool>) -> Result<Value> {
+        let mut conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        // The list snapshot refreshes outside transactions; this lock keeps it consistent.
+        let (total, counts) = query::counts(
+            &conn,
+            &mut *self
+                .list_snapshot
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+        )?;
+        let tx = conn.transaction()?;
+        let products = if include_products == Some(false) {
+            vec![]
+        } else {
+            projection::all(&tx)?
+                .into_iter()
+                .filter(|product| product["hidden"] != true)
+                .collect()
+        };
+        let dictionary = crate::taxonomy::dictionary();
+        let bases = projection::bases(&tx)?;
+        let owned = crate::taxonomy::owned_base_options(&bases);
+        let avatar_options = avatars::options(&tx, &bases, &owned)?;
+        #[cfg(test)]
+        api::assert_options(&dictionary["tags"], &[&avatar_options, &owned]);
+        let result = api::Bootstrap {
+            version: 1,
+            total,
+            counts,
+            products,
+            state: self.state_snapshot(&tx)?,
+            collections: rows(&tx, "collection")?,
+            saved_searches: rows(&tx, "saved_search")?,
+            custom_categories: rows(&tx, "custom_category")?,
+            tag_options: dictionary["tags"].clone(),
+            avatars: Some(dictionary),
+            avatar_options,
+            owned_base_options: owned,
+        };
+        tx.commit()?;
+        Ok(serde_json::to_value(result)?)
     }
     fn edit_overlay(&self, changes: Vec<Value>) -> Result<Value> {
         ensure!(!changes.is_empty(), "catalogue.empty_selection");
