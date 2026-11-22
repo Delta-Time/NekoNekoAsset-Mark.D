@@ -4,6 +4,7 @@ mod targeted_receipt_tests;
 mod acquisition_diagnostics;
 mod checkpoints;
 mod free_history;
+mod free_import;
 mod publication;
 mod records;
 mod routes;
@@ -341,6 +342,13 @@ fn unreadable_page(source: &str, route: &str, code: &str) -> Result<parser::Page
         ordering: parser::Ordering::Unknown,
         free_item: None,
     })
+}
+/// The checkpoint a selected refresh of one account's source publishes through.
+fn selected_checkpoint_key(job: &Value, account: &str, source: &str) -> Result<String> {
+    Ok(format!(
+        "booth-selected:{}:{account}:{source}",
+        field(job, "id")?
+    ))
 }
 /// Rows the parser could not tie to an asset. A page with no such row counts its gaps.
 fn unbound_row_count(page: &parser::Page) -> usize {
@@ -819,6 +827,9 @@ impl BoothService {
         Ok(())
     }
     pub(super) async fn update_job(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
+        if job["args"]["freeImport"] == true {
+            return self.free_import_job(app, job).await;
+        }
         let ids: BTreeSet<String> = job["args"]["productIds"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?
@@ -1170,7 +1181,7 @@ impl BoothService {
         publications: &mut Publications,
         refused: &mut BTreeSet<String>,
     ) -> Result<BTreeSet<String>> {
-        let key = format!("booth-selected:{}:{account}:{source}", field(job, "id")?);
+        let key = selected_checkpoint_key(job, account, source)?;
         let products: BTreeSet<String> = rows
             .iter()
             .filter_map(|row| row.product_id.clone())

@@ -422,6 +422,7 @@ impl BoothService {
                 | "cancel_sync"
                 | "retry_sync"
                 | "update_products"
+                | "import_free"
         ) {
             Some(self.inner.catalogue.begin_catalogue_work()?)
         } else {
@@ -584,6 +585,7 @@ impl BoothService {
             "cancel_sync" => self.cancel_job(app, &args),
             "retry_sync" => self.retry_job(app, &args).await,
             "update_products" => self.update_selected(app, &args),
+            "import_free" => self.import_free(app, &args),
             _ => bail!("UNKNOWN_BOOTH_ACTION"),
         }
     }

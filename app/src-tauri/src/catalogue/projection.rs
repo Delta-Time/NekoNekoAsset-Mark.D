@@ -863,7 +863,11 @@ fn effective_with_jobs(
         &remote
     )?);
     let source_acquired = text(&p, "acquired").to_owned();
-    acquisition::apply_default(&mut p, &source_acquired);
+    // Only a local import records its own time; a store's dates come from its acquisitions.
+    let source_acquired_at = (provider == "local")
+        .then(|| source["acquiredAt"].as_str())
+        .flatten();
+    acquisition::apply_default(&mut p, &source_acquired, source_acquired_at);
     acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
     let (remote_map, file_ids, kept) =
         file_selection(&mut p, provider, &source, &entitlements, remote);

@@ -7,9 +7,10 @@ launch a separate collector or generate catalogue fixtures at startup.
 
 Construct `BoothService::new(catalogue)` and call `start(app_handle)` once to
 resume queued/interrupted jobs. `command(app, action, args)` handles account
-login/logout/removal, source sync, cancellation/retry and selected-product
-updates. Login/sync/update return a durable `jobId`; `nna:changed` announces
-committed changes. Durable records, rather than events, remain authoritative.
+login/logout/removal, source sync, cancellation/retry, selected-product updates and
+adding free items by their listing (`import_free`). Login/sync/update/import return a
+durable `jobId`; `nna:changed` announces committed changes. Durable records, rather
+than events, remain authoritative.
 
 The four source scopes are `library`, `purchase`, `gift` and `free`.
 `sync` supports `incremental`, `full` and `forced`; `source:"all"` collects all
@@ -91,6 +92,21 @@ journaled, so `gift.accepted_at` publishes with the grant. Only that date is kep
 never the `gift.url` claim link. A date never changes, so a stored one costs no
 request. A removed listing has no date to read: it stays unknown, is retried only
 by Full like its public page, and never affects files or coverage.
+
+Free items can be added by their listing (`sync/free_import.rs`). The import runs as
+an Update of one account (`args.freeImport`), so it queues behind that account's
+sync and resumes after a restart like one. For each listing in the order given it
+reads the public JSON, then the item page with the account's session, as a free
+item's Update does, and takes only what that page offers as a free download: a paid
+variation has no download control there. A listing that offers nothing free, cannot
+be read, is gone, or (while the terms-only list switch is on) offers only its terms
+of use is left out and named in the job's `failures`. An added item publishes as the
+account's free-history row, under the record ID BOOTH's free history gives it
+(`free_history_record_id`), so the history a later sync reads merges with it. Its
+`acquiredDateText` is the minute it was added and `acquiredAt` the millisecond, one
+millisecond after the item before it at least, so items added together keep their
+order; a later observation keeps both. A `download_intent` then downloads it like
+Download does. An item the account holds already is only downloaded.
 
 Account pages follow the BOOTH account's language and have no locale in their URLs;
 public item pages and JSON follow the URL, which is always `/ja/`, so category names,

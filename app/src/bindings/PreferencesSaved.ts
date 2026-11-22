@@ -37,6 +37,10 @@ export type PreferencesSaved = {
   oneHandedDrag?: boolean;
   sensitiveMode?: 'blur' | 'hide' | 'show' | 'only';
   hideUnavailable?: boolean;
+  /**
+   * Hides free downloads that hold only a listing's terms of use; absent is on.
+   */
+  hideTermsOnly?: boolean;
   hideUnclassified?: boolean;
   licenseFilter?: boolean;
   nativeSinglePackage?: boolean;

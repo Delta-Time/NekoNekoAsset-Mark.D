@@ -33,7 +33,8 @@
   font-size: 12px;
   margin-bottom: 8px;
 }
-.wf-import .local-import-drop .data-row {
+.wf-import .local-import-drop .data-row,
+.wf-import .booth-import-list .data-row {
   display: flex;
   flex: none;
   align-items: center;
@@ -41,6 +42,7 @@
   padding: 3px 6px;
 }
 .wf-import .local-import-drop .data-row > span,
+.wf-import .booth-import-list .data-row > span,
 .wf-import .local-import-product {
   flex: 1 1 0;
   min-width: 0;
@@ -58,7 +60,8 @@
 .wf-import .local-import-product[aria-pressed="true"] {
   border-color: var(--accent);
 }
-.wf-import .local-import-drop .data-row > button:last-child {
+.wf-import .local-import-drop .data-row > button:last-child,
+.wf-import .booth-import-list .data-row > button:last-child {
   flex: none;
   width: 24px;
   min-width: 24px;
@@ -69,6 +72,28 @@
 .local-import-url {
   display: flex;
   gap: 6px;
+}
+.booth-import {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.booth-import > .field {
+  margin-bottom: 0;
+}
+/* Tall enough that switching from a local mode barely moves the dialog. */
+.wf-import .booth-import-list {
+  min-height: min(320px, 40dvh);
+  max-height: min(420px, 52dvh);
+  margin: 0;
+  padding: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.wf-import .booth-import-list .data-row > span {
+  text-align: left;
 }
 .local-import-url > input {
   flex: 1;

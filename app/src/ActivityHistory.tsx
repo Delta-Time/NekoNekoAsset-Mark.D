@@ -39,7 +39,8 @@ type ActivityJob = Job & {
   fileIds?: string[];
   selectedFileIds?: string[];
   failures?: Record<string, unknown>;
-  args?: { productIds?: unknown };
+  args?: { productIds?: unknown; freeImport?: unknown };
+  addedProductIds?: unknown;
 };
 type Detail = { stamp: string; product?: Product };
 type CopyState = { stamp: string; status: 'copying' | 'copied' | 'copyFailed' };
@@ -49,13 +50,21 @@ const diagnosable = (job: Job) =>
   failed(job) || (job.state === 'completed' && isStoreSyncJob(job.type));
 const terminal = (job: Job) =>
   ['completed', 'failed', 'needsAction', 'cancelled'].includes(job.state);
-// BOOTH and Gumroad updates keep their assets in their arguments.
+// A BOOTH import of free listings: its arguments name listings, some never added.
+const freeImport = (job: ActivityJob) => isStoreJob(job.type) && job.args?.freeImport === true;
+// BOOTH and Gumroad updates keep their assets in their arguments; an import names those it added.
 const productIds = (job: ActivityJob) => [
   ...new Set(
     [
       job.productId,
       ...(job.productIds ?? []),
-      ...(isStoreJob(job.type) && Array.isArray(job.args?.productIds) ? job.args.productIds : []),
+      ...(freeImport(job)
+        ? Array.isArray(job.addedProductIds)
+          ? job.addedProductIds
+          : []
+        : isStoreJob(job.type) && Array.isArray(job.args?.productIds)
+          ? job.args.productIds
+          : []),
     ].filter((id): id is string => typeof id === 'string' && !!id),
   ),
 ];
@@ -169,35 +178,37 @@ export default function ActivityHistory({
   const product = (id: string) => details[id]?.product ?? knownProducts.get(id);
   const title = (id: string) =>
     knownProducts.get(id)?.title || product(id)?.title || t(locale, 'unknown');
-  const jobLabel = (job: Job) =>
-    job.type === 'licenses:sync'
-      ? licenseText(locale, 'licenseSync')!
-      : job.type === 'storage:delete_local_products'
-        ? shellText(locale, 'deleteLocalProducts')!
-        : job.type === 'unity:import'
-          ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
-          : job.type.startsWith('ai:')
-            ? shellText(locale, 'aiTags')!
-            : label(
-                isStoreJob(job.type)
-                  ? /login$/i.test(job.type)
-                    ? 'signIn'
-                    : /update$/i.test(job.type)
-                      ? 'update'
-                      : 'sync'
-                  : job.type === 'download'
-                    ? 'download'
-                    : job.type === 'storage:migrate_root'
-                      ? 'move'
-                      : job.type === 'storage:export_backup'
-                        ? 'export'
-                        : job.type === 'storage:restore_backup' ||
-                            job.type === 'storage:import_local'
-                          ? 'import'
-                          : job.type === 'storage:export_zip'
-                            ? 'exportZip'
-                            : 'storage',
-              );
+  const jobLabel = (job: ActivityJob) =>
+    freeImport(job)
+      ? label('import')
+      : job.type === 'licenses:sync'
+        ? licenseText(locale, 'licenseSync')!
+        : job.type === 'storage:delete_local_products'
+          ? shellText(locale, 'deleteLocalProducts')!
+          : job.type === 'unity:import'
+            ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
+            : job.type.startsWith('ai:')
+              ? shellText(locale, 'aiTags')!
+              : label(
+                  isStoreJob(job.type)
+                    ? /login$/i.test(job.type)
+                      ? 'signIn'
+                      : /update$/i.test(job.type)
+                        ? 'update'
+                        : 'sync'
+                    : job.type === 'download'
+                      ? 'download'
+                      : job.type === 'storage:migrate_root'
+                        ? 'move'
+                        : job.type === 'storage:export_backup'
+                          ? 'export'
+                          : job.type === 'storage:restore_backup' ||
+                              job.type === 'storage:import_local'
+                            ? 'import'
+                            : job.type === 'storage:export_zip'
+                              ? 'exportZip'
+                              : 'storage',
+                );
   function failures(job: ActivityJob) {
     const result: { key: string; name: string; reason: string }[] = [];
     const ids = productIds(job),
@@ -209,13 +220,18 @@ export default function ActivityHistory({
       const productId =
         typeof item?.productId === 'string' ? item.productId : ids.includes(id) ? id : undefined;
       const suppliedName = item?.fileName ?? item?.name;
-      const name = productId
-        ? title(productId)
-        : file
-          ? basename(file.name)
-          : typeof suppliedName === 'string' && !suppliedName.includes('://')
-            ? basename(suppliedName)
-            : label('fileFailure');
+      // A listing an import left out has no asset; its title or link names it.
+      const name = freeImport(job)
+        ? typeof item?.title === 'string' && item.title
+          ? item.title
+          : `https://booth.pm/ja/items/${id}`
+        : productId
+          ? title(productId)
+          : file
+            ? basename(file.name)
+            : typeof suppliedName === 'string' && !suppliedName.includes('://')
+              ? basename(suppliedName)
+              : label('fileFailure');
       result.push({ key: id, name, reason: reason(item?.errorCode ?? value) });
     }
     if (result.length || !failed(job) || !['download', 'storage:import_local'].includes(job.type))

@@ -21,6 +21,7 @@ mod spending;
 #[cfg(test)]
 mod status_tests;
 mod sync;
+pub(crate) mod terms_only;
 #[cfg(test)]
 mod tests;
 mod worker;
@@ -710,6 +711,7 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
     for key in [
         "aiFeaturesEnabled",
         "hideUnavailable",
+        "hideTermsOnly",
         "hideUnclassified",
         "licenseFilter",
         "nativeSinglePackage",
@@ -2505,6 +2507,10 @@ impl Catalogue {
             Request::AccountCounts => query::account_counts(
                 &*self
                     .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+                &mut *self
+                    .list_snapshot
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),

@@ -16,7 +16,7 @@ export function useImportDrafts({ c }: { c: LocalImportProps }) {
       .filter(absolutePath)
       .map((path) => ({ path, kind: 'unknown' })),
   );
-  const [mode, setMode] = useState<'single' | 'batch'>('single');
+  const [mode, setMode] = useState<'single' | 'batch' | 'booth'>('single');
   const [singleDraft, setSingleDraft] = useState<Draft>(() => emptyDraft(seed?.name ?? ''));
   const [batchDrafts, setBatchDrafts] = useState<Record<string, Draft>>({});
   const [selectedPath, setSelectedPath] = useState('');

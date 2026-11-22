@@ -68,7 +68,8 @@ They derive `ts_rs::TS`, and `pnpm --dir app bindings` writes their TypeScript t
 - `catalogue/` is the library database. `mod.rs` holds `Catalogue` (records,
   transactions, `put_many`, `put_many_if_unchanged`, work permits), `projection.rs`
   turns source records plus user overlays into the products the UI shows,
-  `query.rs` filters, searches and sorts, `acquisition.rs` owns acquisition-date
+  `query.rs` filters, searches and sorts, `terms_only.rs` tells a free download that
+  holds only a listing's terms of use, `acquisition.rs` owns acquisition-date
   order, `avatars.rs` the compatible-avatar options, `spending.rs` the per-currency
   totals, `sync.rs` and `worker.rs` the Automerge folder exchange between devices,
   `portable.rs` backup and restore. `api/` declares the requests, answers and record
@@ -79,7 +80,8 @@ They derive `ts_rs::TS`, and `pnpm --dir app bindings` writes their TypeScript t
   which hosts and URLs are allowed. `sync/` is the scan:
   `mod.rs` runs it as named stages (`scan_source_inner`), `records.rs` builds the
   typed records, `publication.rs` publishes products, `checkpoints.rs` resumes,
-  `routes.rs` picks the next page, `free_history.rs` keeps the free-download list.
+  `routes.rs` picks the next page, `free_history.rs` keeps the free-download list,
+  `free_import.rs` adds free items by their listing.
 - `stores/` holds what the stores share and the other two stores. `mod.rs` holds
   `StoreService`, which routes store actions and issues download tickets, and the
   `StoreError` type. `gumroad/` is Gumroad (`mod.rs` parses, `service.rs`

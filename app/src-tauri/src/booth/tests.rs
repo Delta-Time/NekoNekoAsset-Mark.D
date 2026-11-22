@@ -1035,6 +1035,67 @@ fn sparse_acquisition_does_not_inherit_facts_across_conflicting_bindings() {
     std::fs::remove_dir_all(path).unwrap();
 }
 #[test]
+fn a_free_item_added_by_its_listing_keeps_its_time_and_order() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    // Two items added in the same minute: the second a millisecond after the first.
+    for (product, file, at) in [
+        ("900001", "700001", "2026-11-23T05:05:07.123Z"),
+        ("900002", "700002", "2026-11-23T05:05:07.124Z"),
+    ] {
+        let mut added = row();
+        added.source_record_id = format!("free:{}", safety::hash(format!(":{product}:::")));
+        added.product_id = Some(product.into());
+        added.files[0].id = file.into();
+        added.acquired_date_text = Some("2026/11/23 14:05".into());
+        added.acquired_at = Some(at.into());
+        fixture
+            .service
+            .record_row(
+                A,
+                "free",
+                &added,
+                &format!("https://booth.pm/ja/items/{product}"),
+                true,
+            )
+            .unwrap();
+    }
+    let order = |direction: &str| {
+        catalogue
+            .command(
+                "query",
+                json!({"sort":"acquired","direction":direction,"hideUnclassified":false}),
+            )
+            .unwrap()["matchedIds"]
+            .clone()
+    };
+    assert_eq!(order("desc"), json!(["900002", "900001"]));
+    assert_eq!(order("asc"), json!(["900001", "900002"]));
+    // The free history lists the item later with no date: the time stays, shown to the minute.
+    let mut history = row();
+    history.source_record_id = format!("free:{}", safety::hash(":900001:::"));
+    history.files.clear();
+    history.manifest_complete = false;
+    fixture
+        .service
+        .record_row(A, "free", &history, "/library/free_downloads?page=1", false)
+        .unwrap();
+    let acquisition = catalogue
+        .get("acquisition", &format!("{A}:{}", history.source_record_id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(acquisition["acquiredAt"], "2026-11-23T05:05:07.123Z");
+    assert_eq!(acquisition["acquiredDateText"], "2026/11/23 14:05");
+    let product = catalogue
+        .command("product_details", json!({"id":"900001"}))
+        .unwrap();
+    assert_eq!(product["acquired"], "2026/11/23 14:05");
+    assert_eq!(order("desc"), json!(["900002", "900001"]));
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
 fn free_file_observation_keeps_original_acquisition_and_retains_incomplete_files() {
     let fixture = Fixture::new();
     let catalogue = &fixture.service.inner.catalogue;

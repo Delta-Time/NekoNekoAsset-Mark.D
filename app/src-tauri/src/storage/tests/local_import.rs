@@ -1100,3 +1100,84 @@ fn local_import_rejects_empty_batch_loose_overlap_and_library_ancestor_without_p
     assert!(f.service.catalogue.list("job").unwrap().is_empty());
     assert!(f.service.catalogue.list("product").unwrap().is_empty());
 }
+
+#[test]
+fn local_batch_assets_keep_the_order_they_were_added_in() {
+    let f = Fixture::new();
+    let folders: Vec<_> = ["e", "a", "d", "b", "c"]
+        .iter()
+        .map(|name| {
+            let folder = f.path.join(format!("{name}-folder"));
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(
+                folder.join("model.unitypackage"),
+                format!("authored {name}"),
+            )
+            .unwrap();
+            folder
+        })
+        .collect();
+    let mut job = local_job(&f, &folders, "batch");
+    f.service
+        .run_local_import(
+            &mut job,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let ids: Vec<String> = job["productIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 5);
+    let details: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            f.service
+                .catalogue
+                .command("product_details", json!({"id":id}))
+                .unwrap()
+        })
+        .collect();
+    // One minute shows for the whole import, while each asset sorts a millisecond later.
+    assert!(details
+        .iter()
+        .all(|p| p["acquired"] == details[0]["acquired"]));
+    assert!(details
+        .windows(2)
+        .all(|pair| pair[0]["acquiredSortKey"].as_str() < pair[1]["acquiredSortKey"].as_str()));
+    let order = |direction: &str| -> Vec<String> {
+        f.service
+            .catalogue
+            .command(
+                "query",
+                json!({"sort":"acquired","direction":direction,"hideUnclassified":false}),
+            )
+            .unwrap()["matchedIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(order("asc"), ids);
+    assert_eq!(order("desc"), ids.iter().rev().cloned().collect::<Vec<_>>());
+    // A local asset imported before keeps its minute as its key.
+    f.service
+        .catalogue
+        .put(
+            "product",
+            "older-local",
+            json!({"id":"older-local","provider":"local","store":"Local Files","custom":true,"title":"Older","sourceTitle":"Older","acquired":"2026/01/02 03:04"}),
+        )
+        .unwrap();
+    assert_eq!(
+        f.service
+            .catalogue
+            .command("product_details", json!({"id":"older-local"}))
+            .unwrap()["acquiredSortKey"],
+        "2026-01-02T03:04:00.000000000Z"
+    );
+}

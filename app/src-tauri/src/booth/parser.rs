@@ -339,6 +339,10 @@ pub struct Row {
     pub shop_url: Option<String>,
     pub preview_url: Option<String>,
     pub acquired_date_text: Option<String>,
+    /// When the App itself took the row, to the millisecond: a free item added by its
+    /// listing. No store page has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquired_at: Option<String>,
     pub paid_amount_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_line_total_jpy: Option<u64>,
@@ -2967,6 +2971,7 @@ fn read_card<'a>(
             .and_then(absolute)
             .and_then(|v| safety::public_url(&v, "preview")),
         acquired_date_text: date,
+        acquired_at: None,
         paid_amount_text: first_text(card, "[data-test='paid-amount']"),
         product_line_total_jpy: None,
         variant_name,

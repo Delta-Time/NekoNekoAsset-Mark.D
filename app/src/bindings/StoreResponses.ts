@@ -22,6 +22,7 @@ export type StoreResponses = {
   cancel_sync: StoreJob;
   retry_sync: StoreJob;
   update_products: StoreJobs;
+  import_free: StoreJob;
   fetch_product_metadata: ProductMetadata;
   diagnose_ordering: JsonValue;
   diagnose_manifests: JsonValue;

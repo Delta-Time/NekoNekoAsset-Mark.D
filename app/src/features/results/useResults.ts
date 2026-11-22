@@ -68,6 +68,7 @@ export function useResults({
     };
   }, []);
   const hideUnavailable = nativeState.preferences.hideUnavailable !== false,
+    hideTermsOnly = nativeState.preferences.hideTermsOnly !== false,
     hideUnclassified = nativeState.preferences.hideUnclassified !== false,
     queryKey = JSON.stringify({
       query,
@@ -75,6 +76,7 @@ export function useResults({
       sort,
       direction,
       hideUnavailable,
+      hideTermsOnly,
       hideUnclassified,
       licenseEnabled,
     }),
@@ -101,6 +103,7 @@ export function useResults({
       license: licenseEnabled ? query.license : null,
       hiddenOnly: query.quick === 'hidden',
       hideUnavailable,
+      hideTermsOnly,
       hideUnclassified,
       collectionId: committedCollections.find((c) => c.name === collection)?.id,
       sort,
@@ -121,6 +124,7 @@ export function useResults({
       license: licenseEnabled ? query.license : null,
       hiddenOnly: query.quick === 'hidden',
       hideUnavailable,
+      hideTermsOnly,
       hideUnclassified,
       collectionId: committedCollections.find((c) => c.name === collection)?.id,
       sort,
@@ -202,6 +206,7 @@ export function useResults({
     direction,
     collection,
     hideUnavailable,
+    hideTermsOnly,
     hideUnclassified,
     licenseEnabled,
   ]);

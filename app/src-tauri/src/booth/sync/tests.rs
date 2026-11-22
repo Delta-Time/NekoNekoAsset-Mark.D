@@ -1773,6 +1773,7 @@ fn publication_signatures_saved_by_earlier_versions_still_match() {
         shop_url: Some("https://authored.booth.pm/".into()),
         preview_url: Some("https://booth.pximg.net/authored.png".into()),
         acquired_date_text: Some("2026/01/02 03:04".into()),
+        acquired_at: None,
         paid_amount_text: Some("¥ 500".into()),
         product_line_total_jpy: Some(500),
         variant_name: Some("Standard".into()),
@@ -3953,6 +3954,20 @@ fn free_history_witness_and_augmented_rows_preserve_original_acquisition_facts()
     let mut rejected = page.clone();
     rejected.is_detail = true;
     assert_eq!(eligible_free_rows(&rejected).count(), 0);
+}
+/// A free item added by its listing takes the record ID its free-history row will have, so
+/// the sync that later reads the history merges with it instead of adding a second row.
+#[test]
+fn a_free_item_added_by_its_listing_takes_its_history_rows_record() {
+    let route = "/library/free_downloads?page=1";
+    let html = format!("<html><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><nav><a class='nav-item current' href='https://accounts.booth.pm{route}'>Authored tab</a></nav><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Authored</a><div data-test='downloadable-list'><b data-test='filename'>authored.zip</b><a href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a></div></article><div class='pager border-0'><nav><ul><li class='current'><a class='nav-item' href='https://accounts.booth.pm{route}'>1</a></li></ul></nav></div></main></body></html>");
+    let page = parser::parse(&html, "free", route).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].product_id.as_deref(), Some("900001"));
+    assert_eq!(
+        page.rows[0].source_record_id,
+        free_history::free_history_record_id("900001")
+    );
 }
 #[test]
 fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {

@@ -26,6 +26,8 @@ pub enum StoreRequest {
     RetrySync(SyncJob),
     /// Reads the current store pages of `productIds`.
     UpdateProducts(UpdateProducts),
+    /// Adds BOOTH listings by what the account can download from them for free.
+    ImportFree(ImportFree),
     /// Reads a public product page for a local product's metadata.
     FetchProductMetadata(ProductLink),
     DiagnoseOrdering(DiagnosticSource),
@@ -136,6 +138,17 @@ pub struct UpdateProducts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub account_id: Option<String>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
+/// BOOTH item IDs, in the order the user listed them, and the account that takes them.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFree {
+    pub account_id: String,
+    pub product_ids: Vec<String>,
     #[serde(flatten)]
     #[ts(skip)]
     pub rest: Map<String, Value>,
@@ -270,6 +283,7 @@ struct StoreResponses {
     cancel_sync: StoreJob,
     retry_sync: StoreJob,
     update_products: StoreJobs,
+    import_free: StoreJob,
     fetch_product_metadata: ProductMetadata,
     diagnose_ordering: Value,
     diagnose_manifests: Value,

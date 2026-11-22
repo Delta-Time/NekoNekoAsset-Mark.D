@@ -135,12 +135,14 @@
   border-color: var(--acc-ring);
   background: color-mix(in oklab, var(--accent) 5%, var(--field));
 }
-.app .wf-import .local-import-drop .data-row {
+.app .wf-import .local-import-drop .data-row,
+.app .wf-import .booth-import-list .data-row {
   border: 0;
   border-radius: 8px;
   animation: calm-fade-up 0.3s var(--ease) backwards;
 }
-.app .wf-import .local-import-drop .data-row:hover {
+.app .wf-import .local-import-drop .data-row:hover,
+.app .wf-import .booth-import-list .data-row:hover {
   background: var(--hover);
 }
 .app .wf-import .local-import-product {
@@ -153,7 +155,8 @@
   background: var(--acc-1);
   color: var(--text);
 }
-.app .wf-import .local-import-drop .data-row > button:last-child {
+.app .wf-import .local-import-drop .data-row > button:last-child,
+.app .wf-import .booth-import-list .data-row > button:last-child {
   background: transparent;
   color: var(--muted);
 }

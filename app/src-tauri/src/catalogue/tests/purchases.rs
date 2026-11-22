@@ -21,7 +21,7 @@ fn acquisition_dates_accept_complete_provider_timestamps_without_rewriting_raw_t
     }
     let raw = json!({"id":"a","accountId":"a","acquiredDateText":"","acquiredAt":"2026-02-01T09:08:07Z","paidAmountText":"Original provider text"});
     let mut p = json!({"provenance":acquisition::normalize_provenance(&[raw.clone()])});
-    acquisition::apply_default(&mut p, "");
+    acquisition::apply_default(&mut p, "", None);
     assert_eq!(p["acquired"], raw["acquiredAt"]);
     for field in [
         "id",
@@ -36,7 +36,7 @@ fn acquisition_dates_accept_complete_provider_timestamps_without_rewriting_raw_t
         json!({"id":"z","acquiredDateText":"Later provider text"}),
         json!({"id":"a","acquiredDateText":"Unparsed provider text"}),
     ])});
-    acquisition::apply_default(&mut p, "");
+    acquisition::apply_default(&mut p, "", None);
     assert_eq!(p["acquired"], "Unparsed provider text");
     assert!(p["acquiredSortKey"].is_null());
     // Equal dates use the stable acquisition id, not input traversal order.
@@ -44,7 +44,7 @@ fn acquisition_dates_accept_complete_provider_timestamps_without_rewriting_raw_t
         json!({"id":"z","acquiredDateText":"2026/2/1"}),
         json!({"id":"a","acquiredDateText":"2026年2月1日"}),
     ]));
-    acquisition::apply_default(&mut p, "");
+    acquisition::apply_default(&mut p, "", None);
     assert_eq!(p["acquired"], "2026年2月1日");
 }
 
@@ -57,7 +57,7 @@ fn paid_price_requires_unambiguous_scoped_item_evidence_and_preserves_zero() {
         proof("3","b",json!(500),"JPY"), proof("negative","a",json!(-1),"JPY"),
         proof("fraction","a",json!(1.5),"JPY"),
     ])});
-    acquisition::apply_default(&mut p, "");
+    acquisition::apply_default(&mut p, "", None);
     assert!(p["paidPrice"].is_null());
     let accounts = vec![json!("a")];
     acquisition::apply_scope(&mut p, Some(&accounts));
@@ -91,7 +91,7 @@ fn paid_price_requires_unambiguous_scoped_item_evidence_and_preserves_zero() {
         vec![proof("unsafe", "a", json!(9_007_199_254_740_992u64), "JPY")],
     ] {
         p["provenance"] = json!(acquisition::normalize_provenance(&rows));
-        acquisition::apply_default(&mut p, "");
+        acquisition::apply_default(&mut p, "", None);
         assert!(p["paidPrice"].is_null());
     }
     for (amount, currency) in [(12.50, "USD"), (0.0, "EUR")] {

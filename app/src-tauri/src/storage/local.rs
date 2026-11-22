@@ -163,6 +163,18 @@ fn added_date(job: &Value) -> String {
         .format("%Y/%m/%d %H:%M")
         .to_string()
 }
+/// When the user added it, to the millisecond: the job's time plus a millisecond for each asset
+/// the import listed before it, so assets added together keep their order within the minute
+/// `added_date` shows.
+fn added_at(job: &Value, index: usize) -> String {
+    let at = job["createdAt"]
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+    (at + chrono::Duration::milliseconds(index as i64))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
 /// The link to read once for a product added with a date; earlier imports stay as they are.
 fn listing_to_read(product: &Value) -> Option<&str> {
     let added = product["acquired"]
@@ -1067,6 +1079,7 @@ impl StorageService {
                 group,
                 plan,
                 job,
+                index,
                 root,
                 root_path,
                 &copies,
@@ -1161,6 +1174,7 @@ impl StorageService {
         group: &LocalGroup,
         plan: &LocalPlan,
         job: &Value,
+        index: usize,
         root: &Value,
         root_path: &Path,
         copies: &[Value],
@@ -1176,7 +1190,7 @@ impl StorageService {
             .map(|f| file_id(&group.product_id, &f.relative))
             .collect();
         let metadata = group.metadata.as_ref().unwrap_or(&plan.metadata);
-        let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":added_date(job),"importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
+        let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":added_date(job),"acquiredAt":added_at(job,index),"importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
         product["previewUrl"] = metadata["sourceThumbnailUrl"].clone();
         let mut store_product = false;
         if group.membership {

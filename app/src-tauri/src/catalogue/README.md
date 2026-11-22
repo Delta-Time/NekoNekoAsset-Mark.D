@@ -28,9 +28,16 @@ Preferences use `preferences/app`.
 Search normalizes NFKC/lowercase text, aliases, notes, original titles/authors and
 filenames. Character grams bound CJK/substring candidates; exact checks reject
 false positives. Indexed per-product lookups avoid scanning all file entities.
-Title/acquired/price/status sorting keeps unknowns last. Acquisition-date order has
+Title/acquired/price/status sorting keeps unknowns last. A local import shows the minute it
+was added and sorts by its `acquiredAt`, a millisecond apart per asset of one import, so a
+batch keeps its order; local assets imported earlier sort by the minute. Acquisition-date order has
 one home, `acquisition.rs`: an undated free download sorts by its `~`-prefixed place
-in BOOTH's free history, after every date. Ready requires every
+in BOOTH's free history, after every date. The list copy also marks the free BOOTH
+downloads that hold only a listing's terms of use (`terms_only.rs`: every file named
+for the terms, of a listing that also sells a paid variation), read from those few
+candidates' files and listing; `hideTermsOnly` leaves them out of the list, counts
+and account totals the way `hideUnavailable` does, and the Hidden scope still shows
+them. Ready requires every
 currently attached file to be usable at its current revision, independent of source closure;
 partial downloads alone are not
 Attention. Original archive availability is independent of Ready.

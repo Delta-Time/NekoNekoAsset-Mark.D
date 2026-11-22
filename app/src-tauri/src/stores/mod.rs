@@ -542,6 +542,10 @@ impl StoreService {
         } else {
             requested.unwrap_or(StoreProvider::Booth)
         };
+        // Only BOOTH lets an account download a free item without buying it.
+        if action == "import_free" {
+            require_provider(Some(StoreProvider::Booth), provider)?;
+        }
         let account_id = args["accountId"].as_str().map(str::to_owned);
         let retried = if action == "retry_sync" {
             self.catalogue
@@ -549,7 +553,7 @@ impl StoreService {
         } else {
             None
         };
-        if action == "sync"
+        if matches!(action, "sync" | "import_free")
             || (action == "retry_sync"
                 && retried
                     .as_ref()

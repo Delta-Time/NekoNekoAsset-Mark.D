@@ -39,6 +39,8 @@ struct SignedRow<'a> {
     shop_url: Option<&'a str>,
     preview_url: Option<&'a str>,
     acquired_date_text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acquired_at: Option<&'a str>,
     paid_amount_text: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     product_line_total_jpy: Option<u64>,
@@ -74,6 +76,7 @@ impl<'a> SignedRow<'a> {
             shop_url,
             preview_url,
             acquired_date_text,
+            acquired_at,
             paid_amount_text,
             product_line_total_jpy,
             variant_name,
@@ -91,6 +94,7 @@ impl<'a> SignedRow<'a> {
             shop_url: shop_url.as_deref(),
             preview_url: preview_url.as_deref(),
             acquired_date_text: acquired_date_text.as_deref(),
+            acquired_at: acquired_at.as_deref(),
             paid_amount_text: paid_amount_text.as_deref(),
             product_line_total_jpy: *product_line_total_jpy,
             variant_name: variant_name.as_deref(),

@@ -36,6 +36,11 @@ there with their date.
 - Different providers run concurrently; accounts of the same provider queue. Show
   actual stages, separate listing and detail counts, useful errors and terminal
   results. Unknown fields remain unknown.
+- Import › BOOTH: free assets adds listings through one signed-in account: only what
+  the item page offers as a free download, never a paid variation, published as that
+  account's free-history row with the time it was added, then downloaded. What it
+  downloaded stays usable when the seller replaces, removes or deletes the item, as
+  for any free download.
 - Jinxxy's approved compiled `.3b` flow uses only its freshly issued memory-only
   token at the HTTPS endpoint from that same response, without redirects or
   logging.

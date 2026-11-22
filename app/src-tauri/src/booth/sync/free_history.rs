@@ -32,6 +32,12 @@ pub(super) fn saved_free_history(
         .collect()
 }
 
+/// The record ID the free history gives an item's row, which names no order, variation or
+/// date. A free item added by its listing takes it too, so the history merges with it later.
+pub(super) fn free_history_record_id(product: &str) -> String {
+    format!("free:{}", safety::hash(format!(":{product}:::")))
+}
+
 pub(super) fn eligible_free_rows(page: &parser::Page) -> impl Iterator<Item = &parser::Row> {
     page.rows.iter().filter(|row| {
         page.source == "free"

@@ -105,6 +105,7 @@ export type { FileRef } from './FileRef';
 export type { FileRequest } from './FileRequest';
 export type { FileResponses } from './FileResponses';
 export type { FolderPath } from './FolderPath';
+export type { ImportFree } from './ImportFree';
 export type { ImportSource } from './ImportSource';
 export type { Job } from './Job';
 export type { JobProgress } from './JobProgress';

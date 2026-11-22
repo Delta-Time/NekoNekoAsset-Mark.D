@@ -50,6 +50,9 @@ pub struct Preferences {
     pub sensitive_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_unavailable: Option<bool>,
+    /// Hides free downloads that hold only a listing's terms of use; absent is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_terms_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_unclassified: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

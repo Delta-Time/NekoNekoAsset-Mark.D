@@ -124,7 +124,8 @@ export function useImportActions({
     let alive = true;
     void getCurrentWebview()
       .onDragDropEvent((event) => {
-        if (!alive || lock.current) return;
+        // BOOTH listings come as links; dropped files belong to the local modes.
+        if (!alive || lock.current || mode === 'booth') return;
         const payload = event.payload;
         setDropping(payload.type === 'enter' || payload.type === 'over');
         if (payload.type === 'drop') {
@@ -204,7 +205,7 @@ export function useImportActions({
     });
   const submit = () =>
     run(async () => {
-      if (!valid || accepted.current) return;
+      if (!valid || accepted.current || mode === 'booth') return;
       const destinationRoot = destinationRootId;
       if (!ready) {
         if (!libraryGate) {

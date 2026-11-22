@@ -114,6 +114,12 @@ export default function FeaturesSettings({
             onChange={(enabled) => void save({ hideUnavailable: enabled })}
           />
           <Toggle
+            label={q('hideTermsOnly')}
+            checked={preferences.hideTermsOnly !== false}
+            disabled={busy}
+            onChange={(enabled) => void save({ hideTermsOnly: enabled })}
+          />
+          <Toggle
             label={q('hideUnclassified')}
             checked={preferences.hideUnclassified !== false}
             disabled={busy}

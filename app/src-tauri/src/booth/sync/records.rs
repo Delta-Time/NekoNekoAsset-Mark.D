@@ -19,6 +19,10 @@ pub(super) struct Acquisition {
     pub(super) source: String,
     pub(super) order_id: Option<String>,
     pub(super) acquired_date_text: Option<String>,
+    /// When the App added a free item by its listing, to the millisecond, so items added
+    /// together keep their order; the date shown stays `acquired_date_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) acquired_at: Option<String>,
     pub(super) paid_amount_text: Option<String>,
     pub(super) variant_name: Option<String>,
     pub(super) unavailable: bool,
@@ -138,6 +142,7 @@ impl Acquisition {
             source: source.into(),
             order_id: sparse(&row.order_id, "orderId"),
             acquired_date_text: sparse(&row.acquired_date_text, "acquiredDateText"),
+            acquired_at: sparse(&row.acquired_at, "acquiredAt"),
             paid_amount_text: sparse(&row.paid_amount_text, "paidAmountText"),
             variant_name: row.variant_name.clone(),
             unavailable: row.unavailable,

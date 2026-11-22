@@ -5,7 +5,15 @@ import type { LocalImportProps } from './import-parts';
 import type { ImportDrafts } from './useImportDrafts';
 
 /** Tag suggestions, whether the drafts can be imported, and whether closing would lose anything. */
-export function useImportCheck({ drafts, c }: { drafts: ImportDrafts; c: LocalImportProps }) {
+export function useImportCheck({
+  drafts,
+  c,
+  boothDirty,
+}: {
+  drafts: ImportDrafts;
+  c: LocalImportProps;
+  boothDirty: boolean;
+}) {
   const {
     sourceUrl,
     mode,
@@ -60,16 +68,18 @@ export function useImportCheck({ drafts, c }: { drafts: ImportDrafts; c: LocalIm
         )
       : draftValid(draft)) &&
     !batchInvalid;
-  const dirty = !!(
-    sources.length ||
-    name.trim() ||
-    tags.length ||
-    pendingTag.trim() ||
-    sourceUrl.trim() ||
-    thumbnail ||
-    category !== 'NonVRChat' ||
-    mode !== 'single'
-  );
+  const dirty =
+    boothDirty ||
+    !!(
+      sources.length ||
+      name.trim() ||
+      tags.length ||
+      pendingTag.trim() ||
+      sourceUrl.trim() ||
+      thumbnail ||
+      category !== 'NonVRChat' ||
+      mode === 'batch'
+    );
   useEffect(() => {
     c.onDirtyChange?.(dirty);
   }, [dirty, c.onDirtyChange]);

@@ -4,7 +4,8 @@
 //! undated free download `~` and its place in the free history (`freeHistoryOrder`, which
 //! BOOTH's sync gives it), sorting after every date. Each provenance row gets a key
 //! (`row_sort_key`), a product the earliest of its rows (`summarize`, stored in
-//! `products.acquired`), and the list orders by `order_by`.
+//! `products.acquired`), and the list orders by `order_by`. A local import has no rows with
+//! dates: its own `acquired` minute is shown and its `acquiredAt`, when it has one, orders it.
 use super::*;
 
 /// Starts a key that is a place in the free history rather than a date (`~` follows digits).
@@ -120,9 +121,15 @@ fn in_scope(row: &Value, accounts: Option<&Vec<Value>>) -> bool {
     })
 }
 
-/// Used while materializing the default/all-account product summary.
-pub(super) fn apply_default(product: &mut Value, source_acquired: &str) {
-    summarize(product, None, Some(source_acquired));
+/// Used while materializing the default/all-account product summary. `source_acquired_at` is
+/// a local import's own time to the millisecond, which orders it while `source_acquired`, the
+/// minute, is shown.
+pub(super) fn apply_default(
+    product: &mut Value,
+    source_acquired: &str,
+    source_acquired_at: Option<&str>,
+) {
+    summarize(product, None, Some((source_acquired, source_acquired_at)));
 }
 
 /// Absent/null scope uses the materialized all-account summary. An explicit
@@ -275,7 +282,11 @@ fn scope_owned_prices(product: &mut Value, accounts: Option<&Vec<Value>>) {
     product["ownedPaidPrices"] = json!(paid);
 }
 
-fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Option<&str>) {
+fn summarize(
+    product: &mut Value,
+    accounts: Option<&Vec<Value>>,
+    fallback: Option<(&str, Option<&str>)>,
+) {
     let mut rows: Vec<_> = product["provenance"]
         .as_array()
         .into_iter()
@@ -295,8 +306,12 @@ fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Optio
                 .map(|key| (key, text(row, "acquiredDisplay")))
         })
         .min_by(|a, b| a.0.cmp(b.0));
-    let fallback = fallback.filter(|value| !value.trim().is_empty());
-    let fallback_key = fallback.and_then(date_key);
+    let fallback_at = fallback.and_then(|(_, at)| at);
+    let fallback = fallback
+        .map(|(display, _)| display)
+        .filter(|value| !value.trim().is_empty());
+    let fallback_key =
+        fallback.and_then(|display| fallback_at.and_then(date_key).or_else(|| date_key(display)));
     let (key, display) = match (earliest, fallback_key.as_deref()) {
         (Some((key, _)), Some(other)) if other < key => (Some(other), fallback.unwrap()),
         (Some((key, display)), _) if !key.starts_with(FREE_HISTORY_PLACE) => (Some(key), display),

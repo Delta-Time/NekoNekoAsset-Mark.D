@@ -4,6 +4,11 @@
   Features › Hide Unclassified in All assets (default on); turning it off lists
   them. Acquisition and accessible files still publish to the database. Preserve
   manual category overrides and explicit category access.
+- Features › Hide free assets that are only terms of use (default on) leaves out a
+  BOOTH product held only through free downloads whose every file is the terms of
+  use of a listing that also sells a paid variation (`terms_only.rs`). Hiding
+  a real free asset is worse than showing a terms PDF, so anything less certain
+  stays listed. Derived per list snapshot; nothing is rewritten.
 - Custom categories are created and assigned only by the user (Edit, Batch Edit,
   category drops). Source inference, AI and local import never assign, change or
   remove them; deleting one returns its products to automatic classification.

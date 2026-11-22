@@ -5,6 +5,7 @@ import type { AccountRemove } from './AccountRemove';
 import type { AccountRename } from './AccountRename';
 import type { DiagnosticAccount } from './DiagnosticAccount';
 import type { DiagnosticSource } from './DiagnosticSource';
+import type { ImportFree } from './ImportFree';
 import type { ProductLink } from './ProductLink';
 import type { ReceiptDiagnostic } from './ReceiptDiagnostic';
 import type { SyncJob } from './SyncJob';
@@ -27,6 +28,7 @@ export type StoreRequest =
   | ({ action: 'cancel_sync' } & SyncJob)
   | ({ action: 'retry_sync' } & SyncJob)
   | ({ action: 'update_products' } & UpdateProducts)
+  | ({ action: 'import_free' } & ImportFree)
   | ({ action: 'fetch_product_metadata' } & ProductLink)
   | ({ action: 'diagnose_ordering' } & DiagnosticSource)
   | ({ action: 'diagnose_manifests' } & DiagnosticSource)

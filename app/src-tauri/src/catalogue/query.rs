@@ -13,9 +13,15 @@ use std::hash::{Hash, Hasher};
 pub(super) struct ListSnapshot {
     revision: Option<i64>,
     total: i64,
-    /// Sidebar counts by whether unavailable, then Unclassified, products are hidden.
-    counts: [[api::ListCounts; 2]; 2],
+    /// Sidebar counts by which products the list hides (`hidden_set`), then by whether
+    /// Unclassified products are hidden from All.
+    counts: [[api::ListCounts; 2]; 4],
     summaries: HashMap<String, u64>,
+}
+
+/// The count set for what the list hides: unavailable products, terms-only ones, or both.
+fn hidden_set(unavailable: bool, terms_only: bool) -> usize {
+    usize::from(unavailable) | usize::from(terms_only) << 1
 }
 
 /// A store product whose store lists no file for it and that has no bytes on
@@ -32,10 +38,13 @@ macro_rules! unavailable_sql {
 /// row of that account has one, and otherwise follows that account's current price.
 const ACQUISITION_KIND: &str = "CASE WHEN json_extract(a.value,'$.source')='gift' THEN 'gift' WHEN EXISTS(SELECT 1 FROM json_each(p.provenance) g WHERE json_extract(g.value,'$.accountId') IS json_extract(a.value,'$.accountId') AND (json_extract(g.value,'$.source')='gift' OR (json_extract(a.value,'$.source')='free' AND json_extract(g.value,'$.source') IN('library','purchase')))) THEN '' WHEN json_extract(a.value,'$.source')='free' OR json_extract(a.value,'$.paidPrice')=0 THEN 'free' WHEN json_extract(a.value,'$.paidPrice')>0 THEN 'paid' WHEN EXISTS(SELECT 1 FROM json_each(p.provenance) o WHERE json_extract(o.value,'$.accountId') IS json_extract(a.value,'$.accountId') AND json_extract(o.value,'$.paidPrice') IS NOT NULL) THEN '' WHEN COALESCE((SELECT MAX(json_extract(v.value,'$.price')) FROM json_each(p.prices) v,json_each(v.value,'$.accountIds') x WHERE x.value=json_extract(a.value,'$.accountId')),p.price)=0 THEN 'free' ELSE 'paid' END";
 // Keep the effective values of the former summary predicates and ordering.
-const LIST_COLUMNS: &str =concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",summary");
+const LIST_COLUMNS: &str =concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",0,summary");
+/// The rows that may hold only terms of use (`terms_only`): BOOTH products every row of
+/// which is a free download, with few files. Only these read their files and listing.
+const TERMS_CANDIDATES: &str = "json_extract(l.summary,'$.provider')='booth' AND COALESCE(json_extract(l.summary,'$.total'),0) BETWEEN 1 AND 20 AND EXISTS(SELECT 1 FROM json_each(l.provenance)) AND NOT EXISTS(SELECT 1 FROM json_each(l.provenance) a WHERE json_extract(a.value,'$.source') IS NOT 'free')";
 // The UPDATE condition matches products_changed_update, so each recorded event is one revision.
 // Trigger steps inherit an upsert's conflict policy, so the change log has no key and may repeat ids.
-const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,unavailable INTEGER NOT NULL,summary TEXT NOT NULL);
+const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,unavailable INTEGER NOT NULL,terms_only INTEGER NOT NULL,summary TEXT NOT NULL);
  CREATE TEMP TABLE IF NOT EXISTS list_changes(id);
  CREATE TEMP TABLE IF NOT EXISTS list_events(n INTEGER NOT NULL);
  INSERT INTO temp.list_events SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM temp.list_events);
@@ -84,6 +93,7 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             &format!("INSERT INTO temp.list_rows SELECT {LIST_COLUMNS} FROM products p {changed}"),
             [],
         )?;
+        mark_terms_only(conn, partial)?;
         let mut stmt = conn.prepare(&format!("SELECT id,summary FROM temp.list_rows {changed}"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -92,19 +102,19 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             next.summaries.insert(row.get(0)?, hasher.finish());
         }
         conn.execute_batch("DELETE FROM temp.list_changes; UPDATE temp.list_events SET n=0;")?;
-        // Two count sets: every product, and the default list without unavailable ones.
-        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 2] =
+        // One count set for each combination of what the list hides (`hidden_set`).
+        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 4] =
             Default::default();
         let mut hidden = 0i64;
-        let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,unavailable=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6,7")?;
+        let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,unavailable=1,terms_only=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6,7,8")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let count: i64 = row.get(7)?;
+            let count: i64 = row.get(8)?;
             next.total += count;
             if row.get(4)? {
-                let unavailable: bool = row.get(6)?;
+                let (unavailable, terms_only): (bool, bool) = (row.get(6)?, row.get(7)?);
                 for (index, set) in sets.iter_mut().enumerate() {
-                    if index == 1 && unavailable {
+                    if (index & 1 == 1 && unavailable) || (index & 2 == 2 && terms_only) {
                         continue;
                     }
                     *set.0.entry(row.get(0)?).or_default() += count;
@@ -143,6 +153,50 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
     }
 }
 
+/// Marks the copied rows that hold only a listing's terms of use, from each candidate's files
+/// and its listing's variations; a partial refresh reads only the rows it copied again.
+fn mark_terms_only(conn: &Connection, partial: bool) -> Result<()> {
+    let changed = if partial {
+        " AND l.id IN(SELECT id FROM temp.list_changes)"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!("SELECT l.id,p.body,s.body FROM temp.list_rows l JOIN products p ON p.id=l.id LEFT JOIN entities s ON s.kind='product' AND s.id=l.id WHERE {TERMS_CANDIDATES}{changed}"))?;
+    let mut rows = stmt.query([])?;
+    let mut marked = vec![];
+    while let Some(row) = rows.next()? {
+        let product: Value = serde_json::from_str(row.get_ref(1)?.as_str()?)?;
+        let source: Value = row
+            .get::<_, Option<String>>(2)?
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or(Value::Null);
+        let files = product["files"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        // A file the user added is theirs, whatever it is called.
+        let listed: Option<Vec<_>> = files
+            .iter()
+            .map(|file| {
+                (file["userAdded"] != true).then(|| super::terms_only::TermsFile {
+                    name: file["name"].as_str().unwrap_or(""),
+                    variant_id: file["provenance"][0]["variantId"].as_str(),
+                })
+            })
+            .collect();
+        if listed
+            .is_some_and(|files| super::terms_only::terms_only(&files, &source["publicVariants"]))
+        {
+            marked.push(row.get::<_, String>(0)?);
+        }
+    }
+    let mut mark = conn.prepare("UPDATE temp.list_rows SET terms_only=1 WHERE id=?1")?;
+    for id in marked {
+        mark.execute([id])?;
+    }
+    Ok(())
+}
+
 pub(super) fn query(
     conn: &Connection,
     args: &api::QueryRequest,
@@ -156,6 +210,10 @@ pub(super) fn query(
     let hide_unavailable = args.hide_unavailable == Some(true) && !hidden_only;
     if hide_unavailable {
         conditions.push("p.unavailable=0".to_owned());
+    }
+    let hide_terms_only = args.hide_terms_only == Some(true) && !hidden_only;
+    if hide_terms_only {
+        conditions.push("p.terms_only=0".to_owned());
     }
     let hide_unclassified = args.hide_unclassified != Some(false);
     let mut binds: Vec<Sql> = vec![];
@@ -256,7 +314,7 @@ pub(super) fn query(
             avatar,
             hidden_only,
             sensitive,
-            hide_unavailable,
+            (hide_unavailable, hide_terms_only),
             account_ids,
             &account_placeholders,
             include_offline,
@@ -319,8 +377,10 @@ pub(super) fn query(
     all_downloaded &= !ids.is_empty();
     let (products, fingerprints) = page_products(conn, args, list, &ids, account_ids)?;
     // Sidebar counts follow the preferences in every scope, including Hidden.
-    let counts = &list.counts[usize::from(args.hide_unavailable == Some(true))]
-        [usize::from(hide_unclassified)];
+    let counts = &list.counts[hidden_set(
+        args.hide_unavailable == Some(true),
+        args.hide_terms_only == Some(true),
+    )][usize::from(hide_unclassified)];
     Ok(serde_json::to_value(api::QueryResult {
         products,
         total: list.total,
@@ -362,7 +422,7 @@ fn avatar_filter(
     avatar: &str,
     hidden_only: bool,
     sensitive: &str,
-    hide_unavailable: bool,
+    (hide_unavailable, hide_terms_only): (bool, bool),
     account_ids: Option<&Vec<String>>,
     account_placeholders: &[String],
     include_offline: bool,
@@ -376,13 +436,19 @@ fn avatar_filter(
         avatars::registry_from(&projection::bases_in(conn, "temp.list_rows")?, &preferences)?;
     let avatar_id = registry.resolve(avatar);
     // Base pins override ordinary filters, but never the user's explicit
-    // hidden/visible, R-18 or unavailable visibility boundaries.
+    // hidden/visible, R-18, unavailable or terms-only visibility boundaries.
     let mut visible_base = conn.prepare_cached(
-            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) FROM temp.list_rows WHERE id=?1",
+            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) AND (?5=0 OR terms_only=0) FROM temp.list_rows WHERE id=?1",
         )?;
     for id in registry.bases(&avatar_id) {
         if visible_base.query_row(
-            params![id, hidden_only, sensitive, hide_unavailable],
+            params![
+                id,
+                hidden_only,
+                sensitive,
+                hide_unavailable,
+                hide_terms_only
+            ],
             |row| row.get::<_, bool>(0),
         )? {
             pinned.push(id);
@@ -596,39 +662,47 @@ pub(super) fn compact_for_list(product: &mut Value) {
     }
 }
 
-/// The saved list preferences: unavailable products, and Unclassified ones in All,
-/// are hidden unless turned off.
-fn list_preferences(conn: &Connection) -> Result<(bool, bool)> {
+/// The saved list preferences: unavailable products, terms-only ones, and Unclassified ones
+/// in All, are hidden unless turned off.
+struct ListPreferences {
+    unavailable: bool,
+    terms_only: bool,
+    unclassified: bool,
+}
+
+fn list_preferences(conn: &Connection) -> Result<ListPreferences> {
     let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-    Ok((
-        preferences["hideUnavailable"] != false,
-        preferences["hideUnclassified"] != false,
-    ))
+    Ok(ListPreferences {
+        unavailable: preferences["hideUnavailable"] != false,
+        terms_only: preferences["hideTermsOnly"] != false,
+        unclassified: preferences["hideUnclassified"] != false,
+    })
 }
 
 /// Visible account totals are independent of query filters and visited pages.
-pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
+pub(super) fn account_counts(conn: &Connection, cache: &mut ListSnapshot) -> Result<Value> {
+    snapshot(conn, cache)?;
     let mut accounts = BTreeMap::new();
     let mut known = conn.prepare("SELECT id FROM entities WHERE kind='account'")?;
     for id in known.query_map([], |row| row.get::<_, String>(0))? {
         accounts.insert(id?, 0);
     }
-    let visible = if list_preferences(conn)?.0 {
-        concat!(
-            "COALESCE(json_extract(p.summary,'$.hidden'),0)=0 AND NOT ",
-            unavailable_sql!()
-        )
-    } else {
-        "COALESCE(json_extract(p.summary,'$.hidden'),0)=0"
-    };
-    let mut statement = conn.prepare(&format!("SELECT a.value,COUNT(DISTINCT p.id) FROM products p,json_each(p.summary,'$.accountIds') a JOIN entities e ON e.kind='account' AND e.id=a.value WHERE {visible} GROUP BY a.value"))?;
+    let preferences = list_preferences(conn)?;
+    let mut visible = "p.hidden=0".to_owned();
+    if preferences.unavailable {
+        visible.push_str(" AND p.unavailable=0");
+    }
+    if preferences.terms_only {
+        visible.push_str(" AND p.terms_only=0");
+    }
+    let mut statement = conn.prepare(&format!("SELECT a.value,COUNT(DISTINCT p.id) FROM temp.list_rows p,json_each(p.accounts) a JOIN entities e ON e.kind='account' AND e.id=a.value WHERE {visible} GROUP BY a.value"))?;
     for row in statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })? {
         let (account, count) = row?;
         accounts.insert(account, count);
     }
-    let unassigned: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM products p WHERE {visible} AND COALESCE(json_extract(p.summary,'$.custom'),0)<>1 AND NOT EXISTS(SELECT 1 FROM json_each(p.summary,'$.accountIds') a JOIN entities e ON e.kind='account' AND e.id=a.value)"), [], |row| row.get(0))?;
+    let unassigned: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM temp.list_rows p WHERE {visible} AND COALESCE(json_extract(p.summary,'$.custom'),0)<>1 AND NOT EXISTS(SELECT 1 FROM json_each(p.accounts) a JOIN entities e ON e.kind='account' AND e.id=a.value)"), [], |row| row.get(0))?;
     Ok(serde_json::to_value(api::AccountCounts {
         accounts,
         unassigned,
@@ -639,10 +713,12 @@ pub(super) fn counts(
     conn: &Connection,
     cache: &mut ListSnapshot,
 ) -> Result<(i64, api::ListCounts)> {
-    let (unavailable, unclassified) = list_preferences(conn)?;
+    let preferences = list_preferences(conn)?;
     let list = snapshot(conn, cache)?;
     Ok((
         list.total,
-        list.counts[usize::from(unavailable)][usize::from(unclassified)].clone(),
+        list.counts[hidden_set(preferences.unavailable, preferences.terms_only)]
+            [usize::from(preferences.unclassified)]
+        .clone(),
     ))
 }

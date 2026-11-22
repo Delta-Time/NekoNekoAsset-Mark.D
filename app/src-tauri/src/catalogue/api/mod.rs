@@ -147,6 +147,8 @@ pub struct QueryRequest {
     pub license_ids: Option<Vec<String>>,
     pub hidden_only: Option<bool>,
     pub hide_unavailable: Option<bool>,
+    /// Leaves out free downloads that hold only a listing's terms of use.
+    pub hide_terms_only: Option<bool>,
     pub hide_unclassified: Option<bool>,
     pub collection_id: Option<String>,
     /// Older name of `collectionId`.

@@ -34,6 +34,10 @@ export type QueryRequest = {
   license?: { [key in string]: string } | null;
   hiddenOnly?: boolean;
   hideUnavailable?: boolean;
+  /**
+   * Leaves out free downloads that hold only a listing's terms of use.
+   */
+  hideTermsOnly?: boolean;
   hideUnclassified?: boolean;
   collectionId?: string;
   /**
