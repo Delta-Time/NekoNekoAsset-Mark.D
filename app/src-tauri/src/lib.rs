@@ -1718,325 +1718,7 @@ pub fn run() {
                 window.app_handle().exit(0);
             }
         })
-        .setup(move |app| {
-            let data_dir = if cfg!(debug_assertions) {
-                std::env::var_os("NNA_DATA_DIR")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or(app.path().app_local_data_dir()?)
-            } else {
-                app.path().app_local_data_dir()?
-            };
-            std::fs::create_dir_all(&data_dir)?;
-            window_state::initialize(app, &data_dir, main_visible);
-            setup_sessions::schedule_cleanup(&data_dir);
-            if app_reset::pending(&data_dir) {
-                app.manage(LibraryHost {
-                    device_dir: data_dir.clone(),
-                    status: Mutex::new(LibraryStatus {
-                        state: "blocked".into(),
-                        path: app_reset::pending_library(&data_dir),
-                        default_path: None,
-                        error_code: Some("reset_incomplete".into()),
-                        locale: profile::selected_library(&data_dir)
-                            .ok()
-                            .flatten()
-                            .map(|selection| selection.locale)
-                            .unwrap_or_else(|| "en".into()),
-                        missing_credentials: vec![],
-                    }),
-                    services: Mutex::new(None),
-                    setup: Mutex::new(None),
-                    opening: AtomicBool::new(true),
-                    next_catalogue: Mutex::new(None),
-                    switching: Mutex::new(None),
-                });
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let result = tauri::async_runtime::spawn_blocking(move || {
-                        app_reset::apply_pending(&data_dir)
-                    })
-                    .await;
-                    let host = handle.state::<LibraryHost>();
-                    if matches!(result, Ok(Ok(()))) {
-                        if let Ok(mut status) = host.status.lock() {
-                            status.state = "unconfigured".into();
-                            status.path = None;
-                            status.error_code = None;
-                        }
-                    }
-                    host.opening.store(false, Ordering::Release);
-                    let _ = handle.emit("nna:changed", crate::ipc::Change::scope("library"));
-                });
-                return Ok(());
-            }
-            // Explicit reset retains its unconfigured fallback; no unrelated
-            // completed default is opened or changed while returning to setup.
-            let applying_reset = app_reset::pending(&data_dir);
-            let selection = app_reset::apply_pending(&data_dir)
-                .map_err(|_| anyhow::anyhow!("reset_incomplete"))
-                .and_then(|_| profile::selected_library(&data_dir));
-            let mut setup = None;
-            let (catalogue, mut status) = match selection {
-                Ok(Some(selection)) => {
-                    let opened: anyhow::Result<Option<Catalogue>> = (|| {
-                        let preferences = Catalogue::probe_setup_preferences(&selection.path)?;
-                        if preferences
-                            .is_some_and(|preferences| preferences["setupComplete"] == true)
-                        {
-                            Catalogue::open_bound(&selection.path, &data_dir).map(Some)
-                        } else {
-                            let candidate =
-                                validate_setup_candidate(selection.path.clone(), false)?;
-                            setup = Some(SetupState::new(&data_dir, candidate, &selection.locale)?);
-                            Ok(None)
-                        }
-                    })();
-                    let error = opened
-                        .as_ref()
-                        .err()
-                        .map(|error| UiError::from_library_error(error).code);
-                    (
-                        opened.ok().flatten(),
-                        LibraryStatus {
-                            state: if error.is_some() {
-                                "blocked"
-                            } else if setup.is_some() {
-                                "setup"
-                            } else {
-                                "ready"
-                            }
-                            .into(),
-                            path: Some(selection.path),
-                            default_path: None,
-                            error_code: error,
-                            locale: selection.locale,
-                            missing_credentials: vec![],
-                        },
-                    )
-                }
-                Ok(None) if !applying_reset => {
-                    let default_path = profile::default_library_path(&data_dir).ok();
-                    let opened = default_path
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
-                        .and_then(|path| validate_setup_candidate(path.clone(), false))
-                        .and_then(|path| {
-                            if path.exists()
-                                && Catalogue::probe_setup_preferences(&path)?
-                                    .is_some_and(|preferences| preferences["setupComplete"] == true)
-                            {
-                                Catalogue::open_bound(&path, &data_dir).map(Some)
-                            } else {
-                                setup = Some(SetupState::new(&data_dir, path, "en")?);
-                                Ok(None)
-                            }
-                        });
-                    let error = opened
-                        .as_ref()
-                        .err()
-                        .map(|error| UiError::from_library_error(error).code);
-                    let path = setup
-                        .as_ref()
-                        .and_then(|setup| setup.candidate().ok())
-                        .or_else(|| default_path.clone());
-                    let catalogue = opened.ok().flatten();
-                    (
-                        catalogue.clone(),
-                        LibraryStatus {
-                            state: if error.is_some() {
-                                if default_path.as_ref().is_some_and(|path| {
-                                    path.join(".nna/data/catalogue.sqlite3").is_file()
-                                }) {
-                                    "blocked"
-                                } else {
-                                    "unconfigured"
-                                }
-                            } else if catalogue.is_some() {
-                                "ready"
-                            } else {
-                                "setup"
-                            }
-                            .into(),
-                            path,
-                            default_path,
-                            error_code: error,
-                            locale: "en".into(),
-                            missing_credentials: vec![],
-                        },
-                    )
-                }
-                Ok(None) => (
-                    None,
-                    LibraryStatus {
-                        state: "unconfigured".into(),
-                        path: None,
-                        default_path: None,
-                        error_code: None,
-                        locale: "en".into(),
-                        missing_credentials: vec![],
-                    },
-                ),
-                Err(error) => (
-                    None,
-                    LibraryStatus {
-                        state: "blocked".into(),
-                        path: profile::selected_library(&data_dir)
-                            .ok()
-                            .flatten()
-                            .map(|selection| selection.path)
-                            .or_else(|| app_reset::pending_library(&data_dir)),
-                        default_path: None,
-                        error_code: Some(UiError::from_error(error).code),
-                        locale: "en".into(),
-                        missing_credentials: vec![],
-                    },
-                ),
-            };
-            let Some(catalogue) = catalogue else {
-                app.manage(LibraryHost {
-                    device_dir: data_dir,
-                    status: Mutex::new(status),
-                    services: Mutex::new(None),
-                    setup: Mutex::new(setup),
-                    opening: AtomicBool::new(false),
-                    next_catalogue: Mutex::new(None),
-                    switching: Mutex::new(None),
-                });
-                return Ok(());
-            };
-            let prepared = (|| -> anyhow::Result<Services> {
-                if let Some(preferences) = catalogue.get("preferences", "app")? {
-                    if let Some(locale) = preferences["locale"].as_str() {
-                        status.locale = locale.into();
-                    }
-                }
-                let services = Services::new(catalogue.clone(), &data_dir)?;
-                app.asset_protocol_scope()
-                    .allow_directory(catalogue.data_dir().join("media"), true)?;
-                app.asset_protocol_scope()
-                    .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
-                if !services.setup_only {
-                    catalogue.start_sync_worker()?;
-                }
-                Ok(services)
-            })();
-            let services = match prepared {
-                Ok(services) => services,
-                Err(error) => {
-                    status.state = "blocked".into();
-                    status.error_code = Some(UiError::from_library_error(&error).code);
-                    app.manage(LibraryHost {
-                        device_dir: data_dir,
-                        status: Mutex::new(status),
-                        services: Mutex::new(None),
-                        setup: Mutex::new(None),
-                        opening: AtomicBool::new(false),
-                        next_catalogue: Mutex::new(None),
-                        switching: Mutex::new(None),
-                    });
-                    return Ok(());
-                }
-            };
-            let setup_only = services.setup_only;
-            let stores = services.stores.clone();
-            let storage = services.storage.clone();
-            let ai_jobs = services.ai_jobs.clone();
-            let unity = services.unity.clone();
-            let licenses = services.licenses.clone();
-            app.manage(LibraryHost {
-                device_dir: data_dir,
-                status: Mutex::new(status),
-                services: Mutex::new(Some(services)),
-                setup: Mutex::new(None),
-                opening: AtomicBool::new(false),
-                next_catalogue: Mutex::new(None),
-                switching: Mutex::new(None),
-            });
-            // Setup needs only explicit account/login commands. Starting the
-            // long-lived workers here would retain an old library after a new
-            // location choice and could begin downloads before Finish.
-            if setup_only {
-                return Ok(());
-            }
-            let automatic_storage = storage.clone();
-            app.listen("nna:changed", move |event| {
-                let Ok(change) = serde_json::from_str::<ipc::Change>(event.payload()) else {
-                    return;
-                };
-                if change.session_changed == Some(true) {
-                    let storage = automatic_storage.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = storage.reevaluate_automatic().await;
-                    });
-                    return;
-                }
-                if change.scope != "catalogue" {
-                    return;
-                }
-                let ids = change.product_ids.unwrap_or_default();
-                if ids.is_empty() {
-                    return;
-                }
-                let storage = automatic_storage.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = storage.source_products_changed(&ids).await;
-                });
-            });
-            let handle = app.handle().clone();
-            let startup_gate = handle.state::<NativeOperationGate>().0.clone();
-            tauri::async_runtime::spawn(async move {
-                // A failed installer releases this gate and startup work resumes normally.
-                let startup_permit = startup_gate.clone().read_owned().await;
-                let mut previous = catalogue.change_domains().unwrap_or((0, 0, 0));
-                let setup_was_complete = catalogue
-                    .get("preferences", "app")
-                    .ok()
-                    .flatten()
-                    .is_some_and(|preferences| preferences["setupComplete"] == true);
-                if storage.start(handle.clone()).await.is_err() {
-                    let _ = handle.emit("nna:changed", crate::ipc::Change::scope("recovery"));
-                }
-                // Explicit login/sync jobs need the workers even when isolated diagnostics
-                // suppress automatic startup scans.
-                let _ = stores.start(handle.clone()).await;
-                let _ = ai_jobs.start(&handle).await;
-                let _ = unity.start(&handle).await;
-                let _ = licenses.start(&handle).await;
-                drop(startup_permit);
-                #[cfg(debug_assertions)]
-                let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
-                    && std::env::var("NNA_SKIP_STARTUP_SYNC").as_deref() == Ok("1");
-                #[cfg(not(debug_assertions))]
-                let skip_startup_sync = false;
-                if !skip_startup_sync && setup_was_complete {
-                    // Native local state renders before authenticated network work.
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let _sync_permit = startup_gate.read_owned().await;
-                    let _ = sync_connected_accounts(&handle, &catalogue, &stores).await;
-                }
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if catalogue.check_library_available().is_err() {
-                        // Never continue writing after a surfaced loss of the NAS lock handle.
-                        handle.exit(1);
-                        break;
-                    }
-                    if let Ok(revisions) = catalogue.change_domains() {
-                        if revisions.1 != previous.1 {
-                            changed(&handle, "products");
-                        }
-                        if revisions.2 != previous.2 {
-                            changed(&handle, "collections");
-                        }
-                        if revisions.0 != previous.0 {
-                            changed(&handle, "state");
-                        }
-                        previous = revisions;
-                    }
-                }
-            });
-            Ok(())
-        })
+        .setup(move |app| setup_library(app, main_visible))
         .invoke_handler(tauri::generate_handler![
             library_status,
             library_open,
@@ -2058,4 +1740,356 @@ pub fn run() {
         ])
         .run(context)
         .expect("NekoNekoAsset could not start");
+}
+
+/// Opens the selected library or the setup state, then starts the long-lived workers.
+fn setup_library(
+    app: &mut tauri::App,
+    main_visible: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data_dir = if cfg!(debug_assertions) {
+        std::env::var_os("NNA_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(app.path().app_local_data_dir()?)
+    } else {
+        app.path().app_local_data_dir()?
+    };
+    std::fs::create_dir_all(&data_dir)?;
+    window_state::initialize(app, &data_dir, main_visible);
+    setup_sessions::schedule_cleanup(&data_dir);
+    if app_reset::pending(&data_dir) {
+        manage_pending_reset(app, data_dir);
+        return Ok(());
+    }
+    let (catalogue, mut status, setup) = select_library(&data_dir);
+    let Some(catalogue) = catalogue else {
+        app.manage(LibraryHost {
+            device_dir: data_dir,
+            status: Mutex::new(status),
+            services: Mutex::new(None),
+            setup: Mutex::new(setup),
+            opening: AtomicBool::new(false),
+            next_catalogue: Mutex::new(None),
+            switching: Mutex::new(None),
+        });
+        return Ok(());
+    };
+    let prepared = (|| -> anyhow::Result<Services> {
+        if let Some(preferences) = catalogue.get("preferences", "app")? {
+            if let Some(locale) = preferences["locale"].as_str() {
+                status.locale = locale.into();
+            }
+        }
+        let services = Services::new(catalogue.clone(), &data_dir)?;
+        app.asset_protocol_scope()
+            .allow_directory(catalogue.data_dir().join("media"), true)?;
+        app.asset_protocol_scope()
+            .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
+        if !services.setup_only {
+            catalogue.start_sync_worker()?;
+        }
+        Ok(services)
+    })();
+    let services = match prepared {
+        Ok(services) => services,
+        Err(error) => {
+            status.state = "blocked".into();
+            status.error_code = Some(UiError::from_library_error(&error).code);
+            app.manage(LibraryHost {
+                device_dir: data_dir,
+                status: Mutex::new(status),
+                services: Mutex::new(None),
+                setup: Mutex::new(None),
+                opening: AtomicBool::new(false),
+                next_catalogue: Mutex::new(None),
+                switching: Mutex::new(None),
+            });
+            return Ok(());
+        }
+    };
+    let setup_only = services.setup_only;
+    let stores = services.stores.clone();
+    let storage = services.storage.clone();
+    let ai_jobs = services.ai_jobs.clone();
+    let unity = services.unity.clone();
+    let licenses = services.licenses.clone();
+    app.manage(LibraryHost {
+        device_dir: data_dir,
+        status: Mutex::new(status),
+        services: Mutex::new(Some(services)),
+        setup: Mutex::new(None),
+        opening: AtomicBool::new(false),
+        next_catalogue: Mutex::new(None),
+        switching: Mutex::new(None),
+    });
+    // Setup needs only explicit account/login commands. Starting the
+    // long-lived workers here would retain an old library after a new
+    // location choice and could begin downloads before Finish.
+    if setup_only {
+        return Ok(());
+    }
+    listen_for_source_changes(app, &storage);
+    spawn_startup_work(app, catalogue, storage, stores, ai_jobs, unity, licenses);
+    Ok(())
+}
+
+/// An interrupted reset finishes before anything opens; the App then returns to setup.
+fn manage_pending_reset(app: &tauri::App, data_dir: PathBuf) {
+    app.manage(LibraryHost {
+        device_dir: data_dir.clone(),
+        status: Mutex::new(LibraryStatus {
+            state: "blocked".into(),
+            path: app_reset::pending_library(&data_dir),
+            default_path: None,
+            error_code: Some("reset_incomplete".into()),
+            locale: profile::selected_library(&data_dir)
+                .ok()
+                .flatten()
+                .map(|selection| selection.locale)
+                .unwrap_or_else(|| "en".into()),
+            missing_credentials: vec![],
+        }),
+        services: Mutex::new(None),
+        setup: Mutex::new(None),
+        opening: AtomicBool::new(true),
+        next_catalogue: Mutex::new(None),
+        switching: Mutex::new(None),
+    });
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let result =
+            tauri::async_runtime::spawn_blocking(move || app_reset::apply_pending(&data_dir)).await;
+        let host = handle.state::<LibraryHost>();
+        if matches!(result, Ok(Ok(()))) {
+            if let Ok(mut status) = host.status.lock() {
+                status.state = "unconfigured".into();
+                status.path = None;
+                status.error_code = None;
+            }
+        }
+        host.opening.store(false, Ordering::Release);
+        let _ = handle.emit("nna:changed", crate::ipc::Change::scope("library"));
+    });
+}
+
+/// The library to open, its status, and the setup state when setup is not finished.
+fn select_library(
+    data_dir: &std::path::Path,
+) -> (Option<Catalogue>, LibraryStatus, Option<SetupState>) {
+    // Explicit reset retains its unconfigured fallback; no unrelated
+    // completed default is opened or changed while returning to setup.
+    let applying_reset = app_reset::pending(data_dir);
+    let selection = app_reset::apply_pending(data_dir)
+        .map_err(|_| anyhow::anyhow!("reset_incomplete"))
+        .and_then(|_| profile::selected_library(data_dir));
+    let mut setup = None;
+    let (catalogue, status) = match selection {
+        Ok(Some(selection)) => {
+            let opened: anyhow::Result<Option<Catalogue>> = (|| {
+                let preferences = Catalogue::probe_setup_preferences(&selection.path)?;
+                if preferences.is_some_and(|preferences| preferences["setupComplete"] == true) {
+                    Catalogue::open_bound(&selection.path, data_dir).map(Some)
+                } else {
+                    let candidate = validate_setup_candidate(selection.path.clone(), false)?;
+                    setup = Some(SetupState::new(data_dir, candidate, &selection.locale)?);
+                    Ok(None)
+                }
+            })();
+            let error = opened
+                .as_ref()
+                .err()
+                .map(|error| UiError::from_library_error(error).code);
+            (
+                opened.ok().flatten(),
+                LibraryStatus {
+                    state: if error.is_some() {
+                        "blocked"
+                    } else if setup.is_some() {
+                        "setup"
+                    } else {
+                        "ready"
+                    }
+                    .into(),
+                    path: Some(selection.path),
+                    default_path: None,
+                    error_code: error,
+                    locale: selection.locale,
+                    missing_credentials: vec![],
+                },
+            )
+        }
+        Ok(None) if !applying_reset => {
+            let default_path = profile::default_library_path(data_dir).ok();
+            let opened = default_path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
+                .and_then(|path| validate_setup_candidate(path.clone(), false))
+                .and_then(|path| {
+                    if path.exists()
+                        && Catalogue::probe_setup_preferences(&path)?
+                            .is_some_and(|preferences| preferences["setupComplete"] == true)
+                    {
+                        Catalogue::open_bound(&path, data_dir).map(Some)
+                    } else {
+                        setup = Some(SetupState::new(data_dir, path, "en")?);
+                        Ok(None)
+                    }
+                });
+            let error = opened
+                .as_ref()
+                .err()
+                .map(|error| UiError::from_library_error(error).code);
+            let path = setup
+                .as_ref()
+                .and_then(|setup| setup.candidate().ok())
+                .or_else(|| default_path.clone());
+            let catalogue = opened.ok().flatten();
+            (
+                catalogue.clone(),
+                LibraryStatus {
+                    state: if error.is_some() {
+                        if default_path
+                            .as_ref()
+                            .is_some_and(|path| path.join(".nna/data/catalogue.sqlite3").is_file())
+                        {
+                            "blocked"
+                        } else {
+                            "unconfigured"
+                        }
+                    } else if catalogue.is_some() {
+                        "ready"
+                    } else {
+                        "setup"
+                    }
+                    .into(),
+                    path,
+                    default_path,
+                    error_code: error,
+                    locale: "en".into(),
+                    missing_credentials: vec![],
+                },
+            )
+        }
+        Ok(None) => (
+            None,
+            LibraryStatus {
+                state: "unconfigured".into(),
+                path: None,
+                default_path: None,
+                error_code: None,
+                locale: "en".into(),
+                missing_credentials: vec![],
+            },
+        ),
+        Err(error) => (
+            None,
+            LibraryStatus {
+                state: "blocked".into(),
+                path: profile::selected_library(data_dir)
+                    .ok()
+                    .flatten()
+                    .map(|selection| selection.path)
+                    .or_else(|| app_reset::pending_library(data_dir)),
+                default_path: None,
+                error_code: Some(UiError::from_error(error).code),
+                locale: "en".into(),
+                missing_credentials: vec![],
+            },
+        ),
+    };
+    (catalogue, status, setup)
+}
+
+/// Source changes and new sessions reevaluate automatic downloads.
+fn listen_for_source_changes(app: &tauri::App, storage: &Arc<StorageService>) {
+    let automatic_storage = storage.clone();
+    app.listen("nna:changed", move |event| {
+        let Ok(change) = serde_json::from_str::<ipc::Change>(event.payload()) else {
+            return;
+        };
+        if change.session_changed == Some(true) {
+            let storage = automatic_storage.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = storage.reevaluate_automatic().await;
+            });
+            return;
+        }
+        if change.scope != "catalogue" {
+            return;
+        }
+        let ids = change.product_ids.unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        let storage = automatic_storage.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = storage.source_products_changed(&ids).await;
+        });
+    });
+}
+
+/// Starts the workers once any installer has released the gate, syncs connected accounts
+/// and then watches the library for changes from other devices.
+fn spawn_startup_work(
+    app: &tauri::App,
+    catalogue: Catalogue,
+    storage: Arc<StorageService>,
+    stores: Arc<StoreService>,
+    ai_jobs: Arc<ai::jobs::AiJobs>,
+    unity: Arc<unity::UnityService>,
+    licenses: licenses::LicenseService,
+) {
+    let handle = app.handle().clone();
+    let startup_gate = handle.state::<NativeOperationGate>().0.clone();
+    tauri::async_runtime::spawn(async move {
+        // A failed installer releases this gate and startup work resumes normally.
+        let startup_permit = startup_gate.clone().read_owned().await;
+        let mut previous = catalogue.change_domains().unwrap_or((0, 0, 0));
+        let setup_was_complete = catalogue
+            .get("preferences", "app")
+            .ok()
+            .flatten()
+            .is_some_and(|preferences| preferences["setupComplete"] == true);
+        if storage.start(handle.clone()).await.is_err() {
+            let _ = handle.emit("nna:changed", crate::ipc::Change::scope("recovery"));
+        }
+        // Explicit login/sync jobs need the workers even when isolated diagnostics
+        // suppress automatic startup scans.
+        let _ = stores.start(handle.clone()).await;
+        let _ = ai_jobs.start(&handle).await;
+        let _ = unity.start(&handle).await;
+        let _ = licenses.start(&handle).await;
+        drop(startup_permit);
+        #[cfg(debug_assertions)]
+        let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
+            && std::env::var("NNA_SKIP_STARTUP_SYNC").as_deref() == Ok("1");
+        #[cfg(not(debug_assertions))]
+        let skip_startup_sync = false;
+        if !skip_startup_sync && setup_was_complete {
+            // Native local state renders before authenticated network work.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _sync_permit = startup_gate.read_owned().await;
+            let _ = sync_connected_accounts(&handle, &catalogue, &stores).await;
+        }
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if catalogue.check_library_available().is_err() {
+                // Never continue writing after a surfaced loss of the NAS lock handle.
+                handle.exit(1);
+                break;
+            }
+            if let Ok(revisions) = catalogue.change_domains() {
+                if revisions.1 != previous.1 {
+                    changed(&handle, "products");
+                }
+                if revisions.2 != previous.2 {
+                    changed(&handle, "collections");
+                }
+                if revisions.0 != previous.0 {
+                    changed(&handle, "state");
+                }
+                previous = revisions;
+            }
+        }
+    });
 }
