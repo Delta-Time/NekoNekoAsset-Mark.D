@@ -35,6 +35,95 @@ fn status_filter_survives_every_sort_order() {
 }
 
 #[test]
+fn undated_free_downloads_sort_after_every_date_by_their_free_history_order() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let acquired = |product_id: &str, source: &str, fields: Value| {
+        product(&c, product_id);
+        let id = format!("a:{source}:{product_id}");
+        let mut row = json!({"id":id,"productId":product_id,"accountId":"a","source":source});
+        row.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        c.put("acquisition", &id, row).unwrap();
+    };
+    acquired(
+        "dated-old",
+        "purchase",
+        json!({"acquiredDateText":"2026/09/01"}),
+    );
+    acquired(
+        "dated-new",
+        "purchase",
+        json!({"acquiredDateText":"2026/10/01"}),
+    );
+    // One pass orders by position, newest first; a later pass sorts after it.
+    let order = |pass: &str, position: u64| format!("{pass}{:012}", 999_999_999_999 - position);
+    acquired(
+        "free-page-2",
+        "free",
+        json!({"freeHistoryOrder":order("20261101000000", 1000)}),
+    );
+    acquired(
+        "free-page-1",
+        "free",
+        json!({"freeHistoryOrder":order("20261101000000", 0)}),
+    );
+    acquired(
+        "free-next-pass",
+        "free",
+        json!({"freeHistoryOrder":order("20261102000000", 7)}),
+    );
+    // A date wins over a free-history order on the same product.
+    acquired(
+        "bought-too",
+        "free",
+        json!({"freeHistoryOrder":order("20261103000000", 0)}),
+    );
+    acquired(
+        "bought-too",
+        "purchase",
+        json!({"acquiredDateText":"2026/09/15"}),
+    );
+    product(&c, "unknown");
+    for (accounts, last) in [(json!(null), vec!["unknown"]), (json!(["a"]), vec![])] {
+        let ids = |direction: &str| {
+            c.command(
+                "query",
+                json!({"sort":"acquired","direction":direction,"accountIds":accounts}),
+            )
+            .unwrap()["matchedIds"]
+                .clone()
+        };
+        let expected = |ids: &[&str]| json!([ids, &last[..]].concat());
+        assert_eq!(
+            ids("desc"),
+            expected(&[
+                "dated-new",
+                "bought-too",
+                "dated-old",
+                "free-next-pass",
+                "free-page-1",
+                "free-page-2"
+            ])
+        );
+        assert_eq!(
+            ids("asc"),
+            expected(&[
+                "dated-old",
+                "bought-too",
+                "dated-new",
+                "free-page-2",
+                "free-page-1",
+                "free-next-pass"
+            ])
+        );
+    }
+    // Nothing is shown as a date.
+    assert_eq!(projection(&c, "free-page-1")["acquired"], "");
+}
+
+#[test]
 fn summary_status_progress_updates_leave_search_indexes_intact() {
     let f = Fixture::new();
     let c = f.open();

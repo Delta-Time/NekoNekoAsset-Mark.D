@@ -388,13 +388,16 @@ pub(super) fn query(
         };
     let predicate = conditions.join(" AND ");
     // Group original currencies; values in different currencies are not comparable.
-    // Existing BOOTH projections predate priceCurrency and remain JPY.
-    let currency_order = if sort == "price" {
-        "p.currency ASC,"
+    // Existing BOOTH projections predate priceCurrency and remain JPY. Free-history
+    // orders (`~`) follow the dates in either direction.
+    let group_order = if sort == "price" {
+        "p.currency ASC,".to_owned()
+    } else if order == acquired_order {
+        format!("substr({order},1,1)='~' ASC,")
     } else {
-        ""
+        String::new()
     };
-    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{currency_order}{order} {dir},p.id ASC");
+    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{group_order}{order} {dir},p.id ASC");
     let mut stmt = conn.prepare(&sql)?;
     let normal_ids = stmt
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {

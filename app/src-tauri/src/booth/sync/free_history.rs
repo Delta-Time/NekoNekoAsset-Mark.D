@@ -60,6 +60,67 @@ pub(super) fn remember_free_history(
     }
 }
 
+/// Where a free-history list page puts each row. BOOTH lists the newest download first,
+/// page after page, and shows no dates.
+pub(super) fn free_history_positions(page: &parser::Page) -> Vec<(String, u64)> {
+    let number = (page.source == "free" && !page.is_detail)
+        .then(|| safety::route(&page.route, "free").ok())
+        .flatten()
+        .and_then(|url| {
+            url.query_pairs()
+                .find(|(key, _)| key == "page")
+                .and_then(|(_, value)| value.parse::<u64>().ok())
+        });
+    let Some(number) = number.filter(|number| *number > 0) else {
+        return vec![];
+    };
+    page.rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            (
+                row.source_record_id.clone(),
+                (number - 1) * 1000 + index as u64,
+            )
+        })
+        .collect()
+}
+
+/// A sort key for an undated free download, kept from the pass that first listed it: a
+/// later pass sorts after an earlier one, and within one pass BOOTH's newest-first
+/// position decides. Larger is newer.
+pub(super) fn free_history_order(started_at: &str, position: u64) -> Option<String> {
+    let started = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    Some(format!(
+        "{}{:012}",
+        started.with_timezone(&chrono::Utc).format("%Y%m%d%H%M%S"),
+        999_999_999_999u64.checked_sub(position)?
+    ))
+}
+
+/// Gives each free acquisition a pass listed its order, unless it has one already. Returns
+/// the products whose acquisitions changed.
+pub(super) fn stage_free_orders(
+    batch: &mut crate::booth::RecordBatch<'_>,
+    orders: &BTreeMap<String, String>,
+) -> Result<BTreeSet<String>> {
+    let mut products = BTreeSet::new();
+    for (id, order) in orders {
+        let Some(mut acquisition) = batch.get("acquisition", id)? else {
+            continue;
+        };
+        if acquisition["source"] != "free" || !acquisition["freeHistoryOrder"].is_null() {
+            continue;
+        }
+        acquisition["freeHistoryOrder"] = json!(order);
+        if let Some(product) = acquisition["productId"].as_str() {
+            products.insert(product.to_owned());
+        }
+        batch.stage("acquisition", id, acquisition)?;
+    }
+    Ok(products)
+}
+
 pub(super) fn augment_free_row(row: &mut parser::Row, evidence: &free_item::Evidence) {
     if row.product_id.as_deref() == Some(evidence.product_id.as_str()) {
         row.manifest_complete = false;

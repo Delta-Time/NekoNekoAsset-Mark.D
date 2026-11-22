@@ -3876,6 +3876,92 @@ fn free_history_witness_and_augmented_rows_preserve_original_acquisition_facts()
     assert_eq!(eligible_free_rows(&rejected).count(), 0);
 }
 #[test]
+fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {
+    let path = std::env::temp_dir().join(format!("booth-free-order-{}", uuid::Uuid::new_v4()));
+    let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
+    let service = BoothService::new(catalogue.clone()).unwrap();
+    let row = |id: &str| parser::Row {
+        source_record_id: format!("free:{id}"),
+        product_id: Some(id.into()),
+        name: Some("Authored free item".into()),
+        ..parser::Row::default()
+    };
+    let page = |number: u32, ids: &[&str]| parser::Page {
+        route: format!("/library/free_downloads?page={number}"),
+        rows: ids.iter().map(|id| row(id)).collect(),
+        ..free_history_page()
+    };
+    // BOOTH lists the newest download first, page after page.
+    let positions: Vec<_> = [page(1, &["900002", "900001"]), page(2, &["900003"])]
+        .iter()
+        .flat_map(free_history_positions)
+        .collect();
+    assert_eq!(
+        positions,
+        [
+            ("free:900002".to_owned(), 0),
+            ("free:900001".to_owned(), 1),
+            ("free:900003".to_owned(), 1000)
+        ]
+    );
+    // An item's own page or another list has no place in the free history.
+    let detail = parser::Page {
+        is_detail: true,
+        ..page(1, &["900001"])
+    };
+    let library = parser::Page {
+        source: "library".into(),
+        route: "/library?page=1".into(),
+        ..page(1, &["900001"])
+    };
+    assert!(free_history_positions(&detail).is_empty());
+    assert!(free_history_positions(&library).is_empty());
+    let mut orders: BTreeMap<_, _> = positions
+        .iter()
+        .map(|(record, position)| {
+            let order = free_history_order("2026-11-01T09:00:00.123+09:00", *position).unwrap();
+            (format!("a:{record}"), order)
+        })
+        .collect();
+    assert!(orders["a:free:900002"] > orders["a:free:900001"]);
+    assert!(orders["a:free:900001"] > orders["a:free:900003"]);
+    // A later pass sorts after everything an earlier one listed, wherever its rows are.
+    assert!(free_history_order("2026-11-02T00:00:00Z", 5000).unwrap() > orders["a:free:900002"]);
+    for id in ["900001", "900002", "900003"] {
+        let acquisition = format!("a:free:{id}");
+        catalogue.put("acquisition", &acquisition, json!({"id":acquisition,"sourceRecordId":format!("free:{id}"),"productId":id,"accountId":"a","source":"free","variantIds":[]})).unwrap();
+    }
+    // An order once given stays; a purchase or a record that does not exist gets none.
+    let kept = "20261020000000999999999999";
+    catalogue.put("acquisition","a:free:900003",json!({"id":"a:free:900003","sourceRecordId":"free:900003","productId":"900003","accountId":"a","source":"free","variantIds":[],"freeHistoryOrder":kept})).unwrap();
+    catalogue.put("acquisition","a:purchase:900001",json!({"id":"a:purchase:900001","productId":"900001","accountId":"a","source":"purchase","variantIds":[]})).unwrap();
+    orders.insert("a:purchase:900001".into(), kept.into());
+    orders.insert("a:free:900009".into(), kept.into());
+    let mut batch = crate::booth::RecordBatch::new(&catalogue);
+    assert_eq!(
+        stage_free_orders(&mut batch, &orders).unwrap(),
+        BTreeSet::from(["900001".to_owned(), "900002".to_owned()])
+    );
+    batch.commit().unwrap();
+    let order =
+        |id: &str| catalogue.get("acquisition", id).unwrap().unwrap()["freeHistoryOrder"].clone();
+    assert_eq!(order("a:free:900002"), json!(orders["a:free:900002"]));
+    assert_eq!(order("a:free:900003"), json!(kept));
+    assert!(order("a:purchase:900001").is_null());
+    // The next observation of the row rebuilds the record and keeps its order.
+    service
+        .record_row(
+            "a",
+            "free",
+            &row("900001"),
+            "https://booth.pm/ja/items/900001",
+            false,
+        )
+        .unwrap();
+    assert_eq!(order("a:free:900001"), json!(orders["a:free:900001"]));
+    let _ = std::fs::remove_dir_all(path);
+}
+#[test]
 fn current_free_checkpoint_roundtrips_and_does_not_upgrade_missing_version() {
     assert_eq!(FREE_ITEM_ADAPTER_VERSION, 3);
     let checkpoint = Checkpoint::fresh("synthetic", "free", "full").unwrap();

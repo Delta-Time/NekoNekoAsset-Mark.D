@@ -61,9 +61,12 @@ pub(super) fn normalize_provenance(acquisitions: &[Value]) -> Vec<Value> {
                 .into_iter()
                 .find_map(|field| nonempty(&raw[field]))
                 .unwrap_or("");
+            // An undated free download sorts by its place in the free history, after
+            // every date in either direction (`~` follows digits).
             let key = ["acquiredAt", "acquired", "acquiredDateText"]
                 .into_iter()
-                .find_map(|field| nonempty(&raw[field]).and_then(date_key));
+                .find_map(|field| nonempty(&raw[field]).and_then(date_key))
+                .or_else(|| nonempty(&raw["freeHistoryOrder"]).map(|order| format!("~{order}")));
             row["acquiredDisplay"] = json!(display);
             row["acquiredSortKey"] = json!(key);
             let paid = paid_observation(raw);
@@ -261,10 +264,11 @@ fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Optio
     let fallback_key = fallback.and_then(date_key);
     let (key, display) = match (earliest, fallback_key.as_deref()) {
         (Some((key, _)), Some(other)) if other < key => (Some(other), fallback.unwrap()),
-        (Some((key, display)), _) => (Some(key), display),
+        (Some((key, display)), _) if !key.starts_with('~') => (Some(key), display),
         (None, Some(key)) => (Some(key), fallback.unwrap()),
-        (None, None) => (
-            None,
+        // No date: a free-history order still sorts, and nothing is shown as a date.
+        (order, _) => (
+            order.map(|(key, _)| key),
             rows.iter()
                 .find_map(|row| nonempty(&row["acquiredDisplay"]))
                 .or(fallback)

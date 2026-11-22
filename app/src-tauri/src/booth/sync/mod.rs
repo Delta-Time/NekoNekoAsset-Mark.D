@@ -22,8 +22,8 @@ use checkpoints::{
     source_has_incomplete_product, Checkpoint, SourceScan,
 };
 use free_history::{
-    augment_free_row, eligible_free_rows, remember_free_history, saved_free_history,
-    settled_free_absence,
+    augment_free_row, eligible_free_rows, free_history_order, free_history_positions,
+    remember_free_history, saved_free_history, settled_free_absence, stage_free_orders,
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use publication::{
@@ -690,6 +690,7 @@ impl BoothService {
                     .source_closures
                     .extend(collected.source_closures);
                 publications.final_records.extend(collected.final_records);
+                publications.free_orders.extend(collected.free_orders);
                 publications
                     .incomplete_scopes
                     .extend(collected.incomplete_scopes);
@@ -1770,6 +1771,7 @@ impl BoothService {
         // Assets and rows left as they were. They no longer hold the job back, but an
         // unbound row still keeps this source's membership uncertified.
         let (mut left_products, mut unresolved_rows) = (BTreeSet::new(), 0);
+        let pass_started = checkpoint.read_from();
         for (index, journal_id) in checkpoint.journal_ids.iter().enumerate() {
             if index % 16 == 0 {
                 // Scanners and public metadata share one try_join task. Let the
@@ -1785,6 +1787,18 @@ impl BoothService {
                 .get("checkpoint", journal_id)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
+            // A row listed twice keeps its older place.
+            for (record, position) in free_history_positions(&page) {
+                if let Some(order) = free_history_order(&pass_started, position) {
+                    let saved = publications
+                        .free_orders
+                        .entry(format!("{account}:{record}"))
+                        .or_insert_with(|| order.clone());
+                    if order < *saved {
+                        *saved = order;
+                    }
+                }
+            }
             // A row read in updated order joins through its own record. If the App went on to
             // read every page, those pages hold it already, so such a page counts for nothing.
             if safety::updated_order(&page.route) {
@@ -2938,7 +2952,9 @@ impl BoothService {
             for (kind, id, value) in &final_records {
                 batch.stage(kind, id, value.clone())?;
             }
+            let ordered = stage_free_orders(&mut batch, &publications.free_orders)?;
             if batch.try_commit()?.is_some() {
+                source_changed(app, ordered);
                 return Ok(());
             }
         }
@@ -3447,6 +3463,7 @@ impl BoothService {
                     "paidAmountText",
                     "orderId",
                     "observedProductId",
+                    "freeHistoryOrder",
                 ] {
                     if acquisition[key]
                         .as_str()
