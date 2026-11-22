@@ -1555,45 +1555,8 @@ impl GumroadService {
         if let Some(limit) = page_limit {
             job["verification"] = json!({"pageLimit":limit,"sourcePages":{"unarchived":0,"archived":0},"bundlePages":0,"capped":false});
         }
-        let selected: Option<BTreeSet<String>> = job["args"]["productIds"].as_array().map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        });
-        let mut selected_purchases: BTreeSet<String> = if let Some(ids) = &selected {
-            self.inner
-                .catalogue
-                .list("acquisition")?
-                .into_iter()
-                .filter(|row| {
-                    row["accountId"] == account
-                        && row["store"] == "Gumroad"
-                        && row["productId"].as_str().is_some_and(|id| ids.contains(id))
-                })
-                .filter_map(|row| row["purchaseId"].as_str().map(str::to_owned))
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
-        let selected_bundles: BTreeSet<String> = self
-            .inner
-            .catalogue
-            .list("acquisition")?
-            .into_iter()
-            .filter(|row| {
-                row["accountId"] == account
-                    && row["store"] == "Gumroad"
-                    && selected.as_ref().is_some_and(|ids| {
-                        row["productId"].as_str().is_some_and(|id| ids.contains(id))
-                    })
-            })
-            .filter_map(|row| row["sourceBundleId"].as_str().map(str::to_owned))
-            .collect();
-        ensure!(
-            selected.is_none() || !selected_purchases.is_empty() || !selected_bundles.is_empty(),
-            "ENTITLEMENT_UNAVAILABLE"
-        );
+        let (selected, mut selected_purchases, selected_bundles) =
+            self.library_selection(job, account)?;
         let heads = [first, self.library(client, 1, true).await?];
         let buyer_identity = heads[0].buyer_identity.clone();
         ensure!(
@@ -2173,6 +2136,54 @@ impl GumroadService {
         }
         ensure!(finalized, "CONCURRENT_UPDATE");
         Ok(())
+    }
+
+    /// The products an update job selected, and the purchases and bundles that hold them.
+    fn library_selection(
+        &self,
+        job: &Value,
+        account: &str,
+    ) -> Result<(Option<BTreeSet<String>>, BTreeSet<String>, BTreeSet<String>)> {
+        let selected: Option<BTreeSet<String>> = job["args"]["productIds"].as_array().map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        });
+        let selected_purchases: BTreeSet<String> = if let Some(ids) = &selected {
+            self.inner
+                .catalogue
+                .list("acquisition")?
+                .into_iter()
+                .filter(|row| {
+                    row["accountId"] == account
+                        && row["store"] == "Gumroad"
+                        && row["productId"].as_str().is_some_and(|id| ids.contains(id))
+                })
+                .filter_map(|row| row["purchaseId"].as_str().map(str::to_owned))
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let selected_bundles: BTreeSet<String> = self
+            .inner
+            .catalogue
+            .list("acquisition")?
+            .into_iter()
+            .filter(|row| {
+                row["accountId"] == account
+                    && row["store"] == "Gumroad"
+                    && selected.as_ref().is_some_and(|ids| {
+                        row["productId"].as_str().is_some_and(|id| ids.contains(id))
+                    })
+            })
+            .filter_map(|row| row["sourceBundleId"].as_str().map(str::to_owned))
+            .collect();
+        ensure!(
+            selected.is_none() || !selected_purchases.is_empty() || !selected_bundles.is_empty(),
+            "ENTITLEMENT_UNAVAILABLE"
+        );
+        Ok((selected, selected_purchases, selected_bundles))
     }
     fn set_collection_metrics(
         &self,
