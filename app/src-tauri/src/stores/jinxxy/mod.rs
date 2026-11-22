@@ -2051,203 +2051,221 @@ impl JinxxyService {
                 );
                 self.enqueue(app, &account_arg(&args)?, "jinxxySync", None)
             }
-            "cancel_sync" | "retry_sync" => {
-                let id = args["jobId"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?;
-                let mut job = self
-                    .inner
-                    .catalogue
+            "cancel_sync" | "retry_sync" => self.cancel_or_retry(app, action, &args).await,
+            "account_remove" | "account_logout" => {
+                self.disconnect_account(app, action, &args).await
+            }
+            "update_products" => self.update_selected(app, &args),
+            _ => anyhow::bail!("UNKNOWN_STORE_ACTION"),
+        }
+    }
+
+    /// Cancels a queued or running job, or runs a stopped one again.
+    async fn cancel_or_retry(&self, app: &AppHandle, action: &str, args: &Value) -> Result<Value> {
+        let id = args["jobId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?;
+        let mut job = self
+            .inner
+            .catalogue
+            .get("job", id)?
+            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+        ensure!(job["store"] == "Jinxxy", "STORE_ACCOUNT_MISMATCH");
+        if action == "cancel_sync" {
+            let mut cancelled_queued = false;
+            for attempt in 0..4 {
+                let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
+                let mut latest = batch
                     .get("job", id)?
                     .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                ensure!(job["store"] == "Jinxxy", "STORE_ACCOUNT_MISMATCH");
-                if action == "cancel_sync" {
-                    let mut cancelled_queued = false;
-                    for attempt in 0..4 {
-                        let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
-                        let mut latest = batch
-                            .get("job", id)?
-                            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
-                            break;
-                        }
-                        let queued = latest["state"] == "queued";
-                        latest["cancelRequested"] = json!(true);
-                        latest["updatedAt"] = json!(Utc::now().to_rfc3339());
-                        if queued {
-                            latest["state"] = json!("cancelled");
-                        }
-                        batch.stage("job", id, latest.clone())?;
-                        if batch.try_commit()?.is_some() {
-                            job = latest;
-                            cancelled_queued = queued;
-                            break;
-                        }
-                        ensure!(attempt < 3, "CONCURRENT_UPDATE");
-                    }
-                    if cancelled_queued {
-                        self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?;
-                    }
-                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
-                    if cancelled_queued && job["type"] == "jinxxyLogin" {
-                        let account = account_arg(&job)?;
-                        session::finish_login(app, StoreProvider::Jinxxy, &account, false).await?;
-                        session::discard_unverified_account(
-                            &self.inner.catalogue,
-                            StoreProvider::Jinxxy,
-                            &account,
-                        )?;
-                        let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
-                    }
-                } else {
-                    self.ensure_retryable(&job)?;
-                    if job["type"] == "jinxxyLogin" {
-                        let account = account_arg(&job)?;
-                        self.clear_downloads(&account, None);
-                        session::window(
-                            app,
-                            &self.inner.catalogue.device_dir(),
-                            StoreProvider::Jinxxy,
-                            &account,
-                            inventory_page_url(1),
-                            true,
-                        )
-                        .await?;
-                    }
-                    self.requeue_job(&job)?;
-                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
+                if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                    break;
                 }
-                super::api::answer(super::api::StoreJob {
-                    job_id: id.to_owned(),
-                })
+                let queued = latest["state"] == "queued";
+                latest["cancelRequested"] = json!(true);
+                latest["updatedAt"] = json!(Utc::now().to_rfc3339());
+                if queued {
+                    latest["state"] = json!("cancelled");
+                }
+                batch.stage("job", id, latest.clone())?;
+                if batch.try_commit()?.is_some() {
+                    job = latest;
+                    cancelled_queued = queued;
+                    break;
+                }
+                ensure!(attempt < 3, "CONCURRENT_UPDATE");
             }
-            "account_remove" | "account_logout" => {
-                let account = account_arg(&args)?;
-                self.account(&account)?;
-                let remove_products = if action == "account_remove" {
-                    Some(
-                        args["removeProducts"]
-                            .as_bool()
-                            .ok_or_else(|| anyhow::anyhow!("INVALID_ACCOUNT_ACTION"))?,
-                    )
-                } else {
-                    None
-                };
-                ensure!(
-                    !self
-                        .inner
-                        .catalogue
-                        .list("job")?
-                        .iter()
-                        .any(|job| job["accountId"] == account
-                            && matches!(job["state"].as_str(), Some("queued" | "running"))),
-                    "ACCOUNT_BUSY"
-                );
+            if cancelled_queued {
+                self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?;
+            }
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
+            if cancelled_queued && job["type"] == "jinxxyLogin" {
+                let account = account_arg(&job)?;
+                session::finish_login(app, StoreProvider::Jinxxy, &account, false).await?;
+                session::discard_unverified_account(
+                    &self.inner.catalogue,
+                    StoreProvider::Jinxxy,
+                    &account,
+                )?;
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
+            }
+        } else {
+            self.ensure_retryable(&job)?;
+            if job["type"] == "jinxxyLogin" {
+                let account = account_arg(&job)?;
                 self.clear_downloads(&account, None);
-                let window = session::window(
+                session::window(
                     app,
                     &self.inner.catalogue.device_dir(),
                     StoreProvider::Jinxxy,
                     &account,
-                    Url::parse("https://jinxxy.com/my/inventory").unwrap(),
-                    false,
+                    inventory_page_url(1),
+                    true,
                 )
                 .await?;
-                session::forget(
-                    &self.inner.catalogue.device_dir(),
-                    StoreProvider::Jinxxy,
-                    &account,
-                )?;
-                session::disconnect(window).await?;
-                if let Some(remove_products) = remove_products {
-                    let result = self
+            }
+            self.requeue_job(&job)?;
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
+        }
+        super::api::answer(super::api::StoreJob {
+            job_id: id.to_owned(),
+        })
+    }
+
+    /// Logs an account out, or removes it with or without its products.
+    async fn disconnect_account(
+        &self,
+        app: &AppHandle,
+        action: &str,
+        args: &Value,
+    ) -> Result<Value> {
+        let account = account_arg(args)?;
+        self.account(&account)?;
+        let remove_products = if action == "account_remove" {
+            Some(
+                args["removeProducts"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_ACCOUNT_ACTION"))?,
+            )
+        } else {
+            None
+        };
+        ensure!(
+            !self
+                .inner
+                .catalogue
+                .list("job")?
+                .iter()
+                .any(|job| job["accountId"] == account
+                    && matches!(job["state"].as_str(), Some("queued" | "running"))),
+            "ACCOUNT_BUSY"
+        );
+        self.clear_downloads(&account, None);
+        let window = session::window(
+            app,
+            &self.inner.catalogue.device_dir(),
+            StoreProvider::Jinxxy,
+            &account,
+            Url::parse("https://jinxxy.com/my/inventory").unwrap(),
+            false,
+        )
+        .await?;
+        session::forget(
+            &self.inner.catalogue.device_dir(),
+            StoreProvider::Jinxxy,
+            &account,
+        )?;
+        session::disconnect(window).await?;
+        if let Some(remove_products) = remove_products {
+            let result = self
+                .inner
+                .catalogue
+                .remove_account(&account, remove_products)?;
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
+            return Ok(result);
+        }
+        let mut record = self.account(&account)?;
+        if self.inner.catalogue.library_root().is_none() {
+            record["status"] = json!("disconnected");
+            record["state"] = json!("disconnected");
+            record["identityVerified"] = json!(false);
+            record["disconnected"] = json!(true);
+            self.inner.catalogue.put("account", &account, record)?;
+        }
+        self.clear_downloads(&account, None);
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
+        super::api::answer(super::api::StoreAccount {
+            account_id: account,
+        })
+    }
+
+    /// One update job per account that holds the selected products.
+    fn update_selected(&self, app: &AppHandle, args: &Value) -> Result<Value> {
+        let ids = args["productIds"]
+            .as_array()
+            .or_else(|| args["ids"].as_array())
+            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
+        ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
+        let selected: BTreeSet<_> = ids
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .filter(|id| id.starts_with("jinxxy:"))
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
+            })
+            .collect::<Result<_>>()?;
+        let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut matched = BTreeSet::new();
+        let scoped_account = args
+            .get("accountId")
+            .map(|_| account_arg(args))
+            .transpose()?;
+        if let Some(account) = scoped_account.as_ref() {
+            ensure!(
+                bound_account(&self.account(account)?).is_some(),
+                "ACCOUNT_UNAVAILABLE"
+            );
+        }
+        for row in self.inner.catalogue.list("entitlement")? {
+            let (Some(product), Some(account)) =
+                (row["productId"].as_str(), row["accountId"].as_str())
+            else {
+                continue;
+            };
+            if row["provider"] == "jinxxy" && selected.contains(product) {
+                if scoped_account
+                    .as_ref()
+                    .is_some_and(|scope| scope != account)
+                    || !self
                         .inner
                         .catalogue
-                        .remove_account(&account, remove_products)?;
-                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
-                    return Ok(result);
+                        .get("account", account)?
+                        .is_some_and(|record| {
+                            bound_account(&record).is_some()
+                                && super::has_local_session(&self.inner.catalogue, &record)
+                        })
+                {
+                    continue;
                 }
-                let mut record = self.account(&account)?;
-                if self.inner.catalogue.library_root().is_none() {
-                    record["status"] = json!("disconnected");
-                    record["state"] = json!("disconnected");
-                    record["identityVerified"] = json!(false);
-                    record["disconnected"] = json!(true);
-                    self.inner.catalogue.put("account", &account, record)?;
-                }
-                self.clear_downloads(&account, None);
-                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
-                super::api::answer(super::api::StoreAccount {
-                    account_id: account,
-                })
+                matched.insert(product.to_owned());
+                accounts
+                    .entry(account.to_owned())
+                    .or_default()
+                    .insert(product.to_owned());
             }
-            "update_products" => {
-                let ids = args["productIds"]
-                    .as_array()
-                    .or_else(|| args["ids"].as_array())
-                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
-                ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
-                let selected: BTreeSet<_> = ids
-                    .iter()
-                    .map(|id| {
-                        id.as_str()
-                            .filter(|id| id.starts_with("jinxxy:"))
-                            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
-                    })
-                    .collect::<Result<_>>()?;
-                let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-                let mut matched = BTreeSet::new();
-                let scoped_account = args
-                    .get("accountId")
-                    .map(|_| account_arg(&args))
-                    .transpose()?;
-                if let Some(account) = scoped_account.as_ref() {
-                    ensure!(
-                        bound_account(&self.account(account)?).is_some(),
-                        "ACCOUNT_UNAVAILABLE"
-                    );
-                }
-                for row in self.inner.catalogue.list("entitlement")? {
-                    let (Some(product), Some(account)) =
-                        (row["productId"].as_str(), row["accountId"].as_str())
-                    else {
-                        continue;
-                    };
-                    if row["provider"] == "jinxxy" && selected.contains(product) {
-                        if scoped_account
-                            .as_ref()
-                            .is_some_and(|scope| scope != account)
-                            || !self.inner.catalogue.get("account", account)?.is_some_and(
-                                |record| {
-                                    bound_account(&record).is_some()
-                                        && super::has_local_session(&self.inner.catalogue, &record)
-                                },
-                            )
-                        {
-                            continue;
-                        }
-                        matched.insert(product.to_owned());
-                        accounts
-                            .entry(account.to_owned())
-                            .or_default()
-                            .insert(product.to_owned());
-                    }
-                }
-                ensure!(matched.len() == selected.len(), "ACCOUNT_UNAVAILABLE");
-                let mut jobs = Vec::new();
-                for (account, products) in accounts {
-                    jobs.push(self.enqueue(
-                        app,
-                        &account,
-                        "jinxxyUpdate",
-                        Some(products.into_iter().map(Value::String).collect()),
-                    )?);
-                }
-                let job_ids: Vec<_> = jobs.iter().map(|job| job["jobId"].clone()).collect();
-                super::api::StoreJobs::of(job_ids)
-            }
-            _ => anyhow::bail!("UNKNOWN_STORE_ACTION"),
         }
+        ensure!(matched.len() == selected.len(), "ACCOUNT_UNAVAILABLE");
+        let mut jobs = Vec::new();
+        for (account, products) in accounts {
+            jobs.push(self.enqueue(
+                app,
+                &account,
+                "jinxxyUpdate",
+                Some(products.into_iter().map(Value::String).collect()),
+            )?);
+        }
+        let job_ids: Vec<_> = jobs.iter().map(|job| job["jobId"].clone()).collect();
+        super::api::StoreJobs::of(job_ids)
     }
     fn enqueue(
         &self,
