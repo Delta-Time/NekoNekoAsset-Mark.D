@@ -118,6 +118,7 @@ Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
   internal or private files), the third-party notices check and
   `scripts/test_release.py`;
 - `biome ci` (formatting and lint of `app/`) and `pnpm build` (`tsc` and Vite);
+- `pnpm check`, the UI logic checks in `app/checks`;
 - `cargo fmt --check`, and clippy with `-D warnings`, which fails any production
   function over 250 code lines (`app/src-tauri/clippy.toml`);
 - the Rust library tests;

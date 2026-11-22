@@ -58,6 +58,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run frontend checks
+        working-directory: app
+        run: |
+          pnpm check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check Rust format and lint
         run: |
           cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
