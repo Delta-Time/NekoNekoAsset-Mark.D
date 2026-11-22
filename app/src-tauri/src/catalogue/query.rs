@@ -453,16 +453,6 @@ fn list_sql(
     local_product: &str,
     conditions: &[String],
 ) -> String {
-    let acquired_order = if account_ids.is_none() {
-        "p.acquired".to_owned()
-    } else {
-        let account_order = if account_placeholders.is_empty() {
-            "NULL".to_owned()
-        } else {
-            format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(p.provenance) a WHERE json_extract(a.value,'$.accountId') IN({}))",account_placeholders.join(","))
-        };
-        format!("CASE WHEN {local_product} THEN p.acquired ELSE {account_order} END")
-    };
     let price_order = if account_ids.is_none() {
         "p.price".to_owned()
     } else {
@@ -472,12 +462,6 @@ fn list_sql(
             format!("a.value IN({})", account_placeholders.join(","))
         };
         format!("CASE WHEN {local_product} THEN p.price WHEN json_type(p.prices)='array' THEN (SELECT CASE WHEN COUNT(*)=1 THEN MAX(json_extract(v.value,'$.price')) END FROM json_each(p.prices) v WHERE EXISTS(SELECT 1 FROM json_each(v.value,'$.accountIds') a WHERE {scope})) ELSE p.price END")
-    };
-    let order = match sort {
-        "title" => "p.title",
-        "price" => &price_order,
-        "status" => "NULLIF(p.status,'unknown')",
-        _ => &acquired_order,
     };
     let dir =
         if args
@@ -491,17 +475,21 @@ fn list_sql(
             "ASC"
         };
     let predicate = conditions.join(" AND ");
-    // Group original currencies; values in different currencies are not comparable.
-    // Existing BOOTH projections predate priceCurrency and remain JPY. Free-history
-    // orders (`~`) follow the dates in either direction.
-    let group_order = if sort == "price" {
-        "p.currency ASC,".to_owned()
-    } else if order == acquired_order {
-        format!("substr({order},1,1)='~' ASC,")
-    } else {
-        String::new()
+    let empty_last = |order: &str, group: &str| {
+        format!("({order} IS NULL OR {order}='') ASC,{group}{order} {dir}")
     };
-    format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{group_order}{order} {dir},p.id ASC")
+    let order_by = match sort {
+        "title" => empty_last("p.title", ""),
+        // Group original currencies; values in different currencies are not comparable.
+        // Existing BOOTH projections predate priceCurrency and remain JPY.
+        "price" => empty_last(&price_order, "p.currency ASC,"),
+        "status" => empty_last("NULLIF(p.status,'unknown')", ""),
+        _ => acquisition::order_by(
+            &acquisition::sort_key_sql(account_ids.map(|_| account_placeholders), local_product),
+            dir,
+        ),
+    };
+    format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY {order_by},p.id ASC")
 }
 
 /// The requested page of products, scoped to the selected accounts; a list client gets only

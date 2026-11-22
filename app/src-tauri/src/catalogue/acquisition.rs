@@ -1,5 +1,46 @@
 //! Derived acquisition summaries. Raw provider records and identities stay intact.
+//!
+//! Acquisition-date order lives here. A sort key is a date from `date_key`, or for an
+//! undated free download `~` and its place in the free history (`freeHistoryOrder`, which
+//! BOOTH's sync gives it), sorting after every date. Each provenance row gets a key
+//! (`row_sort_key`), a product the earliest of its rows (`summarize`, stored in
+//! `products.acquired`), and the list orders by `order_by`.
 use super::*;
+
+/// Starts a key that is a place in the free history rather than a date (`~` follows digits).
+const FREE_HISTORY_PLACE: char = '~';
+
+/// The order key of one acquisition: its date, else its place in the free history.
+fn row_sort_key(raw: &Value) -> Option<String> {
+    ["acquiredAt", "acquired", "acquiredDateText"]
+        .into_iter()
+        .find_map(|field| nonempty(&raw[field]).and_then(date_key))
+        .or_else(|| {
+            nonempty(&raw["freeHistoryOrder"]).map(|order| format!("{FREE_HISTORY_PLACE}{order}"))
+        })
+}
+
+/// The SQL key the list orders products by: the stored product key, or for selected
+/// accounts the earliest key of their rows. A local product keeps its own key.
+pub(super) fn sort_key_sql(accounts: Option<&[String]>, local_product: &str) -> String {
+    let Some(placeholders) = accounts else {
+        return "p.acquired".to_owned();
+    };
+    let account_order = if placeholders.is_empty() {
+        "NULL".to_owned()
+    } else {
+        format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(p.provenance) a WHERE json_extract(a.value,'$.accountId') IN({}))",placeholders.join(","))
+    };
+    format!("CASE WHEN {local_product} THEN p.acquired ELSE {account_order} END")
+}
+
+/// The ORDER BY terms for a key: dates in `dir`, then free-history places in `dir`, then
+/// products with nothing known.
+pub(super) fn order_by(key: &str, dir: &str) -> String {
+    format!(
+        "({key} IS NULL OR {key}='') ASC,substr({key},1,1)='{FREE_HISTORY_PLACE}' ASC,{key} {dir}"
+    )
+}
 
 pub(super) fn date_key(value: &str) -> Option<String> {
     let value = value.trim();
@@ -61,14 +102,8 @@ pub(super) fn normalize_provenance(acquisitions: &[Value]) -> Vec<Value> {
                 .into_iter()
                 .find_map(|field| nonempty(&raw[field]))
                 .unwrap_or("");
-            // An undated free download sorts by its place in the free history, after
-            // every date in either direction (`~` follows digits).
-            let key = ["acquiredAt", "acquired", "acquiredDateText"]
-                .into_iter()
-                .find_map(|field| nonempty(&raw[field]).and_then(date_key))
-                .or_else(|| nonempty(&raw["freeHistoryOrder"]).map(|order| format!("~{order}")));
             row["acquiredDisplay"] = json!(display);
-            row["acquiredSortKey"] = json!(key);
+            row["acquiredSortKey"] = json!(row_sort_key(raw));
             let paid = paid_observation(raw);
             row["paidPrice"] = json!(paid.map(|(amount, _)| amount));
             row["paidCurrency"] = json!(paid.map(|(_, currency)| currency));
@@ -264,7 +299,7 @@ fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Optio
     let fallback_key = fallback.and_then(date_key);
     let (key, display) = match (earliest, fallback_key.as_deref()) {
         (Some((key, _)), Some(other)) if other < key => (Some(other), fallback.unwrap()),
-        (Some((key, display)), _) if !key.starts_with('~') => (Some(key), display),
+        (Some((key, display)), _) if !key.starts_with(FREE_HISTORY_PLACE) => (Some(key), display),
         (None, Some(key)) => (Some(key), fallback.unwrap()),
         // No date: a free-history order still sorts, and nothing is shown as a date.
         (order, _) => (
