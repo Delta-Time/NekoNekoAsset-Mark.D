@@ -2594,6 +2594,66 @@ fn parse_internal(
     let is_detail = path == "/orders" && url.path() != path;
     let doc = Html::parse_document(html);
     crate::support_trace::parser_language(&source, html_language(&doc));
+    recognize_page(&doc, &source, path, is_detail)?;
+    let main = doc
+        .select(&sel("main,[role='main']"))
+        .next()
+        .unwrap_or_else(|| doc.root_element());
+    let cards = product_cards(main, &source, is_detail);
+    let mut page = Page {
+        source: source.clone(),
+        route: format!(
+            "{}{}",
+            url.path(),
+            url.query().map(|q| format!("?{q}")).unwrap_or_default()
+        ),
+        rows: vec![],
+        next: vec![],
+        details: vec![],
+        terminal: false,
+        unresolved: 0,
+        fingerprint: String::new(),
+        is_detail,
+        ordering: ordering(&doc, &source, is_detail),
+        free_item: None,
+    };
+    let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
+    for (ordinal, card) in cards.iter().copied().enumerate() {
+        if source == "purchase" && !is_detail {
+            order_detail(&mut page, card);
+            continue;
+        }
+        read_card(
+            &mut page,
+            &mut occurrences,
+            card,
+            ordinal,
+            &cards,
+            &source,
+            is_detail,
+            &url,
+            route,
+            &mut diagnostic,
+            &mut structure,
+        );
+    }
+    read_pager(
+        &mut page, &doc, main, &url, path, &source, is_detail, &cards,
+    )?;
+    if source == "purchase" && is_detail {
+        trace_receipt(&mut page, &doc, &url);
+    }
+    page.details.sort();
+    page.details.dedup();
+    // Include actual file facts, never signing parameters, in restart-boundary evidence.
+    page.fingerprint = safety::hash(serde_json::to_vec(
+        &serde_json::json!({"rows":page.rows.iter().map(|r|(&r.source_record_id,&r.product_id,r.files.iter().map(|f|(&f.id,&f.variant_id,&f.revision,&f.name,f.size_bytes)).collect::<Vec<_>>())).collect::<Vec<_>>(),"next":page.next,"details":page.details,"terminal":page.terminal,"unresolved":page.unresolved,"ordering":page.ordering}),
+    )?);
+    Ok(page)
+}
+
+/// Rejects a signed-out, challenged or unrecognized page before anything is read from it.
+fn recognize_page(doc: &Html, source: &str, path: &str, is_detail: bool) -> Result<()> {
     // The site's anonymous OAuth page has no password/login form. Its explicit
     // signed-out marker must also reject an otherwise recognizable empty shelf.
     if doc
@@ -2624,7 +2684,7 @@ fn parse_internal(
             .join(" ")
     };
     let marker = is_detail
-        || match source.as_str() {
+        || match source {
             "library" => heading.contains("ライブラリ") || heading.contains("Library"),
             "purchase" => heading.contains("注文") || heading.contains("Order"),
             "gift" => heading.contains("ギフト") || heading.contains("Gift"),
@@ -2647,10 +2707,11 @@ fn parse_internal(
     if !marker {
         bail!("SOURCE_MARKER_UNKNOWN");
     }
-    let main = doc
-        .select(&sel("main,[role='main']"))
-        .next()
-        .unwrap_or_else(|| doc.root_element());
+    Ok(())
+}
+
+/// The page's product cards, or each product anchor's own repeated component.
+fn product_cards<'a>(main: ElementRef<'a>, source: &str, is_detail: bool) -> Vec<ElementRef<'a>> {
     let selector = if is_detail {
         ".sheet"
     } else if source == "purchase" {
@@ -2710,238 +2771,260 @@ fn parse_internal(
             }
         }
     }
-    let mut page = Page {
-        source: source.clone(),
-        route: format!(
-            "{}{}",
-            url.path(),
-            url.query().map(|q| format!("?{q}")).unwrap_or_default()
-        ),
-        rows: vec![],
-        next: vec![],
-        details: vec![],
-        terminal: false,
-        unresolved: 0,
-        fingerprint: String::new(),
-        is_detail,
-        ordering: ordering(&doc, &source, is_detail),
-        free_item: None,
+    cards
+}
+
+/// An order-list card names one order whose receipt is read next.
+fn order_detail(page: &mut Page, card: ElementRef<'_>) {
+    let mut ids: BTreeSet<_> = links(card).into_iter().filter_map(order_id).collect();
+    if let Some(id) = enclosing_order(card) {
+        ids.insert(id);
+    }
+    if ids.len() == 1 {
+        let id = ids.into_iter().next().unwrap();
+        page.details.push(format!("/orders/{id}"));
+    } else {
+        page.unresolved += 1;
+    }
+}
+
+/// One card's row: its product, files, record identity and acquisition date.
+fn read_card<'a>(
+    page: &mut Page,
+    occurrences: &mut BTreeMap<String, usize>,
+    card: ElementRef<'a>,
+    ordinal: usize,
+    cards: &[ElementRef<'a>],
+    source: &str,
+    is_detail: bool,
+    url: &url::Url,
+    route: &str,
+    diagnostic: &mut Option<&mut super::diagnostics::ManifestDiagnostics>,
+    structure: &mut Option<&mut FileStructureDiagnostics>,
+) {
+    let receipt = source == "purchase" && is_detail;
+    let raw_controls = raw_download_controls(card, receipt);
+    if is_detail && (raw_controls == 0 || omitted_notice_scope(card)) {
+        return;
+    }
+    let anchors = links(card);
+    let ids: BTreeSet<_> = anchors.iter().copied().filter_map(identity).collect();
+    let f = files(card, receipt);
+    let unavailable = unavailable(card);
+    // Do not inspect text of order summaries, physical goods, comments or contacts.
+    if is_detail && f.is_empty() && !unavailable {
+        unresolved_controls(page, raw_controls, url, ordinal);
+        return;
+    }
+    let product_id = if ids.len() == 1 {
+        ids.into_iter().next()
+    } else {
+        None
     };
-    let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
-    for (ordinal, card) in cards.iter().copied().enumerate() {
-        if source == "purchase" && !is_detail {
-            let mut ids: BTreeSet<_> = links(card).into_iter().filter_map(order_id).collect();
-            if let Some(id) = enclosing_order(card) {
-                ids.insert(id);
-            }
-            if ids.len() == 1 {
-                let id = ids.into_iter().next().unwrap();
-                page.details.push(format!("/orders/{id}"));
-            } else {
-                page.unresolved += 1;
-            }
-            continue;
-        }
-        let receipt = source == "purchase" && is_detail;
-        let raw_controls = raw_download_controls(card, receipt);
-        if is_detail && (raw_controls == 0 || omitted_notice_scope(card)) {
-            continue;
-        }
-        let anchors = links(card);
-        let ids: BTreeSet<_> = anchors.iter().copied().filter_map(identity).collect();
-        let f = files(card, receipt);
-        let unavailable = unavailable(card);
-        // Do not inspect text of order summaries, physical goods, comments or contacts.
-        if is_detail && f.is_empty() && !unavailable {
-            // Ignore unrelated receipt regions. Invalid digital candidates still
-            // prevent a complete traversal, without inspecting their body.
-            if raw_controls != 0 {
-                page.unresolved += 1;
-                page.rows.push(Row {
-                    source_record_id: format!("purchase:{}:{ordinal}", url.path()),
-                    order_id: url.path().strip_prefix("/orders/").map(str::to_owned),
-                    error_code: Some("DIGITAL_CONTROLS_UNRESOLVED".into()),
-                    ..Row::default()
-                });
-            }
-            continue;
-        }
-        let product_id = if ids.len() == 1 {
-            ids.into_iter().next()
-        } else {
-            None
-        };
-        let mut error_code = if product_id.is_none()
-            && unavailable
-            && f.is_empty()
-            && !numeric_identity_present(card)
-        {
+    let mut error_code =
+        if product_id.is_none() && unavailable && f.is_empty() && !numeric_identity_present(card) {
             Some("BOOTH_WITHHELD_PRODUCT_ID".to_owned())
         } else if product_id.is_none() {
             Some("PRODUCT_ID_UNRESOLVED".to_owned())
         } else {
             None
         };
-        if error_code.as_deref() == Some("PRODUCT_ID_UNRESOLVED") {
-            page.unresolved += 1;
-        }
-        let title = first_text(card,"[data-test='item-name'],.font-bold.text-16.break-all,.text-text-default.font-bold,b a.nav[href*='/items/']").or_else(||anchors.iter().copied().find(|a|product_id.is_some() && identity(*a)==product_id && !text(*a).is_empty()).map(text));
-        if product_id.is_some() && title.is_none() && !unavailable {
-            error_code = Some("PRODUCT_TITLE_UNRESOLVED".into());
-            page.unresolved += 1;
-        }
-        if raw_controls != downloads(card, receipt).len() {
-            error_code = Some("DIGITAL_CONTROLS_UNRESOLVED".into());
-            page.unresolved += 1;
-        }
-        let shop = anchors.iter().copied().find(|a| {
-            a.value()
-                .attr("href")
-                .and_then(absolute)
-                .and_then(|v| safety::public_url(&v, "shop"))
-                .is_some()
-        });
-        let img = card
-            .select(&sel(
-                "img.l-library-item-thumbnail,img[src*='pximg'],[data-test='item-thumbnail']",
-            ))
-            .next();
-        let explicit_list = card
-            .select(&sel("[data-test='downloadable-list'],.list.list--collapse"))
-            .next()
-            .is_some()
-            || card
-                .select(&sel(".legacy-list-item [data-dropdown-items]"))
-                .next()
-                .is_some();
-        let manifest_complete = !f.is_empty()
-            && error_code.is_none()
-            && !unavailable
-            && raw_controls == downloads(card, receipt).len()
-            && f.iter().all(|f| f.name.is_some())
-            && (explicit_list
-                || (matches!(source.as_str(), "library" | "gift" | "free")
-                    && FileStructureDiagnostics::modern_list_witness(card, &f)));
-        let positive_purchase = source == "purchase"
-            && is_detail
-            && error_code
-                .as_deref()
-                .is_none_or(|code| code == "PRODUCT_TITLE_UNRESOLVED")
-            && rebound_product_fields(
-                card,
-                &[Row {
-                    product_id: product_id.clone(),
-                    files: f.clone(),
-                    manifest_complete,
-                    ..Row::default()
-                }],
-            );
-        // Retain the previous direct-card component for existing native IDs only.
-        // A receipt-summary date never enters this legacy identity component.
-        // Preserve previously established native keys; a newly recoverable
-        // financial field must not change an existing undated acquisition ID.
-        let legacy_date = if positive_purchase {
-            card.select(&sel("time[datetime],[data-test='downloaded-at'],[data-test='acquired-at'],[data-test='ordered-at']")).next().map(|n|n.value().attr("datetime").map(safety::short).unwrap_or_else(||text(n)))
-        } else {
-            None
-        };
-        let mut date = if source == "purchase" && is_detail {
-            None
-        } else {
-            card.select(&sel("time[datetime],[data-test='downloaded-at'],[data-test='acquired-at'],[data-test='ordered-at']")).next().map(|n|n.value().attr("datetime").map(safety::short).unwrap_or_else(||text(n)))
-        };
-        let line = card
-            .value()
-            .attr("data-order-item-id")
-            .or_else(|| card.value().attr("data-line-item-id"))
-            .filter(|v| safety::numeric(v));
-        let order_id = if is_detail {
-            url.path().strip_prefix("/orders/").map(str::to_owned)
-        } else {
-            None
-        };
-        let variant_name = first_text(card, "[data-test='variation-name'],.variation-name");
-        let variant_identity = card
-            .value()
-            .attr("data-variation-id")
-            .filter(|v| safety::numeric(v))
-            .unwrap_or("");
-        let record_key = line.map(|v| format!("line:{v}")).unwrap_or_else(|| {
-            format!(
-                "{}:{}:{}:{}:{}",
-                order_id.as_deref().unwrap_or(""),
-                product_id.as_deref().unwrap_or("unknown"),
-                variant_identity,
-                // Preserve both previously dated and undated native purchase IDs.
-                if source == "purchase" && is_detail {
-                    legacy_date.as_deref().unwrap_or("")
-                } else {
-                    date.as_deref().unwrap_or("")
-                },
-                if product_id.is_none() {
-                    format!("{route}:{ordinal}")
-                } else {
-                    String::new()
-                }
-            )
-        });
-        let base_record_id = format!("{source}:{}", safety::hash(record_key));
-        let occurrence = occurrences.entry(base_record_id.clone()).or_default();
-        let source_record_id = if *occurrence == 0 {
-            base_record_id
-        } else {
-            format!("{base_record_id}:occurrence:{occurrence}")
-        };
-        *occurrence += 1;
-        if positive_purchase {
-            date = order_id
-                .as_deref()
-                .and_then(|id| receipt_acquired_date(&cards, card, id));
-            if legacy_date
-                .as_ref()
-                .is_some_and(|legacy| date.as_ref().is_some_and(|date| date != legacy))
-            {
-                date = None;
-            }
-        }
-        if let Some(counts) = diagnostic.as_deref_mut() {
-            counts.record(
-                explicit_list,
-                &f,
-                error_code.is_none(),
-                unavailable,
-                raw_controls,
-                downloads(card, receipt).len(),
+    if error_code.as_deref() == Some("PRODUCT_ID_UNRESOLVED") {
+        page.unresolved += 1;
+    }
+    let title = first_text(card,"[data-test='item-name'],.font-bold.text-16.break-all,.text-text-default.font-bold,b a.nav[href*='/items/']").or_else(||anchors.iter().copied().find(|a|product_id.is_some() && identity(*a)==product_id && !text(*a).is_empty()).map(text));
+    if product_id.is_some() && title.is_none() && !unavailable {
+        error_code = Some("PRODUCT_TITLE_UNRESOLVED".into());
+        page.unresolved += 1;
+    }
+    if raw_controls != downloads(card, receipt).len() {
+        error_code = Some("DIGITAL_CONTROLS_UNRESOLVED".into());
+        page.unresolved += 1;
+    }
+    let shop = shop_anchor(&anchors);
+    let img = card
+        .select(&sel(
+            "img.l-library-item-thumbnail,img[src*='pximg'],[data-test='item-thumbnail']",
+        ))
+        .next();
+    let explicit_list = explicit_file_list(card);
+    let manifest_complete = !f.is_empty()
+        && error_code.is_none()
+        && !unavailable
+        && raw_controls == downloads(card, receipt).len()
+        && f.iter().all(|f| f.name.is_some())
+        && (explicit_list
+            || (matches!(source, "library" | "gift" | "free")
+                && FileStructureDiagnostics::modern_list_witness(card, &f)));
+    let positive_purchase = source == "purchase"
+        && is_detail
+        && error_code
+            .as_deref()
+            .is_none_or(|code| code == "PRODUCT_TITLE_UNRESOLVED")
+        && rebound_product_fields(
+            card,
+            &[Row {
+                product_id: product_id.clone(),
+                files: f.clone(),
                 manifest_complete,
-            );
+                ..Row::default()
+            }],
+        );
+    // Retain the previous direct-card component for existing native IDs only.
+    // A receipt-summary date never enters this legacy identity component.
+    // Preserve previously established native keys; a newly recoverable
+    // financial field must not change an existing undated acquisition ID.
+    let legacy_date = if positive_purchase {
+        card.select(&sel("time[datetime],[data-test='downloaded-at'],[data-test='acquired-at'],[data-test='ordered-at']")).next().map(|n|n.value().attr("datetime").map(safety::short).unwrap_or_else(||text(n)))
+    } else {
+        None
+    };
+    let mut date = if source == "purchase" && is_detail {
+        None
+    } else {
+        card.select(&sel("time[datetime],[data-test='downloaded-at'],[data-test='acquired-at'],[data-test='ordered-at']")).next().map(|n|n.value().attr("datetime").map(safety::short).unwrap_or_else(||text(n)))
+    };
+    let line = card
+        .value()
+        .attr("data-order-item-id")
+        .or_else(|| card.value().attr("data-line-item-id"))
+        .filter(|v| safety::numeric(v));
+    let order_id = if is_detail {
+        url.path().strip_prefix("/orders/").map(str::to_owned)
+    } else {
+        None
+    };
+    let variant_name = first_text(card, "[data-test='variation-name'],.variation-name");
+    let variant_identity = card
+        .value()
+        .attr("data-variation-id")
+        .filter(|v| safety::numeric(v))
+        .unwrap_or("");
+    let record_key = line.map(|v| format!("line:{v}")).unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}:{}:{}",
+            order_id.as_deref().unwrap_or(""),
+            product_id.as_deref().unwrap_or("unknown"),
+            variant_identity,
+            // Preserve both previously dated and undated native purchase IDs.
+            if source == "purchase" && is_detail {
+                legacy_date.as_deref().unwrap_or("")
+            } else {
+                date.as_deref().unwrap_or("")
+            },
+            if product_id.is_none() {
+                format!("{route}:{ordinal}")
+            } else {
+                String::new()
+            }
+        )
+    });
+    let base_record_id = format!("{source}:{}", safety::hash(record_key));
+    let occurrence = occurrences.entry(base_record_id.clone()).or_default();
+    let source_record_id = if *occurrence == 0 {
+        base_record_id
+    } else {
+        format!("{base_record_id}:occurrence:{occurrence}")
+    };
+    *occurrence += 1;
+    if positive_purchase {
+        date = order_id
+            .as_deref()
+            .and_then(|id| receipt_acquired_date(cards, card, id));
+        if legacy_date
+            .as_ref()
+            .is_some_and(|legacy| date.as_ref().is_some_and(|date| date != legacy))
+        {
+            date = None;
         }
-        if let Some(counts) = structure.as_deref_mut() {
-            counts.record(card, &f);
-        }
-        page.rows.push(Row {
-            source_record_id,
-            product_id,
-            order_id,
-            name: title,
-            shop: shop.map(text),
-            shop_url: shop
-                .and_then(|a| a.value().attr("href"))
-                .and_then(absolute)
-                .and_then(|v| safety::public_url(&v, "shop")),
-            preview_url: img
-                .and_then(|e| e.value().attr("src").or_else(|| e.value().attr("data-src")))
-                .and_then(absolute)
-                .and_then(|v| safety::public_url(&v, "preview")),
-            acquired_date_text: date,
-            paid_amount_text: first_text(card, "[data-test='paid-amount']"),
-            product_line_total_jpy: None,
-            variant_name,
-            files: f,
-            manifest_complete,
+    }
+    if let Some(counts) = diagnostic.as_deref_mut() {
+        counts.record(
+            explicit_list,
+            &f,
+            error_code.is_none(),
             unavailable,
-            error_code,
+            raw_controls,
+            downloads(card, receipt).len(),
+            manifest_complete,
+        );
+    }
+    if let Some(counts) = structure.as_deref_mut() {
+        counts.record(card, &f);
+    }
+    page.rows.push(Row {
+        source_record_id,
+        product_id,
+        order_id,
+        name: title,
+        shop: shop.map(text),
+        shop_url: shop
+            .and_then(|a| a.value().attr("href"))
+            .and_then(absolute)
+            .and_then(|v| safety::public_url(&v, "shop")),
+        preview_url: img
+            .and_then(|e| e.value().attr("src").or_else(|| e.value().attr("data-src")))
+            .and_then(absolute)
+            .and_then(|v| safety::public_url(&v, "preview")),
+        acquired_date_text: date,
+        paid_amount_text: first_text(card, "[data-test='paid-amount']"),
+        product_line_total_jpy: None,
+        variant_name,
+        files: f,
+        manifest_complete,
+        unavailable,
+        error_code,
+    });
+}
+
+/// Download controls without readable files leave the receipt unresolved.
+fn unresolved_controls(page: &mut Page, raw_controls: usize, url: &url::Url, ordinal: usize) {
+    // Ignore unrelated receipt regions. Invalid digital candidates still
+    // prevent a complete traversal, without inspecting their body.
+    if raw_controls != 0 {
+        page.unresolved += 1;
+        page.rows.push(Row {
+            source_record_id: format!("purchase:{}:{ordinal}", url.path()),
+            order_id: url.path().strip_prefix("/orders/").map(str::to_owned),
+            error_code: Some("DIGITAL_CONTROLS_UNRESOLVED".into()),
+            ..Row::default()
         });
     }
+}
+
+/// The card's link to its shop.
+fn shop_anchor<'a>(anchors: &[ElementRef<'a>]) -> Option<ElementRef<'a>> {
+    anchors.iter().copied().find(|a| {
+        a.value()
+            .attr("href")
+            .and_then(absolute)
+            .and_then(|v| safety::public_url(&v, "shop"))
+            .is_some()
+    })
+}
+
+/// Whether the card lists its downloads explicitly.
+fn explicit_file_list(card: ElementRef<'_>) -> bool {
+    card.select(&sel("[data-test='downloadable-list'],.list.list--collapse"))
+        .next()
+        .is_some()
+        || card
+            .select(&sel(".legacy-list-item [data-dropdown-items]"))
+            .next()
+            .is_some()
+}
+
+/// Where the list goes next, and whether this page ends it.
+fn read_pager(
+    page: &mut Page,
+    doc: &Html,
+    main: ElementRef<'_>,
+    url: &url::Url,
+    path: &str,
+    source: &str,
+    is_detail: bool,
+    cards: &[ElementRef<'_>],
+) -> Result<()> {
     if is_detail {
         if cards.is_empty() {
             page.unresolved += 1;
@@ -2953,7 +3036,7 @@ fn parse_internal(
             .and_then(|(_, v)| v.parse::<u32>().ok())
             .unwrap_or(1);
         if cards.is_empty() {
-            if !empty_list(main, &source) {
+            if !empty_list(main, source) {
                 bail!("NO_RECOGNIZED_ROWS");
             }
             page.terminal = true;
@@ -2970,7 +3053,7 @@ fn parse_internal(
             if let Some(u) = a
                 .value()
                 .attr("href")
-                .and_then(|v| safety::route(v, &source).ok())
+                .and_then(|v| safety::route(v, source).ok())
             {
                 if u.path() == path && this_order(&u) {
                     let p = u
@@ -2989,7 +3072,7 @@ fn parse_internal(
         page.next.sort();
         page.next.dedup();
         // A list of one page keeps BOOTH's pager element, with nothing in it.
-        if page.next.is_empty() && current == 1 && !cards.is_empty() && only_page(&doc) {
+        if page.next.is_empty() && current == 1 && !cards.is_empty() && only_page(doc) {
             page.terminal = true;
         }
         if page.next.is_empty() {
@@ -2998,8 +3081,8 @@ fn parse_internal(
                 .any(|a| {
                     a.value()
                         .attr("href")
-                        .and_then(|v| safety::route(v, &source).ok())
-                        .is_some_and(|u| u == url)
+                        .and_then(|v| safety::route(v, source).ok())
+                        .is_some_and(|u| u == *url)
                 });
             if explicit_last {
                 page.terminal = true;
@@ -3009,7 +3092,7 @@ fn parse_internal(
             let own = pager.select(&sel("a[href]")).any(|a| {
                 a.value()
                     .attr("href")
-                    .and_then(|v| safety::route(v, &source).ok())
+                    .and_then(|v| safety::route(v, source).ok())
                     .is_some_and(|u| u.path() == path)
             });
             if !own {
@@ -3022,8 +3105,8 @@ fn parse_internal(
                 .any(|a| {
                     a.value()
                         .attr("href")
-                        .and_then(|v| safety::route(v, &source).ok())
-                        .is_some_and(|u| u == url)
+                        .and_then(|v| safety::route(v, source).ok())
+                        .is_some_and(|u| u == *url)
                 });
             let enabled_next = pager.select(&sel("a[rel='next'][href]")).any(|a| {
                 a.value().attr("aria-disabled") != Some("true")
@@ -3035,47 +3118,42 @@ fn parse_internal(
             }
         }
     }
-    if source == "purchase" && is_detail {
-        if let Some(receipt_id) = url.path().strip_prefix("/orders/") {
-            let (fields, rejected) = match product_line_proof_document(&doc, &page.rows, receipt_id)
-            {
-                Ok(proof) => {
-                    let fields = serde_json::to_value(&proof.diagnostics).unwrap_or(Value::Null);
-                    apply_product_line_charges(&mut page.rows, proof, receipt_id);
-                    (fields, false)
-                }
-                Err(_) => (Value::Null, true),
-            };
-            let (rows, paid_rows, dated_rows) = page
-                .rows
-                .iter()
-                .filter(|row| row.order_id.as_deref() == Some(receipt_id))
-                .fold((0u64, 0u64, 0u64), |(rows, paid, dated), row| {
-                    (
-                        rows + 1,
-                        paid + u64::from(row.product_line_total_jpy.is_some()),
-                        dated
-                            + u64::from(
-                                row.acquired_date_text
-                                    .as_ref()
-                                    .is_some_and(|value| !value.trim().is_empty()),
-                            ),
-                    )
-                });
-            let language = html_language(&doc);
-            // This counts parser calls in the current job attempt, not unique
-            // receipts. Only fixed counters/booleans and a closed language code
-            // leave the parser; receipt identities and source values stay here.
-            crate::support_trace::receipt(&fields, rows, paid_rows, dated_rows, rejected, language);
-        }
+    Ok(())
+}
+
+/// Fixed counters about a receipt's paid and dated product lines, for support reports.
+fn trace_receipt(page: &mut Page, doc: &Html, url: &url::Url) {
+    if let Some(receipt_id) = url.path().strip_prefix("/orders/") {
+        let (fields, rejected) = match product_line_proof_document(doc, &page.rows, receipt_id) {
+            Ok(proof) => {
+                let fields = serde_json::to_value(&proof.diagnostics).unwrap_or(Value::Null);
+                apply_product_line_charges(&mut page.rows, proof, receipt_id);
+                (fields, false)
+            }
+            Err(_) => (Value::Null, true),
+        };
+        let (rows, paid_rows, dated_rows) = page
+            .rows
+            .iter()
+            .filter(|row| row.order_id.as_deref() == Some(receipt_id))
+            .fold((0u64, 0u64, 0u64), |(rows, paid, dated), row| {
+                (
+                    rows + 1,
+                    paid + u64::from(row.product_line_total_jpy.is_some()),
+                    dated
+                        + u64::from(
+                            row.acquired_date_text
+                                .as_ref()
+                                .is_some_and(|value| !value.trim().is_empty()),
+                        ),
+                )
+            });
+        let language = html_language(doc);
+        // This counts parser calls in the current job attempt, not unique
+        // receipts. Only fixed counters/booleans and a closed language code
+        // leave the parser; receipt identities and source values stay here.
+        crate::support_trace::receipt(&fields, rows, paid_rows, dated_rows, rejected, language);
     }
-    page.details.sort();
-    page.details.dedup();
-    // Include actual file facts, never signing parameters, in restart-boundary evidence.
-    page.fingerprint = safety::hash(serde_json::to_vec(
-        &serde_json::json!({"rows":page.rows.iter().map(|r|(&r.source_record_id,&r.product_id,r.files.iter().map(|f|(&f.id,&f.variant_id,&f.revision,&f.name,f.size_bytes)).collect::<Vec<_>>())).collect::<Vec<_>>(),"next":page.next,"details":page.details,"terminal":page.terminal,"unresolved":page.unresolved,"ordering":page.ordering}),
-    )?);
-    Ok(page)
 }
 /// A list with nothing in it. BOOTH translates the sentence, so its layout says what it is:
 /// a lone text panel, inside the order list for orders.
