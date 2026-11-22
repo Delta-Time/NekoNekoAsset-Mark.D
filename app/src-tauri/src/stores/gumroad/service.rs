@@ -26,6 +26,43 @@ struct BundleMembers {
     complete: bool,
 }
 
+/// What a Gumroad library pass reads with; fixed when the pass starts.
+#[derive(Clone, Copy)]
+struct LibraryRead<'a> {
+    app: &'a AppHandle,
+    account: &'a str,
+    client: &'a reqwest::Client,
+    selected: &'a Option<BTreeSet<String>>,
+    selected_bundles: &'a BTreeSet<String>,
+    known_purchases: &'a BTreeMap<String, String>,
+    buyer_identity: &'a str,
+    checkpoint_id: &'a str,
+    metadata_total: u64,
+    page_limit: Option<u64>,
+    metrics_before: [u64; 3],
+    classified_before: [[u64; 13]; 2],
+}
+
+/// What a Gumroad library pass has read so far; its checkpoint saves it as the pass goes.
+struct LibraryPass {
+    verification_capped: bool,
+    selected_purchases: BTreeSet<String>,
+    signatures: [String; 2],
+    owned_bundles: BTreeMap<String, gumroad::LibraryBundle>,
+    incomplete: BTreeSet<String>,
+    checkpoint: Value,
+    seen: BTreeSet<String>,
+    products: BTreeSet<String>,
+    unresolved: u64,
+    found: BTreeSet<String>,
+    public_products: BTreeMap<String, Option<gumroad::PublicProductObservation>>,
+    public_errors: BTreeMap<String, String>,
+    public_unavailable: BTreeSet<String>,
+    bundle_completed: BTreeSet<String>,
+    bundled_purchases: BTreeSet<String>,
+    bundle_memberships: BTreeMap<String, BundleMembers>,
+}
+
 type PublicRead<'a> =
     Shared<BoxFuture<'a, Result<Option<gumroad::PublicProductObservation>, String>>>;
 fn shared_public_read<'a>(
@@ -1551,11 +1588,11 @@ impl GumroadService {
         let metrics_before = self.inner.http.metrics();
         let classified_before = self.inner.http.classified_metrics();
         let page_limit = crate::verification::source_page_limit().map(|v| v as u64);
-        let mut verification_capped = false;
+        let verification_capped = false;
         if let Some(limit) = page_limit {
             job["verification"] = json!({"pageLimit":limit,"sourcePages":{"unarchived":0,"archived":0},"bundlePages":0,"capped":false});
         }
-        let (selected, mut selected_purchases, selected_bundles) =
+        let (selected, selected_purchases, selected_bundles) =
             self.library_selection(job, account)?;
         let heads = [first, self.library(client, 1, true).await?];
         let buyer_identity = heads[0].buyer_identity.clone();
@@ -1563,7 +1600,7 @@ impl GumroadService {
             heads[1].buyer_identity == buyer_identity,
             "ACCOUNT_IDENTITY_MISMATCH"
         );
-        let mut signatures = [signature(&heads[0]), signature(&heads[1])];
+        let signatures = [signature(&heads[0]), signature(&heads[1])];
         let mut owned_bundles = BTreeMap::new();
         for bundle in heads.iter().flat_map(|head| &head.bundles) {
             owned_bundles
@@ -1572,7 +1609,7 @@ impl GumroadService {
         }
         // Distinct assets that their own definitive answer left as they were. A selected
         // bundle the library no longer lists is one of them.
-        let mut incomplete: BTreeSet<String> = selected_bundles
+        let incomplete: BTreeSet<String> = selected_bundles
             .iter()
             .filter(|id| !owned_bundles.contains_key(*id))
             .map(|id| format!("gumroad:{id}"))
@@ -1583,27 +1620,27 @@ impl GumroadService {
             format!("gumroad:{account}:library")
         };
         let saved = self.inner.catalogue.get("checkpoint", &checkpoint_id)?;
-        let mut checkpoint = saved.filter(|row| selected.is_none() && row["publicationVersion"] == 1 && row["jobId"] == job["id"] && row["headSignatures"] == json!(signatures) && row["unresolvedRows"].as_u64() == Some(0))
+        let checkpoint = saved.filter(|row| selected.is_none() && row["publicationVersion"] == 1 && row["jobId"] == job["id"] && row["headSignatures"] == json!(signatures) && row["unresolvedRows"].as_u64() == Some(0))
             .unwrap_or_else(|| json!({"id":checkpoint_id,"publicationVersion":1,"journalIds":[],"publishedProducts":[],"store":"Gumroad","accountId":account,"jobId":job["id"],"headSignatures":signatures,"nextPages":[1,1],"seenPurchaseIds":[],"productIds":[],"unresolvedRows":0,"pages":0,"complete":false}));
         self.inner
             .catalogue
             .prune_store_checkpoints("Gumroad", account)?;
-        let mut seen: BTreeSet<String> = checkpoint["seenPurchaseIds"]
+        let seen: BTreeSet<String> = checkpoint["seenPurchaseIds"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        let mut products: BTreeSet<String> = checkpoint["productIds"]
+        let products: BTreeSet<String> = checkpoint["productIds"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        let mut unresolved = checkpoint["unresolvedRows"].as_u64().unwrap_or(0);
-        let mut found = BTreeSet::new();
+        let unresolved = checkpoint["unresolvedRows"].as_u64().unwrap_or(0);
+        let found = BTreeSet::new();
         let known_purchases: BTreeMap<String, String> = self
             .inner
             .catalogue
@@ -1621,10 +1658,10 @@ impl GumroadService {
             StoreProvider::Gumroad,
             Arc::new(reqwest::cookie::Jar::default()),
         )?;
-        let mut public_products = BTreeMap::new();
+        let public_products = BTreeMap::new();
         let public_reads: Mutex<BTreeMap<String, PublicRead<'_>>> = Mutex::new(BTreeMap::new());
-        let mut public_errors = BTreeMap::new();
-        let mut public_unavailable = BTreeSet::new();
+        let public_errors = BTreeMap::new();
+        let public_unavailable = BTreeSet::new();
         let metadata_total = heads.iter().map(|head| head.count).sum::<u64>()
             + owned_bundles
                 .values()
@@ -1632,21 +1669,92 @@ impl GumroadService {
                     selected.is_none() || selected_bundles.contains(&bundle.product_id)
                 })
                 .count() as u64;
-        let mut bundle_completed: BTreeSet<String> = checkpoint["completedBundles"]
+        let bundle_completed: BTreeSet<String> = checkpoint["completedBundles"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        let mut bundled_purchases: BTreeSet<String> = checkpoint["bundlePurchaseIds"]
+        let bundled_purchases: BTreeSet<String> = checkpoint["bundlePurchaseIds"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        let mut bundle_memberships = BTreeMap::new();
+        let bundle_memberships = BTreeMap::new();
+        let read = LibraryRead {
+            app,
+            account,
+            client,
+            selected: &selected,
+            selected_bundles: &selected_bundles,
+            known_purchases: &known_purchases,
+            buyer_identity: &buyer_identity,
+            checkpoint_id: &checkpoint_id,
+            metadata_total,
+            page_limit,
+            metrics_before,
+            classified_before,
+        };
+        let mut pass = LibraryPass {
+            verification_capped,
+            selected_purchases,
+            signatures,
+            owned_bundles,
+            incomplete,
+            checkpoint,
+            seen,
+            products,
+            unresolved,
+            found,
+            public_products,
+            public_errors,
+            public_unavailable,
+            bundle_completed,
+            bundled_purchases,
+            bundle_memberships,
+        };
+        self.read_bundle_memberships(read, job, &mut pass).await?;
+        let (listed, observed) = self
+            .read_listing(read, &public_client, &public_reads, job, heads, &mut pass)
+            .await?;
+        self.assemble_bundles(read, job, &mut pass).await?;
+        self.finish_collection(read, job, listed, observed, &mut pass)
+    }
+
+    /// Reads which purchases each owned bundle holds, before the listing pass skips them.
+    async fn read_bundle_memberships(
+        &self,
+        read: LibraryRead<'_>,
+        job: &mut Value,
+        pass: &mut LibraryPass,
+    ) -> Result<()> {
+        let LibraryRead {
+            app,
+            client,
+            selected,
+            selected_bundles,
+            buyer_identity,
+            metadata_total,
+            page_limit,
+            metrics_before,
+            classified_before,
+            ..
+        } = read;
+        let LibraryPass {
+            verification_capped,
+            owned_bundles,
+            checkpoint,
+            seen,
+            products,
+            unresolved,
+            bundle_completed,
+            bundled_purchases,
+            bundle_memberships,
+            ..
+        } = pass;
         for bundle in owned_bundles
             .values()
             .filter(|bundle| selected.is_none() || selected_bundles.contains(&bundle.product_id))
@@ -1655,9 +1763,9 @@ impl GumroadService {
                 continue;
             }
             let members = self
-                .bundle_members(client, bundle, &buyer_identity, Some(job))
+                .bundle_members(client, bundle, buyer_identity, Some(job))
                 .await?;
-            verification_capped |= !members.complete;
+            *verification_capped |= !members.complete;
             if page_limit.is_some() {
                 job["verification"]["bundlePages"] =
                     json!(job["verification"]["bundlePages"].as_u64().unwrap_or(0) + members.pages);
@@ -1674,6 +1782,34 @@ impl GumroadService {
                 crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
             );
         }
+        Ok(())
+    }
+
+    /// Reads both library tabs page by page, and once more from the start if membership
+    /// changed during the pass; returns what the closing pass listed and observed.
+    async fn read_listing<'a>(
+        &'a self,
+        read: LibraryRead<'a>,
+        public_client: &'a reqwest::Client,
+        public_reads: &Mutex<BTreeMap<String, PublicRead<'a>>>,
+        job: &mut Value,
+        heads: [LibraryPage; 2],
+        pass: &mut LibraryPass,
+    ) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
+        let LibraryRead {
+            client,
+            selected,
+            selected_bundles,
+            buyer_identity,
+            page_limit,
+            ..
+        } = read;
+        let LibraryPass {
+            selected_purchases,
+            bundled_purchases,
+            checkpoint,
+            ..
+        } = &mut *pass;
         selected_purchases.retain(|id| !bundled_purchases.contains(id));
         // Mid-run change detection compares membership only. The first change restarts the
         // listing pass from its first pages; purchases already read are not read again.
@@ -1686,276 +1822,51 @@ impl GumroadService {
             serde_json::from_value(checkpoint["observedPurchases"].clone()).unwrap_or_default();
         let mut pending: VecDeque<_> = heads.into_iter().enumerate().collect();
         while let Some((tab, head)) = pending.pop_front() {
+            let LibraryPass {
+                verification_capped,
+                checkpoint,
+                ..
+            } = &mut *pass;
             let archived = tab == 1;
             let pages = head.pages;
             let observed_pages = page_limit.map_or(pages, |limit| pages.min(limit));
-            verification_capped |= observed_pages != pages;
+            *verification_capped |= observed_pages != pages;
             let count = head.count;
             let mut first = Some(head);
             for page_index in checkpoint["nextPages"][tab].as_u64().unwrap_or(1)..=observed_pages {
-                self.cancelled(job)?;
-                let page = if page_index == 1 {
-                    // The initial response has already been validated.
-                    first.take().unwrap()
-                } else {
-                    match self.library(client, page_index, archived).await {
-                        Ok(page) => page,
-                        Err(error) if page_gone(&error) => {
-                            membership_changed = true;
-                            pending.clear();
-                            break;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                };
-                job["progress"] = json!({"stage":"collecting","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
-                self.save_running_job(job)?;
-                let _ = app.emit(
-                    "nna:changed",
-                    crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
-                );
-                ensure!(
-                    page.buyer_identity == buyer_identity,
-                    "ACCOUNT_IDENTITY_MISMATCH"
-                );
-                if page.count != count {
-                    // The tab's membership changed: this pass cannot close.
+                if self
+                    .read_library_page(
+                        read,
+                        public_client,
+                        public_reads,
+                        job,
+                        pass,
+                        &mut listed,
+                        &mut observed,
+                        restarted,
+                        &mut first,
+                        tab,
+                        archived,
+                        count,
+                        page_index,
+                    )
+                    .await?
+                {
                     membership_changed = true;
                     pending.clear();
                     break;
                 }
-                let mut observations = Vec::new();
-                let mut page_unresolved = 0;
-                let mut journal = Vec::new();
-                let completed_before_page = seen.len() + bundle_completed.len();
-                let mut page_processed = 0usize;
-                // Poll two complete content/public acquisitions together. The consumer
-                // only stages finished results, retaining page order and grant grouping.
-                let mut eligible = Vec::new();
-                for row in page.purchases {
-                    listed.insert(row.purchase_id.clone());
-                    // A purchase already read on an earlier page or pass is read once.
-                    if !seen.insert(row.purchase_id.clone()) {
-                        continue;
-                    }
-                    if !parentless_purchase(&row, &bundled_purchases) {
-                        page_processed += 1;
-                        continue;
-                    }
-                    if selected.as_ref().is_some_and(|ids| {
-                        known_purchases
-                            .get(&row.purchase_id)
-                            .is_some_and(|id| !ids.contains(id))
-                    }) {
-                        page_processed += 1;
-                        continue;
-                    }
-                    found.insert(row.purchase_id.clone());
-                    eligible.push(row);
-                }
-                let content_job = job.clone();
-                let mut contents = futures_util::stream::iter(eligible.into_iter().map(|row| {
-                    let content_job = &content_job;
-                    let public_reads = &public_reads;
-                    let public_client = &public_client;
-                    let selected = &selected;
-                    async move {
-                        self.cancelled(content_job)?;
-                        let content = self.expanded_content(client, &row, None).await;
-                        let public = if let Ok(observation) = &content {
-                            if selected
-                                .as_ref()
-                                .is_none_or(|ids| ids.contains(&observation.catalogue_product_id()))
-                            {
-                                if let Some(url) = &observation.public_product_url {
-                                    let future = shared_public_read(
-                                        public_reads,
-                                        &observation.product_id,
-                                        || {
-                                            let id = observation.product_id.clone();
-                                            let url = url.clone();
-                                            async move {
-                                                self.public_product(public_client, &url, &id)
-                                                    .await
-                                                    .map_err(|error| safe_code(&error))
-                                            }
-                                            .boxed()
-                                            .shared()
-                                        },
-                                    )?;
-                                    Some(future.await)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        self.cancelled(content_job)?;
-                        Ok::<_, anyhow::Error>((row, content, public))
-                    }
-                }))
-                .buffer_unordered(2);
-                while let Some(result) = contents.next().await {
-                    let (row, content, public) = result?;
-                    page_processed += 1;
-                    self.cancelled(job)?;
-                    match content {
-                        Ok(observation) => {
-                            let id = observation.catalogue_product_id();
-                            if selected.as_ref().is_some_and(|ids| !ids.contains(&id)) {
-                                continue;
-                            }
-                            if let Some(public) = public {
-                                let public = match public {
-                                    Ok(Some(public)) => Some(public),
-                                    Ok(None) => {
-                                        public_unavailable.insert(observation.product_id.clone());
-                                        None
-                                    }
-                                    Err(code) => {
-                                        public_errors.insert(observation.product_id.clone(), code);
-                                        None
-                                    }
-                                };
-                                public_products.insert(observation.product_id.clone(), public);
-                            }
-                            ensure!(
-                                selected.as_ref().is_none_or(|ids| ids.contains(&id)),
-                                "GUMROAD_PRODUCT_BINDING_UNPROVEN"
-                            );
-                            let complete = observation.inventory_complete;
-                            if !complete {
-                                page_unresolved += 1;
-                                incomplete.insert(id.clone());
-                            }
-                            observed.insert(row.purchase_id.clone(), id.clone());
-                            products.insert(id.clone());
-                            journal.push(json!({"purchaseId":row.purchase_id,"productId":id,"complete":complete,"errorCode":public_errors.get(&observation.product_id).filter(|_|needs_public_quote(&observation)).cloned().or_else(|| (!observation.inventory_complete).then(|| "GUMROAD_INVENTORY_UNPROVEN".into()))}));
-                            // Publish this complete acquisition while other content
-                            // futures and later listing pages remain outstanding.
-                            if complete {
-                                let published = self.consume_complete_observation(
-                                    job,
-                                    account,
-                                    &row,
-                                    &observation,
-                                    public_products
-                                        .get(&observation.product_id)
-                                        .and_then(Option::as_ref),
-                                    public_errors
-                                        .get(&observation.product_id)
-                                        .filter(|_| needs_public_quote(&observation)),
-                                    needs_public_quote(&observation)
-                                        && public_unavailable.contains(&observation.product_id),
-                                    &mut checkpoint,
-                                )?;
-                                for product in published {
-                                    let _ = app.emit(
-                                        "nna:changed",
-                                        crate::ipc::Change::products("catalogue", [product]),
-                                    );
-                                }
-                            }
-                            observations.push((row, observation));
-                        }
-                        Err(error) => {
-                            let code = safe_code(&error);
-                            if job_level(&code) {
-                                return Err(error);
-                            }
-                            // This purchase's own answer: it stays as it was.
-                            page_unresolved += 1;
-                            incomplete.insert(purchase_asset(&known_purchases, &row.purchase_id));
-                            journal.push(json!({"purchaseId":row.purchase_id,"complete":false,"errorCode":code}));
-                        }
-                    }
-                    job["progress"]["stage"] = json!("enriching");
-                    job["progress"]["metadataCompleted"] =
-                        json!(completed_before_page + page_processed);
-                    job["progress"]["published"] = json!(checkpoint["publishedProducts"]
-                        .as_array()
-                        .map_or(0, Vec::len));
-                    self.save_running_job(job)?;
-                    let _ = app.emit(
-                        "nna:changed",
-                        crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
-                    );
-                }
-                unresolved += page_unresolved;
-                checkpoint["nextPages"][tab] = json!(page_index + 1);
-                checkpoint["seenPurchaseIds"] = json!(seen);
-                checkpoint["listedPurchaseIds"] = json!(listed);
-                checkpoint["observedPurchases"] = json!(observed);
-                checkpoint["productIds"] = json!(products);
-                checkpoint["unresolvedRows"] = json!(unresolved);
-                checkpoint["pages"] = json!(checkpoint["pages"].as_u64().unwrap_or(0) + 1);
-                if page_limit.is_some() {
-                    job["verification"]["sourcePages"]
-                        [if archived { "archived" } else { "unarchived" }] = json!(page_index);
-                }
-                checkpoint["updatedAt"] = json!(now());
-                // A restarted pass keeps the first pass's page journals.
-                let journal_id = format!(
-                    "gumroad:{account}:{}:{}{tab}:{page_index}",
-                    field(job, "id")?,
-                    if restarted { "restart:" } else { "" }
-                );
-                append_journal(&mut checkpoint, &journal_id)?;
-                let mut committed = false;
-                for _ in 0..3 {
-                    self.cancelled(job)?;
-                    let mut batch = RecordBatch::new(&self.inner.catalogue);
-                    let mut prepared = RecordBatch::new(&self.inner.catalogue);
-                    for (row, observation) in &observations {
-                        project(&mut prepared, account, row, observation)?;
-                        project_public(
-                            &mut prepared,
-                            observation,
-                            public_products
-                                .get(&observation.product_id)
-                                .and_then(Option::as_ref),
-                        )?;
-                        if let Some(error) = public_errors
-                            .get(&observation.product_id)
-                            .filter(|_| needs_public_quote(observation))
-                        {
-                            let id = observation.catalogue_product_id();
-                            let mut product = prepared.get("product", &id)?.unwrap();
-                            product["priceRefreshErrorCode"] = json!(error);
-                            prepared.stage("product", &id, product)?;
-                        }
-                        if needs_public_quote(observation)
-                            && public_unavailable.contains(&observation.product_id)
-                        {
-                            let id = observation.catalogue_product_id();
-                            let mut product = prepared.get("product", &id)?.unwrap();
-                            product["publicPageAvailability"] = json!("unavailable");
-                            prepared.stage("product", &id, product)?;
-                        }
-                    }
-                    batch.stage("checkpoint", &journal_id, json!({"id":journal_id,"store":"Gumroad","accountId":account,"runId":job["id"],"source":"library","archived":archived,"page":page_index,"observations":journal,"records":prepared.staged_records()}))?;
-                    if selected.is_none() {
-                        batch.stage("checkpoint", &checkpoint_id, checkpoint.clone())?;
-                        batch.stage("source_coverage", &checkpoint_id, json!({"id":checkpoint_id,"store":"Gumroad","accountId":account,"source":"library","status":"running","coverageComplete":false,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"updatedAt":now()}))?;
-                    }
-                    if batch.try_commit()?.is_some() {
-                        committed = true;
-                        break;
-                    }
-                }
-                ensure!(committed, "CONCURRENT_UPDATE");
-                job["progress"] = json!({"stage":"enriching","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
-                job["updatedAt"] = json!(now());
-                self.set_collection_metrics(job, metrics_before, classified_before);
-                self.save_running_job(job)?;
-                let _ = app.emit(
-                    "nna:changed",
-                    crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
-                );
             }
+            let LibraryPass {
+                signatures,
+                seen,
+                owned_bundles,
+                verification_capped,
+                bundled_purchases,
+                checkpoint,
+                bundle_memberships,
+                ..
+            } = &mut *pass;
             if !pending.is_empty() {
                 continue;
             }
@@ -1976,7 +1887,7 @@ impl GumroadService {
             if !membership_changed
                 && current
                     .iter()
-                    .zip(&signatures)
+                    .zip(&*signatures)
                     .all(|(head, expected)| membership_kept(head, expected, |id| seen.contains(id)))
             {
                 continue;
@@ -1993,9 +1904,9 @@ impl GumroadService {
                     continue;
                 }
                 let members = self
-                    .bundle_members(client, bundle, &buyer_identity, Some(job))
+                    .bundle_members(client, bundle, buyer_identity, Some(job))
                     .await?;
-                verification_capped |= !members.complete;
+                *verification_capped |= !members.complete;
                 bundled_purchases
                     .extend(members.purchases.iter().map(|row| row.purchase_id.clone()));
                 checkpoint["pages"] =
@@ -2003,7 +1914,7 @@ impl GumroadService {
                 bundle_memberships.insert(bundle.product_id.clone(), members);
                 owned_bundles.insert(bundle.product_id.clone(), bundle.clone());
             }
-            signatures = [signature(&current[0]), signature(&current[1])];
+            *signatures = [signature(&current[0]), signature(&current[1])];
             checkpoint["headSignatures"] = json!(signatures);
             checkpoint["listingRestarted"] = json!(true);
             checkpoint["listedPurchaseIds"] = json!(listed);
@@ -2011,6 +1922,439 @@ impl GumroadService {
             checkpoint["nextPages"] = json!([1, 1]);
             pending.extend(current.into_iter().enumerate());
         }
+        Ok((listed, observed))
+    }
+
+    /// Reads one library page and publishes its complete purchases; returns true when the
+    /// tab's membership changed and the pass must stop reading it.
+    async fn read_library_page<'a>(
+        &'a self,
+        read: LibraryRead<'a>,
+        public_client: &'a reqwest::Client,
+        public_reads: &Mutex<BTreeMap<String, PublicRead<'a>>>,
+        job: &mut Value,
+        pass: &mut LibraryPass,
+        listed: &mut BTreeSet<String>,
+        observed: &mut BTreeMap<String, String>,
+        restarted: bool,
+        first: &mut Option<LibraryPage>,
+        tab: usize,
+        archived: bool,
+        count: u64,
+        page_index: u64,
+    ) -> Result<bool> {
+        let LibraryRead {
+            app,
+            client,
+            selected,
+            known_purchases,
+            buyer_identity,
+            metadata_total,
+            ..
+        } = read;
+        let LibraryPass {
+            checkpoint,
+            seen,
+            products,
+            unresolved,
+            found,
+            bundle_completed,
+            bundled_purchases,
+            ..
+        } = &mut *pass;
+        self.cancelled(job)?;
+        let page = if page_index == 1 {
+            // The initial response has already been validated.
+            first.take().unwrap()
+        } else {
+            match self.library(client, page_index, archived).await {
+                Ok(page) => page,
+                Err(error) if page_gone(&error) => {
+                    return Ok(true);
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        job["progress"] = json!({"stage":"collecting","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
+        self.save_running_job(job)?;
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+        );
+        ensure!(
+            page.buyer_identity == buyer_identity,
+            "ACCOUNT_IDENTITY_MISMATCH"
+        );
+        if page.count != count {
+            // The tab's membership changed: this pass cannot close.
+            return Ok(true);
+        }
+        let mut observations = Vec::new();
+        let mut page_unresolved = 0;
+        let mut journal = Vec::new();
+        let completed_before_page = seen.len() + bundle_completed.len();
+        let mut page_processed = 0usize;
+        // Poll two complete content/public acquisitions together. The consumer
+        // only stages finished results, retaining page order and grant grouping.
+        let mut eligible = Vec::new();
+        for row in page.purchases {
+            listed.insert(row.purchase_id.clone());
+            // A purchase already read on an earlier page or pass is read once.
+            if !seen.insert(row.purchase_id.clone()) {
+                continue;
+            }
+            if !parentless_purchase(&row, bundled_purchases) {
+                page_processed += 1;
+                continue;
+            }
+            if selected.as_ref().is_some_and(|ids| {
+                known_purchases
+                    .get(&row.purchase_id)
+                    .is_some_and(|id| !ids.contains(id))
+            }) {
+                page_processed += 1;
+                continue;
+            }
+            found.insert(row.purchase_id.clone());
+            eligible.push(row);
+        }
+        let content_job = job.clone();
+        let mut contents = futures_util::stream::iter(eligible.into_iter().map(|row| {
+            let content_job = &content_job;
+            let public_reads = &public_reads;
+            let selected = &selected;
+            async move {
+                self.cancelled(content_job)?;
+                let content = self.expanded_content(client, &row, None).await;
+                let public = if let Ok(observation) = &content {
+                    if selected
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&observation.catalogue_product_id()))
+                    {
+                        if let Some(url) = &observation.public_product_url {
+                            let future =
+                                shared_public_read(public_reads, &observation.product_id, || {
+                                    let id = observation.product_id.clone();
+                                    let url = url.clone();
+                                    async move {
+                                        self.public_product(public_client, &url, &id)
+                                            .await
+                                            .map_err(|error| safe_code(&error))
+                                    }
+                                    .boxed()
+                                    .shared()
+                                })?;
+                            Some(future.await)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.cancelled(content_job)?;
+                Ok::<_, anyhow::Error>((row, content, public))
+            }
+        }))
+        .buffer_unordered(2);
+        while let Some(result) = contents.next().await {
+            let (row, content, public) = result?;
+            self.consume_content(
+                read,
+                job,
+                pass,
+                observed,
+                &mut observations,
+                &mut page_unresolved,
+                &mut journal,
+                &mut page_processed,
+                completed_before_page,
+                row,
+                content,
+                public,
+            )?;
+        }
+        self.commit_library_page(
+            read,
+            job,
+            pass,
+            listed,
+            observed,
+            restarted,
+            tab,
+            archived,
+            page_index,
+            &observations,
+            journal,
+            page_unresolved,
+        )?;
+        Ok(false)
+    }
+
+    /// Takes one purchase's read content: publishes it when complete, and journals it.
+    fn consume_content(
+        &self,
+        read: LibraryRead<'_>,
+        job: &mut Value,
+        pass: &mut LibraryPass,
+        observed: &mut BTreeMap<String, String>,
+        observations: &mut Vec<(LibraryPurchase, ContentObservation)>,
+        page_unresolved: &mut u64,
+        journal: &mut Vec<Value>,
+        page_processed: &mut usize,
+        completed_before_page: usize,
+        row: LibraryPurchase,
+        content: Result<ContentObservation>,
+        public: Option<Result<Option<gumroad::PublicProductObservation>, String>>,
+    ) -> Result<()> {
+        let LibraryRead {
+            app,
+            account,
+            selected,
+            known_purchases,
+            ..
+        } = read;
+        let LibraryPass {
+            incomplete,
+            checkpoint,
+            products,
+            public_products,
+            public_errors,
+            public_unavailable,
+            ..
+        } = pass;
+        *page_processed += 1;
+        self.cancelled(job)?;
+        match content {
+            Ok(observation) => {
+                let id = observation.catalogue_product_id();
+                if selected.as_ref().is_some_and(|ids| !ids.contains(&id)) {
+                    return Ok(());
+                }
+                if let Some(public) = public {
+                    let public = match public {
+                        Ok(Some(public)) => Some(public),
+                        Ok(None) => {
+                            public_unavailable.insert(observation.product_id.clone());
+                            None
+                        }
+                        Err(code) => {
+                            public_errors.insert(observation.product_id.clone(), code);
+                            None
+                        }
+                    };
+                    public_products.insert(observation.product_id.clone(), public);
+                }
+                ensure!(
+                    selected.as_ref().is_none_or(|ids| ids.contains(&id)),
+                    "GUMROAD_PRODUCT_BINDING_UNPROVEN"
+                );
+                let complete = observation.inventory_complete;
+                if !complete {
+                    *page_unresolved += 1;
+                    incomplete.insert(id.clone());
+                }
+                observed.insert(row.purchase_id.clone(), id.clone());
+                products.insert(id.clone());
+                journal.push(json!({"purchaseId":row.purchase_id,"productId":id,"complete":complete,"errorCode":public_errors.get(&observation.product_id).filter(|_|needs_public_quote(&observation)).cloned().or_else(|| (!observation.inventory_complete).then(|| "GUMROAD_INVENTORY_UNPROVEN".into()))}));
+                // Publish this complete acquisition while other content
+                // futures and later listing pages remain outstanding.
+                if complete {
+                    let published = self.consume_complete_observation(
+                        job,
+                        account,
+                        &row,
+                        &observation,
+                        public_products
+                            .get(&observation.product_id)
+                            .and_then(Option::as_ref),
+                        public_errors
+                            .get(&observation.product_id)
+                            .filter(|_| needs_public_quote(&observation)),
+                        needs_public_quote(&observation)
+                            && public_unavailable.contains(&observation.product_id),
+                        checkpoint,
+                    )?;
+                    for product in published {
+                        let _ = app.emit(
+                            "nna:changed",
+                            crate::ipc::Change::products("catalogue", [product]),
+                        );
+                    }
+                }
+                observations.push((row, observation));
+            }
+            Err(error) => {
+                let code = safe_code(&error);
+                if job_level(&code) {
+                    return Err(error);
+                }
+                // This purchase's own answer: it stays as it was.
+                *page_unresolved += 1;
+                incomplete.insert(purchase_asset(known_purchases, &row.purchase_id));
+                journal
+                    .push(json!({"purchaseId":row.purchase_id,"complete":false,"errorCode":code}));
+            }
+        }
+        job["progress"]["stage"] = json!("enriching");
+        job["progress"]["metadataCompleted"] = json!(completed_before_page + *page_processed);
+        job["progress"]["published"] = json!(checkpoint["publishedProducts"]
+            .as_array()
+            .map_or(0, Vec::len));
+        self.save_running_job(job)?;
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+        );
+        Ok(())
+    }
+
+    /// Records the page in the pass checkpoint and commits its journal and records together.
+    fn commit_library_page(
+        &self,
+        read: LibraryRead<'_>,
+        job: &mut Value,
+        pass: &mut LibraryPass,
+        listed: &BTreeSet<String>,
+        observed: &BTreeMap<String, String>,
+        restarted: bool,
+        tab: usize,
+        archived: bool,
+        page_index: u64,
+        observations: &[(LibraryPurchase, ContentObservation)],
+        journal: Vec<Value>,
+        page_unresolved: u64,
+    ) -> Result<()> {
+        let LibraryRead {
+            app,
+            account,
+            selected,
+            checkpoint_id,
+            metadata_total,
+            page_limit,
+            metrics_before,
+            classified_before,
+            ..
+        } = read;
+        let LibraryPass {
+            checkpoint,
+            seen,
+            products,
+            unresolved,
+            public_products,
+            public_errors,
+            public_unavailable,
+            bundle_completed,
+            ..
+        } = pass;
+        *unresolved += page_unresolved;
+        checkpoint["nextPages"][tab] = json!(page_index + 1);
+        checkpoint["seenPurchaseIds"] = json!(seen);
+        checkpoint["listedPurchaseIds"] = json!(listed);
+        checkpoint["observedPurchases"] = json!(observed);
+        checkpoint["productIds"] = json!(products);
+        checkpoint["unresolvedRows"] = json!(unresolved);
+        checkpoint["pages"] = json!(checkpoint["pages"].as_u64().unwrap_or(0) + 1);
+        if page_limit.is_some() {
+            job["verification"]["sourcePages"][if archived { "archived" } else { "unarchived" }] =
+                json!(page_index);
+        }
+        checkpoint["updatedAt"] = json!(now());
+        // A restarted pass keeps the first pass's page journals.
+        let journal_id = format!(
+            "gumroad:{account}:{}:{}{tab}:{page_index}",
+            field(job, "id")?,
+            if restarted { "restart:" } else { "" }
+        );
+        append_journal(checkpoint, &journal_id)?;
+        let mut committed = false;
+        for _ in 0..3 {
+            self.cancelled(job)?;
+            let mut batch = RecordBatch::new(&self.inner.catalogue);
+            let mut prepared = RecordBatch::new(&self.inner.catalogue);
+            for (row, observation) in observations {
+                project(&mut prepared, account, row, observation)?;
+                project_public(
+                    &mut prepared,
+                    observation,
+                    public_products
+                        .get(&observation.product_id)
+                        .and_then(Option::as_ref),
+                )?;
+                if let Some(error) = public_errors
+                    .get(&observation.product_id)
+                    .filter(|_| needs_public_quote(observation))
+                {
+                    let id = observation.catalogue_product_id();
+                    let mut product = prepared.get("product", &id)?.unwrap();
+                    product["priceRefreshErrorCode"] = json!(error);
+                    prepared.stage("product", &id, product)?;
+                }
+                if needs_public_quote(observation)
+                    && public_unavailable.contains(&observation.product_id)
+                {
+                    let id = observation.catalogue_product_id();
+                    let mut product = prepared.get("product", &id)?.unwrap();
+                    product["publicPageAvailability"] = json!("unavailable");
+                    prepared.stage("product", &id, product)?;
+                }
+            }
+            batch.stage("checkpoint", &journal_id, json!({"id":journal_id,"store":"Gumroad","accountId":account,"runId":job["id"],"source":"library","archived":archived,"page":page_index,"observations":journal,"records":prepared.staged_records()}))?;
+            if selected.is_none() {
+                batch.stage("checkpoint", checkpoint_id, checkpoint.clone())?;
+                batch.stage("source_coverage", checkpoint_id, json!({"id":checkpoint_id,"store":"Gumroad","accountId":account,"source":"library","status":"running","coverageComplete":false,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"updatedAt":now()}))?;
+            }
+            if batch.try_commit()?.is_some() {
+                committed = true;
+                break;
+            }
+        }
+        ensure!(committed, "CONCURRENT_UPDATE");
+        job["progress"] = json!({"stage":"enriching","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
+        job["updatedAt"] = json!(now());
+        self.set_collection_metrics(job, metrics_before, classified_before);
+        self.save_running_job(job)?;
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+        );
+        Ok(())
+    }
+
+    /// Assembles and publishes each owned bundle from the purchases it holds.
+    async fn assemble_bundles(
+        &self,
+        read: LibraryRead<'_>,
+        job: &mut Value,
+        pass: &mut LibraryPass,
+    ) -> Result<()> {
+        let LibraryRead {
+            app,
+            account,
+            client,
+            selected,
+            selected_bundles,
+            buyer_identity,
+            checkpoint_id,
+            metadata_total,
+            metrics_before,
+            classified_before,
+            ..
+        } = read;
+        let LibraryPass {
+            owned_bundles,
+            incomplete,
+            checkpoint,
+            seen,
+            products,
+            unresolved,
+            bundle_completed,
+            bundled_purchases,
+            bundle_memberships,
+            ..
+        } = pass;
         let mut reused_children = BTreeMap::new();
         for bundle in owned_bundles
             .values()
@@ -2026,7 +2370,7 @@ impl GumroadService {
                 .assemble_bundle(
                     client,
                     bundle,
-                    &buyer_identity,
+                    buyer_identity,
                     members,
                     &mut reused_children,
                     Some(job),
@@ -2035,7 +2379,7 @@ impl GumroadService {
             let (card, observation, pages) = match assembled {
                 // A bundle the library stopped listing stays as it was.
                 Err(error) if safe_code(&error) == "GUMROAD_BUNDLE_OWNERSHIP_UNPROVEN" => {
-                    unresolved += 1;
+                    *unresolved += 1;
                     incomplete.insert(format!("gumroad:{}", bundle.product_id));
                     continue;
                 }
@@ -2044,7 +2388,7 @@ impl GumroadService {
             let id = observation.catalogue_product_id();
             bundled_purchases.extend(observation.member_purchase_ids.iter().cloned());
             products.insert(id.clone());
-            unresolved += u64::from(!observation.inventory_complete);
+            *unresolved += u64::from(!observation.inventory_complete);
             if !observation.inventory_complete {
                 incomplete.insert(id.clone());
             }
@@ -2060,7 +2404,7 @@ impl GumroadService {
                 field(job, "id")?,
                 fingerprint(&json!(bundle.product_id))
             );
-            append_journal(&mut checkpoint, &journal_id)?;
+            append_journal(checkpoint, &journal_id)?;
             let mut committed = false;
             for _ in 0..3 {
                 self.cancelled(job)?;
@@ -2069,8 +2413,8 @@ impl GumroadService {
                 project(&mut prepared, account, &card, &observation)?;
                 batch.stage("checkpoint", &journal_id, json!({"id":journal_id,"store":"Gumroad","accountId":account,"runId":job["id"],"source":"library","sourceBundleId":bundle.product_id,"purchaseIds":observation.member_purchase_ids,"complete":observation.inventory_complete,"pages":pages,"observations":[{"productId":id,"complete":observation.inventory_complete}],"records":prepared.staged_records()}))?;
                 if selected.is_none() {
-                    batch.stage("checkpoint", &checkpoint_id, checkpoint.clone())?;
-                    batch.stage("source_coverage", &checkpoint_id, json!({"id":checkpoint_id,"store":"Gumroad","accountId":account,"source":"library","status":"running","coverageComplete":false,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"updatedAt":now()}))?;
+                    batch.stage("checkpoint", checkpoint_id, checkpoint.clone())?;
+                    batch.stage("source_coverage", checkpoint_id, json!({"id":checkpoint_id,"store":"Gumroad","accountId":account,"source":"library","status":"running","coverageComplete":false,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"updatedAt":now()}))?;
                 }
                 if batch.try_commit()?.is_some() {
                     committed = true;
@@ -2078,7 +2422,7 @@ impl GumroadService {
                 }
             }
             ensure!(committed, "CONCURRENT_UPDATE");
-            self.publish_complete_journal(app, job, &mut checkpoint, &journal_id)?;
+            self.publish_complete_journal(app, job, checkpoint, &journal_id)?;
             job["progress"] = json!({"stage":"enriching","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
             self.set_collection_metrics(job, metrics_before, classified_before);
             self.save_running_job(job)?;
@@ -2087,13 +2431,46 @@ impl GumroadService {
                 crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
             );
         }
+        Ok(())
+    }
+
+    /// Settles the pass: what stays as it was, certification of what the closing pass
+    /// listed, and the library's coverage.
+    fn finish_collection(
+        &self,
+        read: LibraryRead<'_>,
+        job: &mut Value,
+        listed: BTreeSet<String>,
+        observed: BTreeMap<String, String>,
+        pass: &mut LibraryPass,
+    ) -> Result<()> {
+        let LibraryRead {
+            app,
+            account,
+            selected,
+            known_purchases,
+            checkpoint_id,
+            metrics_before,
+            classified_before,
+            ..
+        } = read;
+        let LibraryPass {
+            verification_capped,
+            selected_purchases,
+            incomplete,
+            checkpoint,
+            products,
+            unresolved,
+            found,
+            ..
+        } = pass;
         // A selected purchase the library no longer lists stays as it was.
-        for id in selected_purchases.difference(&found) {
-            incomplete.insert(purchase_asset(&known_purchases, id));
+        for id in selected_purchases.difference(found) {
+            incomplete.insert(purchase_asset(known_purchases, id));
         }
-        record_incomplete(job, &incomplete);
+        record_incomplete(job, incomplete);
         self.set_collection_metrics(job, metrics_before, classified_before);
-        if verification_capped {
+        if *verification_capped {
             // Observed complete grants were already published additively. A
             // verification stop is not source closure or a replacement manifest.
             job["verification"]["capped"] = json!(true);
@@ -2106,20 +2483,13 @@ impl GumroadService {
             .filter(|(purchase, _)| !listed.contains(purchase))
             .map(|(_, product)| product)
             .collect();
-        self.publish_journals(
-            app,
-            job,
-            account,
-            &mut checkpoint,
-            &known_purchases,
-            &unlisted,
-        )?;
+        self.publish_journals(app, job, account, checkpoint, known_purchases, &unlisted)?;
         if selected.is_some() {
             return Ok(());
         }
         let coverage_id = format!("gumroad:{account}:library");
-        checkpoint["complete"] = json!(unresolved == 0);
-        let coverage = json!({"id":coverage_id,"store":"Gumroad","accountId":account,"source":"library","coverageComplete":unresolved == 0,"status":if unresolved == 0 { "complete" } else { "incomplete" },"terminalSeen":true,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"productCount":products.len(),"incrementalBoundary":"fullTraversalWhenOrderingUnproven","completedAt":now()});
+        checkpoint["complete"] = json!(*unresolved == 0);
+        let coverage = json!({"id":coverage_id,"store":"Gumroad","accountId":account,"source":"library","coverageComplete":*unresolved == 0,"status":if *unresolved == 0 { "complete" } else { "incomplete" },"terminalSeen":true,"pages":checkpoint["pages"],"unresolvedRows":unresolved,"productCount":products.len(),"incrementalBoundary":"fullTraversalWhenOrderingUnproven","completedAt":now()});
         let mut finalized = false;
         for _ in 0..3 {
             let mut batch = RecordBatch::new(&self.inner.catalogue);
@@ -2127,7 +2497,7 @@ impl GumroadService {
                 .get("job", field(job, "id")?)?
                 .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
             ensure!(current["state"] != "cancelled", "CANCELLED");
-            batch.stage("checkpoint", &checkpoint_id, checkpoint.clone())?;
+            batch.stage("checkpoint", checkpoint_id, checkpoint.clone())?;
             batch.stage("source_coverage", &coverage_id, coverage.clone())?;
             if batch.try_commit()?.is_some() {
                 finalized = true;
