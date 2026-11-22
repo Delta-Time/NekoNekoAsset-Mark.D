@@ -1,162 +1,127 @@
 # Contributing to NekoNekoAsset
 
-Original project code is MIT licensed. Keep the existing compact interface and
-workflow; discuss substantial product or dependency changes in a GitHub issue.
-Preserve third-party licenses, notices and stable Unity `.meta` GUIDs.
+Original project code is MIT licensed. Open a GitHub issue before a substantial
+product or dependency change. Keep the existing compact interface and workflow, and
+preserve third-party licenses, notices and stable Unity `.meta` GUIDs.
 
-## Build
+## Set up
 
-Windows x64 is the App distribution target. Install Visual Studio 2022 Build
-Tools with Desktop development with C++, WebView2, Node.js **24.19.0**, pnpm
-**11.25.0**, Python **3.14.8**, and Rust via rustup. `rust-toolchain.toml` selects
-Rust **1.99.0** and the Windows MSVC target. Use the committed lockfiles.
+Windows x64 is the App's platform. Install Visual Studio 2022 Build Tools with
+Desktop development with C++, the WebView2 Runtime, Node.js **24.19.0**, pnpm
+**11.25.0**, Python **3.14.8**, and Rust through rustup; `rust-toolchain.toml`
+selects Rust **1.99.0** with rustfmt and clippy. Use the committed lockfiles.
+
+```powershell
+pnpm --dir app install --frozen-lockfile
+pnpm --dir app tauri dev
+```
+
+A debug build shares the installed App's identifier, so quit an installed
+NekoNekoAsset first (only one instance runs), and by default it also shares its
+device profile: the library choice and store sign-ins. Set `NNA_DATA_DIR` to an
+empty folder to give a debug build its own profile:
+
+```powershell
+$env:NNA_DATA_DIR = "$env:TEMP\nna-dev-profile"; pnpm --dir app tauri dev
+```
+
+Develop with a test library and authored assets. Never commit or attach personal
+catalogue records, account or order details, cookies, tokens, keys, browser
+profiles or downloaded asset files; keep diagnostics aggregate and redact personal
+values from screenshots and logs. `pnpm --dir app tauri build --no-bundle` makes an
+unsigned local build.
+
+## Where the code lives
+
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the code and the rules it keeps. In short:
+
+| To change | Look in |
+| --- | --- |
+| BOOTH sync and downloads | `app/src-tauri/src/booth/` |
+| Gumroad, Jinxxy | `app/src-tauri/src/stores/gumroad/`, `app/src-tauri/src/stores/jinxxy/` |
+| What a store answers | `ANSWERS.md` beside each store's code |
+| Downloads, extraction, local import, library moves | `app/src-tauri/src/storage/` |
+| Search, filters, sorting, what a product shows | `app/src-tauri/src/catalogue/` (`query.rs`, `projection.rs`) |
+| Categories, avatar names and tags | `app/src-tauri/src/taxonomy/` |
+| Unity transfer | `app/src-tauri/src/unity/` and `unity/Packages/com.yank.nekonekoasset.bridge/` |
+| License filter | `app/src-tauri/src/licenses/` |
+| AI | `app/src-tauri/src/ai/` and `app/src/features/ai/` |
+| A screen or panel | `app/src/features/<area>/` and `app/src/styles/<area>.css` |
+| UI text | `app/src/locales/<language>.json` |
+| A request or answer between the UI and Rust | the service's `api` module in Rust, then `pnpm --dir app bindings` |
+
+## Making a change
+
+- **UI text.** `app/src/locales/en.json` is the source; a new key goes into every
+  language file, and `pnpm build` fails when one lacks it. Keys are
+  `<table>.<key>`; `app/src/messages.ts` lists which lookup function reads each
+  table. A translation fix touches only its language's file.
+- **Data between Rust and the UI** is declared once, in Rust: a service's actions are
+  one tagged enum (such as `catalogue::api::CatalogueRequest`) and the records the UI
+  reads are structs (such as `catalogue::api::Product`). Run
+  `pnpm --dir app bindings` to regenerate their TypeScript in `app/src/bindings` and
+  commit it with the Rust change, so `pnpm build` fails wherever the UI still uses an
+  old name.
+- **Saved data.** Since **0.2.0 Beta**, installed users' libraries are a
+  compatibility contract. Avoid database, schema and storage-format changes unless
+  necessary. A necessary incompatible change needs an explicit, versioned migration
+  from supported earlier public versions, safe failure handling and focused checks
+  that the data survives and reopens. Never silently recreate, reset or discard a
+  user's database. An App update keeps the catalogue, library paths, user edits,
+  settings and protected sessions.
+- **Store behavior.** Test parsers on pages you write yourself, never on captured
+  ones. When you observe a store answer nobody recorded, add it to that store's
+  `ANSWERS.md` with the date.
+- **Tests.** Keep meaningful existing tests and never weaken a check to make it
+  pass. Add focused tests for deterministic logic with real regression risk; Rust
+  tests sit beside the code (`foo_tests.rs` or a `tests/` folder). No new test
+  framework is needed.
+- **UI.** Look at the rendered App: relevant widths, scales, languages, light and
+  dark themes, keyboard focus, loading and error states. A passing build is no proof
+  of how it looks.
+- **Formatting.** `pnpm --dir app format` and
+  `cargo fmt --all --manifest-path app/src-tauri/Cargo.toml` before committing.
+  Never reformat `unity/Packages`, whose bytes the Bridge release attests.
+  Formatting-only commits are listed in `.git-blame-ignore-revs`; run
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip them in blame.
+- **Dependencies.** A new Rust or npm dependency changes a lockfile that the
+  third-party notices attest: run `python scripts/update-notices.py` and commit its
+  output.
+
+## Checks
 
 From the repository root:
 
 ```powershell
-pnpm --dir app install --frozen-lockfile
 pnpm --dir app exec biome ci
 pnpm --dir app build
 cargo fmt --all --check --manifest-path app/src-tauri/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path app/src-tauri/Cargo.toml -- -D warnings
 cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
 pnpm --dir app bindings
+python scripts/release.py check
+python scripts/update-notices.py --check
 python scripts/test_release.py
 python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/bridge
 ```
 
-CI runs the same checks. Format before committing with `pnpm --dir app format`
-and `cargo fmt --all --manifest-path app/src-tauri/Cargo.toml`; never reformat
-`unity/Packages`, whose bytes the Bridge release attests. Formatting-only commits
-are listed in `.git-blame-ignore-revs`; run
-`git config blame.ignoreRevsFile .git-blame-ignore-revs` to skip them locally.
+After `pnpm --dir app bindings`, `git status app/src/bindings` must show nothing.
 
-Run the App with `pnpm --dir app tauri dev`. Release packaging requires the
-maintainer's updater signing key; unsigned local builds can use
-`pnpm --dir app tauri build --no-bundle`. The Bridge packager uses only Python's
-standard library and verifies bytes, archive structure and GUIDs without a Unity
-license. Packaging checks do not establish native Unity import behavior.
+## What CI enforces
 
-## Changes and verification
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
 
-Preserve meaningful existing tests. Add focused tests for deterministic logic
-with meaningful regression risk; no new test framework or broad testing gate is
-required. Inspect rendered UI and relevant keyboard, loading and error states for
-visual changes. Never treat a successful build as proof of visual quality.
+- release inputs and logic: `scripts/release.py check` (which also refuses tracked
+  internal or private files), the third-party notices check and
+  `scripts/test_release.py`;
+- `biome ci` (formatting and lint of `app/`) and `pnpm build` (`tsc` and Vite);
+- `cargo fmt --check`, and clippy with `-D warnings`, which fails any production
+  function over 250 code lines (`app/src-tauri/clippy.toml`);
+- the Rust library tests;
+- generated bindings: CI reruns `scripts/bindings.mjs` and fails when
+  `app/src/bindings` differs from what is committed;
+- the Unity Bridge packager, which checks archive bytes, inventory and GUIDs without
+  a Unity license. It does not prove a real Unity import.
 
-UI text lives in `app/src/locales/<language>.json`, with `en.json` as the source,
-so a translation fix touches only its language's file. Keys are `<table>.<key>`;
-`app/src/messages.ts` lists which lookup function reads each table. A new key goes
-into every language file: `pnpm build` fails when one lacks it.
-
-Data that crosses between Rust and the UI is declared once, in Rust: a service's
-actions are one tagged enum (such as `catalogue::api::CatalogueRequest`) and the
-records the UI reads are structs (such as `catalogue::api::Product`).
-`pnpm --dir app bindings` regenerates their TypeScript in `app/src/bindings`;
-commit it with the Rust change, so `pnpm build` fails wherever the UI still uses
-an old action or field name. CI regenerates it and fails when the result differs
-from what is committed.
-
-Use synthetic catalogues and authored assets when developing or reporting bugs.
-Do not commit or attach personal catalogue records, account/order information,
-cookies, tokens, keys, browser profiles or acquired asset files. Keep diagnostics
-aggregate and redact personal values from screenshots and logs.
-
-Starting with **0.2.0 Beta**, installed users' persistent data is a compatibility
-contract. Avoid database/schema/storage-format changes unless necessary. Every
-necessary incompatible persistent-format change must include an explicit,
-versioned migration from supported previous public versions, safe failure
-handling and focused preservation/reopen checks. Never silently recreate, reset
-or discard an existing user's database. A routine App update must retain the
-catalogue, library paths, user edits, settings and protected device sessions.
-
-## Maintainer releases
-
-Each release has one numeric App version (`0.3.5`) and tag (`v0.3.5`). Keep
-`app/package.json`, Cargo and Tauri config in agreement. The Bridge keeps the
-version of the release that last changed it: a release that changes the Bridge
-sets Bridge `package.json` to the same new version and attaches the Bridge, while
-an App-only release attaches none. Release checks reject an unchanged Bridge
-version whose sources differ from that version's tag. Use a patch increment for
-routine releases. A minor or major increment requires the project owner's
-explicit agreement before changing the version.
-
-Starting with 0.2.1, every release needs an entry in the root `changelog.md` and
-the same notes on its GitHub Release page. Keep release sections newest first,
-with a heading such as `## 0.2.1 Beta - 2026-10-14`, then describe the actual
-user-facing changes. The newest section must match the App version and have
-nonempty notes; duplicate version sections are rejected. An App-only release
-names the unchanged Bridge version and links the release that has its files.
-Release tooling copies that complete heading and section into the draft and
-published Release body.
-The App update feed uses the published Release body, so release notes have one
-source of truth. `release/config.json` contains only the Beta `prerelease` flag.
-
-Windows releases contain the NSIS installer and its Tauri
-signature; no portable App is distributed. Releases that change the Bridge also
-include `.unitypackage`, UPM `.tgz`, ZIP and the verified inventory. VCC listing
-is not yet configured.
-
-Before tagging, the maintainer must perform bounded metadata-only real-session
-checks in an empty isolated catalogue, with automatic downloads OFF: five pages
-per available BOOTH Library/purchases/gifts/free-history, Gumroad buyer
-library/bundle and Jinxxy inventory source, or a verified shorter natural end.
-Drain details, compare observed facts with actual database/UI projections and
-owned variants/files, and validate raw file lists/counts against the entitlement
-union. Unexplained missing facts, duplicated aliases or count mismatches block a
-release. Record aggregate publication timing, counts, requests and backoff; no
-full-library scan or asset download is required or authorized by this check.
-Also verify the current App Rust sender against an isolated actual Unity Editor:
-received bytes, import result and durable same-ID receipt must pass. Unavailable
-sessions/licensing block release instead of being counted as a pass.
-
-Stage the final public build inputs, run `python scripts/release.py source-digest`,
-then record the completed checks in the tracked `release/verification.json`:
-
-```json
-{
-  "formatVersion": 1,
-  "version": "0.2.1",
-  "sourceSha256": "<source-digest output>",
-  "verifiedAt": "<completed UTC timestamp, RFC 3339>",
-  "checks": {
-    "storeMetadata": {
-      "passed": true,
-      "pageLimit": 5,
-      "autoDownload": false,
-      "fullScan": false,
-      "sources": ["booth", "gumroad", "jinxxy"],
-      "failures": 0
-    },
-    "fileIdentity": {"passed": true, "failures": 0},
-    "appUnityTransfer": {
-      "passed": true,
-      "receivedBytesMatch": true,
-      "importSucceeded": true,
-      "durableReceipt": true
-    }
-  }
-}
-```
-
-This is a maintainer attestation after actual local checks; CI never receives
-private sessions or local verification harnesses. Include only aggregate
-evidence. Build-input changes invalidate the digest. Run
-`python scripts/release.py check --tag v0.3.5 --require-verification`, commit the
-source and marker, then push the matching tag. The Release workflow builds the
-App, and the Bridge when the release changes it, uploads the complete checked set
-to a draft, publishes it together, and updates GitHub Pages `/app/latest.json`
-and `/bridge/latest.json` directly. The Bridge feed follows the newest release
-that attaches the Bridge, so App-only releases do not offer a Bridge update.
-Published assets are immutable. Rerunning a published tag refreshes Pages only;
-fixes require a new version. Pages selects the highest published numeric version,
-including Beta prereleases, so older-tag reruns cannot downgrade the update feed.
-
-Configure GitHub Pages to use Actions and allow the `github-pages` environment
-to deploy version tags. Store the Tauri updater private key and optional password
-in repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; retain a secure backup outside Git. The
-matching public key is in Tauri config. Release signatures bind their App version
-in the signed trusted comment; manual signing must pass `--app-version`. Updater
-signatures authenticate updates;
-the first Beta does not include a Windows Authenticode publisher certificate.
+CI never sees store accounts. Real-account and real-Unity checks are the
+maintainer's, before each release: see [RELEASING.md](RELEASING.md).
