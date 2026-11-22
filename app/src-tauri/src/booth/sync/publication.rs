@@ -24,6 +24,107 @@ pub(super) fn product_draft_scope(
         && saved["product"]["id"] == product
 }
 
+/// The facts of a row that a saved publication signature covers: the fields `parser::Row`
+/// had when signatures were first saved, in that order and shape, so saved signatures keep
+/// matching. A new `Row` field enters only if it changes what is published, and then every
+/// interrupted run resumed by the new version republishes its products once.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedRow<'a> {
+    source_record_id: &'a str,
+    product_id: Option<&'a str>,
+    order_id: Option<&'a str>,
+    name: Option<&'a str>,
+    shop: Option<&'a str>,
+    shop_url: Option<&'a str>,
+    preview_url: Option<&'a str>,
+    acquired_date_text: Option<&'a str>,
+    paid_amount_text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product_line_total_jpy: Option<u64>,
+    variant_name: Option<&'a str>,
+    files: Vec<SignedFile<'a>>,
+    manifest_complete: bool,
+    unavailable: bool,
+    error_code: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedFile<'a> {
+    id: &'a str,
+    variant_id: Option<&'a str>,
+    name: Option<&'a str>,
+    size_bytes: Option<u64>,
+    source_url: &'a str,
+    revision: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'a str>,
+}
+
+impl<'a> SignedRow<'a> {
+    fn of(row: &'a parser::Row) -> Self {
+        // Every field is named, so a new one fails to compile here until it is placed.
+        let parser::Row {
+            source_record_id,
+            product_id,
+            order_id,
+            name,
+            shop,
+            shop_url,
+            preview_url,
+            acquired_date_text,
+            paid_amount_text,
+            product_line_total_jpy,
+            variant_name,
+            files,
+            manifest_complete,
+            unavailable,
+            error_code,
+        } = row;
+        Self {
+            source_record_id,
+            product_id: product_id.as_deref(),
+            order_id: order_id.as_deref(),
+            name: name.as_deref(),
+            shop: shop.as_deref(),
+            shop_url: shop_url.as_deref(),
+            preview_url: preview_url.as_deref(),
+            acquired_date_text: acquired_date_text.as_deref(),
+            paid_amount_text: paid_amount_text.as_deref(),
+            product_line_total_jpy: *product_line_total_jpy,
+            variant_name: variant_name.as_deref(),
+            files: files.iter().map(SignedFile::of).collect(),
+            manifest_complete: *manifest_complete,
+            unavailable: *unavailable,
+            error_code: error_code.as_deref(),
+        }
+    }
+}
+
+impl<'a> SignedFile<'a> {
+    fn of(file: &'a parser::File) -> Self {
+        let parser::File {
+            id,
+            variant_id,
+            name,
+            size_bytes,
+            source_url,
+            revision,
+            format,
+        } = file;
+        Self {
+            id,
+            variant_id: variant_id.as_deref(),
+            name: name.as_deref(),
+            size_bytes: *size_bytes,
+            source_url,
+            revision,
+            format: format.as_deref(),
+        }
+    }
+}
+
 pub(super) fn publication_manifest<'a>(
     account: &str,
     source: &str,
@@ -40,7 +141,10 @@ pub(super) fn publication_manifest<'a>(
             let route = routes
                 .get(&row.source_record_id)
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            Ok(safety::hash(serde_json::to_vec(&(row, route))?))
+            Ok(safety::hash(serde_json::to_vec(&(
+                SignedRow::of(row),
+                route,
+            ))?))
         })
         .collect::<Result<_>>()?;
     rows.sort_unstable();

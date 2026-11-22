@@ -1760,6 +1760,85 @@ fn product_draft_restart_and_cancel_preserve_published_snapshot_until_atomic_pub
     drop(catalogue);
     std::fs::remove_dir_all(path).unwrap();
 }
+/// A resumed run restores a product only when its saved signature still matches, so the
+/// signature of the same rows must never move between App versions.
+#[test]
+fn publication_signatures_saved_by_earlier_versions_still_match() {
+    let full = parser::Row {
+        source_record_id: "purchase:pinned-a".into(),
+        product_id: Some("900101".into()),
+        order_id: Some("910101".into()),
+        name: Some("Authored item".into()),
+        shop: Some("Authored shop".into()),
+        shop_url: Some("https://authored.booth.pm/".into()),
+        preview_url: Some("https://booth.pximg.net/authored.png".into()),
+        acquired_date_text: Some("2026/01/02 03:04".into()),
+        paid_amount_text: Some("¥ 500".into()),
+        product_line_total_jpy: Some(500),
+        variant_name: Some("Standard".into()),
+        files: vec![parser::File {
+            id: "920101".into(),
+            variant_id: Some("930101".into()),
+            name: Some("authored.zip".into()),
+            size_bytes: Some(1024),
+            source_url: "https://booth.pm/downloadables/920101".into(),
+            revision: "unknown".into(),
+            format: Some("mp3".into()),
+        }],
+        manifest_complete: true,
+        unavailable: false,
+        error_code: None,
+    };
+    let sparse = parser::Row {
+        source_record_id: "free:pinned-b".into(),
+        product_id: Some("900101".into()),
+        files: vec![
+            parser::File {
+                id: "920102".into(),
+                source_url: "https://booth.pm/downloadables/920102".into(),
+                revision: "rev-2".into(),
+                ..full.files[0].clone()
+            },
+            parser::File {
+                id: "920103".into(),
+                variant_id: None,
+                name: None,
+                size_bytes: None,
+                source_url: "https://booth.pm/downloadables/920103".into(),
+                revision: "unknown".into(),
+                format: None,
+            },
+        ],
+        unavailable: true,
+        error_code: Some("FREE_OFFER_UNAVAILABLE".into()),
+        ..Default::default()
+    };
+    let routes = BTreeMap::from([
+        ("purchase:pinned-a".to_owned(), "/orders/910101".to_owned()),
+        (
+            "free:pinned-b".to_owned(),
+            "/library/free?page=2".to_owned(),
+        ),
+    ]);
+    let files = BTreeSet::from(["account-a:920101:930101".to_owned()]);
+    let one = publication_manifest("account-a", "purchase", "900101", [&full], &routes, &files);
+    let both = publication_manifest(
+        "account-a",
+        "free",
+        "900101",
+        [&sparse, &full],
+        &routes,
+        &BTreeSet::new(),
+    );
+    assert_eq!(
+        one.unwrap(),
+        "4ada86e091668494a583e81527b9f22ff42403944df23b94c2831a4fafbafcc5"
+    );
+    assert_eq!(
+        both.unwrap(),
+        "5f5347181ff82721261f8130c2c260e790164229344c147b1b7522b6867d3970"
+    );
+}
 #[test]
 fn restored_free_scope_preserves_unbound_exception_and_completed_totals_without_replay() {
     let path = std::env::temp_dir().join(format!("booth-restored-free-{}", uuid::Uuid::new_v4()));
