@@ -1994,7 +1994,6 @@ impl BoothService {
             source,
             mode,
             prefetch,
-            key,
             ..
         } = read;
         let PassProducts {
@@ -2045,42 +2044,17 @@ impl BoothService {
                 checkpoint,
             )?
         {
-            if !already_published {
-                *metadata_completed += 1;
-            }
-            let draft = if let Some(saved) = saved_draft.as_ref().filter(|saved| {
-                product_draft_scope(saved, account, source, &checkpoint.run_id, &product)
-                    && saved["enriched"] == true
-            }) {
-                saved["product"].clone()
-            } else {
-                self.inner
-                    .catalogue
-                    .get("product", &product)?
-                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
-            };
-            self.retain_published_context(
+            self.keep_restored_product(
+                read,
                 publications,
-                prefetch,
-                ProductPublication {
-                    account: account.into(),
-                    source: source.into(),
-                    product: product.clone(),
-                    rows: product_rows.iter().map(|row| (*row).clone()).collect(),
-                    routes: product_rows
-                        .iter()
-                        .filter_map(|row| {
-                            row_routes
-                                .get(&row.source_record_id)
-                                .map(|route| (row.source_record_id.clone(), route.clone()))
-                        })
-                        .collect(),
-                    draft,
-                    files,
-                    checkpoint_key: key.to_owned(),
-                    force_verify: mode != "incremental",
-                    needs_enrichment: false,
-                },
+                checkpoint,
+                row_routes,
+                metadata_completed,
+                already_published,
+                &product,
+                &product_rows,
+                files,
+                &saved_draft,
             )?;
             return Ok(());
         }
@@ -2201,6 +2175,110 @@ impl BoothService {
         }
         job["progress"]["stage"] = json!("enriching");
         self.progress(app, job)?;
+        self.keep_pass_product(
+            read,
+            job,
+            publications,
+            checkpoint,
+            row_routes,
+            product,
+            observed_rows,
+            observed_files,
+            draft,
+            needs_enrichment,
+            availability_only,
+        )?;
+        Ok(())
+    }
+
+    /// Keeps a product the pass already published, from its enriched draft or its record.
+    fn keep_restored_product(
+        &self,
+        read: SourceRead<'_>,
+        publications: &mut Publications,
+        checkpoint: &Checkpoint,
+        row_routes: &BTreeMap<String, String>,
+        metadata_completed: &mut usize,
+        already_published: bool,
+        product: &str,
+        product_rows: &[&parser::Row],
+        files: BTreeSet<String>,
+        saved_draft: &Option<Value>,
+    ) -> Result<()> {
+        let SourceRead {
+            account,
+            source,
+            mode,
+            prefetch,
+            key,
+            ..
+        } = read;
+        if !already_published {
+            *metadata_completed += 1;
+        }
+        let draft = if let Some(saved) = saved_draft.as_ref().filter(|saved| {
+            product_draft_scope(saved, account, source, &checkpoint.run_id, product)
+                && saved["enriched"] == true
+        }) {
+            saved["product"].clone()
+        } else {
+            self.inner
+                .catalogue
+                .get("product", product)?
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
+        };
+        self.retain_published_context(
+            publications,
+            prefetch,
+            ProductPublication {
+                account: account.into(),
+                source: source.into(),
+                product: product.to_owned(),
+                rows: product_rows.iter().map(|row| (*row).clone()).collect(),
+                routes: product_rows
+                    .iter()
+                    .filter_map(|row| {
+                        row_routes
+                            .get(&row.source_record_id)
+                            .map(|route| (row.source_record_id.clone(), route.clone()))
+                    })
+                    .collect(),
+                draft,
+                files,
+                checkpoint_key: key.to_owned(),
+                force_verify: mode != "incremental",
+                needs_enrichment: false,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Marks the product pending, then keeps it for publication: an availability-only grant
+    /// beside its product, any other among the pass's products and, with prefetch, published
+    /// early.
+    fn keep_pass_product(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        publications: &mut Publications,
+        checkpoint: &mut Checkpoint,
+        row_routes: &BTreeMap<String, String>,
+        product: String,
+        observed_rows: Vec<&parser::Row>,
+        observed_files: BTreeSet<String>,
+        draft: Value,
+        needs_enrichment: bool,
+        availability_only: bool,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            prefetch,
+            key,
+            ..
+        } = read;
         checkpoint.enrichment_pending.insert(product.clone());
         let product_routes = observed_rows
             .iter()
