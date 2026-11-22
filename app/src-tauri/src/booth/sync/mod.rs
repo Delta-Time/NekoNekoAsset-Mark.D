@@ -1484,22 +1484,7 @@ impl BoothService {
         let mut checkpoint = self
             .resume_checkpoint(&key, account, source, mode, client, selected, prefetch)
             .await?;
-        // Only the Library is long enough to matter and has a second order to find changes by.
-        // Every order and receipt is still read, so a purchase is found whatever this does.
-        // Updating chosen assets stops there too: a row they changed leads the updated order,
-        // and an unchanged one stays as that pass read it.
-        let mut tracker = if (mode == "incremental" || selected.is_some())
-            && source == "library"
-            && !checkpoint.read_every_page
-        {
-            baseline
-                .filter(|b| {
-                    checkpoint.overlap_end.is_some() || b.recently_read_in_full(chrono::Utc::now())
-                })
-                .map(Tracker::new)
-        } else {
-            None
-        };
+        let mut tracker = pass_tracker(mode, selected, source, &checkpoint, baseline);
         let mut updated_tracker: Option<UpdatedTracker> = None;
         let mut free_history = self.replay_journals(
             &checkpoint,
@@ -1528,24 +1513,7 @@ impl BoothService {
             &mut free_history,
         )
         .await?;
-        // A source that shifted during the pass cannot be labelled complete.
-        let head_route = format!("{}?page=1", safety::source_path(source)?);
-        let final_head = self
-            .fetch_page(client, source, &head_route, prefetch)
-            .await?;
-        if self.cancelled(job)? {
-            bail!("CANCELLED");
-        }
-        record_source_head(&mut checkpoint, &final_head);
-        if let Some(prefetch) = prefetch {
-            let early = prefetch
-                .early
-                .lock()
-                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-            set_collecting_totals(job, &early, source);
-        }
-        job["progress"]["stage"] = json!("enriching");
-        self.progress(app, job)?;
+        let (head_route, final_head) = self.reread_source_head(read, job, &mut checkpoint).await?;
         // Replace the accessible manifest only after its current item rows were durably read.
         // Earlier acquisition observations/artifacts remain; retired remote files are not deleted.
         let PassRows {
@@ -1569,69 +1537,18 @@ impl BoothService {
                 publications,
             )
             .await?;
-        let merged = checkpoint
-            .overlap_end
-            .map(|end| {
-                baseline
-                    .and_then(|base| {
-                        super::incremental::merged_rows(base, &current_rows, end, &updated_rows)
-                    })
-                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))
-            })
-            .transpose()?;
-        let refreshed_products: BTreeSet<_> = current_rows
-            .iter()
-            .chain(merged.iter().flat_map(|merged| &merged.changed))
-            .filter_map(|r| r.product_id.clone())
-            .collect();
-        let mut all_rows = match merged {
-            Some(merged) => merged.rows,
-            None => current_rows,
-        };
-        // Known listed receipts keep their previous complete observation, like a verified tail.
-        for route in &checkpoint.reused {
-            let rows = known_receipts
-                .get(route)
-                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            all_rows.extend(rows.iter().cloned());
-        }
-        let retained_observations =
-            checkpoint.overlap_end.is_some() || !checkpoint.reused.is_empty();
-        // A verified incremental tail retains its original order identity; its
-        // receipt route can be reconstructed without a page-number guess.
-        for row in &all_rows {
-            row_routes
-                .entry(row.source_record_id.clone())
-                .or_insert_with(|| {
-                    row.order_id
-                        .as_deref()
-                        .filter(|id| source == "purchase" && safety::numeric(id))
-                        .map(|id| format!("/orders/{id}"))
-                        .unwrap_or_else(|| head_route.clone())
-                });
-        }
-        // Refreshed prefix rows replace old rows. A changed file list must not be
-        // unioned with an obsolete journal row from the previous complete pass.
-        let mut manifests: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
-        let mut rows_by_product: BTreeMap<&str, Vec<&parser::Row>> = BTreeMap::new();
-        for row in &all_rows {
-            let Some(id) = row.product_id.as_ref() else {
-                continue;
-            };
-            // Preserve every bound receipt row and its original order. Product
-            // assembly must not rescan the entire source for each manifest.
-            rows_by_product.entry(id.as_str()).or_default().push(row);
-            if selected.is_some_and(|s| !s.contains(id))
-                || (source == "purchase" && row.files.is_empty())
-            {
-                continue;
-            }
-            let manifest = manifests
-                .entry(id.clone())
-                .or_insert((BTreeSet::new(), true));
-            manifest.1 &= row.manifest_complete;
-            manifest.0.extend(observed_file_ids(account, [row]));
-        }
+        let (all_rows, refreshed_products, retained_observations) = merge_pass_rows(
+            &checkpoint,
+            baseline,
+            &known_receipts,
+            source,
+            &head_route,
+            current_rows,
+            &updated_rows,
+            &mut row_routes,
+        )?;
+        let (manifests, mut rows_by_product) =
+            product_manifests(&all_rows, selected, account, source);
         checkpoint.forget_unlisted(|id| rows_by_product.contains_key(id));
         let records = vec![];
         let closed_traversal = checkpoint.terminal
@@ -1641,26 +1558,7 @@ impl BoothService {
         let mut enrichment_error = None;
         let metadata_total = manifests.len();
         let mut metadata_completed = checkpoint.published_products.len();
-        if let Some(prefetch) = prefetch {
-            let mut early = prefetch
-                .early
-                .lock()
-                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-            early.remaining_sources.remove(source);
-            if unbound_membership || !closed_traversal {
-                early
-                    .publications
-                    .unbound_sources
-                    .insert((account.into(), source.into()));
-            }
-            early
-                .publications
-                .checkpoints
-                .insert(key.clone(), checkpoint.clone());
-            if early.remaining_sources.is_empty() {
-                self.publish_early(app, job, &mut early, None)?;
-            }
-        }
+        self.note_source_collected(read, job, &checkpoint, unbound_membership, closed_traversal)?;
         let pass = PassProducts {
             head_route: &head_route,
             row_routes: &row_routes,
@@ -1723,6 +1621,83 @@ impl BoothService {
                 unresolved_rows,
             },
         )
+    }
+
+    /// Reads the source's first page again once the pass is read, and moves the job on to
+    /// enriching.
+    async fn reread_source_head(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        checkpoint: &mut Checkpoint,
+    ) -> Result<(String, parser::Page)> {
+        let SourceRead {
+            app,
+            source,
+            client,
+            prefetch,
+            ..
+        } = read;
+        // A source that shifted during the pass cannot be labelled complete.
+        let head_route = format!("{}?page=1", safety::source_path(source)?);
+        let final_head = self
+            .fetch_page(client, source, &head_route, prefetch)
+            .await?;
+        if self.cancelled(job)? {
+            bail!("CANCELLED");
+        }
+        record_source_head(checkpoint, &final_head);
+        if let Some(prefetch) = prefetch {
+            let early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            set_collecting_totals(job, &early, source);
+        }
+        job["progress"]["stage"] = json!("enriching");
+        self.progress(app, job)?;
+        Ok((head_route, final_head))
+    }
+
+    /// With prefetch, tells the early publication this source is collected; it publishes
+    /// once every source is.
+    fn note_source_collected(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        checkpoint: &Checkpoint,
+        unbound_membership: bool,
+        closed_traversal: bool,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            prefetch,
+            key,
+            ..
+        } = read;
+        if let Some(prefetch) = prefetch {
+            let mut early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            early.remaining_sources.remove(source);
+            if unbound_membership || !closed_traversal {
+                early
+                    .publications
+                    .unbound_sources
+                    .insert((account.into(), source.into()));
+            }
+            early
+                .publications
+                .checkpoints
+                .insert(key.to_owned(), checkpoint.clone());
+            if early.remaining_sources.is_empty() {
+                self.publish_early(app, job, &mut early, None)?;
+            }
+        }
+        Ok(())
     }
 
     /// Requeues the receipts the previous pass no longer supplies, reuses the ones it does,
@@ -4541,3 +4516,120 @@ fn revision_observation(
 
 #[cfg(test)]
 mod tests;
+
+/// The Library tracker that lets an incremental pass stop at the rows it already knows.
+fn pass_tracker(
+    mode: &str,
+    selected: Option<&BTreeSet<String>>,
+    source: &str,
+    checkpoint: &Checkpoint,
+    baseline: Option<&Baseline>,
+) -> Option<Tracker> {
+    // Only the Library is long enough to matter and has a second order to find changes by.
+    // Every order and receipt is still read, so a purchase is found whatever this does.
+    // Updating chosen assets stops there too: a row they changed leads the updated order,
+    // and an unchanged one stays as that pass read it.
+    if (mode == "incremental" || selected.is_some())
+        && source == "library"
+        && !checkpoint.read_every_page
+    {
+        baseline
+            .filter(|b| {
+                checkpoint.overlap_end.is_some() || b.recently_read_in_full(chrono::Utc::now())
+            })
+            .map(Tracker::new)
+    } else {
+        None
+    }
+}
+
+/// The pass's rows with a verified tail and reused receipts merged in, the products it read
+/// again and whether older observations were kept; every row gets its receipt route.
+fn merge_pass_rows(
+    checkpoint: &Checkpoint,
+    baseline: Option<&Baseline>,
+    known_receipts: &BTreeMap<String, Vec<parser::Row>>,
+    source: &str,
+    head_route: &str,
+    current_rows: Vec<parser::Row>,
+    updated_rows: &[parser::Row],
+    row_routes: &mut BTreeMap<String, String>,
+) -> Result<(Vec<parser::Row>, BTreeSet<String>, bool)> {
+    let merged = checkpoint
+        .overlap_end
+        .map(|end| {
+            baseline
+                .and_then(|base| {
+                    super::incremental::merged_rows(base, &current_rows, end, updated_rows)
+                })
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))
+        })
+        .transpose()?;
+    let refreshed_products: BTreeSet<_> = current_rows
+        .iter()
+        .chain(merged.iter().flat_map(|merged| &merged.changed))
+        .filter_map(|r| r.product_id.clone())
+        .collect();
+    let mut all_rows = match merged {
+        Some(merged) => merged.rows,
+        None => current_rows,
+    };
+    // Known listed receipts keep their previous complete observation, like a verified tail.
+    for route in &checkpoint.reused {
+        let rows = known_receipts
+            .get(route)
+            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+        all_rows.extend(rows.iter().cloned());
+    }
+    let retained_observations = checkpoint.overlap_end.is_some() || !checkpoint.reused.is_empty();
+    // A verified incremental tail retains its original order identity; its
+    // receipt route can be reconstructed without a page-number guess.
+    for row in &all_rows {
+        row_routes
+            .entry(row.source_record_id.clone())
+            .or_insert_with(|| {
+                row.order_id
+                    .as_deref()
+                    .filter(|id| source == "purchase" && safety::numeric(id))
+                    .map(|id| format!("/orders/{id}"))
+                    .unwrap_or_else(|| head_route.to_owned())
+            });
+    }
+    Ok((all_rows, refreshed_products, retained_observations))
+}
+
+/// Each listed product's observed files and whether its rows list them in full, and every
+/// product's rows in their original order.
+fn product_manifests<'a>(
+    all_rows: &'a [parser::Row],
+    selected: Option<&BTreeSet<String>>,
+    account: &str,
+    source: &str,
+) -> (
+    BTreeMap<String, (BTreeSet<String>, bool)>,
+    BTreeMap<&'a str, Vec<&'a parser::Row>>,
+) {
+    // Refreshed prefix rows replace old rows. A changed file list must not be
+    // unioned with an obsolete journal row from the previous complete pass.
+    let mut manifests: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
+    let mut rows_by_product: BTreeMap<&str, Vec<&parser::Row>> = BTreeMap::new();
+    for row in all_rows {
+        let Some(id) = row.product_id.as_ref() else {
+            continue;
+        };
+        // Preserve every bound receipt row and its original order. Product
+        // assembly must not rescan the entire source for each manifest.
+        rows_by_product.entry(id.as_str()).or_default().push(row);
+        if selected.is_some_and(|s| !s.contains(id))
+            || (source == "purchase" && row.files.is_empty())
+        {
+            continue;
+        }
+        let manifest = manifests
+            .entry(id.clone())
+            .or_insert((BTreeSet::new(), true));
+        manifest.1 &= row.manifest_complete;
+        manifest.0.extend(observed_file_ids(account, [row]));
+    }
+    (manifests, rows_by_product)
+}
