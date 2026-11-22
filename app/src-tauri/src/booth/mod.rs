@@ -552,38 +552,7 @@ impl BoothService {
                 crate::stores::api::StoreJob::of(&job)
             }
             "account_logout" | "account_remove" => {
-                let id = field(&args, "accountId")?;
-                self.known_account(id)?;
-                self.inner.catalogue.require_account_idle(id)?;
-                if self
-                    .inner
-                    .running
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                    .contains(&format!("account:{id}"))
-                {
-                    bail!("ACCOUNT_BUSY");
-                }
-                auth::disconnect(app, &self.inner.catalogue.device_dir(), id).await?;
-                if action == "account_remove" {
-                    let result = self
-                        .inner
-                        .catalogue
-                        .remove_account(id, args["removeProducts"] == true)?;
-                    self.changed(app, None);
-                    return Ok(result);
-                }
-                let mut a = self.known_account(id)?;
-                if self.inner.catalogue.library_root().is_none() {
-                    a["disconnected"] = json!(true);
-                    a["state"] = json!("disconnected");
-                    a["status"] = json!("disconnected");
-                    self.inner.catalogue.put("account", id, a)?;
-                }
-                self.changed(app, None);
-                crate::stores::api::answer(crate::stores::api::StoreAccount {
-                    account_id: id.to_owned(),
-                })
+                self.disconnect_account(app, action, &args).await
             }
             "sync" => {
                 let id = field(&args, "accountId")?;
@@ -610,122 +579,172 @@ impl BoothService {
                 self.spawn_job(app.clone(), job.clone())?;
                 crate::stores::api::StoreJob::of(&job)
             }
-            "cancel_sync" => {
-                let id = field(&args, "jobId")?;
-                let job = self
-                    .inner
-                    .catalogue
-                    .get("job", id)?
-                    .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                if !matches!(
-                    job["type"].as_str(),
-                    Some("boothSync" | "boothUpdate" | "boothLogin")
-                ) {
-                    bail!("INVALID_JOB");
-                }
-                for attempt in 0..4 {
-                    let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
-                    let mut latest = batch
-                        .get("job", id)?
-                        .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                    if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
-                        break;
-                    }
-                    latest["state"] = json!("cancelled");
-                    latest["updatedAt"] = json!(now());
-                    latest["completedAt"] = json!(now());
-                    batch.stage("job", id, latest)?;
-                    if batch.try_commit()?.is_some() {
-                        break;
-                    }
-                    ensure!(attempt < 3, "CONCURRENT_UPDATE");
-                }
-                self.changed(app, Some(id));
-                crate::stores::api::answer(crate::stores::api::StoreJob {
-                    job_id: id.to_owned(),
-                })
-            }
-            "retry_sync" => {
-                let id = field(&args, "jobId")?;
-                let job = self
-                    .inner
-                    .catalogue
-                    .get("job", id)?
-                    .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                if !matches!(
-                    job["type"].as_str(),
-                    Some("boothSync" | "boothUpdate" | "boothLogin")
-                ) {
-                    bail!("INVALID_JOB");
-                }
-                if !matches!(
-                    job["state"].as_str(),
-                    Some("failed" | "needsAction" | "cancelled")
-                ) {
-                    bail!("JOB_BUSY");
-                }
-                let key = job["accountId"]
-                    .as_str()
-                    .map(|id| format!("account:{id}"))
-                    .unwrap_or_else(|| {
-                        if job["args"]["publicOnly"] == true {
-                            format!("booth-public:{id}")
-                        } else {
-                            "booth-global".into()
-                        }
-                    });
-                // A retried update waits for the account like a new one.
-                if job["type"] != "boothUpdate"
-                    && self
-                        .inner
-                        .running
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                        .contains(&key)
-                {
-                    bail!("ACCOUNT_BUSY");
-                }
-                if job["type"] == "boothLogin" {
-                    let account = field(&job, "accountId")?;
-                    self.known_account(account)?;
-                    auth::window(app, &self.inner.catalogue.device_dir(), account, true).await?;
-                }
-                let job = self.requeue_job(&job)?;
-                self.spawn_job(app.clone(), job)?;
-                crate::stores::api::answer(crate::stores::api::StoreJob {
-                    job_id: id.to_owned(),
-                })
-            }
-            "update_products" => {
-                let ids = args["productIds"]
-                    .as_array()
-                    .or_else(|| args["ids"].as_array())
-                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
-                let ids: BTreeSet<String> = ids
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .filter(|id| safety::numeric(id))
-                            .map(str::to_owned)
-                            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
-                    })
-                    .collect::<Result<_>>()?;
-                ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
-                let mut jobs = Vec::new();
-                for scope in self.update_scopes(&ids)? {
-                    if let Some(active) = self.active_update(&scope)? {
-                        jobs.push(active["id"].clone());
-                        continue;
-                    }
-                    let job = self.make_job("boothUpdate", scope)?;
-                    self.spawn_job(app.clone(), job.clone())?;
-                    jobs.push(job["id"].clone());
-                }
-                crate::stores::api::StoreJobs::of(jobs)
-            }
+            "cancel_sync" => self.cancel_job(app, &args),
+            "retry_sync" => self.retry_job(app, &args).await,
+            "update_products" => self.update_selected(app, &args),
             _ => bail!("UNKNOWN_BOOTH_ACTION"),
         }
+    }
+
+    /// Logs an account out, or removes it with or without its products.
+    async fn disconnect_account(
+        &self,
+        app: &AppHandle,
+        action: &str,
+        args: &Value,
+    ) -> Result<Value> {
+        let id = field(args, "accountId")?;
+        self.known_account(id)?;
+        self.inner.catalogue.require_account_idle(id)?;
+        if self
+            .inner
+            .running
+            .lock()
+            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+            .contains(&format!("account:{id}"))
+        {
+            bail!("ACCOUNT_BUSY");
+        }
+        auth::disconnect(app, &self.inner.catalogue.device_dir(), id).await?;
+        if action == "account_remove" {
+            let result = self
+                .inner
+                .catalogue
+                .remove_account(id, args["removeProducts"] == true)?;
+            self.changed(app, None);
+            return Ok(result);
+        }
+        let mut a = self.known_account(id)?;
+        if self.inner.catalogue.library_root().is_none() {
+            a["disconnected"] = json!(true);
+            a["state"] = json!("disconnected");
+            a["status"] = json!("disconnected");
+            self.inner.catalogue.put("account", id, a)?;
+        }
+        self.changed(app, None);
+        crate::stores::api::answer(crate::stores::api::StoreAccount {
+            account_id: id.to_owned(),
+        })
+    }
+
+    /// Cancels a queued or running BOOTH job.
+    fn cancel_job(&self, app: &AppHandle, args: &Value) -> Result<Value> {
+        let id = field(args, "jobId")?;
+        let job = self
+            .inner
+            .catalogue
+            .get("job", id)?
+            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+        if !matches!(
+            job["type"].as_str(),
+            Some("boothSync" | "boothUpdate" | "boothLogin")
+        ) {
+            bail!("INVALID_JOB");
+        }
+        for attempt in 0..4 {
+            let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
+            let mut latest = batch
+                .get("job", id)?
+                .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+            if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                break;
+            }
+            latest["state"] = json!("cancelled");
+            latest["updatedAt"] = json!(now());
+            latest["completedAt"] = json!(now());
+            batch.stage("job", id, latest)?;
+            if batch.try_commit()?.is_some() {
+                break;
+            }
+            ensure!(attempt < 3, "CONCURRENT_UPDATE");
+        }
+        self.changed(app, Some(id));
+        crate::stores::api::answer(crate::stores::api::StoreJob {
+            job_id: id.to_owned(),
+        })
+    }
+
+    /// Runs a stopped BOOTH job again once its account is free.
+    async fn retry_job(&self, app: &AppHandle, args: &Value) -> Result<Value> {
+        let id = field(args, "jobId")?;
+        let job = self
+            .inner
+            .catalogue
+            .get("job", id)?
+            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+        if !matches!(
+            job["type"].as_str(),
+            Some("boothSync" | "boothUpdate" | "boothLogin")
+        ) {
+            bail!("INVALID_JOB");
+        }
+        if !matches!(
+            job["state"].as_str(),
+            Some("failed" | "needsAction" | "cancelled")
+        ) {
+            bail!("JOB_BUSY");
+        }
+        let key = job["accountId"]
+            .as_str()
+            .map(|id| format!("account:{id}"))
+            .unwrap_or_else(|| {
+                if job["args"]["publicOnly"] == true {
+                    format!("booth-public:{id}")
+                } else {
+                    "booth-global".into()
+                }
+            });
+        // A retried update waits for the account like a new one.
+        if job["type"] != "boothUpdate"
+            && self
+                .inner
+                .running
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+                .contains(&key)
+        {
+            bail!("ACCOUNT_BUSY");
+        }
+        if job["type"] == "boothLogin" {
+            let account = field(&job, "accountId")?;
+            self.known_account(account)?;
+            auth::window(app, &self.inner.catalogue.device_dir(), account, true).await?;
+        }
+        let job = self.requeue_job(&job)?;
+        self.spawn_job(app.clone(), job)?;
+        crate::stores::api::answer(crate::stores::api::StoreJob {
+            job_id: id.to_owned(),
+        })
+    }
+
+    /// One update job per scope that holds the selected products, or the one already running.
+    fn update_selected(&self, app: &AppHandle, args: &Value) -> Result<Value> {
+        let ids = args["productIds"]
+            .as_array()
+            .or_else(|| args["ids"].as_array())
+            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
+        let ids: BTreeSet<String> = ids
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|id| safety::numeric(id))
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
+            })
+            .collect::<Result<_>>()?;
+        ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
+        let mut jobs = Vec::new();
+        for scope in self.update_scopes(&ids)? {
+            if let Some(active) = self.active_update(&scope)? {
+                jobs.push(active["id"].clone());
+                continue;
+            }
+            let job = self.make_job("boothUpdate", scope)?;
+            self.spawn_job(app.clone(), job.clone())?;
+            jobs.push(job["id"].clone());
+        }
+        crate::stores::api::StoreJobs::of(jobs)
     }
     /// An identical update already waiting or running covers a repeated request.
     fn active_update(&self, scope: &Value) -> Result<Option<Value>> {
