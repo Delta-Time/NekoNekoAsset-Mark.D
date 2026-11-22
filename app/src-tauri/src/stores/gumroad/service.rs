@@ -510,61 +510,7 @@ impl GumroadService {
                 api::StoreJob::of(&job)
             }
             "account_remove" | "account_logout" => {
-                let account = field(&args, "accountId")?;
-                let mut row = self.account(account)?;
-                let remove_products = if action == "account_remove" {
-                    Some(
-                        args["removeProducts"]
-                            .as_bool()
-                            .ok_or_else(|| anyhow::anyhow!("INVALID_ACCOUNT_ACTION"))?,
-                    )
-                } else {
-                    None
-                };
-                self.clear_downloads(account, None);
-                ensure!(
-                    !self
-                        .inner
-                        .running
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                        .contains(account),
-                    "ACCOUNT_BUSY"
-                );
-                let window = session::window(
-                    app,
-                    &self.inner.catalogue.device_dir(),
-                    StoreProvider::Gumroad,
-                    account,
-                    Url::parse("https://gumroad.com/login").unwrap(),
-                    false,
-                )
-                .await?;
-                session::forget(
-                    &self.inner.catalogue.device_dir(),
-                    StoreProvider::Gumroad,
-                    account,
-                )?;
-                session::disconnect(window).await?;
-                if let Some(remove_products) = remove_products {
-                    let result = self
-                        .inner
-                        .catalogue
-                        .remove_account(account, remove_products)?;
-                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
-                    return Ok(result);
-                }
-                if self.inner.catalogue.library_root().is_none() {
-                    row["disconnected"] = json!(true);
-                    row["state"] = json!("disconnected");
-                    row["status"] = json!("disconnected");
-                    row["identityVerified"] = json!(false);
-                    self.inner.catalogue.put("account", account, row)?;
-                }
-                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
-                api::answer(api::StoreAccount {
-                    account_id: account.to_owned(),
-                })
+                self.disconnect_account(app, action, &args).await
             }
             "sync" => {
                 let account = field(&args, "accountId")?;
@@ -594,141 +540,211 @@ impl GumroadService {
                 self.spawn(app.clone(), job.clone())?;
                 api::StoreJob::of(&job)
             }
-            "update_products" => {
-                let ids: BTreeSet<String> = args["productIds"]
-                    .as_array()
-                    .or_else(|| args["ids"].as_array())
-                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .filter(|value| value.starts_with("gumroad:"))
-                            .map(str::to_owned)
-                            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
-                    })
-                    .collect::<Result<_>>()?;
-                ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
-                let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-                let mut matched = BTreeSet::new();
-                for entitlement in self.inner.catalogue.list("entitlement")? {
-                    if entitlement["store"] == "Gumroad"
-                        && entitlement["productId"]
-                            .as_str()
-                            .is_some_and(|id| ids.contains(id))
-                    {
-                        let account = field(&entitlement, "accountId")?;
-                        if args["accountId"]
-                            .as_str()
-                            .is_some_and(|scope| scope != account)
-                        {
-                            continue;
-                        }
-                        let record = self.account(account)?;
-                        if !crate::stores::active_bound_account(&record)
-                            || !crate::stores::has_local_session(&self.inner.catalogue, &record)
-                        {
-                            continue;
-                        }
-                        matched.insert(field(&entitlement, "productId")?.to_owned());
-                        accounts
-                            .entry(account.into())
-                            .or_default()
-                            .insert(field(&entitlement, "productId")?.into());
-                    }
+            "update_products" => self.update_selected(app, &args),
+            "cancel_sync" | "retry_sync" => self.cancel_or_retry(app, action, &args).await,
+            _ => bail!("UNKNOWN_STORE_ACTION"),
+        }
+    }
+
+    /// Logs an account out, or removes it with or without its products.
+    async fn disconnect_account(
+        &self,
+        app: &AppHandle,
+        action: &str,
+        args: &Value,
+    ) -> Result<Value> {
+        let account = field(args, "accountId")?;
+        let mut row = self.account(account)?;
+        let remove_products = if action == "account_remove" {
+            Some(
+                args["removeProducts"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_ACCOUNT_ACTION"))?,
+            )
+        } else {
+            None
+        };
+        self.clear_downloads(account, None);
+        ensure!(
+            !self
+                .inner
+                .running
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+                .contains(account),
+            "ACCOUNT_BUSY"
+        );
+        let window = session::window(
+            app,
+            &self.inner.catalogue.device_dir(),
+            StoreProvider::Gumroad,
+            account,
+            Url::parse("https://gumroad.com/login").unwrap(),
+            false,
+        )
+        .await?;
+        session::forget(
+            &self.inner.catalogue.device_dir(),
+            StoreProvider::Gumroad,
+            account,
+        )?;
+        session::disconnect(window).await?;
+        if let Some(remove_products) = remove_products {
+            let result = self
+                .inner
+                .catalogue
+                .remove_account(account, remove_products)?;
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
+            return Ok(result);
+        }
+        if self.inner.catalogue.library_root().is_none() {
+            row["disconnected"] = json!(true);
+            row["state"] = json!("disconnected");
+            row["status"] = json!("disconnected");
+            row["identityVerified"] = json!(false);
+            self.inner.catalogue.put("account", account, row)?;
+        }
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
+        api::answer(api::StoreAccount {
+            account_id: account.to_owned(),
+        })
+    }
+
+    /// One update job per account that holds the selected products.
+    fn update_selected(&self, app: &AppHandle, args: &Value) -> Result<Value> {
+        let ids: BTreeSet<String> = args["productIds"]
+            .as_array()
+            .or_else(|| args["ids"].as_array())
+            .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| value.starts_with("gumroad:"))
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
+            })
+            .collect::<Result<_>>()?;
+        ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
+        let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut matched = BTreeSet::new();
+        for entitlement in self.inner.catalogue.list("entitlement")? {
+            if entitlement["store"] == "Gumroad"
+                && entitlement["productId"]
+                    .as_str()
+                    .is_some_and(|id| ids.contains(id))
+            {
+                let account = field(&entitlement, "accountId")?;
+                if args["accountId"]
+                    .as_str()
+                    .is_some_and(|scope| scope != account)
+                {
+                    continue;
                 }
-                ensure!(matched.len() == ids.len(), "AUTH_REQUIRED");
-                for account in accounts.keys() {
-                    self.account(account)?;
+                let record = self.account(account)?;
+                if !crate::stores::active_bound_account(&record)
+                    || !crate::stores::has_local_session(&self.inner.catalogue, &record)
+                {
+                    continue;
                 }
-                let running = self
+                matched.insert(field(&entitlement, "productId")?.to_owned());
+                accounts
+                    .entry(account.into())
+                    .or_default()
+                    .insert(field(&entitlement, "productId")?.into());
+            }
+        }
+        ensure!(matched.len() == ids.len(), "AUTH_REQUIRED");
+        for account in accounts.keys() {
+            self.account(account)?;
+        }
+        let running = self
+            .inner
+            .running
+            .lock()
+            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+        ensure!(
+            accounts.keys().all(|account| !running.contains(account)),
+            "ACCOUNT_BUSY"
+        );
+        drop(running);
+        let mut jobs = Vec::new();
+        for (account, ids) in accounts {
+            let job = self.make_job(
+                "gumroadUpdate",
+                json!({"accountId":account,"productIds":ids}),
+            )?;
+            self.spawn(app.clone(), job.clone())?;
+            jobs.push(job["id"].clone());
+        }
+        api::StoreJobs::of(jobs)
+    }
+
+    /// Cancels a queued or running job, or runs a stopped one again.
+    async fn cancel_or_retry(&self, app: &AppHandle, action: &str, args: &Value) -> Result<Value> {
+        let id = field(args, "jobId")?;
+        let job = self
+            .inner
+            .catalogue
+            .get("job", id)?
+            .filter(|job| job["store"] == "Gumroad")
+            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+        if action == "cancel_sync" {
+            for attempt in 0..4 {
+                let mut batch = RecordBatch::new(&self.inner.catalogue);
+                let mut latest = batch
+                    .get("job", id)?
+                    .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
+                    break;
+                }
+                latest["state"] = json!("cancelled");
+                latest["errorCode"] = json!("CANCELLED");
+                latest["completedAt"] = json!(now());
+                latest["progress"]["stage"] = json!("cancelled");
+                latest["updatedAt"] = json!(now());
+                batch.stage("job", id, latest)?;
+                if batch.try_commit()?.is_some() {
+                    break;
+                }
+                ensure!(attempt < 3, "CONCURRENT_UPDATE");
+            }
+        } else {
+            ensure!(
+                matches!(
+                    job["state"].as_str(),
+                    Some("failed" | "needsAction" | "cancelled")
+                ),
+                "JOB_BUSY"
+            );
+            ensure!(
+                !self
                     .inner
                     .running
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-                ensure!(
-                    accounts.keys().all(|account| !running.contains(account)),
-                    "ACCOUNT_BUSY"
-                );
-                drop(running);
-                let mut jobs = Vec::new();
-                for (account, ids) in accounts {
-                    let job = self.make_job(
-                        "gumroadUpdate",
-                        json!({"accountId":account,"productIds":ids}),
-                    )?;
-                    self.spawn(app.clone(), job.clone())?;
-                    jobs.push(job["id"].clone());
-                }
-                api::StoreJobs::of(jobs)
+                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+                    .contains(field(&job, "accountId")?),
+                "ACCOUNT_BUSY"
+            );
+            if job["type"] == "gumroadLogin" {
+                self.clear_downloads(field(&job, "accountId")?, None);
+                session::window(
+                    app,
+                    &self.inner.catalogue.device_dir(),
+                    StoreProvider::Gumroad,
+                    field(&job, "accountId")?,
+                    Url::parse("https://gumroad.com/login").unwrap(),
+                    true,
+                )
+                .await?;
             }
-            "cancel_sync" | "retry_sync" => {
-                let id = field(&args, "jobId")?;
-                let job = self
-                    .inner
-                    .catalogue
-                    .get("job", id)?
-                    .filter(|job| job["store"] == "Gumroad")
-                    .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                if action == "cancel_sync" {
-                    for attempt in 0..4 {
-                        let mut batch = RecordBatch::new(&self.inner.catalogue);
-                        let mut latest = batch
-                            .get("job", id)?
-                            .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) {
-                            break;
-                        }
-                        latest["state"] = json!("cancelled");
-                        latest["errorCode"] = json!("CANCELLED");
-                        latest["completedAt"] = json!(now());
-                        latest["progress"]["stage"] = json!("cancelled");
-                        latest["updatedAt"] = json!(now());
-                        batch.stage("job", id, latest)?;
-                        if batch.try_commit()?.is_some() {
-                            break;
-                        }
-                        ensure!(attempt < 3, "CONCURRENT_UPDATE");
-                    }
-                } else {
-                    ensure!(
-                        matches!(
-                            job["state"].as_str(),
-                            Some("failed" | "needsAction" | "cancelled")
-                        ),
-                        "JOB_BUSY"
-                    );
-                    ensure!(
-                        !self
-                            .inner
-                            .running
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                            .contains(field(&job, "accountId")?),
-                        "ACCOUNT_BUSY"
-                    );
-                    if job["type"] == "gumroadLogin" {
-                        self.clear_downloads(field(&job, "accountId")?, None);
-                        session::window(
-                            app,
-                            &self.inner.catalogue.device_dir(),
-                            StoreProvider::Gumroad,
-                            field(&job, "accountId")?,
-                            Url::parse("https://gumroad.com/login").unwrap(),
-                            true,
-                        )
-                        .await?;
-                    }
-                    let job = self.requeue_job(&job)?;
-                    self.spawn(app.clone(), job)?;
-                }
-                let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
-                api::answer(api::StoreJob {
-                    job_id: id.to_owned(),
-                })
-            }
-            _ => bail!("UNKNOWN_STORE_ACTION"),
+            let job = self.requeue_job(&job)?;
+            self.spawn(app.clone(), job)?;
         }
+        let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
+        api::answer(api::StoreJob {
+            job_id: id.to_owned(),
+        })
     }
     fn make_job(&self, kind: &str, args: Value) -> Result<Value> {
         let id = uuid::Uuid::new_v4().to_string();
