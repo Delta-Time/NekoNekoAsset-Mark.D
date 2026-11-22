@@ -234,21 +234,12 @@ pub(super) fn query(
         });
     }
     if let Some(kinds) = &args.acquisition {
-        let listed = ["paid", "free", "gift"]
-            .into_iter()
-            .filter(|kind| kinds.iter().any(|value| value == kind))
-            .map(|kind| format!("'{kind}'"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let scope = match account_ids {
-            None => "1=1".to_owned(),
-            Some(_) if account_placeholders.is_empty() => "0=1".to_owned(),
-            Some(_) => format!(
-                "json_extract(a.value,'$.accountId') IN({})",
-                account_placeholders.join(",")
-            ),
-        };
-        conditions.push(format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND));
+        conditions.push(acquisition_condition(
+            kinds,
+            account_ids,
+            &account_placeholders,
+            local_product,
+        ));
     }
     // The license database chose these; an empty list keeps nothing.
     if let Some(ids) = &args.license_ids {
@@ -260,76 +251,20 @@ pub(super) fn query(
     let avatar = args.avatar.as_deref().unwrap_or("");
     let mut pinned = vec![];
     if !avatar.is_empty() && avatar != "all" {
-        let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-        let registry =
-            avatars::registry_from(&projection::bases_in(conn, "temp.list_rows")?, &preferences)?;
-        let avatar_id = registry.resolve(avatar);
-        // Base pins override ordinary filters, but never the user's explicit
-        // hidden/visible, R-18 or unavailable visibility boundaries.
-        let mut visible_base = conn.prepare_cached(
-            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) FROM temp.list_rows WHERE id=?1",
+        avatar_filter(
+            conn,
+            avatar,
+            hidden_only,
+            sensitive,
+            hide_unavailable,
+            account_ids,
+            &account_placeholders,
+            include_offline,
+            local_product,
+            &mut bind,
+            &mut pinned,
+            &mut conditions,
         )?;
-        for id in registry.bases(&avatar_id) {
-            if visible_base.query_row(
-                params![id, hidden_only, sensitive, hide_unavailable],
-                |row| row.get::<_, bool>(0),
-            )? {
-                pinned.push(id);
-            }
-        }
-        // Names and item links have no ID of this identity stored. Match the raw
-        // evidence that option counts assign to it, before or after its aliases persist.
-        let known = |id: &str| registry.entries.contains_key(id) || id.starts_with("avatar:");
-        let mut pairs = conn.prepare_cached("SELECT DISTINCT COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'') FROM temp.list_rows p,json_each(p.evidence) e")?;
-        let mut rows = pairs.query([])?;
-        let mut values = vec![];
-        while let Some(row) = rows.next()? {
-            let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
-            if registry
-                .evidence_identity(&preferences, &evidence_id, &name, &known)
-                .as_ref()
-                == Some(&avatar_id)
-            {
-                values.push(format!(
-                    "({},{})",
-                    bind(Sql::Text(evidence_id)),
-                    bind(Sql::Text(name))
-                ));
-            }
-        }
-        let assigned = if values.is_empty() {
-            "0=1".to_owned()
-        } else {
-            format!("(COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'')) IN(VALUES{})", values.join(","))
-        };
-        let matches = if avatar_id.starts_with("avatar:") {
-            assigned
-        } else {
-            let avatar_binds = registry
-                .terms(&avatar_id)
-                .into_iter()
-                .map(|v| bind(Sql::Text(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("({assigned} OR json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds})))")
-        };
-        let scope = if account_ids.is_some() {
-            let account_scope = if account_placeholders.is_empty() {
-                "0=1".to_owned()
-            } else {
-                format!("(json_extract(e.value,'$.source') IN('user','sourceTag','userTag') OR json_extract(e.value,'$.accountId') IN({}))",account_placeholders.join(","))
-            };
-            if include_offline {
-                format!("({local_product} OR {account_scope})")
-            } else {
-                account_scope
-            }
-        } else {
-            "1=1".into()
-        };
-        conditions.push(format!(
-            "EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"
-        ));
     }
     let search = normalized(
         args.search
@@ -349,6 +284,175 @@ pub(super) fn query(
             bind(Sql::Text(term.to_owned()))
         ));
     }
+    let sql = list_sql(
+        args,
+        sort,
+        account_ids,
+        &account_placeholders,
+        local_product,
+        &conditions,
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let normal_ids = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // The explicit avatar Base exception overrides every filter and sort. Apply
+    // before count/paging so pinned records occur exactly once on every page.
+    let pinned_set: BTreeSet<_> = pinned.iter().cloned().collect();
+    let mut all_downloaded = normal_ids.iter().all(|(_, downloaded)| *downloaded);
+    for id in &pinned {
+        all_downloaded &= conn.query_row(
+            "SELECT downloaded=1 FROM temp.list_rows WHERE id=?1",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )?;
+    }
+    let mut ids = pinned;
+    ids.extend(
+        normal_ids
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| !pinned_set.contains(id)),
+    );
+    all_downloaded &= !ids.is_empty();
+    let (products, fingerprints) = page_products(conn, args, list, &ids, account_ids)?;
+    // Sidebar counts follow the preferences in every scope, including Hidden.
+    let counts = &list.counts[usize::from(args.hide_unavailable == Some(true))]
+        [usize::from(hide_unclassified)];
+    Ok(serde_json::to_value(api::QueryResult {
+        products,
+        total: list.total,
+        matched: ids.len(),
+        matched_ids: ids,
+        counts: counts.clone(),
+        all_downloaded,
+        fingerprints,
+    })?)
+}
+
+/// Products acquired as paid, free or gift, by the selected accounts when there are any.
+fn acquisition_condition(
+    kinds: &[String],
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    local_product: &str,
+) -> String {
+    let listed = ["paid", "free", "gift"]
+        .into_iter()
+        .filter(|kind| kinds.iter().any(|value| value == kind))
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let scope = match account_ids {
+        None => "1=1".to_owned(),
+        Some(_) if account_placeholders.is_empty() => "0=1".to_owned(),
+        Some(_) => format!(
+            "json_extract(a.value,'$.accountId') IN({})",
+            account_placeholders.join(",")
+        ),
+    };
+    format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND)
+}
+
+/// A selected avatar keeps the products compatible with it and pins its own Base products.
+fn avatar_filter(
+    conn: &Connection,
+    avatar: &str,
+    hidden_only: bool,
+    sensitive: &str,
+    hide_unavailable: bool,
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    include_offline: bool,
+    local_product: &str,
+    bind: &mut impl FnMut(Sql) -> String,
+    pinned: &mut Vec<String>,
+    conditions: &mut Vec<String>,
+) -> Result<()> {
+    let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
+    let registry =
+        avatars::registry_from(&projection::bases_in(conn, "temp.list_rows")?, &preferences)?;
+    let avatar_id = registry.resolve(avatar);
+    // Base pins override ordinary filters, but never the user's explicit
+    // hidden/visible, R-18 or unavailable visibility boundaries.
+    let mut visible_base = conn.prepare_cached(
+            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) FROM temp.list_rows WHERE id=?1",
+        )?;
+    for id in registry.bases(&avatar_id) {
+        if visible_base.query_row(
+            params![id, hidden_only, sensitive, hide_unavailable],
+            |row| row.get::<_, bool>(0),
+        )? {
+            pinned.push(id);
+        }
+    }
+    // Names and item links have no ID of this identity stored. Match the raw
+    // evidence that option counts assign to it, before or after its aliases persist.
+    let known = |id: &str| registry.entries.contains_key(id) || id.starts_with("avatar:");
+    let mut pairs = conn.prepare_cached("SELECT DISTINCT COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'') FROM temp.list_rows p,json_each(p.evidence) e")?;
+    let mut rows = pairs.query([])?;
+    let mut values = vec![];
+    while let Some(row) = rows.next()? {
+        let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
+        if registry
+            .evidence_identity(&preferences, &evidence_id, &name, &known)
+            .as_ref()
+            == Some(&avatar_id)
+        {
+            values.push(format!(
+                "({},{})",
+                bind(Sql::Text(evidence_id)),
+                bind(Sql::Text(name))
+            ));
+        }
+    }
+    let assigned = if values.is_empty() {
+        "0=1".to_owned()
+    } else {
+        format!("(COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'')) IN(VALUES{})", values.join(","))
+    };
+    let matches = if avatar_id.starts_with("avatar:") {
+        assigned
+    } else {
+        let avatar_binds = registry
+            .terms(&avatar_id)
+            .into_iter()
+            .map(|v| bind(Sql::Text(v)))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("({assigned} OR json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds})))")
+    };
+    let scope = if account_ids.is_some() {
+        let account_scope = if account_placeholders.is_empty() {
+            "0=1".to_owned()
+        } else {
+            format!("(json_extract(e.value,'$.source') IN('user','sourceTag','userTag') OR json_extract(e.value,'$.accountId') IN({}))",account_placeholders.join(","))
+        };
+        if include_offline {
+            format!("({local_product} OR {account_scope})")
+        } else {
+            account_scope
+        }
+    } else {
+        "1=1".into()
+    };
+    conditions.push(format!(
+        "EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"
+    ));
+    Ok(())
+}
+
+/// The list query: the filters, then the chosen order with empty values last.
+fn list_sql(
+    args: &api::QueryRequest,
+    sort: &str,
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    local_product: &str,
+    conditions: &[String],
+) -> String {
     let acquired_order = if account_ids.is_none() {
         "p.acquired".to_owned()
     } else {
@@ -397,32 +501,18 @@ pub(super) fn query(
     } else {
         String::new()
     };
-    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{group_order}{order} {dir},p.id ASC");
-    let mut stmt = conn.prepare(&sql)?;
-    let normal_ids = stmt
-        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    // The explicit avatar Base exception overrides every filter and sort. Apply
-    // before count/paging so pinned records occur exactly once on every page.
-    let pinned_set: BTreeSet<_> = pinned.iter().cloned().collect();
-    let mut all_downloaded = normal_ids.iter().all(|(_, downloaded)| *downloaded);
-    for id in &pinned {
-        all_downloaded &= conn.query_row(
-            "SELECT downloaded=1 FROM temp.list_rows WHERE id=?1",
-            [id],
-            |row| row.get::<_, bool>(0),
-        )?;
-    }
-    let mut ids = pinned;
-    ids.extend(
-        normal_ids
-            .into_iter()
-            .map(|(id, _)| id)
-            .filter(|id| !pinned_set.contains(id)),
-    );
-    all_downloaded &= !ids.is_empty();
+    format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{group_order}{order} {dir},p.id ASC")
+}
+
+/// The requested page of products, scoped to the selected accounts; a list client gets only
+/// the summaries it does not already hold, with their fingerprints.
+fn page_products(
+    conn: &Connection,
+    args: &api::QueryRequest,
+    list: &ListSnapshot,
+    ids: &[String],
+    account_ids: Option<&Vec<String>>,
+) -> Result<(Vec<Value>, Option<BTreeMap<String, String>>)> {
     let summaries = args.include_files == Some(false);
     let list_presentation = args.presentation.as_deref() == Some("list");
     let offset = args.offset.unwrap_or(0) as usize;
@@ -482,18 +572,7 @@ pub(super) fn query(
         }
         products.push(product);
     }
-    // Sidebar counts follow the preferences in every scope, including Hidden.
-    let counts = &list.counts[usize::from(args.hide_unavailable == Some(true))]
-        [usize::from(hide_unclassified)];
-    Ok(serde_json::to_value(api::QueryResult {
-        products,
-        total: list.total,
-        matched: ids.len(),
-        matched_ids: ids,
-        counts: counts.clone(),
-        all_downloaded,
-        fingerprints: known.map(|_| fingerprints),
-    })?)
+    Ok((products, known.map(|_| fingerprints)))
 }
 
 /// List summaries drop what only the inspector reads.
