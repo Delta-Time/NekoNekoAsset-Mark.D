@@ -1,0 +1,2 @@
+# A function outside tests with more code lines than this fails CI (lib.rs turns the check on).
+too-many-lines-threshold = 250

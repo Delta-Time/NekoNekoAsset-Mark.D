@@ -1,3 +1,6 @@
+// Functions outside tests stay under the line limit in clippy.toml; test scenarios may run long.
+#![cfg_attr(not(test), warn(clippy::too_many_lines))]
+
 mod ai;
 mod app_reset;
 mod booth;
