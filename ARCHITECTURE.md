@@ -219,7 +219,8 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - **Store → storage.** For a download, `StoreService::download_ticket` issues a
   fresh signed URL and client that are never stored. Storage checks the response
   (`stores::validate_download_response`), then writes, verifies and extracts. What
-  each store answers is recorded beside its code.
+  each store has been seen to answer is in `booth/ANSWERS.md`,
+  `stores/gumroad/ANSWERS.md` and `stores/jinxxy/ANSWERS.md`.
 - **App → Unity.** Wire protocol v1 is frozen: loopback TCP, a per-Editor registry
   file holding a random capability, length-prefixed JSON control frames, then raw
   file bytes, and a durable receipt per request ID. Additions must be optional, as
