@@ -389,6 +389,20 @@ struct SourceRead<'a> {
     key: &'a str,
 }
 
+/// The rows one source pass read, in page order, and what its pages left unproven.
+struct PassRows {
+    current_rows: Vec<parser::Row>,
+    updated_rows: Vec<parser::Row>,
+    free_evidence: BTreeMap<String, super::free_item::Evidence>,
+    row_routes: BTreeMap<String, String>,
+    unbound_membership: bool,
+    terminal_unproven_observed: bool,
+    incomplete_products: BTreeSet<String>,
+    availability_products: BTreeSet<String>,
+    left_products: BTreeSet<String>,
+    unresolved_rows: usize,
+}
+
 impl BoothService {
     pub(super) async fn diagnose_product_line_fields(
         &self,
@@ -1547,112 +1561,27 @@ impl BoothService {
         self.progress(app, job)?;
         // Replace the accessible manifest only after its current item rows were durably read.
         // Earlier acquisition observations/artifacts remain; retired remote files are not deleted.
-        let mut current_rows = vec![];
-        let mut updated_rows = vec![];
-        let mut free_evidence = BTreeMap::new();
-        let mut row_routes = BTreeMap::new();
-        let mut free_routes = BTreeMap::new();
-        let mut unbound_membership = false;
-        let mut terminal_unproven_observed = false;
-        let mut incomplete_products = BTreeSet::new();
-        let mut availability_products = BTreeSet::new();
-        // Assets and rows left as they were. They no longer hold the job back, but an
-        // unbound row still keeps this source's membership uncertified.
-        let (mut left_products, mut unresolved_rows) = (BTreeSet::new(), 0);
-        let pass_started = checkpoint.read_from();
-        for (index, journal_id) in checkpoint.journal_ids.iter().enumerate() {
-            if index % 16 == 0 {
-                // Scanners and public metadata share one try_join task. Let the
-                // sibling future run during this synchronous assembly work.
-                tokio::task::yield_now().await;
-                if self.cancelled(job)? {
-                    bail!("CANCELLED");
-                }
-            }
-            let journal = self
-                .inner
-                .catalogue
-                .get("checkpoint", journal_id)?
-                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
-            // A row listed twice keeps its older place.
-            for (record, position) in free_history_positions(&page) {
-                if let Some(order) = free_history_order(&pass_started, position) {
-                    let saved = publications
-                        .free_orders
-                        .entry(format!("{account}:{record}"))
-                        .or_insert_with(|| order.clone());
-                    if order < *saved {
-                        *saved = order;
-                    }
-                }
-            }
-            // A row read in updated order joins through its own record. If the App went on to
-            // read every page, those pages hold it already, so such a page counts for nothing.
-            if safety::updated_order(&page.route) {
-                if checkpoint.overlap_end.is_some() {
-                    updated_rows.extend(page.rows);
-                }
-                continue;
-            }
-            let mut page_unbound = false;
-            // Normal parser unresolved rows are either exact product-bound
-            // failures or unbound controls/routes. Free item evidence has its
-            // own complete product-file-list scope.
-            if page.unresolved != 0 {
-                if let Some(evidence) = &page.free_item {
-                    if settled_free_absence(&page, &free_history) {
-                        availability_products.insert(evidence.product_id.clone());
-                    } else {
-                        incomplete_products.insert(evidence.product_id.clone());
-                    }
-                } else if !page.rows.is_empty()
-                    && page
-                        .rows
-                        .iter()
-                        .filter(|row| {
-                            row.error_code.as_deref() != Some("BOOTH_WITHHELD_PRODUCT_ID")
-                        })
-                        .all(|row| row.product_id.is_some())
-                    && page.rows.iter().any(|row| row.error_code.is_some())
-                {
-                    incomplete_products.extend(
-                        page.rows
-                            .iter()
-                            .filter(|row| row.error_code.is_some())
-                            .filter_map(|row| row.product_id.clone()),
-                    );
-                } else {
-                    unbound_membership = true;
-                    page_unbound = true;
-                    unresolved_rows += unbound_row_count(&page);
-                }
-            }
-            if !page.is_detail && !page.terminal && page.next.is_empty() {
-                unbound_membership = true;
-                page_unbound = true;
-            }
-            terminal_unproven_observed |= trace_checked_journal(&page, page_unbound);
-            for row in &page.rows {
-                row_routes.insert(row.source_record_id.clone(), page.route.clone());
-            }
-            if let Some(evidence) = page.free_item {
-                free_routes.insert(evidence.product_id.clone(), page.route);
-                free_evidence.insert(evidence.product_id.clone(), evidence);
-            }
-            current_rows.extend(page.rows);
-        }
-        if source == "free" {
-            for row in &mut current_rows {
-                if let Some(evidence) = row.product_id.as_ref().and_then(|id| free_evidence.get(id))
-                {
-                    augment_free_row(row, evidence);
-                    if let Some(route) = free_routes.get(&evidence.product_id) {
-                        row_routes.insert(row.source_record_id.clone(), route.clone());
-                    }
-                }
-            }
-        }
+        let PassRows {
+            current_rows,
+            updated_rows,
+            free_evidence,
+            mut row_routes,
+            unbound_membership,
+            terminal_unproven_observed,
+            incomplete_products,
+            availability_products,
+            mut left_products,
+            unresolved_rows,
+        } = self
+            .collect_pass_rows(
+                job,
+                account,
+                source,
+                &checkpoint,
+                &free_history,
+                publications,
+            )
+            .await?;
         let merged = checkpoint
             .overlap_end
             .map(|end| {
@@ -2103,6 +2032,137 @@ impl BoothService {
             gaps_local,
             products: left_products,
             rows: unresolved_rows,
+        })
+    }
+
+    /// Rereads the pass's journaled pages: the rows they listed, in page order, and what
+    /// they left unproven.
+    async fn collect_pass_rows(
+        &self,
+        job: &Value,
+        account: &str,
+        source: &str,
+        checkpoint: &Checkpoint,
+        free_history: &BTreeMap<String, Vec<parser::Row>>,
+        publications: &mut Publications,
+    ) -> Result<PassRows> {
+        let mut current_rows = vec![];
+        let mut updated_rows = vec![];
+        let mut free_evidence = BTreeMap::new();
+        let mut row_routes = BTreeMap::new();
+        let mut free_routes = BTreeMap::new();
+        let mut unbound_membership = false;
+        let mut terminal_unproven_observed = false;
+        let mut incomplete_products = BTreeSet::new();
+        let mut availability_products = BTreeSet::new();
+        // Assets and rows left as they were. They no longer hold the job back, but an
+        // unbound row still keeps this source's membership uncertified.
+        let (left_products, mut unresolved_rows) = (BTreeSet::new(), 0);
+        let pass_started = checkpoint.read_from();
+        for (index, journal_id) in checkpoint.journal_ids.iter().enumerate() {
+            if index % 16 == 0 {
+                // Scanners and public metadata share one try_join task. Let the
+                // sibling future run during this synchronous assembly work.
+                tokio::task::yield_now().await;
+                if self.cancelled(job)? {
+                    bail!("CANCELLED");
+                }
+            }
+            let journal = self
+                .inner
+                .catalogue
+                .get("checkpoint", journal_id)?
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+            let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
+            // A row listed twice keeps its older place.
+            for (record, position) in free_history_positions(&page) {
+                if let Some(order) = free_history_order(&pass_started, position) {
+                    let saved = publications
+                        .free_orders
+                        .entry(format!("{account}:{record}"))
+                        .or_insert_with(|| order.clone());
+                    if order < *saved {
+                        *saved = order;
+                    }
+                }
+            }
+            // A row read in updated order joins through its own record. If the App went on to
+            // read every page, those pages hold it already, so such a page counts for nothing.
+            if safety::updated_order(&page.route) {
+                if checkpoint.overlap_end.is_some() {
+                    updated_rows.extend(page.rows);
+                }
+                continue;
+            }
+            let mut page_unbound = false;
+            // Normal parser unresolved rows are either exact product-bound
+            // failures or unbound controls/routes. Free item evidence has its
+            // own complete product-file-list scope.
+            if page.unresolved != 0 {
+                if let Some(evidence) = &page.free_item {
+                    if settled_free_absence(&page, free_history) {
+                        availability_products.insert(evidence.product_id.clone());
+                    } else {
+                        incomplete_products.insert(evidence.product_id.clone());
+                    }
+                } else if !page.rows.is_empty()
+                    && page
+                        .rows
+                        .iter()
+                        .filter(|row| {
+                            row.error_code.as_deref() != Some("BOOTH_WITHHELD_PRODUCT_ID")
+                        })
+                        .all(|row| row.product_id.is_some())
+                    && page.rows.iter().any(|row| row.error_code.is_some())
+                {
+                    incomplete_products.extend(
+                        page.rows
+                            .iter()
+                            .filter(|row| row.error_code.is_some())
+                            .filter_map(|row| row.product_id.clone()),
+                    );
+                } else {
+                    unbound_membership = true;
+                    page_unbound = true;
+                    unresolved_rows += unbound_row_count(&page);
+                }
+            }
+            if !page.is_detail && !page.terminal && page.next.is_empty() {
+                unbound_membership = true;
+                page_unbound = true;
+            }
+            terminal_unproven_observed |= trace_checked_journal(&page, page_unbound);
+            for row in &page.rows {
+                row_routes.insert(row.source_record_id.clone(), page.route.clone());
+            }
+            if let Some(evidence) = page.free_item {
+                free_routes.insert(evidence.product_id.clone(), page.route);
+                free_evidence.insert(evidence.product_id.clone(), evidence);
+            }
+            current_rows.extend(page.rows);
+        }
+        if source == "free" {
+            for row in &mut current_rows {
+                if let Some(evidence) = row.product_id.as_ref().and_then(|id| free_evidence.get(id))
+                {
+                    augment_free_row(row, evidence);
+                    if let Some(route) = free_routes.get(&evidence.product_id) {
+                        row_routes.insert(row.source_record_id.clone(), route.clone());
+                    }
+                }
+            }
+        }
+        Ok(PassRows {
+            current_rows,
+            updated_rows,
+            free_evidence,
+            row_routes,
+            unbound_membership,
+            terminal_unproven_observed,
+            incomplete_products,
+            availability_products,
+            left_products,
+            unresolved_rows,
         })
     }
 
