@@ -340,6 +340,16 @@ fn registry_from_bases(
     preferences: &Value,
     prepared_options: Option<&[Value]>,
 ) -> Result<Registry> {
+    let mut registry = dictionary_registry();
+    add_owned_bases(&mut registry, bases, preferences, prepared_options);
+    let entries = add_aliases(&mut registry, preferences);
+    supersede_derived_identities(&mut registry, preferences, &entries);
+    apply_saved_settings(&mut registry, preferences);
+    Ok(registry)
+}
+
+/// The registry of curated avatars, before any owned Base joins it.
+fn dictionary_registry() -> Registry {
     let dictionary = crate::taxonomy::dictionary();
     let mut registry = Registry {
         entries: BTreeMap::new(),
@@ -366,6 +376,16 @@ fn registry_from_bases(
             .unwrap_or_else(|| text(&entry, "creator").to_owned()));
         registry.entries.insert(id, entry);
     }
+    registry
+}
+
+/// Each owned Base becomes an option, or joins the curated identity a human linked it to.
+fn add_owned_bases(
+    registry: &mut Registry,
+    bases: &[Value],
+    preferences: &Value,
+    prepared_options: Option<&[Value]>,
+) {
     // A saved identity name is stronger evidence than an ambiguous source
     // title. Use it only for option construction; retain the original source
     // records below for aliases, shops and exact Base product identity.
@@ -445,6 +465,10 @@ fn registry_from_bases(
         entry["aliases"] = json!(aliases);
         registry.entries.insert(id, entry);
     }
+}
+
+/// Source history, official and saved aliases; returns the entries as they were before.
+fn add_aliases(registry: &mut Registry, preferences: &Value) -> Vec<Value> {
     // Source history belongs to exact currently active Base products. It must
     // not resurrect deleted Base identities or removed human settings aliases.
     for entry in registry.entries.values_mut() {
@@ -465,7 +489,7 @@ fn registry_from_bases(
             continue;
         }
         for name in names(entry) {
-            add_alias(&mut registry, &name, text(entry, "id"), false);
+            add_alias(registry, &name, text(entry, "id"), false);
         }
     }
     for entry in &entries {
@@ -473,7 +497,7 @@ fn registry_from_bases(
             continue;
         }
         for name in names(entry) {
-            add_alias(&mut registry, &name, text(entry, "id"), false);
+            add_alias(registry, &name, text(entry, "id"), false);
         }
     }
     for (alias, id) in preferences["avatarAliases"]
@@ -489,9 +513,14 @@ fn registry_from_bases(
             }) {
                 continue;
             }
-            add_alias(&mut registry, alias, id, false);
+            add_alias(registry, alias, id, false);
         }
     }
+    entries
+}
+
+/// A derived identity that only one Base explains becomes a spelling of that Base.
+fn supersede_derived_identities(registry: &mut Registry, preferences: &Value, entries: &[Value]) {
     // A link recorded a derived identity before its Base was here, or in an older
     // build. Once only that Base explains it, the identity is a spelling of the Base,
     // so saved searches and choices follow. Nothing on disk changes, so the row and
@@ -539,6 +568,10 @@ fn registry_from_bases(
                 .insert(derived, text(entry, "id").to_owned());
         }
     }
+}
+
+/// Saved avatar settings: merged onto the Base a duplicate stands for, then decorated.
+fn apply_saved_settings(registry: &mut Registry, preferences: &Value) {
     // The Base's own choices win, and unticking a duplicate never hides the Base.
     let mut saved = preferences["avatarSettings"]
         .as_object()
@@ -567,14 +600,14 @@ fn registry_from_bases(
             None
         };
         if let Some(display) = display {
-            add_alias(&mut registry, &display, &canonical, true);
+            add_alias(registry, &display, &canonical, true);
         }
         for name in strings(&settings["aliases"]).into_iter().chain(
             ["originalName", "englishName"]
                 .into_iter()
                 .filter_map(|k| settings[k].as_str().map(str::to_owned)),
         ) {
-            add_alias(&mut registry, &name, &canonical, true);
+            add_alias(registry, &name, &canonical, true);
         }
     }
     for entry in registry.entries.values_mut() {
@@ -601,7 +634,6 @@ fn registry_from_bases(
             aliases.push(json!(derived));
         }
     }
-    Ok(registry)
 }
 pub(super) fn normalize_preferences(conn: &Connection, preferences: &mut Value) -> Result<()> {
     let registry = registry(conn, preferences)?;
