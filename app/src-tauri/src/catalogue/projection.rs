@@ -829,12 +829,77 @@ fn effective_with_jobs(
         roots.insert(root, raw(conn, "root", root)?.unwrap_or(Value::Null));
     }
     let jobs = product_jobs(conn, id, local_import_jobs)?;
-    let inference = category(&source);
+    let (mut p, provider) = base_projection(&source);
+    let ai = overlay.get("ai").map(validate_ai_overlay).transpose()?;
+    let organization = overlay
+        .get("aiTagOrganization")
+        .map(validate_ai_organization)
+        .transpose()?;
+    let ai_current = ai_matches_evidence(&source, &overlay, &remote, &artifacts, &ai)?;
+    let organization_current =
+        organization_matches_evidence(&source, &overlay, &remote, &artifacts, &organization)?;
+    apply_overlay(conn, &mut p, &source, &overlay, &ai, ai_current)?;
+    apply_prices(&mut p, &source, provider);
+    if !p["sensitive"].is_boolean() {
+        p["sensitive"] = json!(false);
+    }
+    // No procedural mock art/kind is assigned to real records.
+    p.as_object_mut().unwrap().remove("kind");
+    let accounts = unique(
+        acquisitions
+            .iter()
+            .chain(entitlements.iter())
+            .chain(remote.iter())
+            .filter_map(|v| v["accountId"].as_str())
+            .map(str::to_owned),
+    );
+    p["accountIds"] = json!(accounts);
+    p["provenance"] = json!(acquisition::normalize_provenance(&acquisitions));
+    p["sources"] = json!(source_rows(
+        conn,
+        &source,
+        &acquisitions,
+        &entitlements,
+        &remote
+    )?);
+    let source_acquired = text(&p, "acquired").to_owned();
+    acquisition::apply_default(&mut p, &source_acquired);
+    acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
+    let (remote_map, file_ids, kept) =
+        file_selection(&mut p, provider, &source, &entitlements, remote);
+    let evidence = apply_files(
+        &mut p,
+        id,
+        &source,
+        file_ids,
+        kept,
+        remote_map,
+        &refused,
+        &artifact_map,
+        &roots,
+    );
+    update_status(&mut p, &jobs);
+    p["ownedAvatarEvidence"] = json!(evidence);
+    apply_tag_inputs(
+        &mut p,
+        &source,
+        &overlay,
+        &ai,
+        ai_current,
+        &organization,
+        organization_current,
+    )?;
+    Ok(Some(p))
+}
+
+/// The source record with its display fields, and the store it came from.
+fn base_projection(source: &Value) -> (Value, &'static str) {
+    let inference = category(source);
     let mut p = source.clone();
-    let provider = match normalized(if text(&source, "provider").is_empty() {
-        text(&source, "store")
+    let provider = match normalized(if text(source, "provider").is_empty() {
+        text(source, "store")
     } else {
-        text(&source, "provider")
+        text(source, "provider")
     })
     .as_str()
     {
@@ -864,45 +929,72 @@ fn effective_with_jobs(
     p["sourceTags"] = source.get("sourceTags").unwrap_or(&source["tags"]).clone();
     p["categoryInference"] = inference.clone();
     p["category"] = inference["category"].clone();
-    let ai = overlay.get("ai").map(validate_ai_overlay).transpose()?;
-    let organization = overlay
-        .get("aiTagOrganization")
-        .map(validate_ai_organization)
-        .transpose()?;
-    let mut ai_current = match &ai {
+    (p, provider)
+}
+
+/// Whether the saved AI analysis was made from the evidence the product has now.
+fn ai_matches_evidence(
+    source: &Value,
+    overlay: &Value,
+    remote: &[Value],
+    artifacts: &[Value],
+    ai: &Option<AiOverlay>,
+) -> Result<bool> {
+    let mut ai_current = match ai {
         Some(ai) => match &ai.evidence_fingerprint {
             Some(expected) => {
                 ai_evidence_fingerprint(
-                    &source,
-                    &overlay,
-                    &remote,
-                    &artifacts,
+                    source,
+                    overlay,
+                    remote,
+                    artifacts,
                     &ai.evidence_refs,
                     &ai.content_evidence_refs,
                 )? == *expected
             }
-            None => {
-                ai_fingerprint(&source, &overlay, &remote, &artifacts)? == ai.catalogue_fingerprint
-            }
+            None => ai_fingerprint(source, overlay, remote, artifacts)? == ai.catalogue_fingerprint,
         },
         None => false,
     };
     if let Some(expected) = ai.as_ref().and_then(|ai| ai.preview_fingerprint.as_ref()) {
-        ai_current &= ai_preview_fingerprint(&source, &overlay)? == *expected;
+        ai_current &= ai_preview_fingerprint(source, overlay)? == *expected;
     }
-    let organization_current = match &organization {
+    Ok(ai_current)
+}
+
+/// Whether the saved AI tag organization was made from the evidence the product has now.
+fn organization_matches_evidence(
+    source: &Value,
+    overlay: &Value,
+    remote: &[Value],
+    artifacts: &[Value],
+    organization: &Option<AiTagOrganization>,
+) -> Result<bool> {
+    let organization_current = match organization {
         Some(organization) => match &organization.evidence_fingerprint {
             Some(expected) => {
-                ai_evidence_fingerprint(&source, &overlay, &[], &[], &["sourceTags".into()], &[])?
+                ai_evidence_fingerprint(source, overlay, &[], &[], &["sourceTags".into()], &[])?
                     == *expected
             }
             None => {
-                ai_fingerprint(&source, &overlay, &remote, &artifacts)?
+                ai_fingerprint(source, overlay, remote, artifacts)?
                     == organization.catalogue_fingerprint
             }
         },
         None => false,
     };
+    Ok(organization_current)
+}
+
+/// The user's overlay, the AI category and source URLs, and the preview to show.
+fn apply_overlay(
+    conn: &Connection,
+    p: &mut Value,
+    source: &Value,
+    overlay: &Value,
+    ai: &Option<AiOverlay>,
+    ai_current: bool,
+) -> Result<()> {
     p["aiCurrent"] = json!(ai_current);
     p["aiCategoryApplied"] = json!(false);
     if ai_current && overlay.get("category").is_none() {
@@ -933,11 +1025,11 @@ fn effective_with_jobs(
     p["categoryOverride"] = json!(overlay.get("category").is_some());
     p["sourceOriginUrl"] = source["sourceUrl"].clone();
     p["sourceUrlOverride"] = json!(overlay.get("sourceUrl").is_some());
-    let page_availability = crate::booth::effective_public_page_availability(&source);
+    let page_availability = crate::booth::effective_public_page_availability(source);
     p["publicPageAvailability"] = json!(page_availability);
-    let source_url = text(&p, "sourceUrl");
+    let source_url = text(p, "sourceUrl");
     let overridden_url = overlay.get("sourceUrl").is_some()
-        && text(&overlay, "sourceUrl") != text(&source, "sourceUrl");
+        && text(overlay, "sourceUrl") != text(source, "sourceUrl");
     p["sourceUrlAvailable"] = json!(
         !source_url.is_empty()
             && validate_source_url(source_url).is_ok()
@@ -965,16 +1057,21 @@ fn effective_with_jobs(
             p[f] = json!("");
         }
     }
+    Ok(())
+}
+
+/// The current price: the store's own for Gumroad, Jinxxy and local links, BOOTH's listing.
+fn apply_prices(p: &mut Value, source: &Value, provider: &str) {
     let priced_link = source["priceSourceUrl"]
         .as_str()
-        .unwrap_or(text(&source, "sourceUrl"));
-    if provider == "local" && listing_link(text(&p, "sourceUrl")) != listing_link(priced_link) {
+        .unwrap_or(text(source, "sourceUrl"));
+    if provider == "local" && listing_link(text(p, "sourceUrl")) != listing_link(priced_link) {
         // That price was read from another listing than the one the user links now.
         p["price"] = Value::Null;
         p["priceCurrency"] = Value::Null;
         p["currentPriceText"] = Value::Null;
     } else if matches!(provider, "gumroad" | "jinxxy" | "local") {
-        let currency = text(&source, "priceCurrency");
+        let currency = text(source, "priceCurrency");
         let amount = acquisition::money_amount(&source["price"], currency);
         p["price"] = json!(amount);
         let formatted = source["priceFormatted"]
@@ -1001,31 +1098,16 @@ fn effective_with_jobs(
             .or_else(|| crate::booth::listing_price_display(&source["listingPriceText"])));
         p["priceCurrency"] = json!(p["currentPriceText"].is_string().then_some("JPY"));
     }
-    if !p["sensitive"].is_boolean() {
-        p["sensitive"] = json!(false);
-    }
-    // No procedural mock art/kind is assigned to real records.
-    p.as_object_mut().unwrap().remove("kind");
-    let accounts = unique(
-        acquisitions
-            .iter()
-            .chain(entitlements.iter())
-            .chain(remote.iter())
-            .filter_map(|v| v["accountId"].as_str())
-            .map(str::to_owned),
-    );
-    p["accountIds"] = json!(accounts);
-    p["provenance"] = json!(acquisition::normalize_provenance(&acquisitions));
-    p["sources"] = json!(source_rows(
-        conn,
-        &source,
-        &acquisitions,
-        &entitlements,
-        &remote
-    )?);
-    let source_acquired = text(&p, "acquired").to_owned();
-    acquisition::apply_default(&mut p, &source_acquired);
-    acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
+}
+
+/// Which files the product lists: the store's current grants and the files kept beside them.
+fn file_selection(
+    p: &mut Value,
+    provider: &str,
+    source: &Value,
+    entitlements: &[Value],
+    remote: Vec<Value>,
+) -> (BTreeMap<String, Value>, BTreeSet<String>, Vec<String>) {
     let required: BTreeSet<_> = if provider == "local" {
         strings(&source["localManifest"]["fileIds"])
             .into_iter()
@@ -1055,7 +1137,7 @@ fn effective_with_jobs(
             !entitlements.is_empty() && entitlements.iter().all(|e| e["manifestComplete"] == true)
         };
     p["manifestComplete"] = json!(manifest_complete);
-    let mut remote_map: BTreeMap<String, Value> = remote
+    let remote_map: BTreeMap<String, Value> = remote
         .into_iter()
         .map(|v| (text(&v, "id").to_owned(), v))
         .collect();
@@ -1082,6 +1164,21 @@ fn effective_with_jobs(
             .map(|(fid, _)| fid.clone())
             .collect()
     };
+    (remote_map, file_ids, kept)
+}
+
+/// Each listed file with its download state; returns the owned-avatar evidence the files give.
+fn apply_files(
+    p: &mut Value,
+    id: &str,
+    source: &Value,
+    file_ids: BTreeSet<String>,
+    kept: Vec<String>,
+    mut remote_map: BTreeMap<String, Value>,
+    refused: &BTreeSet<&str>,
+    artifact_map: &BTreeMap<(&str, &str), &Value>,
+    roots: &BTreeMap<&str, Value>,
+) -> Vec<Value> {
     let mut files = vec![];
     let mut evidence = vec![];
     let mut known_file_count = 0;
@@ -1177,7 +1274,7 @@ fn effective_with_jobs(
         }
         if known && !text(&f, "accountId").is_empty() {
             for avatar in crate::taxonomy::account_variant_avatars(
-                &source,
+                source,
                 f["variantId"].as_str(),
                 text(&f, "variantName"),
             ) {
@@ -1195,11 +1292,22 @@ fn effective_with_jobs(
         p["keptFiles"] = json!(kept_count);
     }
     p["files"] = json!(files);
-    update_status(&mut p, &jobs);
-    p["ownedAvatarEvidence"] = json!(evidence);
+    evidence
+}
+
+/// What the tag resolver reads, compatibility, and tag suggestions.
+fn apply_tag_inputs(
+    p: &mut Value,
+    source: &Value,
+    overlay: &Value,
+    ai: &Option<AiOverlay>,
+    ai_current: bool,
+    organization: &Option<AiTagOrganization>,
+    organization_current: bool,
+) -> Result<()> {
     let source_tags = strings(&p["sourceTags"]);
     let listing = unique(
-        crate::taxonomy::listing_avatar_evidence(&source)
+        crate::taxonomy::listing_avatar_evidence(source)
             .into_iter()
             .filter_map(|v| {
                 v["displayName"]
@@ -1231,7 +1339,7 @@ fn effective_with_jobs(
         }
     }
     compatibility(
-        &mut p,
+        p,
         crate::taxonomy::exact_avatar_tag,
         crate::taxonomy::canonical_tag,
         crate::taxonomy::exact_avatar_tag,
@@ -1239,12 +1347,12 @@ fn effective_with_jobs(
     p["tagSuggestions"] = json!(crate::taxonomy::tag_suggestions(
         &format!(
             "{} {}",
-            text(&p, "sourceTitle"),
+            text(p, "sourceTitle"),
             strings(&p["sourceTags"]).join(" ")
         ),
         &strings(&p["rejectedTags"])
     ));
-    Ok(Some(p))
+    Ok(())
 }
 
 /// Recompute release-check components using the same read-only source and resolver.
