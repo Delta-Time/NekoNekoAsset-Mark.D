@@ -50,6 +50,13 @@ impl CacheUsage {
     }
 }
 
+/// A remote thumbnail's local copy.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CachedPreview {
+    pub path: PathBuf,
+}
+
 pub struct PreviewCache {
     owner: path_safety::PinnedRoot,
     client: reqwest::Client,

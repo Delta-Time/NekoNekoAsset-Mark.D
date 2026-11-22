@@ -50,7 +50,7 @@ pub(super) fn source_changed(app: &AppHandle, ids: impl IntoIterator<Item = Stri
     if !product_ids.is_empty() {
         let _ = app.emit(
             "nna:changed",
-            json!({"scope":"catalogue","productIds":product_ids}),
+            crate::ipc::Change::products("catalogue", product_ids),
         );
     }
 }

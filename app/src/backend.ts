@@ -2,16 +2,22 @@ import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Product, Locale } from './model';
 import type {
-  AvatarDelta,
   Bootstrap,
   CatalogueRequest,
   CatalogueResponses,
+  DialogKind,
+  DialogOptions,
+  DialogPick,
   FileRequest,
   FileResponses,
   Job,
   LicensesRequest,
+  LibraryOpened,
+  LibraryStatus,
   LicensesResponses,
   LocalFiles,
+  NativeChange,
+  OverlayChange,
   Preferences,
   ProductMetadata,
   StorageRequest,
@@ -20,13 +26,21 @@ import type {
   StoreResponses,
   UnityRequest,
   UnityResponses,
+  UpdateCheck,
+  UpdateProgress,
+  Zoomed,
 } from './bindings';
 export type {
+  AppRelease,
   AvatarDelta,
   AvatarOption,
   AvatarSetting,
+  BridgeRelease,
   Collection,
   Job,
+  LibraryCredential,
+  LibraryStatus,
+  NativeChange,
   Preferences,
   ProductMetadata,
   Root,
@@ -36,6 +50,8 @@ export type {
   UnityEditor,
   UnityLeaf,
   UnityReceipt,
+  UpdateCheck,
+  UpdateProgress,
 } from './bindings';
 
 export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
@@ -68,7 +84,6 @@ export type ArgsParam<S extends Service, A extends string> =
 export type ActionResult<S extends Service, A extends string> = A extends keyof Responses[S]
   ? Responses[S][A]
   : any;
-type DialogKind = 'folder' | 'open_file' | 'save_file';
 /** A native action, or a native file dialog through the `dialog` service. */
 export type NativeCall = {
   <S extends Service, A extends Action<S>>(
@@ -129,28 +144,12 @@ export function progressPercent(job: Job | undefined): number | undefined {
     ? Math.min(100, (100 * done) / total)
     : undefined;
 }
-export interface ProductOverlayChange {
-  id: string;
-  patch: Partial<Product>;
-  ownedAvatarsDelta?: AvatarDelta;
-}
+/** An overlay change with its patch typed as product fields. */
+export type ProductOverlayChange = Omit<OverlayChange, 'patch'> & { patch: Partial<Product> };
 /** Files added to and removed from a product's own copies. */
 export type LocalFileChanges = Omit<LocalFiles, 'productId'>;
 export function updateLocalFiles(productId: string, changes: LocalFileChanges) {
   return invokeAction('storage', 'local_files', { productId, ...changes });
-}
-export interface LibraryCredential {
-  id: string;
-  name: string;
-  store: string;
-}
-export interface LibraryStatus {
-  state: 'ready' | 'setup' | 'unconfigured' | 'blocked';
-  path?: string;
-  defaultPath?: string;
-  errorCode?: string;
-  locale?: string;
-  missingCredentials?: LibraryCredential[];
 }
 export async function libraryStatus(): Promise<LibraryStatus> {
   if (!isTauri()) throw new Error('nativeUnavailable');
@@ -160,7 +159,7 @@ export async function openLibrary(
   path: string,
   locale?: Locale,
   newLibrary = false,
-): Promise<{ restarting: boolean }> {
+): Promise<LibraryOpened> {
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke('library_open', { path, locale, newLibrary });
 }
@@ -191,9 +190,9 @@ export const emptyState: NativeState = {
   sourceCoverage: [],
   conflicts: [],
 };
+/** What a file dialog picked, with the first path as `path`. */
 export interface DialogResult {
   path: string;
-  content?: string;
   paths?: string[];
 }
 export async function invokeAction<S extends Service, A extends Action<S>>(
@@ -216,36 +215,22 @@ export async function invokeAction<S extends Service, A extends Action<S>>(
   return value;
 }
 export async function dialog(
-  kind: 'folder' | 'open_file' | 'save_file',
-  options: Record<string, unknown> = {},
+  kind: DialogKind,
+  options: DialogOptions = {},
 ): Promise<DialogResult | null> {
   if (!isTauri()) throw new Error('nativeUnavailable');
-  const result = await invoke<DialogResult | string | string[] | null>('native_dialog', {
-    kind,
-    options,
-  });
-  return typeof result === 'string'
-    ? { path: result }
-    : Array.isArray(result)
-      ? { path: result[0] ?? '', paths: result }
-      : result;
-}
-export interface NativeChange {
-  scope?: string;
-  productIds?: string[];
+  const result = await invoke<DialogPick | null>('native_dialog', { kind, options });
+  return result === null
+    ? null
+    : typeof result === 'string'
+      ? { path: result }
+      : { path: result[0] ?? '', paths: result };
 }
 export async function subscribeChanged(
   reload: (change: NativeChange) => void,
 ): Promise<() => void> {
   return isTauri()
-    ? listen<{ scope?: unknown; productIds?: unknown }>('nna:changed', (event) =>
-        reload({
-          scope: typeof event.payload?.scope === 'string' ? event.payload.scope : undefined,
-          productIds: Array.isArray(event.payload?.productIds)
-            ? event.payload.productIds.filter((id): id is string => typeof id === 'string')
-            : undefined,
-        }),
-      )
+    ? listen<NativeChange>('nna:changed', (event) => reload(event.payload))
     : () => {};
 }
 type FileAction = FileRequest['action'];
@@ -256,38 +241,13 @@ export async function nativeFileAction<A extends FileAction>(
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke<FileResponses[A]>('native_file_action', { action, args });
 }
-export async function nativeZoom(scale: number): Promise<{ scale: number }> {
+export async function nativeZoom(scale: number): Promise<Zoomed> {
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke('native_zoom', { scale });
 }
 export async function openExternal(url: string): Promise<void> {
   if (!isTauri()) throw new Error('nativeUnavailable');
   return invoke('external_open', { url });
-}
-export interface AppRelease {
-  version: string;
-  notes: string;
-  releaseUrl: string;
-}
-export interface BridgeRelease {
-  version: string;
-  unitypackageUrl: string;
-  releaseUrl: string;
-}
-export interface UpdateCheck {
-  app: {
-    currentVersion: string;
-    installSupported: boolean;
-    available?: AppRelease;
-    errorCode?: string;
-  };
-  bridge?: BridgeRelease;
-  bridgeError?: string;
-}
-export interface UpdateProgress {
-  stage: 'downloading' | 'verifying' | 'installing';
-  downloadedBytes: number;
-  totalBytes?: number | null;
 }
 export async function checkUpdates(): Promise<UpdateCheck> {
   if (!isTauri()) throw new Error('nativeUnavailable');

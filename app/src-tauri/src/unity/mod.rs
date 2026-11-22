@@ -8,7 +8,7 @@ use crate::{catalogue::Catalogue, storage::StorageService};
 use anyhow::{bail, ensure, Result};
 use api::UnityRequest;
 use jobs::{RequestRecord, RequestStore};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -47,7 +47,7 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 fn emit(app: &tauri::AppHandle) {
-    let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
 }
 fn error_code(error: anyhow::Error) -> String {
     let text = error.to_string();
@@ -705,6 +705,7 @@ fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn unity_receives_ordinary_paths_for_verbatim_roots() {

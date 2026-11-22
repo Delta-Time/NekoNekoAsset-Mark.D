@@ -473,7 +473,7 @@ impl StoreService {
                 .ok_or_else(|| anyhow::anyhow!("ACCOUNT_UNAVAILABLE"))?;
             let name = normalized_account_name(&args["name"])?;
             self.rename_account(id, &name)?;
-            let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
             return api::answer(api::AccountRenamed {
                 account_id: id.to_owned(),
                 name,
@@ -508,7 +508,7 @@ impl StoreService {
                     "createdAt":chrono::Utc::now().to_rfc3339()
                 }),
             )?;
-            let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
             return api::answer(api::StoreAccount { account_id: id });
         }
         let result = match provider {
@@ -529,7 +529,7 @@ impl StoreService {
         if result.is_err() && matches!(action, "account_login" | "login") {
             if let Some(id) = account_id {
                 if self.catalogue.discard_unverified_account(&id)? {
-                    let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
                 }
             }
         }

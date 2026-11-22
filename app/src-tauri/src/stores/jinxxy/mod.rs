@@ -1333,9 +1333,12 @@ impl JinxxyService {
                                 let _ = app.emit(
                                     "nna:changed",
                                     if job["state"] == "completed" {
-                                        json!({"scope":"booth","sessionChanged":true})
+                                        crate::ipc::Change {
+                                            session_changed: Some(true),
+                                            ..crate::ipc::Change::scope("booth")
+                                        }
                                     } else {
-                                        json!({"scope":"booth"})
+                                        crate::ipc::Change::scope("booth")
                                     },
                                 );
                             }
@@ -1713,7 +1716,7 @@ impl JinxxyService {
             } else {
                 "jobs"
             };
-            let _ = app.emit("nna:changed", json!({"scope":scope}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope(scope));
             return Ok(());
         }
         job["state"] = json!(state);
@@ -1742,7 +1745,7 @@ impl JinxxyService {
             }
             ensure!(attempt < 2, "CONCURRENT_UPDATE");
         }
-        let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
         Ok(())
     }
     fn check_cancelled(&self, id: &str) -> Result<()> {
@@ -1973,7 +1976,7 @@ impl JinxxyService {
                     anyhow::bail!("CONCURRENT_UPDATE");
                 }
             }
-            let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
         }
         Ok((client, data, jar, origin))
     }
@@ -2064,7 +2067,7 @@ impl JinxxyService {
                     if cancelled_queued {
                         self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?;
                     }
-                    let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
                     if cancelled_queued && job["type"] == "jinxxyLogin" {
                         let account = account_arg(&job)?;
                         session::finish_login(app, StoreProvider::Jinxxy, &account, false).await?;
@@ -2073,7 +2076,7 @@ impl JinxxyService {
                             StoreProvider::Jinxxy,
                             &account,
                         )?;
-                        let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                        let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
                     }
                 } else {
                     self.ensure_retryable(&job)?;
@@ -2091,7 +2094,7 @@ impl JinxxyService {
                         .await?;
                     }
                     self.requeue_job(&job)?;
-                    let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
                 }
                 super::api::answer(super::api::StoreJob {
                     job_id: id.to_owned(),
@@ -2140,7 +2143,7 @@ impl JinxxyService {
                         .inner
                         .catalogue
                         .remove_account(&account, remove_products)?;
-                    let _ = app.emit("nna:changed", json!({"scope":"catalogue"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
                     return Ok(result);
                 }
                 let mut record = self.account(&account)?;
@@ -2152,7 +2155,7 @@ impl JinxxyService {
                     self.inner.catalogue.put("account", &account, record)?;
                 }
                 self.clear_downloads(&account, None);
-                let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
                 super::api::answer(super::api::StoreAccount {
                     account_id: account,
                 })
@@ -2597,7 +2600,7 @@ impl JinxxyService {
                         }
                         let _ = app.emit(
                             "nna:changed",
-                            json!({"scope":"catalogue","productIds":[product]}),
+                            crate::ipc::Change::products("catalogue", [product]),
                         );
                         break;
                     }
@@ -2667,7 +2670,7 @@ impl JinxxyService {
             self.certify_product_membership(job, &account, &format!("jinxxy:{product}"), &listed)?;
             let _ = app.emit(
                 "nna:changed",
-                json!({"scope":"catalogue","productIds":[format!("jinxxy:{product}")]}),
+                crate::ipc::Change::products("catalogue", [format!("jinxxy:{product}")]),
             );
         }
         job["completedProducts"] = json!(count);

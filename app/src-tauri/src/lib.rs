@@ -104,15 +104,34 @@ impl Services {
     }
 }
 
-#[derive(Clone, Serialize)]
+/// Whether a library is open, being set up, missing or blocked, for the shell to show.
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 struct LibraryStatus {
+    #[ts(type = "\"ready\" | \"setup\" | \"unconfigured\" | \"blocked\"")]
     state: String,
     path: Option<PathBuf>,
     default_path: Option<PathBuf>,
     error_code: Option<String>,
     locale: String,
-    missing_credentials: Vec<Value>,
+    /// Connected accounts this device has no sign-in for.
+    missing_credentials: Vec<LibraryCredential>,
+}
+
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
+struct LibraryCredential {
+    id: String,
+    name: Option<String>,
+    store: Option<String>,
+}
+
+/// Whether opening the library restarts the App into it.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct LibraryOpened {
+    restarting: bool,
 }
 
 struct LibraryHost {
@@ -357,7 +376,7 @@ fn trusted(
         })
 }
 fn changed(app: &tauri::AppHandle, scope: &str) {
-    let _ = app.emit("nna:changed", json!({"scope":scope}));
+    let _ = app.emit("nna:changed", crate::ipc::Change::scope(scope));
 }
 
 async fn sync_connected_accounts(
@@ -973,12 +992,12 @@ async fn unity_action(
 async fn native_dialog(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-    kind: String,
-    options: Option<Value>,
-) -> Result<Value, UiError> {
+    kind: native::DialogKind,
+    options: Option<native::DialogOptions>,
+) -> Result<Option<native::DialogPick>, UiError> {
     let _operation = trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        native::dialog(&app, &kind, options.unwrap_or(json!({})))
+        native::dialog(&app, kind, options.unwrap_or_default())
     })
     .await
     .map_err(|_| UiError {
@@ -1019,13 +1038,13 @@ fn external_open(
 }
 
 #[tauri::command]
-fn native_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<Value, UiError> {
+fn native_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<native::Zoomed, UiError> {
     let _operation = trusted(&window)?;
     let factor = native::zoom_factor(scale).map_err(UiError::from_error)?;
     window.set_zoom(factor).map_err(|_| UiError {
         code: "ui_scale_failed".into(),
     })?;
-    Ok(json!({"scale":scale}))
+    Ok(native::Zoomed { scale })
 }
 
 #[tauri::command]
@@ -1033,7 +1052,7 @@ async fn preview_cache(
     window: tauri::WebviewWindow,
     services: tauri::State<'_, LibraryHost>,
     url: String,
-) -> Result<Value, UiError> {
+) -> Result<preview::CachedPreview, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
     let _work = services
@@ -1045,7 +1064,7 @@ async fn preview_cache(
         .get(url)
         .await
         .map_err(UiError::from_error)?;
-    Ok(json!({"path":path}))
+    Ok(preview::CachedPreview { path })
 }
 
 #[tauri::command]
@@ -1097,9 +1116,22 @@ fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
         {
             status.locale = locale;
         }
-        status.missing_credentials = services.catalogue.list("account").map_err(UiError::from_error)?
-            .into_iter().filter(|account| account["disconnected"] != true && account["status"] == "connected" && !services.stores.has_local_session(account))
-            .map(|account| json!({"id":account["id"],"name":account["name"],"store":account["store"]})).collect();
+        status.missing_credentials = services
+            .catalogue
+            .list("account")
+            .map_err(UiError::from_error)?
+            .into_iter()
+            .filter(|account| {
+                account["disconnected"] != true
+                    && account["status"] == "connected"
+                    && !services.stores.has_local_session(account)
+            })
+            .map(|account| LibraryCredential {
+                id: account["id"].as_str().unwrap_or_default().to_owned(),
+                name: account["name"].as_str().map(str::to_owned),
+                store: account["store"].as_str().map(str::to_owned),
+            })
+            .collect();
     } else if status.state == "unconfigured" {
         status.default_path = profile::default_library_path(&host.device_dir).ok();
     }
@@ -1413,7 +1445,7 @@ async fn library_open(
     path: PathBuf,
     locale: Option<String>,
     new_library: Option<bool>,
-) -> Result<Value, UiError> {
+) -> Result<LibraryOpened, UiError> {
     let _operation = trusted(&window)?;
     host.begin_opening()?;
     let result = async {
@@ -1440,7 +1472,7 @@ async fn library_open(
             drop(reset_status);
             host.opening.store(false, Ordering::Release);
             changed(&app, "library");
-            return Ok(json!({"restarting":false}));
+            return Ok(LibraryOpened { restarting: false });
         }
         let setup = match host.active_setup()? {
             Some(setup) => Some(setup),
@@ -1481,7 +1513,7 @@ async fn library_open(
             {
                 host.opening.store(false, Ordering::Release);
                 changed(&app, "state");
-                return Ok(json!({"restarting":false}));
+                return Ok(LibraryOpened { restarting: false });
             }
         }
         let active = host.active_services()?;
@@ -1543,7 +1575,7 @@ async fn library_open(
             code: "library_unavailable".into(),
         })? = permit;
         restart_for_library(app);
-        Ok(json!({"restarting":true}))
+        Ok(LibraryOpened { restarting: true })
     }
     .await;
     if result.is_err() {
@@ -1716,7 +1748,7 @@ pub fn run() {
                         }
                     }
                     host.opening.store(false, Ordering::Release);
-                    let _ = handle.emit("nna:changed", json!({"scope":"library"}));
+                    let _ = handle.emit("nna:changed", crate::ipc::Change::scope("library"));
                 });
                 return Ok(());
             }
@@ -1911,27 +1943,20 @@ pub fn run() {
             }
             let automatic_storage = storage.clone();
             app.listen("nna:changed", move |event| {
-                let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+                let Ok(change) = serde_json::from_str::<ipc::Change>(event.payload()) else {
                     return;
                 };
-                if payload["sessionChanged"] == true {
+                if change.session_changed == Some(true) {
                     let storage = automatic_storage.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = storage.reevaluate_automatic().await;
                     });
                     return;
                 }
-                if payload["scope"] != "catalogue" {
+                if change.scope != "catalogue" {
                     return;
                 }
-                let Some(ids) = payload["productIds"].as_array() else {
-                    return;
-                };
-                let ids: Vec<String> = ids
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect();
+                let ids = change.product_ids.unwrap_or_default();
                 if ids.is_empty() {
                     return;
                 }
@@ -1952,7 +1977,7 @@ pub fn run() {
                     .flatten()
                     .is_some_and(|preferences| preferences["setupComplete"] == true);
                 if storage.start(handle.clone()).await.is_err() {
-                    let _ = handle.emit("nna:changed", json!({"scope":"recovery"}));
+                    let _ = handle.emit("nna:changed", crate::ipc::Change::scope("recovery"));
                 }
                 // Explicit login/sync jobs need the workers even when isolated diagnostics
                 // suppress automatic startup scans.

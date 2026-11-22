@@ -18,7 +18,7 @@ use url::Url;
 const BRIDGE_ENDPOINT: &str = "https://yan-k.github.io/NekoNekoAsset-Public/bridge/latest.json";
 const RELEASE_ROOT: &str = "https://github.com/Yan-K/NekoNekoAsset-Public/releases";
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppRelease {
     version: String,
@@ -26,7 +26,7 @@ pub(crate) struct AppRelease {
     release_url: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeRelease {
     version: String,
@@ -34,25 +34,42 @@ pub(crate) struct BridgeRelease {
     release_url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppCheck {
     current_version: String,
     install_supported: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     available: Option<AppRelease>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     error_code: Option<String>,
 }
 
-#[derive(Serialize)]
+/// Whether newer App and Bridge releases exist.
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub(crate) struct UpdateCheck {
     app: AppCheck,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     bridge: Option<BridgeRelease>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     bridge_error: Option<String>,
+}
+
+/// An App update's download and install progress: the `updates:progress` event.
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub(crate) struct UpdateProgress {
+    #[ts(type = "\"downloading\" | \"verifying\" | \"installing\"")]
+    stage: String,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
 }
 
 #[derive(Default)]
@@ -166,9 +183,11 @@ fn progress(app: &AppHandle, stage: &str, downloaded: u64, total: Option<u64>) {
     let _ = app.emit_to(
         "main",
         "updates:progress",
-        serde_json::json!({
-            "stage":stage,"downloadedBytes":downloaded,"totalBytes":total
-        }),
+        UpdateProgress {
+            stage: stage.to_owned(),
+            downloaded_bytes: downloaded,
+            total_bytes: total,
+        },
     );
 }
 

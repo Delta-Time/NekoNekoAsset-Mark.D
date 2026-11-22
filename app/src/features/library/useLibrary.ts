@@ -20,7 +20,16 @@ export function useLibrary() {
     libraryRefreshPending = useRef(false),
     libraryEpoch = useRef(0);
   const blockedLibraryRequest = useRef<{ path: string; newLibrary: boolean } | null>(null);
-  const applyLibraryStatus = (status: LibraryStatus) => {
+  /** Applies a library status; the shell's own fallbacks give only what they know. */
+  const applyLibraryStatus = (known: Pick<LibraryStatus, 'state'> & Partial<LibraryStatus>) => {
+    const status: LibraryStatus = {
+      path: null,
+      defaultPath: null,
+      errorCode: null,
+      locale: '',
+      missingCredentials: [],
+      ...known,
+    };
     libraryStateRef.current = status;
     setLibraryState(status);
   };

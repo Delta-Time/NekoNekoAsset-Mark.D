@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import Art from './Art';
 import { previewSource } from './backend';
+import type { CachedPreview } from './bindings';
 
 type PreviewRequest = { promise: Promise<string | undefined>; path?: string };
 const requests = new Map<string, PreviewRequest>();
@@ -10,7 +11,7 @@ function cachedPreview(url: string): Promise<string | undefined> {
   if (existing) return existing.promise;
   const request: PreviewRequest = { promise: Promise.resolve(undefined) };
   request.promise = isTauri()
-    ? invoke<{ path: string }>('preview_cache', { url })
+    ? invoke<CachedPreview>('preview_cache', { url })
         .then((result) => {
           request.path = convertFileSrc(result.path);
           return request.path;

@@ -424,7 +424,7 @@ impl LicenseService {
                 })?;
                 let _ = app.emit(
                     "nna:changed",
-                    json!({"scope":"licenses","productIds":[product]}),
+                    crate::ipc::Change::products("licenses", [product]),
                 );
                 Ok(serde_json::to_value(api::Done {})?)
             }
@@ -497,7 +497,7 @@ impl LicenseService {
                     }
                 }
                 drop(db);
-                let _ = app.emit("nna:changed", json!({"scope":"licenses"}));
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("licenses"));
                 Ok(serde_json::to_value(api::Done {})?)
             }
         }
@@ -733,7 +733,7 @@ impl LicenseService {
             if let Ok(mut running) = service.inner.running.lock() {
                 *running = None;
             }
-            let _ = app.emit("nna:changed", json!({"scope":"licenses"}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("licenses"));
         });
         Ok(())
     }
@@ -798,7 +798,7 @@ impl LicenseService {
                 self.save_job(app, job)?;
                 let _ = app.emit(
                     "nna:changed",
-                    json!({"scope":"licenses","productIds":changed}),
+                    crate::ipc::Change::products("licenses", changed),
                 );
                 changed = vec![];
                 saved = std::time::Instant::now();
@@ -806,7 +806,7 @@ impl LicenseService {
         }
         let _ = app.emit(
             "nna:changed",
-            json!({"scope":"licenses","productIds":changed}),
+            crate::ipc::Change::products("licenses", changed),
         );
         Ok(())
     }
@@ -838,7 +838,7 @@ impl LicenseService {
         job["updatedAt"] = json!(now());
         let id = job["id"].as_str().unwrap_or_default().to_owned();
         self.inner.catalogue.put("job", &id, job)?;
-        let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
         Ok(())
     }
 }

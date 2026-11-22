@@ -247,7 +247,13 @@ impl BoothService {
         })
     }
     fn changed(&self, app: &AppHandle, job: Option<&str>) {
-        let _ = app.emit("nna:changed", json!({"scope":"booth","jobId":job}));
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change {
+                job_id: job.map(str::to_owned),
+                ..crate::ipc::Change::scope("booth")
+            },
+        );
     }
     fn known_account(&self, id: &str) -> Result<Value> {
         safety::account_id(id)?;
@@ -832,7 +838,10 @@ impl BoothService {
                 eprintln!("BOOTH terminal write failed: {}", code(&error));
                 let _ = app.emit(
                     "nna:changed",
-                    json!({"scope":"jobs","jobId":id,"errorCode":"TERMINAL_WRITE_FAILED"}),
+                    crate::ipc::Change {
+                        error_code: Some("TERMINAL_WRITE_FAILED".into()),
+                        ..crate::ipc::Change::job("jobs", &id)
+                    },
                 );
             }
             if let Ok(mut running) = service.inner.running.lock() {
@@ -856,7 +865,10 @@ impl BoothService {
                 {
                     let _ = app.emit(
                         "nna:changed",
-                        json!({"scope":"booth","sessionChanged":true}),
+                        crate::ipc::Change {
+                            session_changed: Some(true),
+                            ..crate::ipc::Change::scope("booth")
+                        },
                     );
                 }
             }
@@ -1112,7 +1124,7 @@ impl BoothService {
             emit
         };
         if should_emit {
-            let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
         }
         Ok(())
     }

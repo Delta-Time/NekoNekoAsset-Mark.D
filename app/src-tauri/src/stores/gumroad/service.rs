@@ -551,7 +551,7 @@ impl GumroadService {
                         .inner
                         .catalogue
                         .remove_account(account, remove_products)?;
-                    let _ = app.emit("nna:changed", json!({"scope":"catalogue"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("catalogue"));
                     return Ok(result);
                 }
                 if self.inner.catalogue.library_root().is_none() {
@@ -561,7 +561,7 @@ impl GumroadService {
                     row["identityVerified"] = json!(false);
                     self.inner.catalogue.put("account", account, row)?;
                 }
-                let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
                 api::answer(api::StoreAccount {
                     account_id: account.to_owned(),
                 })
@@ -722,7 +722,7 @@ impl GumroadService {
                     let job = self.requeue_job(&job)?;
                     self.spawn(app.clone(), job)?;
                 }
-                let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
+                let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
                 api::answer(api::StoreJob {
                     job_id: id.to_owned(),
                 })
@@ -767,7 +767,7 @@ impl GumroadService {
                                 eprintln!("Gumroad terminal write failed: {}", safe_code(&error));
                             }
                             let _ =
-                                app.emit("nna:changed", json!({"scope":"catalogue","jobId":id}));
+                                app.emit("nna:changed", crate::ipc::Change::job("catalogue", id));
                             return;
                         }
                         if service
@@ -788,7 +788,7 @@ impl GumroadService {
                                 }
                             }
                             let _ =
-                                app.emit("nna:changed", json!({"scope":"catalogue","jobId":id}));
+                                app.emit("nna:changed", crate::ipc::Change::job("catalogue", id));
                             return;
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -815,10 +815,13 @@ impl GumroadService {
                 eprintln!("Gumroad terminal write failed: {}", safe_code(&error));
                 let _ = app.emit(
                     "nna:changed",
-                    json!({"scope":"jobs","jobId":id,"errorCode":"TERMINAL_WRITE_FAILED"}),
+                    crate::ipc::Change {
+                        error_code: Some("TERMINAL_WRITE_FAILED".into()),
+                        ..crate::ipc::Change::job("jobs", &id)
+                    },
                 );
             } else if error.as_deref() == Some("AUTH_REQUIRED") {
-                let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
             }
             if job["type"] == "gumroadLogin" {
                 let verified = service
@@ -843,9 +846,12 @@ impl GumroadService {
                 let _ = app.emit(
                     "nna:changed",
                     if verified {
-                        json!({"scope":"booth","sessionChanged":true})
+                        crate::ipc::Change {
+                            session_changed: Some(true),
+                            ..crate::ipc::Change::scope("booth")
+                        }
                     } else {
-                        json!({"scope":"booth"})
+                        crate::ipc::Change::scope("booth")
                     },
                 );
             }
@@ -857,7 +863,7 @@ impl GumroadService {
             } else {
                 "jobs"
             };
-            let _ = app.emit("nna:changed", json!({"scope":scope,"jobId":id}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::job(scope, id));
         });
         Ok(())
     }
@@ -995,12 +1001,15 @@ impl GumroadService {
             job["progress"]["metadataTotal"] = json!(total);
             job["progress"]["metadataCompleted"] = json!(total);
             self.save_running_job(job)?;
-            let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+            let _ = app.emit(
+                "nna:changed",
+                crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+            );
             commit_gumroad_product(&self.inner.catalogue, job, &product, &records, checkpoint)?;
             self.clear_downloads(account, Some(&product));
             let _ = app.emit(
                 "nna:changed",
-                json!({"scope":"catalogue","productIds":[product]}),
+                crate::ipc::Change::products("catalogue", [product]),
             );
         }
         job["progress"]["stage"] = json!("finalizing");
@@ -1017,7 +1026,7 @@ impl GumroadService {
         for product in self.publish_complete_journal_records(job, checkpoint, journal_id)? {
             let _ = app.emit(
                 "nna:changed",
-                json!({"scope":"catalogue","productIds":[product]}),
+                crate::ipc::Change::products("catalogue", [product]),
             );
         }
         Ok(())
@@ -1358,7 +1367,7 @@ impl GumroadService {
                 bail!("CONCURRENT_UPDATE");
             }
         }
-        let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
         Ok(page)
     }
     async fn bundle_members(
@@ -1681,7 +1690,10 @@ impl GumroadService {
             job["progress"] = json!({"stage":"collecting","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
             self.set_collection_metrics(job, metrics_before, classified_before);
             self.save_running_job(job)?;
-            let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+            let _ = app.emit(
+                "nna:changed",
+                crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+            );
         }
         selected_purchases.retain(|id| !bundled_purchases.contains(id));
         // Mid-run change detection compares membership only. The first change restarts the
@@ -1719,7 +1731,10 @@ impl GumroadService {
                 };
                 job["progress"] = json!({"stage":"collecting","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
                 self.save_running_job(job)?;
-                let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+                let _ = app.emit(
+                    "nna:changed",
+                    crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+                );
                 ensure!(
                     page.buyer_identity == buyer_identity,
                     "ACCOUNT_IDENTITY_MISMATCH"
@@ -1861,7 +1876,7 @@ impl GumroadService {
                                 for product in published {
                                     let _ = app.emit(
                                         "nna:changed",
-                                        json!({"scope":"catalogue","productIds":[product]}),
+                                        crate::ipc::Change::products("catalogue", [product]),
                                     );
                                 }
                             }
@@ -1885,7 +1900,10 @@ impl GumroadService {
                         .as_array()
                         .map_or(0, Vec::len));
                     self.save_running_job(job)?;
-                    let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+                    let _ = app.emit(
+                        "nna:changed",
+                        crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+                    );
                 }
                 unresolved += page_unresolved;
                 checkpoint["nextPages"][tab] = json!(page_index + 1);
@@ -1954,7 +1972,10 @@ impl GumroadService {
                 job["updatedAt"] = json!(now());
                 self.set_collection_metrics(job, metrics_before, classified_before);
                 self.save_running_job(job)?;
-                let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+                let _ = app.emit(
+                    "nna:changed",
+                    crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+                );
             }
             if !pending.is_empty() {
                 continue;
@@ -2082,7 +2103,10 @@ impl GumroadService {
             job["progress"] = json!({"stage":"enriching","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
             self.set_collection_metrics(job, metrics_before, classified_before);
             self.save_running_job(job)?;
-            let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
+            let _ = app.emit(
+                "nna:changed",
+                crate::ipc::Change::job("jobs", job["id"].as_str().unwrap_or_default()),
+            );
         }
         // A selected purchase the library no longer lists stays as it was.
         for id in selected_purchases.difference(&found) {

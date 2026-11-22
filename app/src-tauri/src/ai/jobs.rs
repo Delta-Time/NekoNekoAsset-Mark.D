@@ -278,7 +278,7 @@ impl AiJobs {
             .map(Some)
     }
     fn notify(&self, app: &tauri::AppHandle, scope: &str, ids: &[String]) {
-        let _ = app.emit("nna:changed", json!({"scope":scope,"productIds":ids}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::products(scope, ids));
     }
     fn save_job(
         &self,
@@ -308,9 +308,9 @@ impl AiJobs {
         let service = self.clone();
         let handle = app.clone();
         app.listen("nna:changed", move |event| {
-            let scope = serde_json::from_str::<Value>(event.payload())
+            let scope = serde_json::from_str::<crate::ipc::Change>(event.payload())
                 .ok()
-                .and_then(|v| v["scope"].as_str().map(str::to_owned));
+                .map(|change| change.scope);
             if matches!(
                 scope.as_deref(),
                 Some("products" | "catalogue" | "booth" | "storage")

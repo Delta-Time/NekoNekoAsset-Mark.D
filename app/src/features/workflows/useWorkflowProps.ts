@@ -82,13 +82,13 @@ export function useWorkflowProps({
     libraryReady,
     setupReady: libraryState?.state === 'setup' && !libraryRefreshPending.current,
     defaultLibraryPath:
-      libraryRefreshPending.current || libraryState?.state === 'setup'
+      (libraryRefreshPending.current || libraryState?.state === 'setup'
         ? libraryState?.path
-        : libraryState?.defaultPath,
+        : libraryState?.defaultPath) ?? undefined,
     defaultLibraryError: libraryRefreshPending.current
       ? loadingError
       : ['setup', 'unconfigured'].includes(libraryState?.state ?? '')
-        ? libraryState?.errorCode
+        ? (libraryState?.errorCode ?? undefined)
         : undefined,
     missingCredentials: libraryState?.missingCredentials,
     onLibraryReady: async (path: string, _rootId?: string, newLibrary = false) => {

@@ -51,6 +51,53 @@ pub(crate) fn assert_round_trip(kind: &str, sent: &Value, back: &Value) {
     }
 }
 
+/// What changed, for the UI and the services that follow it to reload: the payload of
+/// every `nna:changed` event.
+#[derive(Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "NativeChange")]
+pub(crate) struct Change {
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub product_ids: Option<Vec<String>>,
+    /// A job's final state could not be written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_code: Option<String>,
+    /// A store sign-in changed, so automatic downloads look again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_changed: Option<bool>,
+}
+
+impl Change {
+    pub(crate) fn scope(scope: impl Into<String>) -> Self {
+        Self {
+            scope: scope.into(),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn job(scope: impl Into<String>, job_id: impl Into<String>) -> Self {
+        Self {
+            job_id: Some(job_id.into()),
+            ..Self::scope(scope)
+        }
+    }
+    pub(crate) fn products(
+        scope: impl Into<String>,
+        ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            product_ids: Some(ids.into_iter().map(Into::into).collect()),
+            ..Self::scope(scope)
+        }
+    }
+}
+
 /// Keeps an explicit `null` apart from a missing field: `Some(Value::Null)` versus
 /// `None`. Use with `#[serde(default, deserialize_with = "crate::ipc::present")]`.
 pub(crate) fn present<'de, D: Deserializer<'de>>(

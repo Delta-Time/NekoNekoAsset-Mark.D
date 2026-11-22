@@ -22,6 +22,7 @@ import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Navigation } from '../shell/useNavigation';
 import type { Results } from '../results/useResults';
 import type { Notices } from '../shell/useNotice';
+import type { DialogKind, DialogOptions } from '../../bindings';
 
 type LooseInvoke = (
   service: Service,
@@ -320,7 +321,7 @@ export function useNative({
         service === 'catalogue' && action === 'collection'
           ? await changeCollection(args)
           : service === 'dialog'
-            ? await nativeDialog(action as 'folder' | 'open_file' | 'save_file', args)
+            ? await nativeDialog(action as DialogKind, args as DialogOptions)
             : await (invokeAction as LooseInvoke)(service, action, args);
       if (result?.restartRequired === true) {
         setLibraryOpening(true);

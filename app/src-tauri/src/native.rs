@@ -1,7 +1,7 @@
 use crate::catalogue::Catalogue;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -13,64 +13,91 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use ts_rs::TS;
 
-pub fn dialog(app: &tauri::AppHandle, kind: &str, options: Value) -> Result<Value> {
+/// Which file dialog to show.
+#[derive(Clone, Copy, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DialogKind {
+    Folder,
+    OpenFile,
+    SaveFile,
+}
+
+/// A file dialog's start folder, suggested name and filters, and whether it picks several.
+#[derive(Default, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields = nullable)]
+pub struct DialogOptions {
+    pub default_path: Option<String>,
+    pub default_name: Option<String>,
+    pub filters: Option<Vec<DialogFilter>>,
+    pub multiple: Option<bool>,
+}
+
+#[derive(Deserialize, TS)]
+pub struct DialogFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+/// What a file dialog picked: one path, or several when it picks several.
+#[derive(Serialize, TS)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum DialogPick {
+    One(PathBuf),
+    Many(Vec<PathBuf>),
+}
+
+/// The scale the window now uses, in percent.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Zoomed {
+    pub scale: f64,
+}
+
+/// Shows a file dialog; `None` when it was cancelled.
+pub fn dialog(
+    app: &tauri::AppHandle,
+    kind: DialogKind,
+    options: DialogOptions,
+) -> Result<Option<DialogPick>> {
     let mut picker = app.dialog().file();
-    if let Some(path) = options.get("defaultPath").and_then(Value::as_str) {
+    if let Some(path) = &options.default_path {
         picker = picker.set_directory(path);
     }
-    if let Some(name) = options.get("defaultName").and_then(Value::as_str) {
+    if let Some(name) = &options.default_name {
         picker = picker.set_file_name(name);
     }
-    if let Some(filters) = options.get("filters").and_then(Value::as_array) {
-        for filter in filters {
-            if let (Some(name), Some(extensions)) = (
-                filter.get("name").and_then(Value::as_str),
-                filter.get("extensions").and_then(Value::as_array),
-            ) {
-                let extensions: Vec<&str> = extensions.iter().filter_map(Value::as_str).collect();
-                picker = picker.add_filter(name, &extensions);
-            }
-        }
+    for filter in options.filters.iter().flatten() {
+        let extensions: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
+        picker = picker.add_filter(&filter.name, &extensions);
     }
-    let result = match kind {
-        "folder" => {
-            if options.get("multiple").and_then(Value::as_bool) == Some(true) {
-                return picker
-                    .blocking_pick_folders()
-                    .map(|files| {
-                        files
-                            .into_iter()
-                            .map(|file| file.into_path().map(|p| json!(p)))
-                            .collect::<std::result::Result<Vec<Value>, _>>()
-                            .map(Value::Array)
-                            .map_err(Into::into)
-                    })
-                    .unwrap_or(Ok(Value::Null));
-            }
-            picker.blocking_pick_folder()
-        }
-        "open_file" => {
-            if options.get("multiple").and_then(Value::as_bool) == Some(true) {
-                let files = picker.blocking_pick_files();
-                return files
-                    .map(|files| {
-                        files
-                            .into_iter()
-                            .map(|file| file.into_path().map(|p| json!(p)))
-                            .collect::<std::result::Result<Vec<Value>, _>>()
-                            .map(Value::Array)
-                            .map_err(Into::into)
-                    })
-                    .unwrap_or(Ok(Value::Null));
-            }
-            picker.blocking_pick_file()
-        }
-        "save_file" => picker.blocking_save_file(),
-        _ => bail!("invalid_dialog_kind"),
+    let several = options.multiple == Some(true);
+    let one = |file: Option<tauri_plugin_dialog::FilePath>| -> Result<Option<DialogPick>> {
+        Ok(file
+            .map(|file| file.into_path())
+            .transpose()?
+            .map(DialogPick::One))
     };
-    result
-        .map(|file| file.into_path().map(|path| json!(path)).map_err(Into::into))
-        .unwrap_or(Ok(Value::Null))
+    let many = |files: Option<Vec<tauri_plugin_dialog::FilePath>>| -> Result<Option<DialogPick>> {
+        Ok(files
+            .map(|files| {
+                files
+                    .into_iter()
+                    .map(|file| file.into_path())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .map(DialogPick::Many))
+    };
+    match kind {
+        DialogKind::Folder if several => many(picker.blocking_pick_folders()),
+        DialogKind::Folder => one(picker.blocking_pick_folder()),
+        DialogKind::OpenFile if several => many(picker.blocking_pick_files()),
+        DialogKind::OpenFile => one(picker.blocking_pick_file()),
+        DialogKind::SaveFile => one(picker.blocking_save_file()),
+    }
 }
 fn selected_path(path: Option<String>) -> Result<PathBuf> {
     let path = PathBuf::from(path.context("path_required")?);

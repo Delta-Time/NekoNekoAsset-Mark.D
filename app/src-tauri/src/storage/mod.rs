@@ -214,10 +214,16 @@ impl StorageService {
         })
     }
     fn changed(&self, app: &tauri::AppHandle, id: Option<&str>) {
-        let _ = app.emit("nna:changed", json!({"scope":"products","jobId":id}));
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change {
+                job_id: id.map(str::to_owned),
+                ..crate::ipc::Change::scope("products")
+            },
+        );
     }
     fn jobs_changed(&self, app: &tauri::AppHandle, id: &str) {
-        let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
     }
     fn root(&self, id: Option<&str>) -> Result<Value> {
         let configured = self.preferences()?["libraryRootId"]
