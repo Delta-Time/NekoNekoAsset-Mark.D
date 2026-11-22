@@ -1312,6 +1312,38 @@ fn download_response(url: &str, status: u16, kind: &str) -> reqwest::Response {
     )
 }
 #[test]
+fn a_refused_file_reads_as_removed_only_from_a_complete_listing_of_its_variation() {
+    // An independently authored receipt: one product line whose variation now offers 700002.
+    let receipt = "<main><div class='sheet' data-product-id='900001'><div><a href='https://invented.booth.pm/items/900001'>Authored product</a><a href='https://invented.booth.pm/'>Authored shop</a><div><span>￥１，５００</span></div></div><div data-test='downloadable-list'><b data-test='filename'>authored_v2.zip</b><a href='https://booth.pm/downloadables/700002?variation_id=800001'>Download</a></div></div><div class='sheet'><div><p><b>注文番号</b></p><div># 910001</div></div><div><p><strong>注文日時</strong></p><div>2026/10/10 09:30</div></div></div></main>";
+    let page = parser::parse(receipt, "purchase", "/orders/910001").unwrap();
+    let file = |id: &str, variant: &str| json!({"productId":"900001","sourceFileId":id,"variantId":variant,"variantName":null});
+    assert_eq!(
+        page_offers(&page.rows, &file("700001", "800001")),
+        Some(false)
+    );
+    assert_eq!(
+        page_offers(&page.rows, &file("700002", "800001")),
+        Some(true)
+    );
+    // Another variation or another product: the page says nothing about the file.
+    assert_eq!(page_offers(&page.rows, &file("700001", "800002")), None);
+    let mut other = file("700001", "800001");
+    other["productId"] = json!("900002");
+    assert_eq!(page_offers(&page.rows, &other), None);
+    // A listing that is not complete says nothing either, unless it still shows the file.
+    let mut partial = page.rows.clone();
+    partial[0].manifest_complete = false;
+    assert_eq!(page_offers(&partial, &file("700001", "800001")), None);
+    assert_eq!(page_offers(&partial, &file("700002", "800009")), Some(true));
+    // A file without a variation ID goes by its variation's name.
+    let mut named = page.rows.clone();
+    named[0].variant_name = Some("Authored A".into());
+    let unbound =
+        |name: &str| json!({"productId":"900001","sourceFileId":"700001","variantName":name});
+    assert_eq!(page_offers(&named, &unbound("Authored A")), Some(false));
+    assert_eq!(page_offers(&named, &unbound("Authored B")), None);
+}
+#[test]
 fn one_file_answering_sign_in_is_refused_alone_and_any_https_host_may_serve_it() {
     for (url, status, kind) in [
         ("https://booth.pm/downloadables/700001", 401, "text/html"),

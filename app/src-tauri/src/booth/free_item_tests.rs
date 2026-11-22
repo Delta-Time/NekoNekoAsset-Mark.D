@@ -407,6 +407,37 @@ fn a_refused_free_file_reads_as_ended_only_when_its_page_says_so() {
     assert!(!free_offer_closed(500, &paid, "900001"));
 }
 #[test]
+fn a_refused_free_file_reads_as_removed_when_its_open_offer_no_longer_lists_it() {
+    use super::super::free_refusal;
+    let file = |id: &str, variant: &str| serde_json::json!({"productId":"900001","sourceFileId":id,"variantId":variant});
+    // The offer goes on with another file in the same variation, as after a new version.
+    assert_eq!(
+        free_refusal(200, HTML, "900001", &file("700009", "800001")),
+        Some("FILE_UNAVAILABLE")
+    );
+    // Still listed, another variation, or a page that proves nothing: the refusal stands.
+    assert_eq!(
+        free_refusal(200, HTML, "900001", &file("700001", "800001")),
+        None
+    );
+    assert_eq!(
+        free_refusal(200, HTML, "900001", &file("700009", "800002")),
+        None
+    );
+    assert_eq!(
+        free_refusal(200, "<html></html>", "900001", &file("700009", "800001")),
+        None
+    );
+    assert_eq!(
+        free_refusal(500, HTML, "900001", &file("700009", "800001")),
+        None
+    );
+    assert_eq!(
+        free_refusal(404, "", "900001", &file("700009", "800001")),
+        Some("FREE_OFFER_UNAVAILABLE")
+    );
+}
+#[test]
 fn settled_free_offer_absence_requires_positive_paid_rows_and_all_guards() {
     let start = HTML.find("<li class='variation-item'>").unwrap();
     let end = start + HTML[start..].find("</li>").unwrap() + "</li>".len();

@@ -77,6 +77,51 @@ fn free_offer_closed(status: u16, body: &str, id: &str) -> bool {
                 evidence.error_code.as_deref() == Some("FREE_OFFER_UNAVAILABLE")
             })
 }
+/// What one readable page says about a file BOOTH refused: still listed (`Some(true)`),
+/// missing from a complete listing of its product and variation (`Some(false)`), or
+/// nothing. A file without a variation ID is matched by its variation's name.
+fn page_offers(rows: &[parser::Row], file: &Value) -> Option<bool> {
+    let id = file["sourceFileId"].as_str()?;
+    let product = file["productId"].as_str()?;
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.product_id.as_deref() == Some(product))
+        .collect();
+    if rows.iter().any(|row| row.files.iter().any(|f| f.id == id)) {
+        return Some(true);
+    }
+    rows.iter()
+        .any(|row| {
+            row.manifest_complete
+                && row.error_code.is_none()
+                && match file["variantId"].as_str() {
+                    Some(variant) => row
+                        .files
+                        .iter()
+                        .any(|f| f.variant_id.as_deref() == Some(variant)),
+                    None => row.variant_name.as_deref() == file["variantName"].as_str(),
+                }
+        })
+        .then_some(false)
+}
+/// What a free item's page says about a file BOOTH refused from it: the offer ended, or
+/// the file is gone while the offer goes on, as when a seller replaces a version.
+fn free_refusal(status: u16, body: &str, id: &str, file: &Value) -> Option<&'static str> {
+    if free_offer_closed(status, body, id) {
+        return Some("FREE_OFFER_UNAVAILABLE");
+    }
+    let evidence = free_item::parse(body, id)
+        .ok()
+        .filter(|_| (200..300).contains(&status))?;
+    let row = parser::Row {
+        product_id: Some(evidence.product_id),
+        files: evidence.files,
+        manifest_complete: evidence.manifest_complete,
+        error_code: evidence.error_code,
+        ..Default::default()
+    };
+    (page_offers(&[row], file) == Some(false)).then_some("FILE_UNAVAILABLE")
+}
 /// Unsigned route for one catalogue file: its bound variant and, for an audio
 /// track, the MP3 rendition.
 fn download_route(file: &Value) -> Result<String> {
@@ -1322,22 +1367,98 @@ impl BoothService {
         .await?;
         http::build_client(jar, download)
     }
-    /// Whether a refused file came from a free offer its public page says has ended,
-    /// the same reading a sync counts. Any other answer leaves the refusal as it was.
-    async fn free_offer_ended(&self, client: &reqwest::Client, file: &Value) -> bool {
-        let Some(route) = file["resolverPage"]
-            .as_str()
-            .filter(|_| file["source"] == "free")
-        else {
-            return false;
-        };
-        let (Some(id), Ok(url)) = (safety::free_item_id(route), url::Url::parse(route)) else {
-            return false;
-        };
-        match self.inner.http.get(client, url).await {
-            Ok((status, body)) => free_offer_closed(status.as_u16(), &body, id),
-            Err(_) => false,
+    /// Why BOOTH refused a file, when a page says so: a free offer that ended, read as a
+    /// sync counts it, or a file a complete listing no longer has. BOOTH refuses a file
+    /// a seller removed instead of answering 404. Any other answer, including a page that
+    /// still lists the file, leaves the refusal as it was.
+    async fn refusal_reason(
+        &self,
+        client: &reqwest::Client,
+        file: &Value,
+        refusal: &str,
+    ) -> Option<&'static str> {
+        if file["source"] == "free" {
+            let route = file["resolverPage"].as_str()?;
+            let id = safety::free_item_id(route)?;
+            let (status, body) = self
+                .inner
+                .http
+                .get(client, url::Url::parse(route).ok()?)
+                .await
+                .ok()?;
+            return free_refusal(status.as_u16(), &body, id, file);
         }
+        if refusal != "PERMISSION_DENIED" {
+            return None;
+        }
+        for (url, source) in self.refusal_pages(file) {
+            let route = url.to_string();
+            let (status, body) = match self.inner.http.get(client, url).await {
+                Ok(read) => read,
+                // A list page that moved, or lies past a verification run's cap, says
+                // nothing; signing out, throttling or an outage end the check.
+                Err(error)
+                    if matches!(
+                        code(&error).as_str(),
+                        "RESPONSE_ROUTE_CHANGED" | "VERIFICATION_PAGE_LIMIT"
+                    ) =>
+                {
+                    continue
+                }
+                Err(_) => return None,
+            };
+            let Some(page) = status
+                .is_success()
+                .then(|| parser::parse(&body, source, &route).ok())
+                .flatten()
+            else {
+                continue;
+            };
+            if let Some(offered) = page_offers(&page.rows, file) {
+                return (!offered).then_some("FILE_UNAVAILABLE");
+            }
+        }
+        None
+    }
+    /// The account pages that can list a refused file: the one that last listed it,
+    /// then the receipts its account bought the product on. Three at most.
+    fn refusal_pages(&self, file: &Value) -> Vec<(url::Url, &'static str)> {
+        let mut pages: Vec<(url::Url, &'static str)> = vec![];
+        let mut add = |route: &str, source: &'static str| {
+            if let Ok(url) = safety::route(route, source) {
+                if !pages.iter().any(|(saved, _)| saved == &url) {
+                    pages.push((url, source));
+                }
+            }
+        };
+        let source = match file["source"].as_str() {
+            Some("library") => Some("library"),
+            Some("purchase") => Some("purchase"),
+            Some("gift") => Some("gift"),
+            _ => None,
+        };
+        if let (Some(route), Some(source)) = (file["resolverPage"].as_str(), source) {
+            add(route, source);
+        }
+        let product = file["productId"].as_str().unwrap_or_default();
+        for acquisition in self
+            .inner
+            .catalogue
+            .related("acquisition", product)
+            .unwrap_or_default()
+        {
+            if acquisition["accountId"] == file["accountId"] && acquisition["source"] == "purchase"
+            {
+                if let Some(order) = acquisition["orderId"]
+                    .as_str()
+                    .filter(|id| safety::numeric(id))
+                {
+                    add(&format!("/orders/{order}"), "purchase");
+                }
+            }
+        }
+        pages.truncate(3);
+        pages
     }
     /// A cookie-less client for public item pages, past the R-18 confirmation.
     pub fn public_client(&self) -> Result<reqwest::Client> {
@@ -1416,9 +1537,12 @@ impl BoothService {
                 if matches!(
                     code(&error).as_str(),
                     "PERMISSION_DENIED" | "FILE_UNAVAILABLE"
-                ) && self.free_offer_ended(&client, &file).await =>
+                ) =>
             {
-                bail!("FREE_OFFER_UNAVAILABLE")
+                match self.refusal_reason(&client, &file, &code(&error)).await {
+                    Some(reason) => bail!(reason),
+                    None => return Err(error),
+                }
             }
             resolved => resolved?,
         };
