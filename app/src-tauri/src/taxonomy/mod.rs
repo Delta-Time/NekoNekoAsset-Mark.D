@@ -278,19 +278,7 @@ pub fn infer_product_category(source: &Value) -> Value {
         .map(|k| text(k))
         .find(|v| !v.trim().is_empty())
         .unwrap_or("");
-    let tags: Vec<String> = ["sourceTags", "tags"]
-        .iter()
-        .flat_map(|key| {
-            source[*key]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-        })
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    let tags: Vec<String> = source_tags(source);
     let normalized_tags: Vec<_> = tags.iter().map(|v| normalize(v)).collect();
     let title_normalized = normalize(title);
     let description_normalized = normalize(description);
@@ -306,57 +294,11 @@ pub fn infer_product_category(source: &Value) -> Value {
             || word_match(v, "vrcfury")
             || v.contains("vrチャット")
     };
-    let has_unity = |v: &str| {
-        word_match(v, "unity")
-            || word_match(v, "unity3d")
-            || word_match(v, "udon")
-            || word_match(v, "udonsharp")
-            || v.contains("unitypackage")
-    };
     let explicit_vr_tag = normalized_tags.iter().any(|v| has_vr(v));
     let explicit_vr_text = has_vr(&title_normalized) || has_vr(&description_normalized);
     let vr_scope = jinxxy || (!gumroad && explicit_vr_tag) || explicit_vr_text;
-    // A passing mention of Unity in a long description is not sufficient. A
-    // retained tag/title or actual engine/package vocabulary provides context.
-    let unity_scope = normalized_tags.iter().any(|v| has_unity(v))
-        || has_unity(&title_normalized)
-        || has_unity(&description_normalized)
-            && [
-                "unitypackage",
-                "ugui",
-                "humanoid",
-                "shader",
-                "シェーダ",
-                "インポート",
-                "import",
-                ".anim",
-                "prefab",
-                "プレハブ",
-                "editor extension",
-                "エディタ拡張",
-            ]
-            .iter()
-            .any(|term| description_normalized.contains(term));
-    let outside_app_tag = normalized_tags.iter().any(|tag| {
-        [
-            "aftereffects",
-            "after effects",
-            "aftereffcts",
-            "ae",
-            "novelai",
-            "photoshop",
-            "clip studio",
-            "clipstudiopaint",
-            "live2d",
-            "ココフォリア",
-            "trpg",
-            "coc",
-            "voice",
-            "ボイス",
-        ]
-        .iter()
-        .any(|term| word_match(tag, term))
-    });
+    let unity_scope = in_unity_scope(&normalized_tags, &title_normalized, &description_normalized);
+    let outside_app_tag = tagged_outside_app(&normalized_tags);
     // Product-opening context is useful even when sellers omit application
     // tags. Do not scan long credits/dependency sections or treat OS names as
     // strong application evidence.
@@ -383,17 +325,7 @@ pub fn infer_product_category(source: &Value) -> Value {
             .or_else(|| source_category["name"].as_str())
             .unwrap_or(""),
     );
-    let outside_category = [
-        "イラスト素材",
-        "ボイス",
-        "フォント",
-        "書体",
-        "illustration",
-        "voice",
-        "font",
-    ]
-    .iter()
-    .any(|term| category_name.contains(term));
+    let outside_category = category_outside_scope(&category_name);
     let target_scope = vr_scope || unity_scope;
     // BOOTH's top level says whether a product is 3D data at all.
     let booth = ["provider", "store"]
@@ -447,12 +379,181 @@ pub fn infer_product_category(source: &Value) -> Value {
             )
         })
         .flatten();
+    let facts = Facts {
+        title,
+        description,
+        tags: &tags,
+        normalized_tags: &normalized_tags,
+        title_normalized: &title_normalized,
+        description_normalized: &description_normalized,
+        description_opening: &description_opening,
+        source_category,
+        category_name: &category_name,
+        parent_name: &parent_name,
+        booth,
+        jinxxy,
+        gumroad,
+        jinxxy_addon,
+        in_3d,
+        vr_scope,
+        unity_scope,
+        target_scope,
+        explicit_vr_tag,
+        explicit_vr_text,
+        outside_app_context,
+        outside_category,
+        os_tag,
+    };
+    apply_store_type(&mut result, store, &facts);
+    let declared_software = apply_software(&mut result, store, &facts);
+    let base_title = apply_base(&mut result, store, declared_software, &facts);
+    apply_tag_type(&mut result, store, &facts, &evidence);
+    apply_fallback(&mut result, base_title, &facts, &evidence);
+    apply_world_prop(&mut result, store, &facts);
+    apply_scope(&mut result, store, &facts);
+    result
+}
+
+/// The listing's tags and stored tags, deduplicated and sorted.
+fn source_tags(source: &Value) -> Vec<String> {
+    ["sourceTags", "tags"]
+        .iter()
+        .flat_map(|key| {
+            source[*key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+        })
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Whether a tag, the title or the description places the product in Unity.
+fn in_unity_scope(
+    normalized_tags: &[String],
+    title_normalized: &str,
+    description_normalized: &str,
+) -> bool {
+    let has_unity = |v: &str| {
+        word_match(v, "unity")
+            || word_match(v, "unity3d")
+            || word_match(v, "udon")
+            || word_match(v, "udonsharp")
+            || v.contains("unitypackage")
+    };
+    // A passing mention of Unity in a long description is not sufficient. A
+    // retained tag/title or actual engine/package vocabulary provides context.
+    normalized_tags.iter().any(|v| has_unity(v))
+        || has_unity(title_normalized)
+        || has_unity(description_normalized)
+            && [
+                "unitypackage",
+                "ugui",
+                "humanoid",
+                "shader",
+                "シェーダ",
+                "インポート",
+                "import",
+                ".anim",
+                "prefab",
+                "プレハブ",
+                "editor extension",
+                "エディタ拡張",
+            ]
+            .iter()
+            .any(|term| description_normalized.contains(term))
+}
+
+/// Whether a tag names an application or medium outside VRChat and Unity.
+fn tagged_outside_app(normalized_tags: &[String]) -> bool {
+    normalized_tags.iter().any(|tag| {
+        [
+            "aftereffects",
+            "after effects",
+            "aftereffcts",
+            "ae",
+            "novelai",
+            "photoshop",
+            "clip studio",
+            "clipstudiopaint",
+            "live2d",
+            "ココフォリア",
+            "trpg",
+            "coc",
+            "voice",
+            "ボイス",
+        ]
+        .iter()
+        .any(|term| word_match(tag, term))
+    })
+}
+
+/// Whether the store category is an illustration, voice or font shelf.
+fn category_outside_scope(category_name: &str) -> bool {
+    [
+        "イラスト素材",
+        "ボイス",
+        "フォント",
+        "書体",
+        "illustration",
+        "voice",
+        "font",
+    ]
+    .iter()
+    .any(|term| category_name.contains(term))
+}
+
+/// What the category stages read about one product, computed once by
+/// `infer_product_category` from its retained public metadata.
+#[derive(Clone, Copy)]
+struct Facts<'a> {
+    title: &'a str,
+    description: &'a str,
+    tags: &'a [String],
+    normalized_tags: &'a [String],
+    title_normalized: &'a str,
+    description_normalized: &'a str,
+    description_opening: &'a str,
+    source_category: &'a Value,
+    category_name: &'a str,
+    parent_name: &'a str,
+    booth: bool,
+    jinxxy: bool,
+    gumroad: bool,
+    jinxxy_addon: bool,
+    in_3d: bool,
+    vr_scope: bool,
+    unity_scope: bool,
+    target_scope: bool,
+    explicit_vr_tag: bool,
+    explicit_vr_text: bool,
+    outside_app_context: bool,
+    outside_category: bool,
+    os_tag: bool,
+}
+
+/// BOOTH's store category, read with the title and tags, names the type.
+fn apply_store_type(
+    result: &mut Value,
+    store: Option<(&'static str, &'static str)>,
+    facts: &Facts,
+) {
+    let Facts {
+        title,
+        tags,
+        normalized_tags,
+        source_category,
+        ..
+    } = *facts;
     if let Some((kind, basis)) = store {
         let found: Vec<Value> = match basis {
             "sourceTitle" => vec![json!({"field":"sourceTitle","value":title})],
             "sourceTags" => tags
                 .iter()
-                .zip(&normalized_tags)
+                .zip(normalized_tags)
                 .filter(|(_, tag)| {
                     names_type(tag, kind)
                         || kind == "Udon"
@@ -472,26 +573,45 @@ pub fn infer_product_category(source: &Value) -> Value {
                 json!({"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")}),
             ],
         };
-        result = json!({"category":kind,"basis":basis,"inferred":true,"evidence":found});
+        *result = json!({"category":kind,"basis":basis,"inferred":true,"evidence":found});
     }
+}
+
+/// Declared software is a tool; returns whether the product declares itself software.
+fn apply_software(
+    result: &mut Value,
+    store: Option<(&'static str, &'static str)>,
+    facts: &Facts,
+) -> bool {
+    let Facts {
+        title,
+        description,
+        tags,
+        normalized_tags,
+        title_normalized,
+        description_opening,
+        source_category,
+        category_name,
+        ..
+    } = *facts;
     // Software describes the product; texture/avatar words often describe its
     // input or output. Only declared software type may override those words.
-    let software_category = software_type(&category_name);
-    let software_title = software_type(&title_normalized);
+    let software_category = software_type(category_name);
+    let software_title = software_type(title_normalized);
     let software_tag = normalized_tags.iter().any(|tag| software_type(tag));
-    let software_opening = description_defines_software(&description_opening);
+    let software_opening = description_defines_software(description_opening);
     let software = software_category || software_title || software_tag || software_opening;
     let declared_software = software_category || software_title || software_opening;
     let specialized_software = RULES.iter().any(|rule| {
         matches!(rule.category, "Shader" | "Udon")
             && result["category"] == rule.category
-            && rule_match(&title_normalized, rule)
+            && rule_match(title_normalized, rule)
             && !software_title
             && !software_opening
             && !RULES
                 .iter()
                 .find(|r| r.category == "Tool")
-                .is_some_and(|r| rule_match(&title_normalized, r))
+                .is_some_and(|r| rule_match(title_normalized, r))
     });
     // In a garment, hair, accessory or texture category an add-on is one more pack,
     // and a software tag one more tag.
@@ -505,7 +625,7 @@ pub fn infer_product_category(source: &Value) -> Value {
         false
     } else if store_content {
         description_defines_software(&description_opening.replace("アドオンです", ""))
-            || software_title && !add_on_pack(&title_normalized)
+            || software_title && !add_on_pack(title_normalized)
     } else {
         software
             && (declared_software
@@ -536,37 +656,71 @@ pub fn infer_product_category(source: &Value) -> Value {
         } else {
             ("sourceDescription", description)
         };
-        result = json!({"category":"Tool","basis":field,"inferred":true,"evidence":[{"field":field,"value":evidence_excerpt(value)}]});
+        *result = json!({"category":"Tool","basis":field,"inferred":true,"evidence":[{"field":field,"value":evidence_excerpt(value)}]});
     }
+    declared_software
+}
+
+/// Only a store category or a title supplies an avatar; returns whether the title does.
+fn apply_base(
+    result: &mut Value,
+    store: Option<(&'static str, &'static str)>,
+    declared_software: bool,
+    facts: &Facts,
+) -> bool {
+    let Facts {
+        title,
+        normalized_tags,
+        title_normalized,
+        source_category,
+        category_name,
+        jinxxy_addon,
+        ..
+    } = *facts;
     // Broad avatar tags/parent categories are compatibility context, not proof
     // that this product supplies an avatar. Description mentions never suffice.
     let base_rule = RULES.iter().find(|rule| rule.category == "Base").unwrap();
-    let base_leaf = rule_match(&category_name, base_rule)
-        && !compatibility_context(&category_name)
+    let base_leaf = rule_match(category_name, base_rule)
+        && !compatibility_context(category_name)
         && !jinxxy_addon;
     let named_original_model = (title_normalized.contains("オリジナル3dモデル")
         || title_normalized.contains("original 3d model"))
         && normalized_tags.iter().any(|tag| rule_match(tag, base_rule));
-    let base_title = (affirmative_base_title(&title_normalized) || named_original_model)
-        && !compatibility_context(&title_normalized)
+    let base_title = (affirmative_base_title(title_normalized) || named_original_model)
+        && !compatibility_context(title_normalized)
         && names::has_name(title);
     if result["category"] == "Base" && !(base_leaf || base_title) {
-        result = json!({"category":"NonVRChat","basis":"fallback","inferred":true,"evidence":[]});
+        *result = json!({"category":"NonVRChat","basis":"fallback","inferred":true,"evidence":[]});
     }
     // BOOTH's own character category outranks tags, which also list what an avatar
     // includes: a hair style, gestures, a shader. With no specific store category,
     // a title that calls itself one named model is enough; a removed page is not.
     if store.is_none() && result["category"] != "Base" && !declared_software && !jinxxy_addon {
         if category_name == "3dキャラクター" {
-            result = json!({"category":"Base","basis":"sourceCategory","inferred":true,
+            *result = json!({"category":"Base","basis":"sourceCategory","inferred":true,
                 "evidence":[{"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")}]});
-        } else if matches!(category_name.as_str(), "" | "3dモデル(その他)")
-            && names_one_model(title, &title_normalized)
+        } else if matches!(category_name, "" | "3dモデル(その他)")
+            && names_one_model(title, title_normalized)
         {
-            result = json!({"category":"Base","basis":"sourceTitle","inferred":true,
+            *result = json!({"category":"Base","basis":"sourceTitle","inferred":true,
                 "evidence":[{"field":"sourceTitle","value":evidence_excerpt(title)}]});
         }
     }
+    base_title
+}
+
+/// An explicit shader or motion tag outranks a generic texture label.
+fn apply_tag_type(
+    result: &mut Value,
+    store: Option<(&'static str, &'static str)>,
+    facts: &Facts,
+    evidence: &impl Fn(&str, &Rule) -> bool,
+) {
+    let Facts {
+        tags,
+        normalized_tags,
+        ..
+    } = *facts;
     // A generic material/texture label must not defeat an explicit shader or
     // motion tag; a store category that says what the product is still wins.
     if store.is_none() && matches!(result["category"].as_str(), Some("Texture" | "NonVRChat")) {
@@ -575,16 +729,34 @@ pub fn infer_product_category(source: &Value) -> Value {
             .filter(|r| matches!(r.category, "Shader" | "Motion"))
             .find(|r| normalized_tags.iter().any(|tag| evidence(tag, r)))
         {
-            result = json!({"category":rule.category,"basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| evidence(tag, rule)).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
+            *result = json!({"category":rule.category,"basis":"tags","inferred":true,"evidence":tags.iter().zip(normalized_tags).filter(|(_, tag)| evidence(tag, rule)).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
         }
     }
+}
+
+/// With nothing else to go on, the title, then the description, names the type.
+fn apply_fallback(
+    result: &mut Value,
+    base_title: bool,
+    facts: &Facts,
+    evidence: &impl Fn(&str, &Rule) -> bool,
+) {
+    let Facts {
+        title,
+        description,
+        title_normalized,
+        description_normalized,
+        booth,
+        target_scope,
+        ..
+    } = *facts;
     // A description mentions dependencies, contents and what a product goes with. On
     // BOOTH, where tags and a category are there to read, it must define a shader; a
     // software definition was read above. It remains the evidence other stores have.
     if result["basis"] == "fallback" {
         for (field, content) in [
-            ("sourceTitle", title_normalized.as_str()),
-            ("sourceDescription", description_normalized.as_str()),
+            ("sourceTitle", title_normalized),
+            ("sourceDescription", description_normalized),
         ] {
             if let Some(rule) = RULES.iter().find(|rule| {
                 rule.category != "NonVRChat"
@@ -597,11 +769,26 @@ pub fn infer_product_category(source: &Value) -> Value {
                         || rule.category != "Shader"
                         || description_defines_shader(content))
             }) {
-                result = json!({"category":rule.category,"basis":field,"inferred":true,"evidence":[{"field":field,"value":evidence_excerpt(if field=="sourceTitle"{title}else{description})}]});
+                *result = json!({"category":rule.category,"basis":field,"inferred":true,"evidence":[{"field":field,"value":evidence_excerpt(if field=="sourceTitle"{title}else{description})}]});
                 break;
             }
         }
     }
+}
+
+/// A prop in a generic 3D category tagged for worlds is World.
+fn apply_world_prop(
+    result: &mut Value,
+    store: Option<(&'static str, &'static str)>,
+    facts: &Facts,
+) {
+    let Facts {
+        tags,
+        normalized_tags,
+        booth,
+        in_3d,
+        ..
+    } = *facts;
     // A world prop in a generic 3D category says world and carries no avatar wording.
     if booth
         && in_3d
@@ -616,14 +803,34 @@ pub fn infer_product_category(source: &Value) -> Value {
                 .any(|word| tag.contains(word))
         })
     {
-        result = json!({"category":"World","basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world")).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
+        *result = json!({"category":"World","basis":"tags","inferred":true,"evidence":tags.iter().zip(normalized_tags).filter(|(_, tag)| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world")).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
     }
+}
+
+/// Scope gates for tools and other shelves, the store fallbacks, and the scope itself.
+fn apply_scope(result: &mut Value, store: Option<(&'static str, &'static str)>, facts: &Facts) {
+    let Facts {
+        title_normalized,
+        category_name,
+        parent_name,
+        booth,
+        jinxxy,
+        gumroad,
+        jinxxy_addon,
+        in_3d,
+        vr_scope,
+        unity_scope,
+        target_scope,
+        explicit_vr_tag,
+        explicit_vr_text,
+        outside_app_context,
+        outside_category,
+        os_tag,
+        ..
+    } = *facts;
     // What a title or tag separates from BOOTH's tools still has to show where it runs.
-    let store_tools = store.is_some()
-        && matches!(
-            category_name.as_str(),
-            "3dツール・システム" | "ソフトウェア"
-        );
+    let store_tools =
+        store.is_some() && matches!(category_name, "3dツール・システム" | "ソフトウェア");
     let restricted = store_tools || matches!(result["category"].as_str(), Some("Tool" | "Texture"));
     let store_texture = result["category"] == "Texture" && matches!(store, Some(("Texture", _)));
     let os_without_target_context = os_tag && !unity_scope && !explicit_vr_tag;
@@ -632,12 +839,12 @@ pub fn infer_product_category(source: &Value) -> Value {
         && !store_texture
         && (!target_scope || outside_app_context && !explicit_vr_tag || os_without_target_context)
     {
-        result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
+        *result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
     }
     // Under any other top level, such as 素材データ, ゲーム or 映像作品, a word needs
     // VRChat or Unity evidence too, and a book about a VRChat world is still a book.
     let work = matches!(
-        parent_name.as_str(),
+        parent_name,
         "小説・その他書籍" | "漫画" | "音楽" | "音声作品" | "イラスト"
     );
     if booth
@@ -646,13 +853,13 @@ pub fn infer_product_category(source: &Value) -> Value {
         && (!target_scope || work)
         && result["category"] != "NonVRChat"
     {
-        result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
+        *result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
     }
     // The product policy treats Jinxxy as a VRChat source. Keep any specific
     // observed type; a generic asset falls under Gimmick, never the excluded shelf.
     // VRCFury alone is a scope hint, not proof that clothing is a gimmick.
     if jinxxy && result["category"] == "NonVRChat" {
-        result = if jinxxy_addon {
+        *result = if jinxxy_addon {
             json!({"category":"Gimmick","basis":"sourceType","inferred":true,
                 "evidence":[{"field":"sourceCategory.types","value":"avatar_addon"}]})
         } else {
@@ -664,7 +871,7 @@ pub fn infer_product_category(source: &Value) -> Value {
     // evidence of a VRChat product without an explicit source title/body mention.
     let gumroad_without_vr_text = gumroad && !explicit_vr_text;
     if gumroad_without_vr_text {
-        result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":[]});
+        *result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":[]});
     }
     // BOOTH's own 3D category stands against a Photoshop or Windows tag, which often
     // says what the source files need, though not against a title naming the application.
@@ -672,7 +879,7 @@ pub fn infer_product_category(source: &Value) -> Value {
         && (store.is_some_and(|(kind, _)| kind != "Tool" && result["category"] == kind)
             || booth && category_name == "3dキャラクター" && result["category"] == "Base");
     let outside = if store_asset {
-        strong_external_application(&title_normalized) && !explicit_vr_tag
+        strong_external_application(title_normalized) && !explicit_vr_tag
     } else {
         (outside_app_context || outside_category) && !explicit_vr_tag || os_without_target_context
     };
@@ -700,7 +907,6 @@ pub fn infer_product_category(source: &Value) -> Value {
             }
         }
     }
-    result
 }
 
 fn names_type(text: &str, category: &str) -> bool {
