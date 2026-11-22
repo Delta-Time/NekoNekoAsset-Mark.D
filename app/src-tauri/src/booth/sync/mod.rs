@@ -1457,6 +1457,16 @@ impl BoothService {
         prefetch: Option<&PublicPrefetch>,
     ) -> Result<SourceScan> {
         let key = format!("booth:{account}:{source}");
+        let read = SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            client,
+            selected,
+            prefetch,
+            key: &key,
+        };
         let baseline_key = format!("booth-complete:{account}:{source}");
         let previous_baseline = self
             .inner
@@ -1499,82 +1509,25 @@ impl BoothService {
             &mut tracker,
             &mut updated_tracker,
         )?;
-        // A resumed run, including one interrupted by an App update, skips known
-        // receipts still queued. One the previous pass no longer supplies is read.
-        let unsupplied: Vec<_> = checkpoint
-            .reused
-            .iter()
-            .filter(|route| !known_receipts.contains_key(*route))
-            .cloned()
-            .collect();
-        for route in unsupplied {
-            checkpoint.reused.remove(&route);
-            checkpoint.pending.push(route);
-        }
-        reuse_known_receipts(&mut checkpoint, &known_receipts);
-        self.save_checkpoint(&key, &checkpoint)?;
-        self.inner
-            .catalogue
-            .prune_store_checkpoints("BOOTH", account)?;
-        let coverage_id = format!("{account}:{source}");
-        if let Some((kind, id, value)) = source_coverage_record(
-            selected,
-            &coverage_id,
-            json!({"id":coverage_id,"accountId":account,"source":source,"status":"running","mode":mode,"freeHistoryStartsAt":if source=="free"{Some("2026-06-15")}else{None},"historicalComplete":false,"incrementalBoundary":if tracker.is_some(){"awaitingNewestFirstOverlap"}else{"fullTraversalWhenOrderingUnproven"},"lastFullTraversalAt":previous_baseline.as_ref().map(|b| &b.full_traversal_at),"updatedAt":now()}),
-        ) {
-            self.inner.catalogue.put(&kind, &id, value)?;
-        }
-        let mut reads = FuturesUnordered::new();
-        let mut active_routes = BTreeSet::new();
-        while !checkpoint.pending.is_empty() {
-            if checkpoint.pages + checkpoint.details_completed >= 10000
-                || checkpoint.pending.len() > 50000
-            {
-                bail!("SOURCE_TRAVERSAL_LIMIT");
-            }
-            if self.cancelled(job)? {
-                bail!("CANCELLED");
-            }
-            let routes = available_routes(&checkpoint.pending, &active_routes)?;
-            for route in routes {
-                if let Some(id) = safety::free_item_id(&route) {
-                    if source != "free" || !free_history.contains_key(id) {
-                        bail!("FREE_ITEM_HISTORY_UNPROVEN");
-                    }
-                }
-                active_routes.insert(route.clone());
-                reads.push(async move {
-                    let read = self.fetch_page(client, source, &route, prefetch).await;
-                    (route, read)
-                });
-            }
-            if let Some((route, read)) = reads.next().await {
-                active_routes.remove(&route);
-                self.read_source_page(
-                    SourceRead {
-                        app,
-                        account,
-                        source,
-                        mode,
-                        client,
-                        selected,
-                        prefetch,
-                        key: &key,
-                    },
-                    job,
-                    route,
-                    read,
-                    &previous_baseline,
-                    baseline,
-                    &known_receipts,
-                    &mut checkpoint,
-                    &mut tracker,
-                    &mut updated_tracker,
-                    &mut free_history,
-                )
-                .await?;
-            }
-        }
+        let coverage_id = self.start_source_pass(
+            read,
+            &mut checkpoint,
+            &known_receipts,
+            &tracker,
+            &previous_baseline,
+        )?;
+        self.read_pass_pages(
+            read,
+            job,
+            &previous_baseline,
+            baseline,
+            &known_receipts,
+            &mut checkpoint,
+            &mut tracker,
+            &mut updated_tracker,
+            &mut free_history,
+        )
+        .await?;
         // A source that shifted during the pass cannot be labelled complete.
         let head_route = format!("{}?page=1", safety::source_path(source)?);
         let final_head = self
@@ -1728,16 +1681,7 @@ impl BoothService {
                 }
             }
             self.assemble_pass_product(
-                SourceRead {
-                    app,
-                    account,
-                    source,
-                    mode,
-                    client,
-                    selected,
-                    prefetch,
-                    key: &key,
-                },
+                read,
                 job,
                 public,
                 enriched,
@@ -1756,16 +1700,7 @@ impl BoothService {
         }
         drop(rows_by_product);
         self.close_source_pass(
-            SourceRead {
-                app,
-                account,
-                source,
-                mode,
-                client,
-                selected,
-                prefetch,
-                key: &key,
-            },
+            read,
             job,
             publications,
             &previous_baseline,
@@ -1788,6 +1723,116 @@ impl BoothService {
                 unresolved_rows,
             },
         )
+    }
+
+    /// Requeues the receipts the previous pass no longer supplies, reuses the ones it does,
+    /// saves the checkpoint and marks the source's coverage running.
+    fn start_source_pass(
+        &self,
+        read: SourceRead<'_>,
+        checkpoint: &mut Checkpoint,
+        known_receipts: &BTreeMap<String, Vec<parser::Row>>,
+        tracker: &Option<Tracker>,
+        previous_baseline: &Option<Baseline>,
+    ) -> Result<String> {
+        let SourceRead {
+            account,
+            source,
+            mode,
+            selected,
+            key,
+            ..
+        } = read;
+        // A resumed run, including one interrupted by an App update, skips known
+        // receipts still queued. One the previous pass no longer supplies is read.
+        let unsupplied: Vec<_> = checkpoint
+            .reused
+            .iter()
+            .filter(|route| !known_receipts.contains_key(*route))
+            .cloned()
+            .collect();
+        for route in unsupplied {
+            checkpoint.reused.remove(&route);
+            checkpoint.pending.push(route);
+        }
+        reuse_known_receipts(checkpoint, known_receipts);
+        self.save_checkpoint(key, checkpoint)?;
+        self.inner
+            .catalogue
+            .prune_store_checkpoints("BOOTH", account)?;
+        let coverage_id = format!("{account}:{source}");
+        if let Some((kind, id, value)) = source_coverage_record(
+            selected,
+            &coverage_id,
+            json!({"id":coverage_id,"accountId":account,"source":source,"status":"running","mode":mode,"freeHistoryStartsAt":if source=="free"{Some("2026-06-15")}else{None},"historicalComplete":false,"incrementalBoundary":if tracker.is_some(){"awaitingNewestFirstOverlap"}else{"fullTraversalWhenOrderingUnproven"},"lastFullTraversalAt":previous_baseline.as_ref().map(|b| &b.full_traversal_at),"updatedAt":now()}),
+        ) {
+            self.inner.catalogue.put(&kind, &id, value)?;
+        }
+        Ok(coverage_id)
+    }
+
+    /// Reads the source's pending pages, several at a time, until none is left.
+    async fn read_pass_pages(
+        &self,
+        source_read: SourceRead<'_>,
+        job: &mut Value,
+        previous_baseline: &Option<Baseline>,
+        baseline: Option<&Baseline>,
+        known_receipts: &BTreeMap<String, Vec<parser::Row>>,
+        checkpoint: &mut Checkpoint,
+        tracker: &mut Option<Tracker>,
+        updated_tracker: &mut Option<UpdatedTracker>,
+        free_history: &mut BTreeMap<String, Vec<parser::Row>>,
+    ) -> Result<()> {
+        let SourceRead {
+            source,
+            client,
+            prefetch,
+            ..
+        } = source_read;
+        let mut reads = FuturesUnordered::new();
+        let mut active_routes = BTreeSet::new();
+        while !checkpoint.pending.is_empty() {
+            if checkpoint.pages + checkpoint.details_completed >= 10000
+                || checkpoint.pending.len() > 50000
+            {
+                bail!("SOURCE_TRAVERSAL_LIMIT");
+            }
+            if self.cancelled(job)? {
+                bail!("CANCELLED");
+            }
+            let routes = available_routes(&checkpoint.pending, &active_routes)?;
+            for route in routes {
+                if let Some(id) = safety::free_item_id(&route) {
+                    if source != "free" || !free_history.contains_key(id) {
+                        bail!("FREE_ITEM_HISTORY_UNPROVEN");
+                    }
+                }
+                active_routes.insert(route.clone());
+                reads.push(async move {
+                    let read = self.fetch_page(client, source, &route, prefetch).await;
+                    (route, read)
+                });
+            }
+            if let Some((route, read)) = reads.next().await {
+                active_routes.remove(&route);
+                self.read_source_page(
+                    source_read,
+                    job,
+                    route,
+                    read,
+                    previous_baseline,
+                    baseline,
+                    known_receipts,
+                    checkpoint,
+                    tracker,
+                    updated_tracker,
+                    free_history,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Stages the pass's checkpoint, baseline and coverage, hands them to publication and
