@@ -80,7 +80,12 @@ pub fn public_ip(ip: std::net::IpAddr) -> bool {
 /// A file reached from the store's own file link may sit on any public HTTPS host,
 /// but the store's sign-in page is never a file.
 pub fn download_destination(provider: StoreProvider, url: &Url) -> bool {
-    public_https(url) && !(metadata_destination(provider, url) && login_path(url))
+    public_https(url) && !sign_in_page(provider, url)
+}
+
+/// The store's own sign-in page, its answer to a request that carried no session.
+pub fn sign_in_page(provider: StoreProvider, url: &Url) -> bool {
+    metadata_destination(provider, url) && login_path(url)
 }
 
 fn login_path(url: &Url) -> bool {

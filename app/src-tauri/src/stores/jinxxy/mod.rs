@@ -134,10 +134,33 @@ fn resolved_location(
         .join(location.ok_or_else(|| anyhow::anyhow!("JINXXY_DOWNLOAD_UNPROVEN"))?)
         .map_err(|_| anyhow::anyhow!("JINXXY_DOWNLOAD_UNPROVEN"))?;
     ensure!(
+        !super::http::sign_in_page(StoreProvider::Jinxxy, &url),
+        "AUTH_REQUIRED"
+    );
+    ensure!(
         super::http::download_destination(StoreProvider::Jinxxy, &url),
         "UNSAFE_DOWNLOAD_URL"
     );
     Ok(url)
+}
+/// The buyer's inventory-page cookies, offered to the file endpoint alone. The WebView keeps
+/// the session to the pages' host, so the shared jar never sends it to Jinxxy's API host;
+/// this throwaway jar serves the one redirect-free request there.
+fn endpoint_jar(
+    jar: &reqwest::cookie::Jar,
+    page: &Url,
+    endpoint: &Url,
+) -> Arc<reqwest::cookie::Jar> {
+    use reqwest::cookie::CookieStore;
+    let scoped = reqwest::cookie::Jar::default();
+    if let Some(cookies) = jar.cookies(page) {
+        for cookie in cookies.to_str().unwrap_or_default().split("; ") {
+            if !cookie.is_empty() {
+                scoped.add_cookie_str(&format!("{cookie}; Secure"), endpoint);
+            }
+        }
+    }
+    Arc::new(scoped)
 }
 
 /// Apollo emits the JavaScript primitive undefined. Replace tokens outside JSON strings,
@@ -2930,18 +2953,16 @@ impl JinxxyService {
                 .filter(|manifest| manifest.valid(product, file, Instant::now()))
                 .map(|manifest| manifest.files.clone())
         };
+        let inventory_page = session
+            .origin
+            .join(&format!("/my/inventory/{inventory}"))
+            .unwrap();
         let files = if let Some(files) = cached_files {
             files
         } else {
             self.clear_downloads(account, Some(&inventory));
             let data = self
-                .page(
-                    client,
-                    session
-                        .origin
-                        .join(&format!("/my/inventory/{inventory}"))
-                        .unwrap(),
-                )
+                .page(client, inventory_page.clone())
                 .await
                 .map_err(|error| self.file_answer(account, error))?;
             let detail = parse_detail(&data, &inventory, Some(product))?;
@@ -3022,16 +3043,13 @@ impl JinxxyService {
             );
             return Ok(ticket);
         }
-        let head_client =
-            super::http::build_head_client(StoreProvider::Jinxxy, session.jar.clone())?;
-        let response = self
-            .inner
-            .http
-            .resolve_head(
-                &head_client,
-                inventory_file_endpoint(&inventory, &source_file)?,
-            )
-            .await?;
+        let endpoint = inventory_file_endpoint(&inventory, &source_file)?;
+        let head_client = super::http::build_head_client(
+            StoreProvider::Jinxxy,
+            endpoint_jar(&session.jar, &inventory_page, &endpoint),
+        )?;
+        let response = self.inner.http.resolve_head(&head_client, endpoint).await?;
+        // A sign-in answer here is about this file's request, like the detail page's.
         let url = resolved_location(
             response.url(),
             response.status(),
@@ -3039,7 +3057,8 @@ impl JinxxyService {
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok()),
-        )?;
+        )
+        .map_err(|error| self.file_answer(account, error))?;
         ensure!(
             bound_account(&self.account(account)?) == Some(session.identity.as_str()),
             "STORE_IDENTITY_CHANGED"

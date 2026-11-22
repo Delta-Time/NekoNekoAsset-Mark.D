@@ -996,13 +996,60 @@ fn head_resolution_keeps_the_signed_location_on_any_public_https_host() {
         "https://127.0.0.1/file.zip",
         "https://10.0.0.1/file.zip",
         "https://localhost/file.zip",
+    ] {
+        assert_eq!(
+            resolved_location(&endpoint, found, Some(location))
+                .unwrap_err()
+                .to_string(),
+            "UNSAFE_DOWNLOAD_URL",
+            "{location}"
+        );
+    }
+    // The store's sign-in page is a sign-in answer, never a file.
+    for location in [
         "https://jinxxy.com/login?redirect=%2Fmy%2Finventory",
         "/login",
     ] {
-        assert!(
-            resolved_location(&endpoint, found, Some(location)).is_err(),
+        assert_eq!(
+            resolved_location(&endpoint, found, Some(location))
+                .unwrap_err()
+                .to_string(),
+            "AUTH_REQUIRED",
             "{location}"
         );
+    }
+}
+#[test]
+fn file_endpoint_alone_gets_the_inventory_pages_cookies() {
+    use reqwest::cookie::CookieStore;
+    let jar = reqwest::cookie::Jar::default();
+    let site = Url::parse("https://jinxxy.com/").unwrap();
+    jar.add_cookie_str("authored_host=HOST_VALUE; Path=/; Secure", &site);
+    jar.add_cookie_str(
+        "authored_domain=DOMAIN_VALUE; Domain=.jinxxy.com; Path=/; Secure",
+        &site,
+    );
+    let page = Url::parse(&format!("https://jinxxy.com/my/inventory/{INVENTORY}")).unwrap();
+    let endpoint = inventory_file_endpoint(INVENTORY, FILE).unwrap();
+    let header = |jar: &dyn CookieStore, url: &str| {
+        jar.cookies(&Url::parse(url).unwrap())
+            .map(|value| value.to_str().unwrap().to_owned())
+            .unwrap_or_default()
+    };
+    // The shared jar keeps the host's own cookie away from the API host.
+    assert!(!header(&jar, endpoint.as_str()).contains("authored_host="));
+    let scoped = endpoint_jar(&jar, &page, &endpoint);
+    let sent = header(&*scoped, endpoint.as_str());
+    assert!(sent.contains("authored_host=HOST_VALUE"), "{sent}");
+    assert!(sent.contains("authored_domain=DOMAIN_VALUE"), "{sent}");
+    let plain_http = endpoint.as_str().replacen("https://", "http://", 1);
+    for other in [
+        "https://jinxxy.com/my/inventory",
+        "https://cdn.jinxxy.com/file.zip",
+        "https://authored-cdn.example/file.zip",
+        plain_http.as_str(),
+    ] {
+        assert!(header(&*scoped, other).is_empty(), "{other}");
     }
 }
 #[test]
