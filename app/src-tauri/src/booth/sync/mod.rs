@@ -418,6 +418,25 @@ struct PassProducts<'a> {
     metadata_total: usize,
 }
 
+/// What a source pass hands over once its products are assembled, to record and close it.
+struct PassClose {
+    checkpoint: Checkpoint,
+    all_rows: Vec<parser::Row>,
+    updated_rows: Vec<parser::Row>,
+    records: Vec<(String, String, Value)>,
+    baseline_key: String,
+    coverage_id: String,
+    left_products: BTreeSet<String>,
+    incomplete_products: BTreeSet<String>,
+    availability_products: BTreeSet<String>,
+    enrichment_error: Option<String>,
+    retained_observations: bool,
+    unbound_membership: bool,
+    closed_traversal: bool,
+    terminal_unproven_observed: bool,
+    unresolved_rows: usize,
+}
+
 impl BoothService {
     pub(super) async fn diagnose_product_line_fields(
         &self,
@@ -1661,7 +1680,7 @@ impl BoothService {
             manifest.0.extend(observed_file_ids(account, [row]));
         }
         checkpoint.forget_unlisted(|id| rows_by_product.contains_key(id));
-        let mut records = vec![];
+        let records = vec![];
         let closed_traversal = checkpoint.terminal
             && checkpoint.pending.is_empty()
             && !checkpoint.head.is_empty()
@@ -1736,6 +1755,79 @@ impl BoothService {
             .await?;
         }
         drop(rows_by_product);
+        self.close_source_pass(
+            SourceRead {
+                app,
+                account,
+                source,
+                mode,
+                client,
+                selected,
+                prefetch,
+                key: &key,
+            },
+            job,
+            publications,
+            &previous_baseline,
+            &final_head,
+            PassClose {
+                checkpoint,
+                all_rows,
+                updated_rows,
+                records,
+                baseline_key,
+                coverage_id,
+                left_products,
+                incomplete_products,
+                availability_products,
+                enrichment_error,
+                retained_observations,
+                unbound_membership,
+                closed_traversal,
+                terminal_unproven_observed,
+                unresolved_rows,
+            },
+        )
+    }
+
+    /// Stages the pass's checkpoint, baseline and coverage, hands them to publication and
+    /// settles what the source left.
+    fn close_source_pass(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        publications: &mut Publications,
+        previous_baseline: &Option<Baseline>,
+        final_head: &parser::Page,
+        pass: PassClose,
+    ) -> Result<SourceScan> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            selected,
+            prefetch,
+            key,
+            ..
+        } = read;
+        let PassClose {
+            mut checkpoint,
+            all_rows,
+            updated_rows,
+            mut records,
+            baseline_key,
+            coverage_id,
+            mut left_products,
+            incomplete_products,
+            availability_products,
+            enrichment_error,
+            retained_observations,
+            unbound_membership,
+            closed_traversal,
+            terminal_unproven_observed,
+            unresolved_rows,
+        } = pass;
         // Collection closure and publication completion are distinct. Pending
         // prepared products remain checkpoint work until their atomic commit.
         let collected_complete =
@@ -1787,7 +1879,7 @@ impl BoothService {
         checkpoint.finished = false;
         let mut finished = serde_json::to_value(&checkpoint)?;
         finished["id"] = json!(key);
-        records.push(("checkpoint".into(), key.clone(), finished));
+        records.push(("checkpoint".into(), key.to_owned(), finished));
         records.extend(source_coverage_record(selected, &coverage_id, json!({"id":coverage_id,"accountId":account,"source":source,"status":if checkpoint.complete(){"complete"}else{"incomplete"},"coverageComplete":checkpoint.complete(),"terminalSeen":checkpoint.terminal,"unresolvedRows":checkpoint.unresolved,"availabilityWarnings":availability_products.len(),"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"productCount":checkpoint.product_ids.len(),"mode":mode,"freeHistoryStartsAt":if source=="free"{Some("2026-06-15")}else{None},"historicalComplete":false,"giftEventLedgerComplete":false,"incrementalBoundary":if checkpoint.overlap_end.is_some(){"verifiedNewestFirstStableOverlap"}else{"fullTraversalWhenOrderingUnproven"},"lastFullTraversalAt":full_traversal_at,"ordering":checkpoint.ordering,"completedAt":now()})));
         // Advance baseline, completion and manifests together: a crash cannot resume
         // an old prefix against a newly replaced baseline.
@@ -1797,7 +1889,7 @@ impl BoothService {
             .iter()
             .find(|(kind, _, _)| kind == "source_coverage")
             .map(|(_, _, value)| value.clone());
-        let mut staged = vec![("checkpoint".into(), key.clone(), collected)];
+        let mut staged = vec![("checkpoint".into(), key.to_owned(), collected)];
         if let Some(coverage) = &mut coverage {
             coverage["status"] = json!("collected");
             coverage["coverageComplete"] = json!(false);
@@ -1810,7 +1902,9 @@ impl BoothService {
                 .unbound_sources
                 .insert((account.into(), source.into()));
         }
-        publications.checkpoints.insert(key, checkpoint.clone());
+        publications
+            .checkpoints
+            .insert(key.to_owned(), checkpoint.clone());
         publications.source_closures.insert(
             (account.into(), source.into()),
             (
