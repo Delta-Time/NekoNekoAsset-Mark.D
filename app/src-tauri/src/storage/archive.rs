@@ -1143,55 +1143,7 @@ pub fn extract_archive(
     let inputs = workspace.join("sources");
     let content = workspace.join("content");
     fs::create_dir(&content).context("storage_write_failed")?;
-    let first_name = sources[0]
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(volume_name)
-        .context("archive_invalid_name")?;
-    // Keep split input sets explicit: 7-Zip otherwise discovers adjacent final
-    // volumes that the caller did not include, hiding a missing-volume claim.
-    let direct = sources.len() == 1
-        && first_name.index == 0
-        && !fs::read_dir(sources[0].parent().context("archive_invalid_name")?)
-            .context("archive_missing_volume")?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| entry.file_name().to_str().and_then(volume_name))
-            .any(|name| {
-                name.key == first_name.key
-                    && name.kind == first_name.kind
-                    && name.index != first_name.index
-            });
-    let first = if direct {
-        // Ordinary complete single archives are read in place.
-        sources[0].clone()
-    } else {
-        fs::create_dir(&inputs).context("storage_write_failed")?;
-        for source in &sources {
-            check_cancel(cancelled)?;
-            let name = source.file_name().context("archive_invalid_name")?;
-            let destination = inputs.join(name);
-            // Group aliases need no payload copy on filesystems supporting
-            // hard links. Read-only inputs use the existing verified copy path,
-            // so helper cleanup never changes their attributes via an alias.
-            if fs::metadata(source)
-                .context("archive_missing_volume")?
-                .permissions()
-                .readonly()
-                || fs::hard_link(source, &destination).is_err()
-            {
-                let size = fs::metadata(source)
-                    .context("archive_missing_volume")?
-                    .len();
-                ensure!(
-                    fs2::available_space(&workspace).context("storage_space_unavailable")?
-                        >= size.saturating_add(16 * 1024 * 1024),
-                    "storage_low_space"
-                );
-                copy_source(source, &destination, cancelled)?;
-            }
-        }
-        inputs.join(sources[0].file_name().context("archive_invalid_name")?)
-    };
+    let first = first_volume(&sources, &inputs, &workspace, cancelled)?;
     let (code_page, entries) = list_archive(seven_zip, &first, cancelled)?;
     let plan = plan_extraction(&entries);
     let expanded_size = entries.iter().try_fold(0u64, |total, entry| {
@@ -1304,6 +1256,65 @@ pub fn extract_archive(
         source_paths: sources,
         _workspace: guard,
     })
+}
+
+/// The first volume 7-Zip reads: in place for one complete archive, else a private link or copy.
+fn first_volume(
+    sources: &[PathBuf],
+    inputs: &Path,
+    workspace: &Path,
+    cancelled: &AtomicBool,
+) -> Result<PathBuf> {
+    let first_name = sources[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(volume_name)
+        .context("archive_invalid_name")?;
+    // Keep split input sets explicit: 7-Zip otherwise discovers adjacent final
+    // volumes that the caller did not include, hiding a missing-volume claim.
+    let direct = sources.len() == 1
+        && first_name.index == 0
+        && !fs::read_dir(sources[0].parent().context("archive_invalid_name")?)
+            .context("archive_missing_volume")?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().to_str().and_then(volume_name))
+            .any(|name| {
+                name.key == first_name.key
+                    && name.kind == first_name.kind
+                    && name.index != first_name.index
+            });
+    let first = if direct {
+        // Ordinary complete single archives are read in place.
+        sources[0].clone()
+    } else {
+        fs::create_dir(inputs).context("storage_write_failed")?;
+        for source in sources {
+            check_cancel(cancelled)?;
+            let name = source.file_name().context("archive_invalid_name")?;
+            let destination = inputs.join(name);
+            // Group aliases need no payload copy on filesystems supporting
+            // hard links. Read-only inputs use the existing verified copy path,
+            // so helper cleanup never changes their attributes via an alias.
+            if fs::metadata(source)
+                .context("archive_missing_volume")?
+                .permissions()
+                .readonly()
+                || fs::hard_link(source, &destination).is_err()
+            {
+                let size = fs::metadata(source)
+                    .context("archive_missing_volume")?
+                    .len();
+                ensure!(
+                    fs2::available_space(workspace).context("storage_space_unavailable")?
+                        >= size.saturating_add(16 * 1024 * 1024),
+                    "storage_low_space"
+                );
+                copy_source(source, &destination, cancelled)?;
+            }
+        }
+        inputs.join(sources[0].file_name().context("archive_invalid_name")?)
+    };
+    Ok(first)
 }
 
 #[cfg(test)]
