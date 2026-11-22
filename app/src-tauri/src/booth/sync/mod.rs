@@ -375,6 +375,20 @@ fn source_gaps_local(
         && (checkpoint.head != final_head || assets_left || rows > 0)
         && !(rows > 0 && checkpoint.product_ids.is_empty())
 }
+
+/// What a BOOTH source scan reads with; fixed while the scan runs.
+#[derive(Clone, Copy)]
+struct SourceRead<'a> {
+    app: &'a AppHandle,
+    account: &'a str,
+    source: &'a str,
+    mode: &'a str,
+    client: &'a reqwest::Client,
+    selected: Option<&'a BTreeSet<String>>,
+    prefetch: Option<&'a PublicPrefetch>,
+    key: &'a str,
+}
+
 impl BoothService {
     pub(super) async fn diagnose_product_line_fields(
         &self,
@@ -1488,190 +1502,29 @@ impl BoothService {
             }
             if let Some((route, read)) = reads.next().await {
                 active_routes.remove(&route);
-                let mut page = match read {
-                    Err(error) if refused_updated_order(&route, &error) => {
-                        crate::support_trace::source_reason(source, &super::code(&error), 1);
-                        read_every_page(&mut checkpoint);
-                        tracker = None;
-                        updated_tracker = None;
-                        self.save_checkpoint(&key, &checkpoint)?;
-                        continue;
-                    }
-                    read => read?,
-                };
-                if contradicts_last_pass(&page, previous_baseline.as_ref()) {
-                    page.unresolved += 1;
-                }
-                if self.cancelled(job)? {
-                    bail!("CANCELLED");
-                }
-                if source == "gift" {
-                    checkpoint.details_completed += self
-                        .read_gift_dates(job, account, mode, client, selected, &mut page)
-                        .await?;
-                }
-                // Persist only parsed digital projections. Replaying this journal is idempotent.
-                let journal_id = format!(
-                    "booth-page:{}:{}",
-                    checkpoint.run_id,
-                    safety::hash(format!("{}:{}", page.route, page.fingerprint))
-                );
-                let journal = json!({"version":1,"id":journal_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"page":page});
-                remember_free_history(&page, &mut free_history);
-                if let Some(evidence) = &page.free_item {
-                    free_history
-                        .get(&evidence.product_id)
-                        .ok_or_else(|| anyhow::anyhow!("FREE_ITEM_HISTORY_UNPROVEN"))?;
-                }
-                // In updated order only what changed counts as read; the rest is the last pass's.
-                let unchanged_here = |row: &parser::Row| {
-                    safety::updated_order(&page.route)
-                        && !updated_tracker
-                            .as_ref()
-                            .is_some_and(|updated| updated.changes(row))
-                };
-                for row in page.rows.iter().filter(|row| !unchanged_here(row)) {
-                    if let Some(id) = &row.product_id {
-                        checkpoint.product_ids.insert(id.clone());
-                    }
-                    if selected.is_some_and(|ids| {
-                        row.product_id.as_ref().is_some_and(|id| !ids.contains(id))
-                    }) {
-                        continue;
-                    }
-                    if let Some(id) = &row.product_id {
-                        checkpoint.product_ids.insert(id.clone());
-                        if mode != "incremental"
-                            || public_refresh_needed(
-                                self.inner.catalogue.get("product", id)?.as_ref(),
-                            )
-                        {
-                            checkpoint.enrichment_pending.insert(id.clone());
-                        }
-                    }
-                }
-                record_source_page(&mut checkpoint, source, &route, &page, selected)?;
-                reuse_known_receipts(&mut checkpoint, &known_receipts);
-                if let Some(limit) = crate::verification::source_page_limit() {
-                    limit_listing_pages(&mut checkpoint, limit);
-                }
-                checkpoint.journal_ids.push(journal_id.clone());
-                let updated_page = safety::updated_order(&page.route);
-                if updated_page {
-                    match updated_tracker
-                        .as_mut()
-                        .map(|updated| updated.observe(&page))
-                    {
-                        Some(UpdatedRead::Settled) => checkpoint.pending.clear(),
-                        Some(UpdatedRead::Reading) => {}
-                        Some(UpdatedRead::Broken) | None => {
-                            read_every_page(&mut checkpoint);
-                            tracker = None;
-                            updated_tracker = None;
-                        }
-                    }
-                } else if let Some(end) = tracker
-                    .as_mut()
-                    .and_then(|t| t.observe(&page))
-                    .filter(|_| !page.terminal)
-                {
-                    checkpoint.overlap_end = Some(end);
-                    checkpoint.pending = vec![safety::updated_route(1)];
-                    // This terminal belongs to the previous complete tail, not this page.
-                    checkpoint.terminal = true;
-                    updated_tracker = tracker
-                        .as_ref()
-                        .zip(baseline)
-                        .map(|(tracker, base)| tracker.updated(&base.updated_head));
-                }
-                if !updated_page && !page.is_detail && !page.terminal && page.next.is_empty() {
-                    checkpoint.unresolved += 1;
-                }
-                self.commit_source_page(&journal_id, &journal, &key, &checkpoint)?;
-                if let Some(prefetch) = prefetch {
-                    let mut discovered = page.clone();
-                    if updated_page {
-                        // A file's page stays one the list always has.
-                        discovered.route = format!("{}?page=1", safety::source_path(source)?);
-                        discovered.rows.retain(|row| {
-                            updated_tracker
-                                .as_ref()
-                                .is_some_and(|updated| updated.changes(row))
-                        });
-                    }
-                    if let Some(evidence) = &page.free_item {
-                        discovered.rows = free_history
-                            .get(&evidence.product_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        for row in &mut discovered.rows {
-                            augment_free_row(row, evidence);
-                        }
-                    }
-                    // Free history queues metadata after its item endpoint so
-                    // that support HTML is already available to reuse. Other
-                    // sources keep publishing while these endpoints are pending.
-                    let products: BTreeSet<_> = discovered
-                        .rows
-                        .iter()
-                        .filter(|_| source != "free" || page.free_item.is_some())
-                        .filter_map(|row| row.product_id.as_ref())
-                        .filter(|id| checkpoint.enrichment_pending.contains(*id))
-                        .collect();
-                    for product in products {
-                        let first = prefetch.enqueue_once(product)?;
-                        if !first {
-                            continue;
-                        }
-                        let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
-                        for row in discovered
-                            .rows
-                            .iter()
-                            .filter(|r| r.product_id.as_ref() == Some(product))
-                        {
-                            self.plan_row(
-                                &mut batch,
-                                account,
-                                source,
-                                row,
-                                &page.route,
-                                mode != "incremental",
-                            )?;
-                        }
-                        if let Some(draft) = batch.get("product", product)? {
-                            prefetch
-                                .requests
-                                .send(PublicRequest {
-                                    product: product.clone(),
-                                    draft,
-                                    account: account.into(),
-                                    source: source.into(),
-                                    run_id: checkpoint.run_id.clone(),
-                                })
-                                .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_FAILED"))?;
-                        }
-                    }
-                    let published = self.stage_discovered_page(
-                        job,
+                self.read_source_page(
+                    SourceRead {
+                        app,
                         account,
                         source,
                         mode,
-                        &key,
-                        &checkpoint,
-                        &discovered,
+                        client,
+                        selected,
                         prefetch,
-                    )?;
-                    source_changed(app, published);
-                }
-                job["progress"] = json!({"stage":"collecting","pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"published":prefetch.and_then(|p|p.early.lock().ok().map(|e|e.published.len())).unwrap_or(checkpoint.published_products.len()),"source":source,"metadataCompleted":checkpoint.product_ids.len()-checkpoint.enrichment_pending.len(),"metadataTotal":checkpoint.product_ids.len()});
-                if let Some(prefetch) = prefetch {
-                    let early = prefetch
-                        .early
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-                    set_collecting_totals(job, &early, source);
-                }
-                self.progress(app, job)?;
+                        key: &key,
+                    },
+                    job,
+                    route,
+                    read,
+                    &previous_baseline,
+                    baseline,
+                    &known_receipts,
+                    &mut checkpoint,
+                    &mut tracker,
+                    &mut updated_tracker,
+                    &mut free_history,
+                )
+                .await?;
             }
         }
         // A source that shifted during the pass cannot be labelled complete.
@@ -2251,6 +2104,251 @@ impl BoothService {
             products: left_products,
             rows: unresolved_rows,
         })
+    }
+
+    /// Takes one fetched page: journals it, queues what it links, moves the trackers, and
+    /// publishes what it discovered early.
+    async fn read_source_page(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        route: String,
+        read_page: Result<parser::Page>,
+        previous_baseline: &Option<Baseline>,
+        baseline: Option<&Baseline>,
+        known_receipts: &BTreeMap<String, Vec<parser::Row>>,
+        checkpoint: &mut Checkpoint,
+        tracker: &mut Option<Tracker>,
+        updated_tracker: &mut Option<UpdatedTracker>,
+        free_history: &mut BTreeMap<String, Vec<parser::Row>>,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            client,
+            selected,
+            prefetch,
+            key,
+        } = read;
+        let mut page = match read_page {
+            Err(error) if refused_updated_order(&route, &error) => {
+                crate::support_trace::source_reason(source, &super::code(&error), 1);
+                read_every_page(checkpoint);
+                *tracker = None;
+                *updated_tracker = None;
+                self.save_checkpoint(key, checkpoint)?;
+                return Ok(());
+            }
+            read => read?,
+        };
+        if contradicts_last_pass(&page, previous_baseline.as_ref()) {
+            page.unresolved += 1;
+        }
+        if self.cancelled(job)? {
+            bail!("CANCELLED");
+        }
+        if source == "gift" {
+            checkpoint.details_completed += self
+                .read_gift_dates(job, account, mode, client, selected, &mut page)
+                .await?;
+        }
+        // Persist only parsed digital projections. Replaying this journal is idempotent.
+        let journal_id = format!(
+            "booth-page:{}:{}",
+            checkpoint.run_id,
+            safety::hash(format!("{}:{}", page.route, page.fingerprint))
+        );
+        let journal = json!({"version":1,"id":journal_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"page":page});
+        remember_free_history(&page, free_history);
+        if let Some(evidence) = &page.free_item {
+            free_history
+                .get(&evidence.product_id)
+                .ok_or_else(|| anyhow::anyhow!("FREE_ITEM_HISTORY_UNPROVEN"))?;
+        }
+        // In updated order only what changed counts as read; the rest is the last pass's.
+        let unchanged_here = |row: &parser::Row| {
+            safety::updated_order(&page.route)
+                && !updated_tracker
+                    .as_ref()
+                    .is_some_and(|updated| updated.changes(row))
+        };
+        for row in page.rows.iter().filter(|row| !unchanged_here(row)) {
+            if let Some(id) = &row.product_id {
+                checkpoint.product_ids.insert(id.clone());
+            }
+            if selected
+                .is_some_and(|ids| row.product_id.as_ref().is_some_and(|id| !ids.contains(id)))
+            {
+                continue;
+            }
+            if let Some(id) = &row.product_id {
+                checkpoint.product_ids.insert(id.clone());
+                if mode != "incremental"
+                    || public_refresh_needed(self.inner.catalogue.get("product", id)?.as_ref())
+                {
+                    checkpoint.enrichment_pending.insert(id.clone());
+                }
+            }
+        }
+        record_source_page(checkpoint, source, &route, &page, selected)?;
+        reuse_known_receipts(checkpoint, known_receipts);
+        if let Some(limit) = crate::verification::source_page_limit() {
+            limit_listing_pages(checkpoint, limit);
+        }
+        checkpoint.journal_ids.push(journal_id.clone());
+        let updated_page = safety::updated_order(&page.route);
+        if updated_page {
+            match updated_tracker
+                .as_mut()
+                .map(|updated| updated.observe(&page))
+            {
+                Some(UpdatedRead::Settled) => checkpoint.pending.clear(),
+                Some(UpdatedRead::Reading) => {}
+                Some(UpdatedRead::Broken) | None => {
+                    read_every_page(checkpoint);
+                    *tracker = None;
+                    *updated_tracker = None;
+                }
+            }
+        } else if let Some(end) = tracker
+            .as_mut()
+            .and_then(|t| t.observe(&page))
+            .filter(|_| !page.terminal)
+        {
+            checkpoint.overlap_end = Some(end);
+            checkpoint.pending = vec![safety::updated_route(1)];
+            // This terminal belongs to the previous complete tail, not this page.
+            checkpoint.terminal = true;
+            *updated_tracker = tracker
+                .as_ref()
+                .zip(baseline)
+                .map(|(tracker, base)| tracker.updated(&base.updated_head));
+        }
+        if !updated_page && !page.is_detail && !page.terminal && page.next.is_empty() {
+            checkpoint.unresolved += 1;
+        }
+        self.commit_source_page(&journal_id, &journal, key, checkpoint)?;
+        if let Some(prefetch) = prefetch {
+            self.stage_prefetched_page(
+                read,
+                job,
+                prefetch,
+                &page,
+                updated_page,
+                updated_tracker,
+                free_history,
+                checkpoint,
+            )?;
+        }
+        job["progress"] = json!({"stage":"collecting","pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"published":prefetch.and_then(|p|p.early.lock().ok().map(|e|e.published.len())).unwrap_or(checkpoint.published_products.len()),"source":source,"metadataCompleted":checkpoint.product_ids.len()-checkpoint.enrichment_pending.len(),"metadataTotal":checkpoint.product_ids.len()});
+        if let Some(prefetch) = prefetch {
+            let early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            set_collecting_totals(job, &early, source);
+        }
+        self.progress(app, job)?;
+        Ok(())
+    }
+
+    /// Queues public metadata for the page's newly listed products and publishes the
+    /// rows it discovered while later pages are still read.
+    fn stage_prefetched_page(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        prefetch: &PublicPrefetch,
+        page: &parser::Page,
+        updated_page: bool,
+        updated_tracker: &Option<UpdatedTracker>,
+        free_history: &BTreeMap<String, Vec<parser::Row>>,
+        checkpoint: &Checkpoint,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            key,
+            ..
+        } = read;
+        let mut discovered = page.clone();
+        if updated_page {
+            // A file's page stays one the list always has.
+            discovered.route = format!("{}?page=1", safety::source_path(source)?);
+            discovered.rows.retain(|row| {
+                updated_tracker
+                    .as_ref()
+                    .is_some_and(|updated| updated.changes(row))
+            });
+        }
+        if let Some(evidence) = &page.free_item {
+            discovered.rows = free_history
+                .get(&evidence.product_id)
+                .cloned()
+                .unwrap_or_default();
+            for row in &mut discovered.rows {
+                augment_free_row(row, evidence);
+            }
+        }
+        // Free history queues metadata after its item endpoint so
+        // that support HTML is already available to reuse. Other
+        // sources keep publishing while these endpoints are pending.
+        let products: BTreeSet<_> = discovered
+            .rows
+            .iter()
+            .filter(|_| source != "free" || page.free_item.is_some())
+            .filter_map(|row| row.product_id.as_ref())
+            .filter(|id| checkpoint.enrichment_pending.contains(*id))
+            .collect();
+        for product in products {
+            let first = prefetch.enqueue_once(product)?;
+            if !first {
+                continue;
+            }
+            let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
+            for row in discovered
+                .rows
+                .iter()
+                .filter(|r| r.product_id.as_ref() == Some(product))
+            {
+                self.plan_row(
+                    &mut batch,
+                    account,
+                    source,
+                    row,
+                    &page.route,
+                    mode != "incremental",
+                )?;
+            }
+            if let Some(draft) = batch.get("product", product)? {
+                prefetch
+                    .requests
+                    .send(PublicRequest {
+                        product: product.clone(),
+                        draft,
+                        account: account.into(),
+                        source: source.into(),
+                        run_id: checkpoint.run_id.clone(),
+                    })
+                    .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_FAILED"))?;
+            }
+        }
+        let published = self.stage_discovered_page(
+            job,
+            account,
+            source,
+            mode,
+            key,
+            checkpoint,
+            &discovered,
+            prefetch,
+        )?;
+        source_changed(app, published);
+        Ok(())
     }
 
     /// The checkpoint this pass continues, or a fresh one when the list moved under it.
