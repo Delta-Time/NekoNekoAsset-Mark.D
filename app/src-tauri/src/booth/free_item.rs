@@ -527,63 +527,10 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
         bail!("AUTH_CHALLENGE");
     }
     let unknown = |code| Evidence::unknown(id, code, false);
-    let canonical: Vec<_> = doc.select(&sel("link[rel='canonical']")).collect();
-    let og: Vec<_> = doc.select(&sel("meta[property='og:url']")).collect();
-    let roots: Vec<_> = doc
-        .select(&sel("div#items.market[data-product-id]"))
-        .collect();
-    // Canonical and OG may name the item by any HTTPS BOOTH URL: a locale prefix or the
-    // shop's own host. The root and every list row must still carry this item's ID.
-    let same_item = |raw: Option<&str>| raw.and_then(safety::item_id).as_deref() == Some(id);
-    if canonical.len() != 1
-        || !same_item(canonical[0].value().attr("href"))
-        || og.len() != 1
-        || !same_item(og[0].value().attr("content"))
-        || roots.len() != 1
-        || roots[0].value().attr("data-product-id") != Some(id)
-    {
-        return Ok(unknown("FREE_ITEM_IDENTITY_UNPROVEN"));
-    }
-    let root = roots[0];
-    let lists: Vec<_> = doc.select(&sel("ul#variations")).collect();
-    if lists.len() != 1 || !root.descendants().any(|n| n.id() == lists[0].id()) {
-        return Ok(unknown("FREE_ITEM_LIST_UNPROVEN"));
-    }
-    let list = lists[0];
-    if std::iter::once(list)
-        .chain(list.select(&sel("[data-product-id],[data-item-id]")))
-        .any(|n| {
-            ["data-product-id", "data-item-id"]
-                .iter()
-                .any(|attr| n.value().attr(attr).is_some_and(|v| v != id))
-        })
-    {
-        return Ok(unknown("FREE_ITEM_IDENTITY_UNPROVEN"));
-    }
-    let rows: Vec<_> = list.children().filter_map(ElementRef::wrap).collect();
-    if rows.is_empty()
-        || rows.iter().any(|n| {
-            n.value().name() != "li" || !n.value().classes().any(|c| c == "variation-item")
-        })
-        || list.select(&sel("li.variation-item")).count() != rows.len()
-    {
-        return Ok(unknown("FREE_ITEM_LIST_UNPROVEN"));
-    }
-    if root.select(&sel("[data-test='load-more'],[data-test='show-more'],[data-test='more-downloadables'],button[aria-expanded='false']:not([data-test='other-downloads-button']),[data-test='variation-select'],[data-test='variation-selector'],select[name='variation_id'],select[name='variation']")).next().is_some() { return Ok(unknown("FREE_ITEM_DYNAMIC_LIST")); }
-    if list
-        .select(&sel(
-            "select,[aria-expanded='false']:not([data-test='other-downloads-button'])",
-        ))
-        .next()
-        .is_some()
-    {
-        return Ok(unknown("FREE_ITEM_DYNAMIC_LIST"));
-    }
-    let root_controls: Vec<_> = root.select(&sel(CONTROLS)).collect();
-    let list_controls: Vec<_> = list.select(&sel(CONTROLS)).collect();
-    if root_controls.len() != list_controls.len() {
-        return Ok(unknown("FREE_ITEM_ORPHAN_CONTROL"));
-    }
+    let (root, list, rows, root_controls) = match proven_offer(&doc, id, &unknown) {
+        Ok(proof) => proof,
+        Err(answer) => return Ok(answer),
+    };
     let mut files = BTreeMap::new();
     let mut accepted_names = vec![];
     let mut accepted_labels = vec![];
@@ -704,29 +651,8 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
     {
         return Ok(unknown("FREE_ITEM_UNKNOWN_DROPDOWN"));
     }
-    for node in std::iter::once(list).chain(list.select(&sel(
-        "[data-file-count],[data-downloadable-count],[data-total-count]",
-    ))) {
-        let mut keys = BTreeSet::new();
-        for button in node.select(&sel(CONTROLS)) {
-            let Some((file, variant, _)) = control(button) else {
-                return Ok(unknown("FREE_ITEM_INVALID_CONTROL"));
-            };
-            keys.insert((file, variant));
-        }
-        for attr in [
-            "data-file-count",
-            "data-downloadable-count",
-            "data-total-count",
-        ] {
-            if node
-                .value()
-                .attr(attr)
-                .is_some_and(|v| v.parse::<usize>().ok() != Some(keys.len()))
-            {
-                return Ok(unknown("FREE_ITEM_COUNT_UNPROVEN"));
-            }
-        }
+    if let Some(answer) = count_mismatch(list, &unknown) {
+        return Ok(answer);
     }
     if files.is_empty() {
         // This settles only the current public free offer. It never certifies
@@ -747,6 +673,112 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
         unavailable: false,
         error_code: None,
     })
+}
+
+/// The page proves one free item with one list of its own rows and no control outside it.
+fn proven_offer<'a>(
+    doc: &'a Html,
+    id: &str,
+    unknown: &impl Fn(&'static str) -> Evidence,
+) -> Result<
+    (
+        ElementRef<'a>,
+        ElementRef<'a>,
+        Vec<ElementRef<'a>>,
+        Vec<ElementRef<'a>>,
+    ),
+    Evidence,
+> {
+    let canonical: Vec<_> = doc.select(&sel("link[rel='canonical']")).collect();
+    let og: Vec<_> = doc.select(&sel("meta[property='og:url']")).collect();
+    let roots: Vec<_> = doc
+        .select(&sel("div#items.market[data-product-id]"))
+        .collect();
+    // Canonical and OG may name the item by any HTTPS BOOTH URL: a locale prefix or the
+    // shop's own host. The root and every list row must still carry this item's ID.
+    let same_item = |raw: Option<&str>| raw.and_then(safety::item_id).as_deref() == Some(id);
+    if canonical.len() != 1
+        || !same_item(canonical[0].value().attr("href"))
+        || og.len() != 1
+        || !same_item(og[0].value().attr("content"))
+        || roots.len() != 1
+        || roots[0].value().attr("data-product-id") != Some(id)
+    {
+        return Err(unknown("FREE_ITEM_IDENTITY_UNPROVEN"));
+    }
+    let root = roots[0];
+    let lists: Vec<_> = doc.select(&sel("ul#variations")).collect();
+    if lists.len() != 1 || !root.descendants().any(|n| n.id() == lists[0].id()) {
+        return Err(unknown("FREE_ITEM_LIST_UNPROVEN"));
+    }
+    let list = lists[0];
+    if std::iter::once(list)
+        .chain(list.select(&sel("[data-product-id],[data-item-id]")))
+        .any(|n| {
+            ["data-product-id", "data-item-id"]
+                .iter()
+                .any(|attr| n.value().attr(attr).is_some_and(|v| v != id))
+        })
+    {
+        return Err(unknown("FREE_ITEM_IDENTITY_UNPROVEN"));
+    }
+    let rows: Vec<_> = list.children().filter_map(ElementRef::wrap).collect();
+    if rows.is_empty()
+        || rows.iter().any(|n| {
+            n.value().name() != "li" || !n.value().classes().any(|c| c == "variation-item")
+        })
+        || list.select(&sel("li.variation-item")).count() != rows.len()
+    {
+        return Err(unknown("FREE_ITEM_LIST_UNPROVEN"));
+    }
+    if root.select(&sel("[data-test='load-more'],[data-test='show-more'],[data-test='more-downloadables'],button[aria-expanded='false']:not([data-test='other-downloads-button']),[data-test='variation-select'],[data-test='variation-selector'],select[name='variation_id'],select[name='variation']")).next().is_some() { return Err(unknown("FREE_ITEM_DYNAMIC_LIST")); }
+    if list
+        .select(&sel(
+            "select,[aria-expanded='false']:not([data-test='other-downloads-button'])",
+        ))
+        .next()
+        .is_some()
+    {
+        return Err(unknown("FREE_ITEM_DYNAMIC_LIST"));
+    }
+    let root_controls: Vec<_> = root.select(&sel(CONTROLS)).collect();
+    let list_controls: Vec<_> = list.select(&sel(CONTROLS)).collect();
+    if root_controls.len() != list_controls.len() {
+        return Err(unknown("FREE_ITEM_ORPHAN_CONTROL"));
+    }
+    Ok((root, list, rows, root_controls))
+}
+
+/// The answer when a count the list states differs from the controls it holds.
+fn count_mismatch(
+    list: ElementRef<'_>,
+    unknown: &impl Fn(&'static str) -> Evidence,
+) -> Option<Evidence> {
+    for node in std::iter::once(list).chain(list.select(&sel(
+        "[data-file-count],[data-downloadable-count],[data-total-count]",
+    ))) {
+        let mut keys = BTreeSet::new();
+        for button in node.select(&sel(CONTROLS)) {
+            let Some((file, variant, _)) = control(button) else {
+                return Some(unknown("FREE_ITEM_INVALID_CONTROL"));
+            };
+            keys.insert((file, variant));
+        }
+        for attr in [
+            "data-file-count",
+            "data-downloadable-count",
+            "data-total-count",
+        ] {
+            if node
+                .value()
+                .attr(attr)
+                .is_some_and(|v| v.parse::<usize>().ok() != Some(keys.len()))
+            {
+                return Some(unknown("FREE_ITEM_COUNT_UNPROVEN"));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
