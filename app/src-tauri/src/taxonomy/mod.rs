@@ -1005,6 +1005,30 @@ fn store_type(
     if !matches!(stated, "Texture" | "Tool" | "World") || title.contains("販売ワールド") {
         return Some((stated, "sourceCategory"));
     }
+    tool_or_world_type(
+        stated,
+        leaf,
+        title,
+        tags,
+        opening,
+        system_title,
+        system_tag,
+        &any_tag,
+    )
+}
+
+/// What a product under BOOTH's texture, tool, software or world category is: its title
+/// and tags tell shaders, Udon, gimmicks and tools apart from the stated category.
+fn tool_or_world_type(
+    stated: &'static str,
+    leaf: &str,
+    title: &str,
+    tags: &[String],
+    opening: &str,
+    system_title: bool,
+    system_tag: bool,
+    any_tag: &impl Fn(&[&str]) -> bool,
+) -> Option<(&'static str, &'static str)> {
     let tagged = |category| tags.iter().any(|tag| names_type(tag, category));
     let world = stated == "World";
     let software_leaf = leaf == "ソフトウェア";
