@@ -659,6 +659,27 @@ pub fn profile_identity(data: &[Value], profile: &Url) -> Result<String> {
 
 type PreparedInventory = (InventoryDetail, Option<DateTime<Utc>>, Option<OrderPayment>);
 
+/// What one inventory pass needs to read a grant, and what the pass has read so far.
+struct GrantPass<'a> {
+    id: &'a str,
+    account: &'a str,
+    client: &'a reqwest::Client,
+    origin: &'a Url,
+    checkpoint_id: &'a str,
+    first_signature: &'a str,
+    page_limit: Option<u64>,
+    observed: &'a mut BTreeSet<String>,
+    product_keys: &'a mut BTreeSet<String>,
+    completed_products: &'a mut BTreeSet<String>,
+    incomplete_products: &'a mut BTreeSet<String>,
+    unresolved_inventory: &'a mut BTreeSet<String>,
+    unbound_inventory: &'a mut BTreeSet<String>,
+    finished: &'a mut BTreeSet<String>,
+    count: &'a mut usize,
+    metadata_completed: &'a mut usize,
+    public_presentations: &'a mut BTreeMap<String, Result<Value, String>>,
+}
+
 /// Selected products absent from the inventory listing are left as they were. Nothing is
 /// retired: an unreadable grant without a product binding may be one of them.
 fn missing_selected(job: &Value, products: &BTreeSet<String>) -> Result<BTreeSet<String>> {
@@ -2270,24 +2291,7 @@ impl JinxxyService {
         self.coverage(job, "running", None)?;
         self.save_job(app, job, "running", None)?;
         if job["type"] == "jinxxyLogin" {
-            for attempt in 0..180 {
-                self.check_cancelled(&id)?;
-                match self.verify(app, &account, true, Some(job)).await {
-                    Ok(_) => {
-                        self.save_job(app, job, "completed", None)?;
-                        return Ok(());
-                    }
-                    Err(error)
-                        if matches!(fixed_error(&error).as_str(), "AUTH_REQUIRED")
-                            && attempt < 179 =>
-                    {
-                        self.save_job(app, job, "running", Some("AUTH_REQUIRED"))?;
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            anyhow::bail!("AUTH_REQUIRED");
+            return self.wait_for_login(app, job, &id, &account).await;
         }
         let (client, first, _, origin) = self.verify(app, &account, true, None).await?;
         let checkpoint_id = format!("jinxxy:{account}:inventory");
@@ -2341,276 +2345,32 @@ impl JinxxyService {
                 observed.len() + page.items.len()
             });
             self.save_job(app, job, "running", None)?;
-            'items: for entry in page.items {
-                // A grant already seen this pass moved with the listing order.
-                if !observed.insert(entry.inventory_id.clone()) {
-                    continue;
-                }
-                self.check_cancelled(&id)?;
-                let ready_detail = if entry.product_id.is_none() {
-                    let detail = self
-                        .asset_detail(
-                            &client,
-                            &origin,
-                            &entry,
-                            &mut incomplete_products,
-                            &mut unresolved_inventory,
-                            &mut unbound_inventory,
-                        )
-                        .await?;
-                    if detail.is_none() {
-                        job["unresolvedInventoryIds"] = json!(unresolved_inventory);
-                        metadata_completed += 1;
-                        continue;
-                    }
-                    detail
-                } else {
-                    None
-                };
-                let product_key = entry
-                    .product_id
-                    .clone()
-                    .or_else(|| {
-                        ready_detail
-                            .as_ref()
-                            .map(|detail| detail.product_id.clone())
-                    })
-                    .ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
-                if job["type"] == "jinxxyUpdate"
-                    && !job["productIds"].as_array().is_some_and(|ids| {
-                        ids.iter()
-                            .any(|id| id.as_str() == Some(format!("jinxxy:{product_key}").as_str()))
-                    })
-                {
-                    continue;
-                }
-                product_keys.insert(product_key.clone());
-                if job["type"] == "jinxxyUpdate" {
-                    // Only matching selected grants contribute to this denominator.
-                    job["progress"]["metadataTotal"] = json!(metadata_completed + 1);
-                }
-                if finished.contains(&entry.inventory_id) {
-                    completed_products.insert(product_key);
-                    count = completed_products.len();
-                    metadata_completed += 1;
-                    continue;
-                }
-                let group = vec![(entry, ready_detail)];
-                let mut details = Vec::new();
-                let mut receipt_error = None;
-                for (entry, ready_detail) in group {
-                    self.check_cancelled(&id)?;
-                    let detail = if let Some(detail) = ready_detail {
-                        detail
-                    } else {
-                        let Some(detail) = self
-                            .asset_detail(
-                                &client,
-                                &origin,
-                                &entry,
-                                &mut incomplete_products,
-                                &mut unresolved_inventory,
-                                &mut unbound_inventory,
-                            )
-                            .await?
-                        else {
-                            job["unresolvedInventoryIds"] = json!(unresolved_inventory);
-                            metadata_completed += 1;
-                            continue 'items;
-                        };
-                        detail
-                    };
-                    ensure!(
-                        detail
-                            .order_id
-                            .as_ref()
-                            .zip(entry.order_id.as_ref())
-                            .is_none_or(|(a, b)| a == b),
-                        "JINXXY_PRODUCT_BINDING_UNPROVEN"
-                    );
-                    // Incomplete grants publish known facts additively without
-                    // certifying membership or blocking the remaining inventory.
-                    if !detail.inventory_complete {
-                        incomplete_products.insert(detail.product_id.clone());
-                    }
-                    let payment =
-                        if let Some(order) = detail.order_id.as_ref().or(entry.order_id.as_ref()) {
-                            let result = async {
-                                let (status, html) = self
-                                    .inner
-                                    .http
-                                    .get(&client, origin.join(&format!("/my/orders/{order}"))?)
-                                    .await?;
-                                ensure!(status.is_success(), "JINXXY_RECEIPT_UNAVAILABLE");
-                                parse_order_payment(
-                                    &html,
-                                    order,
-                                    &detail.inventory_id,
-                                    &detail.product_id,
-                                )
-                            }
-                            .await;
-                            match result {
-                                Ok(payment) => Some(payment),
-                                Err(error) => {
-                                    receipt_error = Some(fixed_error(&error));
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                    let acquired = acquisition_date(&detail, &entry, payment.as_ref());
-                    details.push((detail, acquired, payment));
-                    metadata_completed += 1;
-                    job["progress"]["stage"] = json!("enriching");
-                    job["progress"]["metadataCompleted"] = json!(metadata_completed);
-                    self.save_job(app, job, "running", None)?;
-                }
-                job["progress"]["stage"] = json!("publishing");
-                let detail = &details[0].0;
-                if !public_presentations.contains_key(&detail.product_id) {
-                    if let Some(source) = detail
-                        .source_url
-                        .as_deref()
-                        .and_then(|url| Url::parse(url).ok())
-                    {
-                        self.check_cancelled(&id)?;
-                        let presentation = super::public_metadata::fetch_jinxxy_presentation(
-                            &self.inner.http,
-                            source,
-                            &detail.product_id,
-                        )
-                        .await
-                        .map_err(|error| {
-                            match fixed_error(&error).as_str() {
-                                // A cookie-less public page says nothing about the buyer session.
-                                "AUTH_REQUIRED" => "PUBLIC_METADATA_FAILED".to_owned(),
-                                code => code.to_owned(),
-                            }
-                        });
-                        public_presentations.insert(detail.product_id.clone(), presentation);
-                    }
-                }
-                self.save_job(app, job, "running", None)?;
-                for attempt in 0..3 {
-                    self.check_cancelled(&id)?;
-                    let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
-                    // This expected job row also closes cancellation during commit.
-                    let current_job = batch.get("job", &id)?;
-                    ensure!(
-                        current_job.is_some_and(
-                            |j| j["cancelRequested"] != true && j["state"] != "cancelled"
-                        ),
-                        "CANCELLED"
-                    );
-                    let product = stage_observed_group(&mut batch, &account, &details)?;
-                    let mut source = batch
-                        .get("product", &product)?
-                        .ok_or_else(|| anyhow::anyhow!("PRODUCT_UNAVAILABLE"))?;
-                    if let Some(presentation) = public_presentations.get(&details[0].0.product_id) {
-                        match presentation {
-                            Ok(presentation) => {
-                                source
-                                    .as_object_mut()
-                                    .ok_or_else(|| anyhow::anyhow!("PRODUCT_INVALID"))?
-                                    .extend(
-                                        presentation
-                                            .as_object()
-                                            .ok_or_else(|| {
-                                                anyhow::anyhow!("JINXXY_SOURCE_UNSUPPORTED")
-                                            })?
-                                            .clone(),
-                                    );
-                                source["publicPresentationErrorCode"] = Value::Null;
-                            }
-                            Err(error) => source["publicPresentationErrorCode"] = json!(error),
-                        }
-                    }
-                    source["receiptRefreshState"] = json!(if receipt_error.is_some() {
-                        "unavailable"
-                    } else if details.iter().any(|(_, _, payment)| payment
-                        .as_ref()
-                        .is_some_and(|p| p.paid_price.is_some() || p.paid_at.is_some()))
-                    {
-                        "observed"
-                    } else {
-                        "unknown"
-                    });
-                    source["receiptRefreshErrorCode"] = json!(receipt_error);
-                    batch.stage("product", &product, source)?;
-                    let next_finished: BTreeSet<_> = finished
-                        .iter()
-                        .cloned()
-                        .chain(
-                            details
-                                .iter()
-                                .filter(|(detail, _, _)| detail.inventory_complete)
-                                .map(|(detail, _, _)| detail.inventory_id.clone()),
-                        )
-                        .collect();
-                    // Prepared facts contain no raw pages or download capabilities.
-                    let mut checkpoint = json!({"id":checkpoint_id,"provider":"jinxxy","accountId":account,"jobId":id,"scopeSignature":first_signature,"inventoryIds":next_finished,"updatedAt":Utc::now().to_rfc3339()});
-                    if page_limit.is_some() {
-                        // Keep observed pre-commit facts only in the bounded debug
-                        // verifier. Production checkpoints retain no audit copy.
-                        let previous = self.inner.catalogue.get("checkpoint", &checkpoint_id)?;
-                        let mut expected = BTreeMap::new();
-                        if let Some(previous) = previous.filter(|p| p["jobId"] == id) {
-                            for record in previous["verificationRecords"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                            {
-                                if let (Some(kind), Some(key)) =
-                                    (record[0].as_str(), record[1].as_str())
-                                {
-                                    expected.insert(
-                                        (kind.to_owned(), key.to_owned()),
-                                        record[2].clone(),
-                                    );
-                                }
-                            }
-                        }
-                        for (kind, key, value) in batch.staged_records() {
-                            if matches!(
-                                kind.as_str(),
-                                "product" | "acquisition" | "entitlement" | "remote_file"
-                            ) {
-                                expected.insert((kind, key), value);
-                            }
-                        }
-                        checkpoint["verificationRecords"] = json!(expected
-                            .into_iter()
-                            .map(|((kind, key), value)| (kind, key, value))
-                            .collect::<Vec<_>>());
-                    }
-                    let mut prepared = json!({"id":checkpoint_id,"provider":"jinxxy","accountId":account,"jobId":id,"scopeSignature":first_signature,"inventoryIds":finished,"preparedRecords":batch.staged_records(),"updatedAt":Utc::now().to_rfc3339()});
-                    if page_limit.is_some() {
-                        prepared["verificationRecords"] = checkpoint["verificationRecords"].clone();
-                    }
-                    self.inner
-                        .catalogue
-                        .put("checkpoint", &checkpoint_id, prepared)?;
-                    batch.stage("checkpoint", &checkpoint_id, checkpoint)?;
-                    if batch.try_commit()?.is_some() {
-                        finished = next_finished;
-                        for (detail, _, _) in &details {
-                            self.clear_downloads(&account, Some(&detail.inventory_id));
-                        }
-                        let _ = app.emit(
-                            "nna:changed",
-                            crate::ipc::Change::products("catalogue", [product]),
-                        );
-                        break;
-                    }
-                    ensure!(attempt < 2, "CONCURRENT_UPDATE");
-                }
-                completed_products.insert(product_key);
-                count = completed_products.len();
-                job["completedProducts"] = json!(count);
-                job["progress"]["products"] = json!(count);
-                self.save_job(app, job, "running", None)?;
+            for entry in page.items {
+                self.read_grant(
+                    app,
+                    job,
+                    entry,
+                    GrantPass {
+                        id: &id,
+                        account: &account,
+                        client: &client,
+                        origin: &origin,
+                        checkpoint_id: &checkpoint_id,
+                        first_signature: &first_signature,
+                        page_limit,
+                        observed: &mut observed,
+                        product_keys: &mut product_keys,
+                        completed_products: &mut completed_products,
+                        incomplete_products: &mut incomplete_products,
+                        unresolved_inventory: &mut unresolved_inventory,
+                        unbound_inventory: &mut unbound_inventory,
+                        finished: &mut finished,
+                        count: &mut count,
+                        metadata_completed: &mut metadata_completed,
+                        public_presentations: &mut public_presentations,
+                    },
+                )
+                .await?;
             }
             self.check_cancelled(&id)?;
             if page.page >= observed_pages {
@@ -2687,6 +2447,360 @@ impl JinxxyService {
             job["progress"]["incompleteProducts"] = json!(incomplete);
         }
         self.save_job(app, job, "completed", None)
+    }
+
+    /// A login job checks every three seconds, up to 180 times, until the sign-in verifies.
+    async fn wait_for_login(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        id: &str,
+        account: &str,
+    ) -> Result<()> {
+        for attempt in 0..180 {
+            self.check_cancelled(id)?;
+            match self.verify(app, account, true, Some(job)).await {
+                Ok(_) => {
+                    self.save_job(app, job, "completed", None)?;
+                    return Ok(());
+                }
+                Err(error)
+                    if matches!(fixed_error(&error).as_str(), "AUTH_REQUIRED") && attempt < 179 =>
+                {
+                    self.save_job(app, job, "running", Some("AUTH_REQUIRED"))?;
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        anyhow::bail!("AUTH_REQUIRED");
+    }
+
+    /// Reads one listed grant, its detail and its receipt, then publishes the product.
+    async fn read_grant(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        entry: InventoryEntry,
+        pass: GrantPass<'_>,
+    ) -> Result<()> {
+        let GrantPass {
+            id,
+            account,
+            client,
+            origin,
+            checkpoint_id,
+            first_signature,
+            page_limit,
+            observed,
+            product_keys,
+            completed_products,
+            incomplete_products,
+            unresolved_inventory,
+            unbound_inventory,
+            finished,
+            count,
+            metadata_completed,
+            public_presentations,
+        } = pass;
+        // A grant already seen this pass moved with the listing order.
+        if !observed.insert(entry.inventory_id.clone()) {
+            return Ok(());
+        }
+        self.check_cancelled(id)?;
+        let ready_detail = if entry.product_id.is_none() {
+            let detail = self
+                .asset_detail(
+                    client,
+                    origin,
+                    &entry,
+                    incomplete_products,
+                    unresolved_inventory,
+                    unbound_inventory,
+                )
+                .await?;
+            if detail.is_none() {
+                job["unresolvedInventoryIds"] = json!(unresolved_inventory);
+                *metadata_completed += 1;
+                return Ok(());
+            }
+            detail
+        } else {
+            None
+        };
+        let product_key = entry
+            .product_id
+            .clone()
+            .or_else(|| {
+                ready_detail
+                    .as_ref()
+                    .map(|detail| detail.product_id.clone())
+            })
+            .ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
+        if job["type"] == "jinxxyUpdate"
+            && !job["productIds"].as_array().is_some_and(|ids| {
+                ids.iter()
+                    .any(|id| id.as_str() == Some(format!("jinxxy:{product_key}").as_str()))
+            })
+        {
+            return Ok(());
+        }
+        product_keys.insert(product_key.clone());
+        if job["type"] == "jinxxyUpdate" {
+            // Only matching selected grants contribute to this denominator.
+            job["progress"]["metadataTotal"] = json!(*metadata_completed + 1);
+        }
+        if finished.contains(&entry.inventory_id) {
+            completed_products.insert(product_key);
+            *count = completed_products.len();
+            *metadata_completed += 1;
+            return Ok(());
+        }
+        let group = vec![(entry, ready_detail)];
+        let mut details = Vec::new();
+        let mut receipt_error = None;
+        for (entry, ready_detail) in group {
+            self.check_cancelled(id)?;
+            let detail = if let Some(detail) = ready_detail {
+                detail
+            } else {
+                let Some(detail) = self
+                    .asset_detail(
+                        client,
+                        origin,
+                        &entry,
+                        incomplete_products,
+                        unresolved_inventory,
+                        unbound_inventory,
+                    )
+                    .await?
+                else {
+                    job["unresolvedInventoryIds"] = json!(unresolved_inventory);
+                    *metadata_completed += 1;
+                    return Ok(());
+                };
+                detail
+            };
+            ensure!(
+                detail
+                    .order_id
+                    .as_ref()
+                    .zip(entry.order_id.as_ref())
+                    .is_none_or(|(a, b)| a == b),
+                "JINXXY_PRODUCT_BINDING_UNPROVEN"
+            );
+            // Incomplete grants publish known facts additively without
+            // certifying membership or blocking the remaining inventory.
+            if !detail.inventory_complete {
+                incomplete_products.insert(detail.product_id.clone());
+            }
+            let payment = if let Some(order) = detail.order_id.as_ref().or(entry.order_id.as_ref())
+            {
+                let result = async {
+                    let (status, html) = self
+                        .inner
+                        .http
+                        .get(client, origin.join(&format!("/my/orders/{order}"))?)
+                        .await?;
+                    ensure!(status.is_success(), "JINXXY_RECEIPT_UNAVAILABLE");
+                    parse_order_payment(&html, order, &detail.inventory_id, &detail.product_id)
+                }
+                .await;
+                match result {
+                    Ok(payment) => Some(payment),
+                    Err(error) => {
+                        receipt_error = Some(fixed_error(&error));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let acquired = acquisition_date(&detail, &entry, payment.as_ref());
+            details.push((detail, acquired, payment));
+            *metadata_completed += 1;
+            job["progress"]["stage"] = json!("enriching");
+            job["progress"]["metadataCompleted"] = json!(metadata_completed);
+            self.save_job(app, job, "running", None)?;
+        }
+        job["progress"]["stage"] = json!("publishing");
+        self.fetch_presentation(id, &details, public_presentations)
+            .await?;
+        self.save_job(app, job, "running", None)?;
+        self.commit_grant(
+            app,
+            id,
+            account,
+            checkpoint_id,
+            first_signature,
+            page_limit,
+            &details,
+            &receipt_error,
+            public_presentations,
+            finished,
+        )?;
+        completed_products.insert(product_key);
+        *count = completed_products.len();
+        job["completedProducts"] = json!(count);
+        job["progress"]["products"] = json!(count);
+        self.save_job(app, job, "running", None)?;
+        Ok(())
+    }
+
+    /// The listing's public presentation, read once per product in a pass.
+    async fn fetch_presentation(
+        &self,
+        id: &str,
+        details: &[PreparedInventory],
+        public_presentations: &mut BTreeMap<String, Result<Value, String>>,
+    ) -> Result<()> {
+        let detail = &details[0].0;
+        if !public_presentations.contains_key(&detail.product_id) {
+            if let Some(source) = detail
+                .source_url
+                .as_deref()
+                .and_then(|url| Url::parse(url).ok())
+            {
+                self.check_cancelled(id)?;
+                let presentation = super::public_metadata::fetch_jinxxy_presentation(
+                    &self.inner.http,
+                    source,
+                    &detail.product_id,
+                )
+                .await
+                .map_err(|error| {
+                    match fixed_error(&error).as_str() {
+                        // A cookie-less public page says nothing about the buyer session.
+                        "AUTH_REQUIRED" => "PUBLIC_METADATA_FAILED".to_owned(),
+                        code => code.to_owned(),
+                    }
+                });
+                public_presentations.insert(detail.product_id.clone(), presentation);
+            }
+        }
+        Ok(())
+    }
+
+    /// Publishes the grant's product with its receipt facts and the pass checkpoint.
+    fn commit_grant(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        account: &str,
+        checkpoint_id: &str,
+        first_signature: &str,
+        page_limit: Option<u64>,
+        details: &[PreparedInventory],
+        receipt_error: &Option<String>,
+        public_presentations: &BTreeMap<String, Result<Value, String>>,
+        finished: &mut BTreeSet<String>,
+    ) -> Result<()> {
+        for attempt in 0..3 {
+            self.check_cancelled(id)?;
+            let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
+            // This expected job row also closes cancellation during commit.
+            let current_job = batch.get("job", id)?;
+            ensure!(
+                current_job
+                    .is_some_and(|j| j["cancelRequested"] != true && j["state"] != "cancelled"),
+                "CANCELLED"
+            );
+            let product = stage_observed_group(&mut batch, account, details)?;
+            let mut source = batch
+                .get("product", &product)?
+                .ok_or_else(|| anyhow::anyhow!("PRODUCT_UNAVAILABLE"))?;
+            if let Some(presentation) = public_presentations.get(&details[0].0.product_id) {
+                match presentation {
+                    Ok(presentation) => {
+                        source
+                            .as_object_mut()
+                            .ok_or_else(|| anyhow::anyhow!("PRODUCT_INVALID"))?
+                            .extend(
+                                presentation
+                                    .as_object()
+                                    .ok_or_else(|| anyhow::anyhow!("JINXXY_SOURCE_UNSUPPORTED"))?
+                                    .clone(),
+                            );
+                        source["publicPresentationErrorCode"] = Value::Null;
+                    }
+                    Err(error) => source["publicPresentationErrorCode"] = json!(error),
+                }
+            }
+            source["receiptRefreshState"] = json!(if receipt_error.is_some() {
+                "unavailable"
+            } else if details.iter().any(|(_, _, payment)| payment
+                .as_ref()
+                .is_some_and(|p| p.paid_price.is_some() || p.paid_at.is_some()))
+            {
+                "observed"
+            } else {
+                "unknown"
+            });
+            source["receiptRefreshErrorCode"] = json!(receipt_error);
+            batch.stage("product", &product, source)?;
+            let next_finished: BTreeSet<_> = finished
+                .iter()
+                .cloned()
+                .chain(
+                    details
+                        .iter()
+                        .filter(|(detail, _, _)| detail.inventory_complete)
+                        .map(|(detail, _, _)| detail.inventory_id.clone()),
+                )
+                .collect();
+            // Prepared facts contain no raw pages or download capabilities.
+            let mut checkpoint = json!({"id":checkpoint_id,"provider":"jinxxy","accountId":account,"jobId":id,"scopeSignature":first_signature,"inventoryIds":next_finished,"updatedAt":Utc::now().to_rfc3339()});
+            if page_limit.is_some() {
+                // Keep observed pre-commit facts only in the bounded debug
+                // verifier. Production checkpoints retain no audit copy.
+                let previous = self.inner.catalogue.get("checkpoint", checkpoint_id)?;
+                let mut expected = BTreeMap::new();
+                if let Some(previous) = previous.filter(|p| p["jobId"] == id) {
+                    for record in previous["verificationRecords"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let (Some(kind), Some(key)) = (record[0].as_str(), record[1].as_str()) {
+                            expected.insert((kind.to_owned(), key.to_owned()), record[2].clone());
+                        }
+                    }
+                }
+                for (kind, key, value) in batch.staged_records() {
+                    if matches!(
+                        kind.as_str(),
+                        "product" | "acquisition" | "entitlement" | "remote_file"
+                    ) {
+                        expected.insert((kind, key), value);
+                    }
+                }
+                checkpoint["verificationRecords"] = json!(expected
+                    .into_iter()
+                    .map(|((kind, key), value)| (kind, key, value))
+                    .collect::<Vec<_>>());
+            }
+            let mut prepared = json!({"id":checkpoint_id,"provider":"jinxxy","accountId":account,"jobId":id,"scopeSignature":first_signature,"inventoryIds":finished,"preparedRecords":batch.staged_records(),"updatedAt":Utc::now().to_rfc3339()});
+            if page_limit.is_some() {
+                prepared["verificationRecords"] = checkpoint["verificationRecords"].clone();
+            }
+            self.inner
+                .catalogue
+                .put("checkpoint", checkpoint_id, prepared)?;
+            batch.stage("checkpoint", checkpoint_id, checkpoint)?;
+            if batch.try_commit()?.is_some() {
+                *finished = next_finished;
+                for (detail, _, _) in details {
+                    self.clear_downloads(account, Some(&detail.inventory_id));
+                }
+                let _ = app.emit(
+                    "nna:changed",
+                    crate::ipc::Change::products("catalogue", [product]),
+                );
+                break;
+            }
+            ensure!(attempt < 2, "CONCURRENT_UPDATE");
+        }
+        Ok(())
     }
     fn certify_product_membership(
         &self,
