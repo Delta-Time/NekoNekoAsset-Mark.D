@@ -1409,46 +1409,9 @@ impl BoothService {
             .filter(|_| mode == "incremental" && selected.is_none())
             .map(|b| b.known_receipts(account, source))
             .unwrap_or_default();
-        let previous = resumable_checkpoint(
-            self.inner.catalogue.get("checkpoint", &key)?,
-            mode,
-            selected.is_some(),
-        )?;
-        let mut checkpoint = if let Some(previous) = previous.filter(|p| {
-            !p.finished
-                && p.version == 1
-                && p.publication_version == 1
-                && p.account_id == account
-                && p.source == source
-                && p.mode == mode
-                && mode != "forced"
-                && selected.is_none()
-                && (source != "free" || p.free_item_adapter_version == FREE_ITEM_ADAPTER_VERSION)
-        }) {
-            previous
-        } else {
-            Checkpoint::fresh(account, source, mode)?
-        };
-        // An interrupted source rereads both overlap boundaries before continuing its queue.
-        if !checkpoint.committed.is_empty() {
-            let head_route = format!("{}?page=1", safety::source_path(source)?);
-            let head = self
-                .fetch_page(client, source, &head_route, prefetch)
-                .await?;
-            let mut boundary_page = None;
-            if let Some(boundary) = checkpoint.boundary.as_deref().filter(|b| *b != head_route) {
-                safety::route(boundary, source)?;
-                boundary_page = match self.fetch_page(client, source, boundary, prefetch).await {
-                    // Moved, as far as this run can tell: the fresh pass meets the refusal itself.
-                    Err(error) if refused_updated_order(boundary, &error) => None,
-                    page => Some(page?),
-                };
-            }
-            let moved = overlap_changed(&checkpoint, &head, boundary_page.as_ref());
-            if moved {
-                checkpoint = Checkpoint::fresh(account, source, mode)?;
-            }
-        }
+        let mut checkpoint = self
+            .resume_checkpoint(&key, account, source, mode, client, selected, prefetch)
+            .await?;
         // Only the Library is long enough to matter and has a second order to find changes by.
         // Every order and receipt is still read, so a purchase is found whatever this does.
         // Updating chosen assets stops there too: a row they changed leads the updated order,
@@ -1466,42 +1429,14 @@ impl BoothService {
             None
         };
         let mut updated_tracker: Option<UpdatedTracker> = None;
-        // Reconstruct exactly the durable parsed prefix after a cancellation/crash.
-        let mut recovered_overlap = None;
-        let mut free_history = BTreeMap::new();
-        for id in &checkpoint.journal_ids {
-            let value = self
-                .inner
-                .catalogue
-                .get("checkpoint", id)?
-                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            let page = checked_journal_page(&value, account, source, &checkpoint.run_id)?;
-            remember_free_history(&page, &mut free_history);
-            if page
-                .free_item
-                .as_ref()
-                .is_some_and(|e| !free_history.contains_key(&e.product_id))
-            {
-                bail!("FREE_ITEM_HISTORY_UNPROVEN");
-            }
-            if safety::updated_order(&page.route) {
-                if let Some(updated) = updated_tracker
-                    .as_mut()
-                    .filter(|_| recovered_overlap.is_some())
-                {
-                    updated.observe(&page);
-                }
-            } else if let Some(tracker) = tracker.as_mut().filter(|_| recovered_overlap.is_none()) {
-                let proof = tracker.observe(&page);
-                if checkpoint.overlap_end.is_some() && proof == checkpoint.overlap_end {
-                    recovered_overlap = proof;
-                    updated_tracker = baseline.map(|base| tracker.updated(&base.updated_head));
-                }
-            }
-        }
-        if checkpoint.overlap_end.is_some() && checkpoint.overlap_end != recovered_overlap {
-            bail!("CHECKPOINT_INVALID");
-        }
+        let mut free_history = self.replay_journals(
+            &checkpoint,
+            account,
+            source,
+            baseline,
+            &mut tracker,
+            &mut updated_tracker,
+        )?;
         // A resumed run, including one interrupted by an App update, skips known
         // receipts still queued. One the previous pass no longer supplies is read.
         let unsupplied: Vec<_> = checkpoint
@@ -2316,6 +2251,110 @@ impl BoothService {
             products: left_products,
             rows: unresolved_rows,
         })
+    }
+
+    /// The checkpoint this pass continues, or a fresh one when the list moved under it.
+    async fn resume_checkpoint(
+        &self,
+        key: &str,
+        account: &str,
+        source: &str,
+        mode: &str,
+        client: &reqwest::Client,
+        selected: Option<&BTreeSet<String>>,
+        prefetch: Option<&PublicPrefetch>,
+    ) -> Result<Checkpoint> {
+        let previous = resumable_checkpoint(
+            self.inner.catalogue.get("checkpoint", key)?,
+            mode,
+            selected.is_some(),
+        )?;
+        let mut checkpoint = if let Some(previous) = previous.filter(|p| {
+            !p.finished
+                && p.version == 1
+                && p.publication_version == 1
+                && p.account_id == account
+                && p.source == source
+                && p.mode == mode
+                && mode != "forced"
+                && selected.is_none()
+                && (source != "free" || p.free_item_adapter_version == FREE_ITEM_ADAPTER_VERSION)
+        }) {
+            previous
+        } else {
+            Checkpoint::fresh(account, source, mode)?
+        };
+        // An interrupted source rereads both overlap boundaries before continuing its queue.
+        if !checkpoint.committed.is_empty() {
+            let head_route = format!("{}?page=1", safety::source_path(source)?);
+            let head = self
+                .fetch_page(client, source, &head_route, prefetch)
+                .await?;
+            let mut boundary_page = None;
+            if let Some(boundary) = checkpoint.boundary.as_deref().filter(|b| *b != head_route) {
+                safety::route(boundary, source)?;
+                boundary_page = match self.fetch_page(client, source, boundary, prefetch).await {
+                    // Moved, as far as this run can tell: the fresh pass meets the refusal itself.
+                    Err(error) if refused_updated_order(boundary, &error) => None,
+                    page => Some(page?),
+                };
+            }
+            let moved = overlap_changed(&checkpoint, &head, boundary_page.as_ref());
+            if moved {
+                checkpoint = Checkpoint::fresh(account, source, mode)?;
+            }
+        }
+        Ok(checkpoint)
+    }
+
+    /// Rereads the pass's journaled pages after an interruption: the free history they
+    /// listed, and where the trackers stood.
+    fn replay_journals(
+        &self,
+        checkpoint: &Checkpoint,
+        account: &str,
+        source: &str,
+        baseline: Option<&Baseline>,
+        tracker: &mut Option<Tracker>,
+        updated_tracker: &mut Option<UpdatedTracker>,
+    ) -> Result<BTreeMap<String, Vec<parser::Row>>> {
+        // Reconstruct exactly the durable parsed prefix after a cancellation/crash.
+        let mut recovered_overlap = None;
+        let mut free_history = BTreeMap::new();
+        for id in &checkpoint.journal_ids {
+            let value = self
+                .inner
+                .catalogue
+                .get("checkpoint", id)?
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+            let page = checked_journal_page(&value, account, source, &checkpoint.run_id)?;
+            remember_free_history(&page, &mut free_history);
+            if page
+                .free_item
+                .as_ref()
+                .is_some_and(|e| !free_history.contains_key(&e.product_id))
+            {
+                bail!("FREE_ITEM_HISTORY_UNPROVEN");
+            }
+            if safety::updated_order(&page.route) {
+                if let Some(updated) = updated_tracker
+                    .as_mut()
+                    .filter(|_| recovered_overlap.is_some())
+                {
+                    updated.observe(&page);
+                }
+            } else if let Some(tracker) = tracker.as_mut().filter(|_| recovered_overlap.is_none()) {
+                let proof = tracker.observe(&page);
+                if checkpoint.overlap_end.is_some() && proof == checkpoint.overlap_end {
+                    recovered_overlap = proof;
+                    *updated_tracker = baseline.map(|base| tracker.updated(&base.updated_head));
+                }
+            }
+        }
+        if checkpoint.overlap_end.is_some() && checkpoint.overlap_end != recovered_overlap {
+            bail!("CHECKPOINT_INVALID");
+        }
+        Ok(free_history)
     }
     fn commit_source_page(
         &self,
