@@ -3437,78 +3437,7 @@ impl BoothService {
             None
         };
         let row = canonical_row.as_ref().unwrap_or(row);
-        let acquisition_id = format!("{account}:{}", row.source_record_id);
-        let previous_acquisition = batch.get("acquisition", &acquisition_id)?;
-        let digital_product_id = if source == "purchase" && row.files.is_empty() {
-            None
-        } else {
-            row.product_id.as_ref()
-        };
-        {
-            let mut acquisition = json!({"id":acquisition_id,"sourceRecordId":row.source_record_id,"productId":digital_product_id,"observedProductId":row.product_id,"accountId":account,"source":source,"orderId":row.order_id,"acquiredDateText":row.acquired_date_text,"paidAmountText":row.paid_amount_text,"variantName":row.variant_name,"unavailable":row.unavailable,"errorCode":row.error_code,"observedAt":now()});
-            let variant_ids: BTreeSet<_> = row
-                .files
-                .iter()
-                .filter_map(|f| f.variant_id.as_deref())
-                .filter(|id| safety::numeric(id))
-                .collect();
-            acquisition["variantIds"] = json!(variant_ids);
-            if let Some(previous) = previous_acquisition
-                .as_ref()
-                .filter(|previous| same_acquisition_binding(previous, account, source, row))
-            {
-                // Sparse refreshes do not erase historical facts or their binding.
-                for key in [
-                    "acquiredDateText",
-                    "paidAmountText",
-                    "orderId",
-                    "observedProductId",
-                    "freeHistoryOrder",
-                ] {
-                    if acquisition[key]
-                        .as_str()
-                        .is_none_or(|value| value.trim().is_empty())
-                        && previous[key]
-                            .as_str()
-                            .is_some_and(|value| !value.trim().is_empty())
-                    {
-                        acquisition[key] = previous[key].clone();
-                    }
-                }
-                if source == "purchase"
-                    && row.files.is_empty()
-                    && previous["productId"].as_str().is_some_and(safety::numeric)
-                {
-                    acquisition["productId"] = previous["productId"].clone();
-                }
-                if previous["paidCurrency"] == "JPY"
-                    && previous["paidPriceBasis"] == "productLineTotal"
-                    && previous["paidPrice"].is_number()
-                    && metadata::parse_jpy_price(&previous["paidPrice"]).is_some()
-                {
-                    for key in ["paidPrice", "paidCurrency", "paidPriceBasis"] {
-                        acquisition[key] = previous[key].clone();
-                    }
-                }
-                if variant_ids.is_empty() && row.files.is_empty() {
-                    acquisition["variantIds"] = previous["variantIds"].clone();
-                    acquisition["variantPayments"] = previous["variantPayments"].clone();
-                } else if previous["variantIds"] == acquisition["variantIds"] {
-                    if let Some(payments) = previous.get("variantPayments") {
-                        acquisition["variantPayments"] = payments.clone();
-                    }
-                }
-            }
-            if let Some(amount) = native_product_line_total(row, source, route) {
-                acquisition["paidPrice"] = json!(amount);
-                acquisition["paidCurrency"] = json!("JPY");
-                acquisition["paidPriceBasis"] = json!("productLineTotal");
-                if variant_ids.len() == 1 && row.files.iter().all(|f| f.variant_id.is_some()) {
-                    acquisition["variantPayments"] = json!([{"variantId":variant_ids.iter().next().unwrap(),"name":row.variant_name,"price":amount,"currency":"JPY"}]);
-                }
-            }
-            batch.stage("acquisition", &acquisition_id, acquisition)?;
-        }
+        Self::stage_acquisition(batch, account, source, row, route)?;
         let Some(product_id) = &row.product_id else {
             return Ok(());
         };
@@ -3609,6 +3538,89 @@ impl BoothService {
             .ok_or_else(|| anyhow::anyhow!("ENTITLEMENT_INVALID"))?
             .extend(fresh.as_object().unwrap().clone());
         batch.stage("entitlement", &entitlement_id, entitlement)
+    }
+
+    /// The row's acquisition record, keeping what a sparser listing no longer shows.
+    fn stage_acquisition(
+        batch: &mut super::batch::RecordBatch<'_>,
+        account: &str,
+        source: &str,
+        row: &parser::Row,
+        route: &str,
+    ) -> Result<()> {
+        let acquisition_id = format!("{account}:{}", row.source_record_id);
+        let previous_acquisition = batch.get("acquisition", &acquisition_id)?;
+        let digital_product_id = if source == "purchase" && row.files.is_empty() {
+            None
+        } else {
+            row.product_id.as_ref()
+        };
+        {
+            let mut acquisition = json!({"id":acquisition_id,"sourceRecordId":row.source_record_id,"productId":digital_product_id,"observedProductId":row.product_id,"accountId":account,"source":source,"orderId":row.order_id,"acquiredDateText":row.acquired_date_text,"paidAmountText":row.paid_amount_text,"variantName":row.variant_name,"unavailable":row.unavailable,"errorCode":row.error_code,"observedAt":now()});
+            let variant_ids: BTreeSet<_> = row
+                .files
+                .iter()
+                .filter_map(|f| f.variant_id.as_deref())
+                .filter(|id| safety::numeric(id))
+                .collect();
+            acquisition["variantIds"] = json!(variant_ids);
+            if let Some(previous) = previous_acquisition
+                .as_ref()
+                .filter(|previous| same_acquisition_binding(previous, account, source, row))
+            {
+                // Sparse refreshes do not erase historical facts or their binding.
+                for key in [
+                    "acquiredDateText",
+                    "paidAmountText",
+                    "orderId",
+                    "observedProductId",
+                    "freeHistoryOrder",
+                ] {
+                    if acquisition[key]
+                        .as_str()
+                        .is_none_or(|value| value.trim().is_empty())
+                        && previous[key]
+                            .as_str()
+                            .is_some_and(|value| !value.trim().is_empty())
+                    {
+                        acquisition[key] = previous[key].clone();
+                    }
+                }
+                if source == "purchase"
+                    && row.files.is_empty()
+                    && previous["productId"].as_str().is_some_and(safety::numeric)
+                {
+                    acquisition["productId"] = previous["productId"].clone();
+                }
+                if previous["paidCurrency"] == "JPY"
+                    && previous["paidPriceBasis"] == "productLineTotal"
+                    && previous["paidPrice"].is_number()
+                    && metadata::parse_jpy_price(&previous["paidPrice"]).is_some()
+                {
+                    for key in ["paidPrice", "paidCurrency", "paidPriceBasis"] {
+                        acquisition[key] = previous[key].clone();
+                    }
+                }
+                if variant_ids.is_empty() && row.files.is_empty() {
+                    acquisition["variantIds"] = previous["variantIds"].clone();
+                    acquisition["variantPayments"] = previous["variantPayments"].clone();
+                } else if previous["variantIds"] == acquisition["variantIds"] {
+                    if let Some(payments) = previous.get("variantPayments") {
+                        acquisition["variantPayments"] = payments.clone();
+                    }
+                }
+            }
+            if let Some(amount) = native_product_line_total(row, source, route) {
+                acquisition["paidPrice"] = json!(amount);
+                acquisition["paidCurrency"] = json!("JPY");
+                acquisition["paidPriceBasis"] = json!("productLineTotal");
+                if variant_ids.len() == 1 && row.files.iter().all(|f| f.variant_id.is_some()) {
+                    acquisition["variantPayments"] = json!([{"variantId":variant_ids.iter().next().unwrap(),"name":row.variant_name,"price":amount,"currency":"JPY"}]);
+                }
+            }
+            batch.stage("acquisition", &acquisition_id, acquisition)?;
+        }
+        Ok(())
     }
     async fn enrich(&self, client: &reqwest::Client, id: &str) -> Result<()> {
         let mut product = self
