@@ -403,6 +403,21 @@ struct PassRows {
     unresolved_rows: usize,
 }
 
+/// What a source pass settled before assembling its listed products; each one reads it.
+#[derive(Clone, Copy)]
+struct PassProducts<'a> {
+    head_route: &'a str,
+    row_routes: &'a BTreeMap<String, String>,
+    free_evidence: &'a BTreeMap<String, super::free_item::Evidence>,
+    incomplete_products: &'a BTreeSet<String>,
+    availability_products: &'a BTreeSet<String>,
+    refreshed_products: &'a BTreeSet<String>,
+    retained_observations: bool,
+    closed_traversal: bool,
+    unbound_membership: bool,
+    metadata_total: usize,
+}
+
 impl BoothService {
     pub(super) async fn diagnose_product_line_fields(
         &self,
@@ -1674,6 +1689,18 @@ impl BoothService {
                 self.publish_early(app, job, &mut early, None)?;
             }
         }
+        let pass = PassProducts {
+            head_route: &head_route,
+            row_routes: &row_routes,
+            free_evidence: &free_evidence,
+            incomplete_products: &incomplete_products,
+            availability_products: &availability_products,
+            refreshed_products: &refreshed_products,
+            retained_observations,
+            closed_traversal,
+            unbound_membership,
+            metadata_total,
+        };
         for (index, (product, (files, complete))) in manifests.into_iter().enumerate() {
             if index % 16 == 0 {
                 tokio::task::yield_now().await;
@@ -1681,239 +1708,32 @@ impl BoothService {
                     bail!("CANCELLED");
                 }
             }
-            if retained_observations && !refreshed_products.contains(&product) {
-                continue; // The untouched tail retains its actual prior observation time.
-            }
-            let already_published = checkpoint.published_products.contains(&product);
-            let manifest_complete = complete
-                && !incomplete_products.contains(&product)
-                && (free_evidence
-                    .get(&product)
-                    .is_some_and(|e| e.manifest_complete)
-                    || (closed_traversal && !unbound_membership));
-            let draft_id = format!("booth-product:{}:{product}", checkpoint.run_id);
-            let product_rows = rows_by_product
-                .remove(product.as_str())
-                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            let availability_only = source == "free"
-                && availability_products.contains(&product)
-                && !incomplete_products.contains(&product);
-            // This asset's own rows or item page could not be read in full.
-            if !availability_only && (!complete || incomplete_products.contains(&product)) {
-                left_products.insert(product.clone());
-            }
-            let observed_rows =
-                observed_grant_rows(source, &product_rows, manifest_complete, availability_only);
-            let observed_files = observed_file_ids(account, observed_rows.iter().copied());
-            let saved_draft = self.inner.catalogue.get("checkpoint", &draft_id)?;
-            if !availability_only
-                && self.restore_product_publication(
-                    &product,
-                    &product_rows,
-                    &row_routes,
-                    &files,
-                    manifest_complete,
-                    saved_draft.as_ref(),
-                    &mut checkpoint,
-                )?
-            {
-                if !already_published {
-                    metadata_completed += 1;
-                }
-                let draft = if let Some(saved) = saved_draft.as_ref().filter(|saved| {
-                    product_draft_scope(saved, account, source, &checkpoint.run_id, &product)
-                        && saved["enriched"] == true
-                }) {
-                    saved["product"].clone()
-                } else {
-                    self.inner
-                        .catalogue
-                        .get("product", &product)?
-                        .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
-                };
-                self.retain_published_context(
-                    publications,
-                    prefetch,
-                    ProductPublication {
-                        account: account.into(),
-                        source: source.into(),
-                        product: product.clone(),
-                        rows: product_rows.iter().map(|row| (*row).clone()).collect(),
-                        routes: product_rows
-                            .iter()
-                            .filter_map(|row| {
-                                row_routes
-                                    .get(&row.source_record_id)
-                                    .map(|route| (row.source_record_id.clone(), route.clone()))
-                            })
-                            .collect(),
-                        draft,
-                        files,
-                        checkpoint_key: key.clone(),
-                        force_verify: mode != "incremental",
-                        needs_enrichment: false,
-                    },
-                )?;
-                continue;
-            }
-            let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
-            for row in &product_rows {
-                let route = row_routes
-                    .get(&row.source_record_id)
-                    .map(String::as_str)
-                    .unwrap_or(&head_route);
-                self.plan_row_mode(
-                    &mut batch,
+            self.assemble_pass_product(
+                SourceRead {
+                    app,
                     account,
                     source,
-                    row,
-                    route,
-                    mode != "incremental",
-                    availability_only,
-                    None,
-                )?;
-            }
-            let mut draft = batch
-                .get("product", &product)?
-                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            let mut needs_enrichment = checkpoint.enrichment_pending.contains(&product);
-            if let Some(saved) = saved_draft.filter(|s| {
-                product_draft_scope(s, account, source, &checkpoint.run_id, &product)
-                    && s["enriched"] == true
-            }) {
-                draft = saved["product"].clone();
-                needs_enrichment = false;
-            } else if let Some(observation) = enriched.get(&product) {
-                draft = observation.clone();
-                needs_enrichment = false;
-            } else if checkpoint.enrichment_pending.contains(&product) && prefetch.is_none() {
-                job["progress"] = json!({"stage":"enriching","source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
-                self.progress(app, job)?;
-                if let Err(error) = self.enrich_into(public, &product, &mut draft, None).await {
-                    let error_code = super::code(&error);
-                    self.save_product_draft(&draft_id,
-                        json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":false,"errorCode":error_code}))?;
-                    // A refused or unreadable public page leaves this product as it was.
-                    if product_local_failure(&error_code) {
-                        left_products.insert(product.clone());
-                    } else {
-                        enrichment_error.get_or_insert(error_code);
-                    }
-                    continue;
-                }
-                enriched.insert(product.clone(), draft.clone());
-                needs_enrichment = false;
-            }
-            if needs_enrichment {
-                if let Some(prefetch) = prefetch {
-                    let first = prefetch.enqueue_once(&product)?;
-                    if first {
-                        prefetch
-                            .requests
-                            .send(PublicRequest {
-                                product: product.clone(),
-                                draft: draft.clone(),
-                                account: account.into(),
-                                source: source.into(),
-                                run_id: checkpoint.run_id.clone(),
-                            })
-                            .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_FAILED"))?;
-                    }
-                }
-            }
-            if needs_enrichment && prefetch.is_some() {
-                let request = PublicRequest {
-                    product: product.clone(),
-                    draft: draft.clone(),
-                    account: account.into(),
-                    source: source.into(),
-                    run_id: checkpoint.run_id.clone(),
-                };
-                if let Some(saved) = self
-                    .inner
-                    .catalogue
-                    .get("checkpoint", &draft_id)?
-                    .and_then(|saved| request.saved_product(&saved))
-                {
-                    draft = saved;
-                    needs_enrichment = false;
-                }
-            }
-            self.save_product_draft(&draft_id,
-                json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":!needs_enrichment,"errorCode":if manifest_complete{Value::Null}else{json!("SYNC_INCOMPLETE")}}))?;
-            if self.cancelled(job)? {
-                bail!("CANCELLED");
-            }
-            metadata_completed += 1;
-            if !manifest_complete && !availability_only {
-                checkpoint.enrichment_pending.insert(product.clone());
-                if let Some(prefetch) = prefetch {
-                    prefetch
-                        .early
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                        .publications
-                        .incomplete_scopes
-                        .insert((account.into(), source.into(), product.clone()));
-                }
-                publications.incomplete_scopes.insert((
-                    account.into(),
-                    source.into(),
-                    product.clone(),
-                ));
-                if observed_rows.is_empty() {
-                    continue;
-                }
-            }
-            job["progress"] = json!({"stage":if prefetch.is_some(){"collecting"}else{"publishing"},"source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
-            if let Some(prefetch) = prefetch {
-                let early = prefetch
-                    .early
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-                set_collecting_totals(job, &early, source);
-            }
-            job["progress"]["stage"] = json!("enriching");
-            self.progress(app, job)?;
-            checkpoint.enrichment_pending.insert(product.clone());
-            let product_routes = observed_rows
-                .iter()
-                .filter_map(|row| {
-                    row_routes
-                        .get(&row.source_record_id)
-                        .map(|route| (row.source_record_id.clone(), route.clone()))
-                })
-                .collect();
-            let entry = ProductPublication {
-                account: account.into(),
-                source: source.into(),
-                product: product.clone(),
-                rows: observed_rows.into_iter().cloned().collect(),
-                routes: product_routes,
-                draft,
-                files: observed_files,
-                checkpoint_key: key.clone(),
-                force_verify: mode != "incremental",
-                needs_enrichment,
-            };
-            if availability_only {
-                publications
-                    .availability
-                    .entry(product.clone())
-                    .or_default()
-                    .push(entry);
-            } else {
-                remember_product_context(publications, entry);
-            }
-            if let Some(prefetch) = prefetch.filter(|_| !availability_only) {
-                let mut early = prefetch
-                    .early
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-                let entry = publications.products[&product].last().unwrap().clone();
-                remember_product_context(&mut early.publications, entry);
-                self.publish_early(app, job, &mut early, Some(&BTreeSet::from([product])))?;
-            }
+                    mode,
+                    client,
+                    selected,
+                    prefetch,
+                    key: &key,
+                },
+                job,
+                public,
+                enriched,
+                publications,
+                pass,
+                &mut checkpoint,
+                &mut rows_by_product,
+                &mut left_products,
+                &mut metadata_completed,
+                &mut enrichment_error,
+                product,
+                files,
+                complete,
+            )
+            .await?;
         }
         drop(rows_by_product);
         // Collection closure and publication completion are distinct. Pending
@@ -2033,6 +1853,280 @@ impl BoothService {
             products: left_products,
             rows: unresolved_rows,
         })
+    }
+
+    /// Assembles one listed product from its rows: a published one is restored, any other
+    /// is planned, enriched and kept for publication.
+    async fn assemble_pass_product(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        public: &reqwest::Client,
+        enriched: &mut BTreeMap<String, Value>,
+        publications: &mut Publications,
+        pass: PassProducts<'_>,
+        checkpoint: &mut Checkpoint,
+        rows_by_product: &mut BTreeMap<&str, Vec<&parser::Row>>,
+        left_products: &mut BTreeSet<String>,
+        metadata_completed: &mut usize,
+        enrichment_error: &mut Option<String>,
+        product: String,
+        files: BTreeSet<String>,
+        complete: bool,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            account,
+            source,
+            mode,
+            prefetch,
+            key,
+            ..
+        } = read;
+        let PassProducts {
+            head_route,
+            row_routes,
+            free_evidence,
+            incomplete_products,
+            availability_products,
+            refreshed_products,
+            retained_observations,
+            closed_traversal,
+            unbound_membership,
+            metadata_total,
+        } = pass;
+        if retained_observations && !refreshed_products.contains(&product) {
+            return Ok(()); // The untouched tail retains its actual prior observation time.
+        }
+        let already_published = checkpoint.published_products.contains(&product);
+        let manifest_complete = complete
+            && !incomplete_products.contains(&product)
+            && (free_evidence
+                .get(&product)
+                .is_some_and(|e| e.manifest_complete)
+                || (closed_traversal && !unbound_membership));
+        let draft_id = format!("booth-product:{}:{product}", checkpoint.run_id);
+        let product_rows = rows_by_product
+            .remove(product.as_str())
+            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+        let availability_only = source == "free"
+            && availability_products.contains(&product)
+            && !incomplete_products.contains(&product);
+        // This asset's own rows or item page could not be read in full.
+        if !availability_only && (!complete || incomplete_products.contains(&product)) {
+            left_products.insert(product.clone());
+        }
+        let observed_rows =
+            observed_grant_rows(source, &product_rows, manifest_complete, availability_only);
+        let observed_files = observed_file_ids(account, observed_rows.iter().copied());
+        let saved_draft = self.inner.catalogue.get("checkpoint", &draft_id)?;
+        if !availability_only
+            && self.restore_product_publication(
+                &product,
+                &product_rows,
+                row_routes,
+                &files,
+                manifest_complete,
+                saved_draft.as_ref(),
+                checkpoint,
+            )?
+        {
+            if !already_published {
+                *metadata_completed += 1;
+            }
+            let draft = if let Some(saved) = saved_draft.as_ref().filter(|saved| {
+                product_draft_scope(saved, account, source, &checkpoint.run_id, &product)
+                    && saved["enriched"] == true
+            }) {
+                saved["product"].clone()
+            } else {
+                self.inner
+                    .catalogue
+                    .get("product", &product)?
+                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
+            };
+            self.retain_published_context(
+                publications,
+                prefetch,
+                ProductPublication {
+                    account: account.into(),
+                    source: source.into(),
+                    product: product.clone(),
+                    rows: product_rows.iter().map(|row| (*row).clone()).collect(),
+                    routes: product_rows
+                        .iter()
+                        .filter_map(|row| {
+                            row_routes
+                                .get(&row.source_record_id)
+                                .map(|route| (row.source_record_id.clone(), route.clone()))
+                        })
+                        .collect(),
+                    draft,
+                    files,
+                    checkpoint_key: key.to_owned(),
+                    force_verify: mode != "incremental",
+                    needs_enrichment: false,
+                },
+            )?;
+            return Ok(());
+        }
+        let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
+        for row in &product_rows {
+            let route = row_routes
+                .get(&row.source_record_id)
+                .map(String::as_str)
+                .unwrap_or(head_route);
+            self.plan_row_mode(
+                &mut batch,
+                account,
+                source,
+                row,
+                route,
+                mode != "incremental",
+                availability_only,
+                None,
+            )?;
+        }
+        let mut draft = batch
+            .get("product", &product)?
+            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+        let mut needs_enrichment = checkpoint.enrichment_pending.contains(&product);
+        if let Some(saved) = saved_draft.filter(|s| {
+            product_draft_scope(s, account, source, &checkpoint.run_id, &product)
+                && s["enriched"] == true
+        }) {
+            draft = saved["product"].clone();
+            needs_enrichment = false;
+        } else if let Some(observation) = enriched.get(&product) {
+            draft = observation.clone();
+            needs_enrichment = false;
+        } else if checkpoint.enrichment_pending.contains(&product) && prefetch.is_none() {
+            job["progress"] = json!({"stage":"enriching","source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
+            self.progress(app, job)?;
+            if let Err(error) = self.enrich_into(public, &product, &mut draft, None).await {
+                let error_code = super::code(&error);
+                self.save_product_draft(&draft_id,
+                    json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":false,"errorCode":error_code}))?;
+                // A refused or unreadable public page leaves this product as it was.
+                if product_local_failure(&error_code) {
+                    left_products.insert(product.clone());
+                } else {
+                    enrichment_error.get_or_insert(error_code);
+                }
+                return Ok(());
+            }
+            enriched.insert(product.clone(), draft.clone());
+            needs_enrichment = false;
+        }
+        if needs_enrichment {
+            if let Some(prefetch) = prefetch {
+                let first = prefetch.enqueue_once(&product)?;
+                if first {
+                    prefetch
+                        .requests
+                        .send(PublicRequest {
+                            product: product.clone(),
+                            draft: draft.clone(),
+                            account: account.into(),
+                            source: source.into(),
+                            run_id: checkpoint.run_id.clone(),
+                        })
+                        .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_FAILED"))?;
+                }
+            }
+        }
+        if needs_enrichment && prefetch.is_some() {
+            let request = PublicRequest {
+                product: product.clone(),
+                draft: draft.clone(),
+                account: account.into(),
+                source: source.into(),
+                run_id: checkpoint.run_id.clone(),
+            };
+            if let Some(saved) = self
+                .inner
+                .catalogue
+                .get("checkpoint", &draft_id)?
+                .and_then(|saved| request.saved_product(&saved))
+            {
+                draft = saved;
+                needs_enrichment = false;
+            }
+        }
+        self.save_product_draft(&draft_id,
+            json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":!needs_enrichment,"errorCode":if manifest_complete{Value::Null}else{json!("SYNC_INCOMPLETE")}}))?;
+        if self.cancelled(job)? {
+            bail!("CANCELLED");
+        }
+        *metadata_completed += 1;
+        if !manifest_complete && !availability_only {
+            checkpoint.enrichment_pending.insert(product.clone());
+            if let Some(prefetch) = prefetch {
+                prefetch
+                    .early
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+                    .publications
+                    .incomplete_scopes
+                    .insert((account.into(), source.into(), product.clone()));
+            }
+            publications
+                .incomplete_scopes
+                .insert((account.into(), source.into(), product.clone()));
+            if observed_rows.is_empty() {
+                return Ok(());
+            }
+        }
+        job["progress"] = json!({"stage":if prefetch.is_some(){"collecting"}else{"publishing"},"source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
+        if let Some(prefetch) = prefetch {
+            let early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            set_collecting_totals(job, &early, source);
+        }
+        job["progress"]["stage"] = json!("enriching");
+        self.progress(app, job)?;
+        checkpoint.enrichment_pending.insert(product.clone());
+        let product_routes = observed_rows
+            .iter()
+            .filter_map(|row| {
+                row_routes
+                    .get(&row.source_record_id)
+                    .map(|route| (row.source_record_id.clone(), route.clone()))
+            })
+            .collect();
+        let entry = ProductPublication {
+            account: account.into(),
+            source: source.into(),
+            product: product.clone(),
+            rows: observed_rows.into_iter().cloned().collect(),
+            routes: product_routes,
+            draft,
+            files: observed_files,
+            checkpoint_key: key.to_owned(),
+            force_verify: mode != "incremental",
+            needs_enrichment,
+        };
+        if availability_only {
+            publications
+                .availability
+                .entry(product.clone())
+                .or_default()
+                .push(entry);
+        } else {
+            remember_product_context(publications, entry);
+        }
+        if let Some(prefetch) = prefetch.filter(|_| !availability_only) {
+            let mut early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            let entry = publications.products[&product].last().unwrap().clone();
+            remember_product_context(&mut early.publications, entry);
+            self.publish_early(app, job, &mut early, Some(&BTreeSet::from([product])))?;
+        }
+        Ok(())
     }
 
     /// Rereads the pass's journaled pages: the rows they listed, in page order, and what
