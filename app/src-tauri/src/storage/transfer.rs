@@ -616,13 +616,39 @@ impl StorageService {
         if processed.len() != files.len() && error.is_none() {
             error = Some(anyhow::anyhow!("manifest_changed"));
         }
+        self.extract_downloaded_files(
+            app, job, &job_id, &root, &root_path, &files, &all_files, cancel, &mut error,
+        )
+        .await?;
+        if let Some(error) = error {
+            return Err(error);
+        }
+        // Completion describes the known selected work, not source coverage.
+        // Catalogue keeps a partial product partial until every required file is Ready.
+        job["progress"] = json!(100.0);
+        Ok(())
+    }
+
+    /// Makes each downloaded file Ready, extracting archives and recording failures on the job.
+    async fn extract_downloaded_files(
+        &self,
+        app: &tauri::AppHandle,
+        job: &mut Value,
+        job_id: &str,
+        root: &Value,
+        root_path: &Path,
+        files: &[Value],
+        all_files: &[Value],
+        cancel: &Arc<AtomicBool>,
+        error: &mut Option<anyhow::Error>,
+    ) -> Result<()> {
         let seven_zip = self.seven_zip(app)?;
-        for file in &files {
+        for file in files {
             io::check_cancel(cancel)?;
             let id = artifact_id(file);
             let Some(mut artifact) = self.catalogue.get("artifact", &id)? else {
                 if error.is_none() {
-                    error = Some(anyhow::anyhow!("manifest_changed"));
+                    *error = Some(anyhow::anyhow!("manifest_changed"));
                 }
                 continue;
             };
@@ -633,18 +659,18 @@ impl StorageService {
                 let repair = async {
                     let directory = io::required_string(&artifact, "productDirectory")?.to_owned();
                     ensure!(
-                        source_tree_relative(file, &job_id, &directory)?.as_deref()
+                        source_tree_relative(file, job_id, &directory)?.as_deref()
                             == artifact["relativePath"].as_str(),
                         "source_tree_incomplete"
                     );
                     ensure!(
                         artifact["originalAvailable"] == true
-                            && self.artifact_verified(&artifact, &root_path).await?,
+                            && self.artifact_verified(&artifact, root_path).await?,
                         "source_tree_incomplete"
                     );
                     let (mut updates, mut expected) = self
                         .prepare_selected_source_siblings(
-                            &root, &root_path, file, &all_files, &job_id, &directory, cancel,
+                            root, root_path, file, all_files, job_id, &directory, cancel,
                         )
                         .await?;
                     expected.push((
@@ -667,7 +693,7 @@ impl StorageService {
                         let file_id = file["id"].as_str().unwrap_or("");
                         job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
                         if error.is_none() {
-                            error = Some(failure);
+                            *error = Some(failure);
                         }
                         continue;
                     }
@@ -679,30 +705,24 @@ impl StorageService {
             ) {
                 continue;
             }
-            let path = io::safe_join(&root_path, io::required_string(&artifact, "relativePath")?)?;
+            let path = io::safe_join(root_path, io::required_string(&artifact, "relativePath")?)?;
             if !archive::is_supported_archive(&path) {
                 artifact["status"] = json!("ready");
                 self.catalogue.put("artifact", &id, artifact)?;
                 continue;
             }
             let result = self
-                .extract_for_download(&seven_zip, &root, &mut artifact, &all_files, cancel)
+                .extract_for_download(&seven_zip, root, &mut artifact, all_files, cancel)
                 .await;
             if let Err(e) = result {
                 let file_id = file["id"].as_str().unwrap_or("");
                 job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&e)});
                 if error.is_none() {
-                    error = Some(e)
+                    *error = Some(e)
                 }
             }
-            self.changed(app, Some(&job_id));
+            self.changed(app, Some(job_id));
         }
-        if let Some(error) = error {
-            return Err(error);
-        }
-        // Completion describes the known selected work, not source coverage.
-        // Catalogue keeps a partial product partial until every required file is Ready.
-        job["progress"] = json!(100.0);
         Ok(())
     }
     async fn file_progress(
