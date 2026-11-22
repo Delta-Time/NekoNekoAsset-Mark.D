@@ -2165,16 +2165,7 @@ impl BoothService {
                 return Ok(());
             }
         }
-        job["progress"] = json!({"stage":if prefetch.is_some(){"collecting"}else{"publishing"},"source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
-        if let Some(prefetch) = prefetch {
-            let early = prefetch
-                .early
-                .lock()
-                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-            set_collecting_totals(job, &early, source);
-        }
-        job["progress"]["stage"] = json!("enriching");
-        self.progress(app, job)?;
+        self.report_product_progress(read, job, checkpoint, *metadata_completed, metadata_total)?;
         self.keep_pass_product(
             read,
             job,
@@ -2188,6 +2179,34 @@ impl BoothService {
             needs_enrichment,
             availability_only,
         )?;
+        Ok(())
+    }
+
+    /// Shows the assembled product in the job's progress and moves the job on to enriching.
+    fn report_product_progress(
+        &self,
+        read: SourceRead<'_>,
+        job: &mut Value,
+        checkpoint: &Checkpoint,
+        metadata_completed: usize,
+        metadata_total: usize,
+    ) -> Result<()> {
+        let SourceRead {
+            app,
+            source,
+            prefetch,
+            ..
+        } = read;
+        job["progress"] = json!({"stage":if prefetch.is_some(){"collecting"}else{"publishing"},"source":source,"pages":checkpoint.pages,"detailsCompleted":checkpoint.details_completed,"requestsCompleted":checkpoint.pages+checkpoint.details_completed,"products":checkpoint.product_ids.len(),"remaining":checkpoint.enrichment_pending.len(),"published":checkpoint.published_products.len(),"metadataCompleted":metadata_completed,"metadataTotal":metadata_total});
+        if let Some(prefetch) = prefetch {
+            let early = prefetch
+                .early
+                .lock()
+                .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+            set_collecting_totals(job, &early, source);
+        }
+        job["progress"]["stage"] = json!("enriching");
+        self.progress(app, job)?;
         Ok(())
     }
 
