@@ -1491,104 +1491,143 @@ impl StorageService {
             } else {
                 "file_integrity_failed"
             };
-            archive::validate_no_links(part)?;
-            tokio::fs::create_dir_all(
-                part.parent()
-                    .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?,
-            )
-            .await?;
-            archive::validate_no_links(part)?;
-            let mut output = tokio::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(part)
-                .await?;
-            let mut hasher = Sha256::new();
-            let mut size = 0u64;
-            let mut chunks = response.bytes_stream();
-            let mut last_progress = std::time::Instant::now();
-            let mut next_space_check = 0u64;
-            let mut rate = self.preferences()?["downloadRateBytesPerSecond"]
-                .as_u64()
-                .unwrap_or(0);
-            let slots = download_count(&self.preferences()?["downloadConcurrency"]) as f64;
-            let result = async {
-                while let Some(chunk) = io::cancellable(
+            if let Some(download) = self
+                .write_response(
+                    app,
+                    job_id,
+                    file,
+                    part,
+                    root,
                     cancel,
-                    tokio::time::timeout(Duration::from_secs(60), chunks.next()),
+                    response,
+                    current,
+                    response_revision,
+                    expected,
+                    size_error,
+                    attempt,
+                    &mut last,
                 )
                 .await?
-                .map_err(|_| anyhow::anyhow!("network_timeout"))?
-                {
-                    io::check_cancel(cancel)?;
-                    let bytes = chunk.map_err(|_| anyhow::anyhow!("network_failed"))?;
-                    if size >= next_space_check {
-                        io::space(root, 8 * 1024 * 1024)?;
-                        next_space_check = size.saturating_add(8 * 1024 * 1024);
-                    }
-                    output.write_all(&bytes).await?;
-                    hasher.update(&bytes);
-                    size += bytes.len() as u64;
-                    if let Some(expected) = expected {
-                        ensure!(size <= expected, "{size_error}");
-                    }
-                    if last_progress.elapsed() >= Duration::from_millis(750) {
-                        self.file_progress(
-                            app,
-                            job_id,
-                            io::required_string(file, "id")?,
-                            expected
-                                .filter(|n| *n > 0)
-                                .map(|n| size as f64 / n as f64)
-                                .unwrap_or(0.0),
-                        )
-                        .await?;
-                        rate = self.preferences()?["downloadRateBytesPerSecond"]
-                            .as_u64()
-                            .unwrap_or(0);
-                        last_progress = std::time::Instant::now();
-                    }
-                    if rate > 0 {
-                        io::delay(
-                            cancel,
-                            Duration::from_secs_f64(bytes.len() as f64 * slots / rate as f64),
-                        )
-                        .await?;
-                    }
-                }
-                if let Some(expected) = expected {
-                    ensure!(size == expected, "{size_error}");
-                }
-                output.flush().await?;
-                output.sync_all().await?;
-                Ok::<(), anyhow::Error>(())
-            }
-            .await;
-            drop(output);
-            match result {
-                Ok(()) => {
-                    let hash = hex::encode(hasher.finalize());
-                    let (revision, basis) =
-                        bind_revision(file, &current, response_revision, &hash)?;
-                    return Ok((hash, size, revision, basis, current));
-                }
-                Err(e) => {
-                    let code = io::stable_error(&e);
-                    if matches!(
-                        code,
-                        "cancelled" | "low_space" | "permission_denied" | "store_access_denied"
-                    ) {
-                        return Err(e);
-                    }
-                    last = e;
-                }
-            }
-            if attempt + 1 < DOWNLOAD_ATTEMPTS {
-                io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
+            {
+                return Ok(download);
             }
         }
         Err(last)
+    }
+
+    /// Writes one response into the partial file; a failure worth retrying is kept in `last`.
+    async fn write_response(
+        &self,
+        app: &tauri::AppHandle,
+        job_id: &str,
+        file: &Value,
+        part: &Path,
+        root: &Path,
+        cancel: &AtomicBool,
+        response: reqwest::Response,
+        current: Value,
+        response_revision: Option<String>,
+        expected: Option<u64>,
+        size_error: &str,
+        attempt: u32,
+        last: &mut anyhow::Error,
+    ) -> Result<Option<(String, u64, String, String, Value)>> {
+        archive::validate_no_links(part)?;
+        tokio::fs::create_dir_all(
+            part.parent()
+                .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?,
+        )
+        .await?;
+        archive::validate_no_links(part)?;
+        let mut output = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(part)
+            .await?;
+        let mut hasher = Sha256::new();
+        let mut size = 0u64;
+        let mut chunks = response.bytes_stream();
+        let mut last_progress = std::time::Instant::now();
+        let mut next_space_check = 0u64;
+        let mut rate = self.preferences()?["downloadRateBytesPerSecond"]
+            .as_u64()
+            .unwrap_or(0);
+        let slots = download_count(&self.preferences()?["downloadConcurrency"]) as f64;
+        let result = async {
+            while let Some(chunk) = io::cancellable(
+                cancel,
+                tokio::time::timeout(Duration::from_secs(60), chunks.next()),
+            )
+            .await?
+            .map_err(|_| anyhow::anyhow!("network_timeout"))?
+            {
+                io::check_cancel(cancel)?;
+                let bytes = chunk.map_err(|_| anyhow::anyhow!("network_failed"))?;
+                if size >= next_space_check {
+                    io::space(root, 8 * 1024 * 1024)?;
+                    next_space_check = size.saturating_add(8 * 1024 * 1024);
+                }
+                output.write_all(&bytes).await?;
+                hasher.update(&bytes);
+                size += bytes.len() as u64;
+                if let Some(expected) = expected {
+                    ensure!(size <= expected, "{size_error}");
+                }
+                if last_progress.elapsed() >= Duration::from_millis(750) {
+                    self.file_progress(
+                        app,
+                        job_id,
+                        io::required_string(file, "id")?,
+                        expected
+                            .filter(|n| *n > 0)
+                            .map(|n| size as f64 / n as f64)
+                            .unwrap_or(0.0),
+                    )
+                    .await?;
+                    rate = self.preferences()?["downloadRateBytesPerSecond"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    last_progress = std::time::Instant::now();
+                }
+                if rate > 0 {
+                    io::delay(
+                        cancel,
+                        Duration::from_secs_f64(bytes.len() as f64 * slots / rate as f64),
+                    )
+                    .await?;
+                }
+            }
+            if let Some(expected) = expected {
+                ensure!(size == expected, "{size_error}");
+            }
+            output.flush().await?;
+            output.sync_all().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        drop(output);
+        match result {
+            Ok(()) => {
+                let hash = hex::encode(hasher.finalize());
+                let (revision, basis) = bind_revision(file, &current, response_revision, &hash)?;
+                return Ok(Some((hash, size, revision, basis, current)));
+            }
+            Err(e) => {
+                let code = io::stable_error(&e);
+                if matches!(
+                    code,
+                    "cancelled" | "low_space" | "permission_denied" | "store_access_denied"
+                ) {
+                    return Err(e);
+                }
+                *last = e;
+            }
+        }
+        if attempt + 1 < DOWNLOAD_ATTEMPTS {
+            io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
+        }
+        Ok(None)
     }
     pub(super) async fn extract_for_download(
         &self,
