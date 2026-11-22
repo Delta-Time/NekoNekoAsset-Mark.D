@@ -27,7 +27,7 @@ BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_b
                   "scripts/", ".github/workflows/", "rust-toolchain.toml", "release/config.json",
                   ".gitattributes", "changelog.md")
 FORBIDDEN_PREFIXES = ("AgentDocs/", ".tools/", ".local/", "work/", "tools/",
-                      "unity/verification/", "app/verification/", "app/checks/private/", "app/portable/")
+                      "unity/verification/", "app/verification/", "app/portable/")
 FORBIDDEN_FILES = {"AGENTS.md", "app/scripts/test-native.ps1", "app/scripts/package-portable.ps1"}
 MARKER = "release/verification.json"
 # Landing page languages and their Pages paths; the site never writes under app/ or bridge/.

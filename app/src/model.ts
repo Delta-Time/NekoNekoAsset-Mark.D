@@ -4,19 +4,9 @@ import type {
   AssetFile,
   CustomCategory,
   Product as NativeProduct,
-  SourceCategory,
   SourceCategoryValue,
 } from './bindings';
-export type {
-  Account,
-  AcquisitionProvenance,
-  AssetFile,
-  AvatarEvidence,
-  CategoryInference,
-  CustomCategory,
-  FileProvenance,
-  SourceCategory,
-} from './bindings';
+export type { Account, AssetFile, CustomCategory } from './bindings';
 /** A product as the native catalogue sends it, with a session-only thumbnail. */
 export type Product = NativeProduct & { thumbnailOverrideUrl?: string };
 export type Locale = 'en' | 'ja' | 'ko' | 'zh-Hans' | 'zh-Hant';
@@ -132,50 +122,12 @@ export function fileCountLabel(
   if (!count) return '—';
   return `${ratio ? product.downloaded + '/' : ''}${count}+`;
 }
-/** All assets hides Unclassified unless the user lists it there; explicit shortcuts retain their scopes. */
-export function libraryCategoryMatches(
-  product: Product,
-  category: string,
-  quick = 'all',
-  collection = '',
-  hideUnclassified = true,
-): boolean {
-  if (category !== 'all') return product.category === category;
-  return !hideUnclassified || !!collection || quick !== 'all' || product.category !== 'NonVRChat';
-}
 export function isFileDownloaded(file: AssetFile): boolean {
   return ['ready', 'downloaded', 'extracting', 'extractionFailed'].includes(file.status);
 }
-export type SortKey = 'acquired' | 'title' | 'price' | 'status';
 export type SortDirection = 'asc' | 'desc';
 export function defaultSortDirection(key: string): SortDirection {
   return key === 'acquired' ? 'desc' : 'asc';
-}
-/** Unknown values stay last before direction is applied to known facts. */
-export function compareProducts(
-  a: Product,
-  b: Product,
-  key: string,
-  direction: SortDirection,
-  locale: Locale,
-): number {
-  const value = (product: Product): string | number | null => {
-    if (key === 'price')
-      return product.price !== null && Number.isFinite(product.price) ? product.price : null;
-    if (key === 'status') {
-      const status = getProductDisplayStatus(product);
-      return status === 'unknown' ? null : status;
-    }
-    return (key === 'title' ? product.title : product.acquired).trim() || null;
-  };
-  const left = value(a),
-    right = value(b);
-  if (left === null || right === null) return left === right ? 0 : left === null ? 1 : -1;
-  const order =
-    typeof left === 'number' && typeof right === 'number'
-      ? left - right
-      : String(left).localeCompare(String(right), locale);
-  return direction === 'desc' ? -order : order;
 }
 export const thumbnailSizes = [0, 96, 112, 128, 160, 192, 224, 272, 320] as const;
 /** The fitted width drives both rendered cards and virtual row geometry. */
@@ -199,20 +151,6 @@ export function resultGeometry(
           : 110
       : 74 + Math.max(0, metadataCount) * 18;
   return { list, gap, columns, actual, info, row: list ? density : actual / 1.15 + info + gap };
-}
-/** Checked collections are additive; unchecked memberships remain intact. */
-export function addToCollections(
-  collections: Record<string, string[]>,
-  names: readonly string[],
-  ids: readonly string[],
-): Record<string, string[]> {
-  const additions = [...new Set(names)]
-    .filter((name) => name.trim())
-    .map((name) => [
-      name,
-      [...new Set([...(Object.hasOwn(collections, name) ? collections[name] : []), ...ids])],
-    ]);
-  return { ...collections, ...Object.fromEntries(additions) };
 }
 /** Native controls follow the actual selected/previewed background, including imported themes. */
 export function isLightTheme(tokens: Record<string, string>): boolean {
@@ -249,35 +187,14 @@ export function categoryName(
     ? (custom.find((entry) => entry.id === category)?.name ?? label('unknown'))
     : label(category);
 }
-/** Opaque source keys never assert a normalized asset type or avatar compatibility. */
-export function sourceCategoryKey(category: SourceCategory | undefined): string | null {
-  return category?.name?.trim()
-    ? `booth-category:${JSON.stringify([category.id, category.parentId, category.parentName, category.name])}`
-    : null;
-}
 /** A bare category name, as some records keep it, has no label. */
 export function sourceCategoryLabel(category: SourceCategoryValue): string {
   if (typeof category === 'string') return '';
   return [category.parentName, category.name].filter((value) => value?.trim()).join(' / ');
 }
-export function categoryChoices(
-  _products: readonly Product[] = [],
-): { key: string; sourceLabel?: string }[] {
-  return categoryKeys.map((key) => ({ key }));
-}
 export const statusKeys = ['notDownloaded', 'partial', 'processing', 'ready', 'attention'] as const;
 export type ProductDisplayStatus = (typeof statusKeys)[number] | 'unknown';
 export type SensitiveMode = 'show' | 'blur' | 'hide' | 'only';
-export function sensitiveMatches(product: Product, mode: SensitiveMode): boolean {
-  return mode === 'only'
-    ? product.sensitive === true
-    : mode === 'hide'
-      ? product.sensitive !== true
-      : true;
-}
-export function accountMatches(product: Product, ids: readonly string[] | null): boolean {
-  return ids === null || ids.some((id) => product.accountIds?.includes(id));
-}
 /** Product badges are derived from file integrity, without replacing detailed file states. */
 export function getProductDisplayStatus(product: Product): ProductDisplayStatus {
   if (product.filesLoaded === false)
@@ -344,9 +261,6 @@ const avatarAliasIndex = new Map(
     [canonical, ...aliases].map((alias) => [normalizeSearch(alias), canonical] as const),
   ),
 );
-export function canonicalizeTag(tag: string): string {
-  return avatarAliasIndex.get(normalizeSearch(tag)) ?? tag.normalize('NFKC').trim();
-}
 export function getAvatarAliases(avatar: string): string[] {
   const canonical = avatarAliasIndex.get(normalizeSearch(avatar));
   return [
@@ -372,20 +286,6 @@ export function getEffectiveTags(product: Product): string[] {
       (!offered.has(normalizeSearch(tag)) || owned.has(normalizeSearch(tag))),
   );
 }
-export interface AppState {
-  products: Product[];
-  selectedIds: string[];
-  locale: Locale;
-  query: string;
-  category: string;
-  status: string;
-  theme: 'dark' | 'light' | 'custom';
-  density: number;
-  thumbnail: number;
-  autoDownloadAll: boolean;
-  collections: Record<string, string[]>;
-  savedSearches: { id: string; name: string; query: string; category: string; status: string }[];
-}
 export interface FileSummary {
   downloaded: number;
   total: number;
@@ -396,14 +296,6 @@ export interface FileSummary {
 export function isProductDownloaded(product: Product): boolean {
   if (product.filesLoaded === false) return product.fullyDownloaded === true;
   return product.files.length > 0 && product.files.every(isFileDownloaded);
-}
-/** Browser object URLs and their reset source exist only for the current session. */
-export function stripEphemeralThumbnail(
-  product: Product,
-): Omit<Product, 'thumbnailOverrideUrl' | 'sourcePreviewUrl'> {
-  const { thumbnailOverrideUrl: _override, sourcePreviewUrl: _source, ...safe } = product;
-  if (safe.previewUrl?.startsWith('blob:')) delete safe.previewUrl;
-  return safe;
 }
 /** Bytes present is distinct from validated, usable output. Unknown is never ready. */
 export function summarizeFiles(
@@ -428,23 +320,4 @@ export function summarizeFiles(
 }
 export function normalizeSearch(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().trim();
-}
-export function productMatches(product: Product, query: string): boolean {
-  const text = normalizeSearch(
-    [
-      product.id,
-      product.title,
-      product.sourceTitle,
-      product.shop,
-      product.note,
-      ...getEffectiveTags(product),
-      ...getEffectiveAvatarTags(product),
-      ...product.files.map((f) => f.name),
-    ]
-      .filter(Boolean)
-      .join(' '),
-  );
-  return normalizeSearch(query)
-    .split(/\s+/)
-    .every((term) => text.includes(term));
 }

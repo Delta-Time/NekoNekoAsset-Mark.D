@@ -24,6 +24,6 @@ These apply to every UI change, here and in the Unity Bridge's windows.
   global store.
 - Talk to Rust only through `backend.ts` and `ai-backend.ts`. Their types come from
   `bindings/`, which `pnpm --dir app bindings` generates; never edit it by hand.
-- `category-inference.ts` and `product-edits.ts` are not the App's rules. Category
-  rules live in Rust's `taxonomy/`.
+- Filtering, search, sorting and category rules live in Rust (`catalogue/query.rs`,
+  `taxonomy/`), not in the UI.
 - Setup and library rules are in `../src-tauri/src/AGENTS.md`.

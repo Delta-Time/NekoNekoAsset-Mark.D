@@ -120,10 +120,9 @@ They use authored fixtures, never captured store pages.
   by the generated unions, so a misspelled action or a renamed field fails `tsc`.
   `ai-backend.ts` does the same for AI.
 - `bindings/` is generated. Never edit it by hand.
-- `model.ts` holds display rules: status badges, prices, sort keys, effective tags
-  and avatars. `category-inference.ts` and `product-edits.ts` are older client-side
-  rules that only `app/checks` exercises; the App's category rules are Rust's
-  `taxonomy/`.
+- `model.ts` holds display rules: status badges, prices, effective tags and
+  avatars, and the result grid's geometry. Filtering, search, sorting and
+  categories happen in Rust (`catalogue/query.rs`, `taxonomy/`).
 - `messages.ts` and `locales/<language>.json` hold UI text. `en.json` is the
   source, and `tsc` fails when another language lacks a key.
 - `styles/<area>.css` are imported in cascade order by `main.tsx`; `shared/` holds

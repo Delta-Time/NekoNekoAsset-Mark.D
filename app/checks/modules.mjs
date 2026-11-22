@@ -28,16 +28,4 @@ export const i18nUrl = moduleUrl(
 export const modelUrl = moduleUrl(
   (await readTs('../src/model.ts')).replace("from './i18n'", `from '${i18nUrl}'`),
 );
-export const inferenceUrl = moduleUrl(
-  (await readTs('../src/category-inference.ts')).replaceAll("from './model'", `from '${modelUrl}'`),
-);
-export const editsUrl = moduleUrl(
-  (await readTs('../src/product-edits.ts'))
-    .replaceAll("from './model'", `from '${modelUrl}'`)
-    .replace("from './category-inference'", `from '${inferenceUrl}'`),
-);
-export const model = {
-  ...(await import(modelUrl)),
-  ...(await import(inferenceUrl)),
-  ...(await import(editsUrl)),
-};
+export const model = await import(modelUrl);

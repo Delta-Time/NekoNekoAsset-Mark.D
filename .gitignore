@@ -69,7 +69,6 @@ obj/
 /.codex/
 /app/README.md
 /app/.gitignore
-/app/checks/private/
 /app/portable/
 /app/scripts/
 /app/src-tauri/gen/schemas/

@@ -95,8 +95,7 @@ const {
   collectionSnapshotKey,
   reconciledCollectionName,
 } = await source('collections.ts');
-const { getProductDisplayStatus, getEffectiveAvatarTags, accountMatches } =
-  await source('model.ts');
+const { getProductDisplayStatus, getEffectiveAvatarTags } = await source('model.ts');
 let active = 0,
   maxActive = 0,
   calls = 0;
@@ -215,8 +214,6 @@ assert.equal(
 assert.equal(getProductDisplayStatus({ ...product, status: 'attention' }), 'attention');
 assert.deepEqual(getEffectiveAvatarTags(product, ['A']), ['Authored Avatar']);
 assert.deepEqual(getEffectiveAvatarTags(product, []), []);
-assert.equal(accountMatches(product, ['B']), false);
-assert.equal(accountMatches(product, []), false);
 assert.deepEqual(
   getEffectiveAvatarTags(
     {
@@ -230,7 +227,7 @@ assert.deepEqual(
   ['Authored Avatar'],
 );
 console.log(
-  'PASS: one active / one trailing refresh, burst deduplication, failure recovery, immutable collection pending changes, authoritative native non-ready status, global tag compatibility with account predicate.',
+  'PASS: one active / one trailing refresh, burst deduplication, failure recovery, immutable collection pending changes, authoritative native non-ready status, account-scoped tag compatibility.',
 );
 
 // Pending native writes never lock presentation, and a rejected middle write
