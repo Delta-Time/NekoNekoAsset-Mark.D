@@ -9,7 +9,6 @@
   --line: color-mix(in oklab, var(--border) 74%, transparent);
   --line-2: var(--border);
   --hover: color-mix(in oklab, var(--text) 6%, transparent);
-  --press: color-mix(in oklab, var(--text) 11%, transparent);
   --field: color-mix(in oklab, var(--bg) 62%, var(--panel));
   --faint: color-mix(in oklab, var(--muted) 90%, var(--panel));
   --acc-1: color-mix(in oklab, var(--accent) 13%, transparent);

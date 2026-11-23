@@ -7,16 +7,6 @@
 ::-webkit-scrollbar-thumb:hover {
   background-color: #8889;
 }
-.product-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(var(--thumb-size), 100%), 1fr));
-  align-content: start;
-  gap: 12px;
-  padding: 3px 16px 16px;
-  overflow: auto;
-  flex: 1;
-  min-width: 0;
-}
 .product-card {
   min-width: 0;
   position: relative;
@@ -72,71 +62,11 @@
   text-overflow: ellipsis;
   margin: 3px 0 7px;
 }
-.product-status.ready,
 .positive {
   color: var(--positive);
 }
-.product-status.partial,
 .warning {
   color: var(--warning);
-}
-.product-status.error,
-.negative {
-  color: var(--negative);
-}
-.product-table {
-  border-collapse: separate;
-  border-spacing: 0;
-  width: 100%;
-  text-align: left;
-  font-size: 12px;
-  table-layout: auto;
-}
-.product-table th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  border-bottom: 1px solid var(--border);
-  padding: 9px 10px;
-  white-space: nowrap;
-}
-.product-table th button {
-  border: 0;
-  min-height: 20px;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  font-size: inherit;
-}
-.product-table td {
-  border-bottom: 1px solid var(--border);
-  padding: 5px 10px;
-  height: var(--row-size);
-  white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.product-table th:first-child,
-.product-table td:first-child {
-  padding-left: 18px;
-  width: 35px;
-}
-.product-table tbody tr {
-  cursor: pointer;
-}
-.product-table tbody tr:hover {
-  background: var(--panel);
-}
-.product-table tbody tr.selected {
-  background: var(--control);
-}
-.product-table tbody tr.selected td:first-child {
-  box-shadow: inset 3px 0 var(--accent);
 }
 .row-thumb {
   width: calc(var(--row-size) - 10px);
@@ -178,18 +108,6 @@
 .empty-state button {
   margin-top: 8px;
 }
-@media (min-width: 1600px) {
-  .product-grid {
-    gap: 15px;
-  }
-}
-@media (max-width: 1120px) {
-  .product-grid {
-    padding-left: 12px;
-    padding-right: 12px;
-    gap: 9px;
-  }
-}
 .product-status > span:first-of-type {
   min-width: 0;
   overflow: hidden;
@@ -224,22 +142,6 @@
   align-items: center;
   justify-content: center;
   white-space: nowrap;
-}
-.product-table td:nth-child(2) {
-  max-width: 440px;
-}
-.product-table .product-status {
-  min-width: 90px;
-}
-@media (max-width: 1120px) {
-  .product-table td {
-    max-width: 150px;
-  }
-  .product-table th,
-  .product-table td {
-    padding-left: 7px;
-    padding-right: 7px;
-  }
 }
 /* Windowed rows retain the full result range through inert measured spacers. */
 .row-thumb > .thumb {

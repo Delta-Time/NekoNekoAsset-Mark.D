@@ -79,10 +79,6 @@
 .app .wf-sync-identity small {
   color: var(--muted);
 }
-.app .wf-sync-account,
-.app .wf-store-row {
-  border-bottom-color: var(--line);
-}
 .app .wf-sync-account {
   gap: 12px;
   margin-bottom: 8px;
@@ -96,12 +92,8 @@
   font-size: 13px;
   font-weight: 700;
 }
-.app .wf-account-confirm,
-.app .wf-tag-picker {
-  border-color: var(--line);
-  border-radius: 12px;
-}
 .app .wf-account-confirm {
+  border-radius: 12px;
   background: var(--bad-1);
   border: 1px solid color-mix(in oklab, var(--negative) 35%, transparent);
   animation: calm-fade-up 0.3s var(--ease);

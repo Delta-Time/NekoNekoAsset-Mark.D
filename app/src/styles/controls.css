@@ -348,9 +348,6 @@
 .app .callout.error {
   background: var(--bad-1);
 }
-.app .callout.success {
-  background: var(--ok-1);
-}
 .app .data-list {
   border: 1px solid var(--line);
   border-radius: 12px;
