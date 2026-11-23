@@ -47,7 +47,12 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "template": "windows/installer.nsi"
+      }
+    }
   },
   "plugins": {
     "updater": {
