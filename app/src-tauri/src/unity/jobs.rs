@@ -4,6 +4,7 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 const KIND: &str = "unity_request";
@@ -34,6 +35,41 @@ pub struct RequestRecord {
 
 fn terminal(phase: &str) -> bool {
     matches!(phase, "completed" | "cancelled" | "failed" | "interrupted")
+}
+
+/// The Editor took the connection but sent no answer: its main thread is busy, not gone.
+/// Any reply, even an invalid or unauthorized one, is not this.
+pub(super) fn no_answer(error: &str) -> bool {
+    matches!(
+        error.split(':').next(),
+        Some("UNITY_TIMEOUT" | "UNITY_NO_RESPONSE")
+    )
+}
+
+/// Applied, skipped and failed files as the Bridge's review counts them: a result whose path
+/// holds other results is a folder, and a loose file's `.meta` goes with its file.
+fn file_counts(results: &[Value]) -> Value {
+    let paths: Vec<String> = results
+        .iter()
+        .map(|result| result["path"].as_str().unwrap_or_default().to_lowercase())
+        .collect();
+    let folders: HashSet<&str> = paths
+        .iter()
+        .flat_map(|path| path.match_indices('/').map(|(end, _)| &path[..end]))
+        .collect();
+    let count = |state: &str| {
+        results
+            .iter()
+            .zip(&paths)
+            .filter(|(result, path)| {
+                result["state"] == state
+                    && !path.is_empty()
+                    && !path.ends_with(".meta")
+                    && !folders.contains(path.as_str())
+            })
+            .count()
+    };
+    json!({"applied":count("applied"),"skipped":count("skipped"),"failed":count("failed")})
 }
 
 impl RequestRecord {
@@ -176,6 +212,15 @@ impl RequestRecord {
             && self.created_at == other.created_at
     }
 
+    /// Writing or refreshing holds Unity's main thread, and Bridges before 0.4.0 then answer
+    /// nothing: the request keeps its last stage instead of turning unresolved.
+    pub(super) fn keeps_stage_without_answer(&self, error: &str) -> bool {
+        matches!(
+            self.phase.as_str(),
+            "importing" | "refreshing" | "compiling"
+        ) && no_answer(error)
+    }
+
     pub(super) fn presented_phase(&self) -> &str {
         // Older v1 Bridges may still wait for compilation after applying the files.
         // Keep that request active without presenting compiler state as importer work.
@@ -249,7 +294,7 @@ impl RequestRecord {
             "unityVersion":self.unity_version, "targetInstanceId":self.instance_id,
             "state":state, "stage":self.presented_phase(),
             "writesStarted":receipt["writesStarted"].as_bool().unwrap_or(false),
-            "resultCounts":{"applied":count("applied"),"skipped":count("skipped"),"failed":failed},
+            "resultCounts":file_counts(results.map_or(&[][..], Vec::as_slice)),
             "errorCode":error,
             "createdAt":self.created_at,"updatedAt":self.updated_at
         });

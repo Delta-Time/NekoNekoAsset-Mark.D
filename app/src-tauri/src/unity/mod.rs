@@ -49,9 +49,15 @@ fn now() -> String {
 fn emit(app: &tauri::AppHandle) {
     let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
 }
+/// The code a job records for a failure.
 fn error_code(error: anyhow::Error) -> String {
     let text = error.to_string();
     let code = text.split(':').next().unwrap_or("");
+    // A listener that closed unanswered reads as a timeout: the request may still run, and
+    // UNITY_NO_RESPONSE's text asks to retry the native-import click.
+    if code == "UNITY_NO_RESPONSE" {
+        return "UNITY_TIMEOUT".into();
+    }
     if code.len() <= 80
         && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && (code.starts_with("UNITY_")
@@ -67,6 +73,15 @@ fn error_code(error: anyhow::Error) -> String {
 }
 fn terminal(phase: &str) -> bool {
     matches!(phase, "completed" | "cancelled" | "failed" | "interrupted")
+}
+/// Whether Unity's own importer reads this package; anything unreadable takes the Bridge.
+async fn native_header(path: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let mut header = Vec::with_capacity(1024);
+    file.take(1024).read_to_end(&mut header).await.is_ok() && wire::native_import_reads(&header)
 }
 /// Unity's importer takes an ordinary path, not the verbatim form of canonical roots.
 fn plain_path(path: &str) -> String {
@@ -241,6 +256,10 @@ impl UnityService {
             } else {
                 None
             };
+            let path = match path {
+                Some(path) if native_header(&path).await => Some(path),
+                _ => None,
+            };
             if let Some(path) = path {
                 // The App holds the foreground after the click; let Unity show its window.
                 #[cfg(windows)]
@@ -350,7 +369,11 @@ impl UnityService {
         if !record.bytes_started {
             return details(&record);
         }
-        self.query_once(app, &job_id, cancel).await?;
+        if let Err(error) = self.query_once(app, &job_id, cancel).await {
+            if !record.keeps_stage_without_answer(&error.to_string()) {
+                return Err(error);
+            }
+        }
         details(
             &self
                 .requests
@@ -621,10 +644,15 @@ impl UnityService {
             } else {
                 wire::status(&registry, &identity(&record)).await
             };
-            if let Ok(response) = response {
-                if response.receipt.is_some() {
+            match response {
+                Ok(response) if response.receipt.is_some() => {
                     return self.apply_response(app, id, response).await;
                 }
+                // Connected but unanswered: the Editor is busy, and its stale heartbeat would
+                // only make discovery report it gone. Any reply that is not this request's,
+                // as from another Editor on a reused port, goes through discovery.
+                Err(error) if jobs::no_answer(&error.to_string()) => return Err(error),
+                _ => {}
             }
         }
         let editors = discovery::discover(&self.registry_dir).await?;
@@ -675,7 +703,9 @@ impl UnityService {
                     .get(&id)
                     .is_some_and(|flag| flag.load(Ordering::Acquire));
                 if let Err(error) = service.query_once(&app, &id, cancel).await {
-                    let _ = service.record_failure(&app, &id, error).await;
+                    if !record.keeps_stage_without_answer(&error.to_string()) {
+                        let _ = service.record_failure(&app, &id, error).await;
+                    }
                 }
                 drop(work);
                 tokio::time::sleep(Duration::from_secs(if record.phase == "unresolved" {
@@ -762,5 +792,17 @@ mod tests {
         );
         receipt.results.clear();
         validate_result_entries(&manifest, &receipt).unwrap();
+    }
+
+    #[test]
+    fn a_job_records_an_unanswered_query_as_a_timeout() {
+        assert_eq!(
+            error_code(anyhow::anyhow!("UNITY_NO_RESPONSE")),
+            "UNITY_TIMEOUT"
+        );
+        assert_eq!(
+            error_code(anyhow::anyhow!("UNITY_INVALID_RESPONSE")),
+            "UNITY_INVALID_RESPONSE"
+        );
     }
 }

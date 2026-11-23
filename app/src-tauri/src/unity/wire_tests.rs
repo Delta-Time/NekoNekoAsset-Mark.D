@@ -63,6 +63,20 @@ async fn framing_rejects_zero_oversize_invalid_utf8_and_truncated_json() {
     }
 }
 
+#[tokio::test]
+async fn a_listener_closing_before_its_reply_did_not_answer() {
+    let (writer, mut reader) = tokio::io::duplex(64);
+    drop(writer);
+    let error = read_frame(&mut reader).await.err().unwrap();
+    assert_eq!(error.to_string(), "UNITY_NO_RESPONSE");
+    // A reply cut short still came from someone: it is invalid, not unanswered.
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    writer.write_all(&[9, 0]).await.unwrap();
+    writer.shutdown().await.unwrap();
+    let error = read_frame(&mut reader).await.err().unwrap();
+    assert_eq!(error.to_string(), "UNITY_INVALID_RESPONSE");
+}
+
 #[test]
 fn encoded_response_preserves_absent_preparation_counters() {
     let registry = registry(9000);
@@ -322,4 +336,54 @@ async fn changed_snapshot_hash_never_returns_a_staged_ack() {
     tokio::fs::remove_file(path).await.unwrap();
     assert_eq!(result.err().unwrap().to_string(), "UNITY_SOURCE_CHANGED");
     task.await.unwrap();
+}
+
+#[test]
+fn native_import_skips_packages_whose_gzip_name_unity_reads_as_another_archive() {
+    let named = |flags: u8, extra: &[u8], name: &[u8]| -> Vec<u8> {
+        let mut header = vec![0x1f, 0x8b, 8, flags, 0, 0, 0, 0, 0, 0xff];
+        header.extend_from_slice(extra);
+        header.extend_from_slice(name);
+        header
+    };
+    // Unity's exporter, other tar names and no name at all open in Unity's own window.
+    let read: [&[u8]; 5] = [
+        b"archtemp.tar\0",
+        b"Outfit.tar\0",
+        b"OUTFIT.TAR\0",
+        b"Outfit\0",
+        b"Outfit.unitypackage.tar\0",
+    ];
+    for name in read {
+        assert!(native_import_reads(&named(8, &[], name)), "{name:?}");
+    }
+    assert!(native_import_reads(&named(0, &[], b"")));
+    // Any other extension makes Unity 2022.3 import nothing, so those take the Bridge.
+    let skipped: [&[u8]; 6] = [
+        b"Outfit.unitypackage\0",
+        b"OUTFIT.UNITYPACKAGE\0",
+        b"Outfit.tar.gz\0",
+        b"Outfit.tgz\0",
+        b"Outfit.zip\0",
+        b"Outfit.bin\0",
+    ];
+    for name in skipped {
+        assert!(!native_import_reads(&named(8, &[], name)), "{name:?}");
+    }
+    assert!(!native_import_reads(&named(
+        0x0c,
+        &[2, 0, 7, 7],
+        b"Outfit.unitypackage\0"
+    )));
+    assert!(native_import_reads(&named(
+        0x0c,
+        &[2, 0, 7, 7],
+        b"archtemp.tar\0"
+    )));
+    // Not gzip, cut short, or a name without its end: the Bridge reads and reports it.
+    let unterminated = named(8, &[], b"archtemp.tar");
+    let unread: [&[u8]; 3] = [b"PK\x03\x04", &[0x1f, 0x8b, 8, 0], &unterminated];
+    for header in unread {
+        assert!(!native_import_reads(header));
+    }
 }

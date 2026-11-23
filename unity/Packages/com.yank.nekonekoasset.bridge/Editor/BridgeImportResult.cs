@@ -30,12 +30,28 @@ namespace NekoNekoAsset.Bridge
         {
             if (Application.isBatchMode) return;
             string requestId = SessionState.GetString(PendingImportResultKey, "");
-            if (Requests.TryGetValue(requestId, out StoredBridgeRequest request)
+            if (TryGetRequest(requestId, out StoredBridgeRequest request)
                 && request.receipt.sessionId == registry.sessionId) ShowImportResult(request);
         }
 
         internal static StoredBridgeRequest ImportResultRequest(string requestId)
-            => Requests.TryGetValue(requestId, out StoredBridgeRequest request) ? request : null;
+            => TryGetRequest(requestId, out StoredBridgeRequest request) ? request : null;
+
+        // Applied, skipped and failed files as the review counts them: a result whose path holds
+        // other results is a folder, and a loose file's .meta goes with its file. The App agrees.
+        internal static int[] FileCounts(List<BridgeFileResult> results)
+        {
+            var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BridgeFileResult result in results)
+                for (int separator = (result.path ?? "").IndexOf('/'); separator >= 0; separator = result.path.IndexOf('/', separator + 1))
+                    folders.Add(result.path.Substring(0, separator));
+            var counts = new int[3];
+            foreach (BridgeFileResult result in results)
+                if (!string.IsNullOrEmpty(result.path) && !folders.Contains(result.path)
+                    && !result.path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                    counts[result.state == "applied" ? 0 : result.state == "skipped" ? 1 : 2]++;
+            return counts;
+        }
 
         // Only new, owned targets are eligible. Overwritten preexisting targets are
         // intentionally retained. Asset/meta hashes guard all subsequent edits.
@@ -91,6 +107,7 @@ namespace NekoNekoAsset.Bridge
         private BridgeLocalization labels;
         private Vector2 scroll;
         private string cleanupSummary;
+        private int[] counts;
         internal static void Show(StoredBridgeRequest request, string locale)
         {
             var window = CreateInstance<BridgeImportResultWindow>();
@@ -98,37 +115,52 @@ namespace NekoNekoAsset.Bridge
             window.locale = locale;
             window.labels = new BridgeLocalization(locale);
             window.titleContent = new GUIContent(window.labels.Text("resultTitle"));
-            window.minSize = new Vector2(440, 280);
+            if (Succeeded(request))
+            {
+                // A success needs no path list: its counts and the way to the imported files.
+                window.minSize = new Vector2(360, 76);
+                Rect main = EditorGUIUtility.GetMainWindowPosition();
+                window.position = new Rect(main.x + (main.width - 420f) * .5f, main.y + (main.height - 96f) * .5f, 420f, 96f);
+            }
+            else window.minSize = new Vector2(440, 280);
             window.ShowUtility();
         }
+
+        private static bool Succeeded(StoredBridgeRequest request)
+            => request.receipt.stage == "completed" && !request.receipt.results.Any(result => result.state == "failed");
+
         private void OnEnable()
         {
             labels = new BridgeLocalization(locale);
         }
+
         private void OnGUI()
         {
             if (request == null || labels == null) return;
-            request = BridgeRuntime.ImportResultRequest(request.receipt.requestId) ?? request;
-            GUILayout.Label(labels.Text(request.receipt.stage == "completed" ? "completed" : "failed"), EditorStyles.boldLabel);
-            int applied = request.receipt.results.Count(result => result.state == "applied");
-            int failed = request.receipt.results.Count(result => result.state == "failed");
-            int skipped = request.receipt.results.Count(result => result.state == "skipped");
-            GUILayout.Label(labels.Format("resultCounts", applied, skipped, failed));
-            if (!string.IsNullOrEmpty(request.receipt.error)
-                && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(request.receipt.error)))
-                EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
-            scroll = EditorGUILayout.BeginScrollView(scroll);
-            foreach (BridgeFileResult result in request.receipt.results)
+            if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Escape)
             {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    EditorGUILayout.SelectableLabel(result.path, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-                    GUILayout.Label(labels.Text(result.state), GUILayout.Width(65));
-                }
-                if (!string.IsNullOrEmpty(result.message)) GUILayout.Label(result.message, EditorStyles.wordWrappedMiniLabel);
+                Event.current.Use();
+                Close();
+                GUIUtility.ExitGUI();
             }
-            EditorGUILayout.EndScrollView();
-            if (!string.IsNullOrEmpty(cleanupSummary)) GUILayout.Label(cleanupSummary, EditorStyles.wordWrappedMiniLabel);
+            request = BridgeRuntime.ImportResultRequest(request.receipt.requestId) ?? request;
+            if (counts == null) counts = BridgeRuntime.FileCounts(request.receipt.results);
+            int applied = counts[0], skipped = counts[1], failed = counts[2];
+            bool succeeded = Succeeded(request);
+            GUILayout.Label(labels.Text(succeeded ? "completed" : applied > 0 ? "partlyImported" : "failed"), EditorStyles.boldLabel);
+            GUILayout.Label(labels.Format("resultCounts", applied, skipped, failed));
+            if (succeeded) GUILayout.FlexibleSpace();
+            else
+            {
+                if (!string.IsNullOrEmpty(request.receipt.error)
+                    && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(request.receipt.error)))
+                    EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
+                scroll = EditorGUILayout.BeginScrollView(scroll);
+                foreach (BridgeFileResult result in request.receipt.results) if (result.state == "failed") DrawResult(result);
+                foreach (BridgeFileResult result in request.receipt.results) if (result.state != "failed") DrawResult(result);
+                EditorGUILayout.EndScrollView();
+                if (!string.IsNullOrEmpty(cleanupSummary)) GUILayout.Label(cleanupSummary, EditorStyles.wordWrappedMiniLabel);
+            }
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (request.receipt.stage != "completed" && request.ownedWrites != null && request.ownedWrites.Count > 0 && !request.cleanupDone)
@@ -139,8 +171,44 @@ namespace NekoNekoAsset.Bridge
                         cleanupSummary = labels.Format("cleanupCounts", counts[0], counts[1]);
                     }
                 GUILayout.FlexibleSpace();
+                if (applied + skipped > 0 && GUILayout.Button(labels.Text("showInProject"))) ShowInProject();
                 if (GUILayout.Button(labels.Text("close"))) Close();
             }
+        }
+
+        private void DrawResult(BridgeFileResult result)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.SelectableLabel(result.path, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+                GUILayout.Label(labels.Text(result.state), GUILayout.Width(65));
+            }
+            if (!string.IsNullOrEmpty(result.message)) GUILayout.Label(result.message, EditorStyles.wordWrappedMiniLabel);
+        }
+
+        // Highlights the deepest folder holding everything imported, or else each top-level item.
+        private void ShowInProject()
+        {
+            List<string[]> paths = request.receipt.results
+                .Where(result => result.state != "failed" && !string.IsNullOrEmpty(result.path)
+                    && !result.path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                .Select(result => result.path.Split('/')).ToList();
+            if (paths.Count == 0) return;
+            int common = paths[0].Length;
+            foreach (string[] path in paths)
+            {
+                int same = 0;
+                while (same < common && same < path.Length && path[same] == paths[0][same]) same++;
+                common = same;
+            }
+            IEnumerable<string> targets = common >= 2 ? new[] { string.Join("/", paths[0].Take(common)) }
+                : paths.Select(path => string.Join("/", path.Take(Math.Min(2, path.Length)))).Distinct();
+            UnityEngine.Object[] found = targets.Select(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>)
+                .Where(target => target != null).ToArray();
+            if (found.Length == 0) return;
+            Selection.objects = found;
+            EditorUtility.FocusProjectWindow();
+            EditorGUIUtility.PingObject(found[0]);
         }
     }
 }

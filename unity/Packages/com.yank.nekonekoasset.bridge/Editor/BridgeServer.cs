@@ -91,6 +91,7 @@ namespace NekoNekoAsset.Bridge
                                 output.Write(buffer, 0, count);
                                 hash.TransformBlock(buffer, 0, count, null, 0);
                                 remaining -= count;
+                                Interlocked.Add(ref submission.Request.receivedBytes, count);
                             }
                             hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
                             if (!string.Equals(BridgeFiles.Hex(hash.Hash), entry.sha256, StringComparison.Ordinal))

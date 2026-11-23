@@ -28,6 +28,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		// by the importer when the checked state changes.
 		public bool HasCheckedGuidConflict;
 		public bool HasCheckedPathConflict;
+		public bool HasCheckedBlocked;
 
 		// True when this node (or any checked descendant, for folders) is an Update:
 		// the incoming asset overwrites an existing asset at the same path/GUID.
@@ -323,7 +324,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 					else
 					{
 						if (!string.Equals(node.FullPath, accum, StringComparison.Ordinal))
-							throw new InvalidDataException("Case-colliding package paths: " + node.FullPath + " and " + accum);
+							throw new InvalidDataException("Case-colliding package paths: " + node.FullPath + ", " + accum);
 						if (!isEntryNode && !node.IsFolder)
 							throw new InvalidDataException("A package file is also used as a directory: " + accum);
 						if (isEntryNode && node.HasPackageEntry)

@@ -448,3 +448,51 @@ fn presented_receipts_read_as_the_typed_receipt() {
         |_| vec![],
     );
 }
+
+#[test]
+fn activity_counts_files_like_the_review() {
+    let mut r = record();
+    freeze(&mut r);
+    r.phase = "completed".into();
+    r.receipt = Some(receipt(&r, "completed"));
+    r.receipt.as_mut().unwrap()["results"] = json!([
+        {"entryId":"p","path":"Assets/Pack","state":"applied","message":null},
+        {"entryId":"p","path":"Assets/pack/a.png","state":"applied","message":null},
+        {"entryId":"p","path":"Assets/Pack/Empty","state":"skipped","message":null},
+        {"entryId":"l","path":"Assets/Loose/b.txt","state":"applied","message":null},
+        {"entryId":"m","path":"Assets/Loose/b.txt.meta","state":"applied","message":null}
+    ]);
+    assert_eq!(
+        r.job()["resultCounts"],
+        json!({"applied":2,"skipped":1,"failed":0})
+    );
+    assert_eq!(r.job()["state"], "completed");
+    // A failed folder entry is not a file, but the request still needs a look.
+    r.receipt.as_mut().unwrap()["results"][0]["state"] = json!("failed");
+    assert_eq!(r.job()["resultCounts"]["failed"], 0);
+    assert_eq!(r.job()["state"], "needsAction");
+    assert_eq!(r.job()["errorCode"], "unity_partial_failure");
+}
+
+#[test]
+fn an_unanswered_query_keeps_writing_stages_only() {
+    let mut request = record();
+    for (phase, error, keeps) in [
+        ("importing", "UNITY_TIMEOUT", true),
+        ("refreshing", "UNITY_NO_RESPONSE", true),
+        ("compiling", "UNITY_TIMEOUT", true),
+        ("importing", "UNITY_UNAVAILABLE", false),
+        // A reply that fails validation came from someone: discovery decides.
+        ("importing", "UNITY_INVALID_RESPONSE", false),
+        ("waitingForUser", "UNITY_TIMEOUT", false),
+        ("preparing", "UNITY_NO_RESPONSE", false),
+        ("unresolved", "UNITY_TIMEOUT", false),
+    ] {
+        request.phase = phase.into();
+        assert_eq!(
+            request.keeps_stage_without_answer(error),
+            keeps,
+            "{phase} {error}"
+        );
+    }
+}

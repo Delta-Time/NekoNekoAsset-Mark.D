@@ -15,9 +15,11 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 
 		// Read path/GUID metadata and stream asset fingerprints. For received packages,
 		// verify the compressed bytes during this same scan rather than reading them twice.
+		// With a payload directory, the same pass also writes every member there for the importer.
 		public static List<UnityPackageEntry> ReadMetadata(string filePath, string expectedArchiveHash = null,
-			Action<long> progress = null, Func<bool> cancelled = null)
+			Action<long> progress = null, Func<bool> cancelled = null, string payloadDirectory = null)
 		{
+			if (payloadDirectory != null) Directory.CreateDirectory(payloadDirectory);
 			var map = new Dictionary<string, UnityPackageEntry>(StringComparer.OrdinalIgnoreCase);
 			var ordered = new List<UnityPackageEntry>();
 			try
@@ -68,6 +70,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 							if (record.HasMetaMember)
 								throw new InvalidDataException("Duplicate asset.meta member for GUID " + guid);
 							byte[] meta = reader.ReadEntryBytes(MaxMetaBytes);
+							if (payloadDirectory != null)
+								using (var output = new FileStream(Path.Combine(payloadDirectory, guid + ".meta.payload"), FileMode.CreateNew, FileAccess.Write, FileShare.None))
+									output.Write(meta, 0, meta.Length);
 							record.HasMetaMember = true;
 							record.MetaGuid = GuidUtility.ExtractGuidFromMeta(meta);
 							record.IsFolder = GuidUtility.MetaDeclaresFolder(meta);
@@ -79,7 +84,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 								throw new InvalidDataException("Duplicate asset member for GUID " + guid);
 							record.HasAssetMember = true;
 							record.Size = entry.Size;
-							record.AssetHash = reader.ReadEntrySha256();
+							if (payloadDirectory == null) record.AssetHash = reader.ReadEntrySha256();
+							else using (var output = new FileStream(Path.Combine(payloadDirectory, guid + ".asset.payload"), FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024))
+								record.AssetHash = reader.CopyEntryTo(output);
 						}
 						else
 						{
@@ -182,10 +189,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                     string path = Path.Combine(stagingDirectory, guid + (isMeta ? ".meta.payload" : ".asset.payload"));
                     string hash;
                     using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    {
                         hash = reader.CopyEntryTo(output, isMeta ? MaxMetaBytes : long.MaxValue);
-                        output.Flush(true);
-                    }
                     if (isMeta) { payload.MetaPath = path; payload.MetaHash = hash; }
                     else { payload.AssetPath = path; payload.AssetHash = hash; payload.AssetSize = entry.Size; }
                 }

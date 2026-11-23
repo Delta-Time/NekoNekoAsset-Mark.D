@@ -299,7 +299,12 @@ async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(writer: &mut W, value:
 
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<BridgeResponse> {
     let mut prefix = [0; 4];
-    read_bytes(reader, &mut prefix).await?;
+    // A listener that closes before its first reply byte took the request but never answered:
+    // an Editor whose main thread stayed busy. A reply cut short is an invalid response.
+    if idle_read(reader, &mut prefix[..1]).await? == 0 {
+        return Err(anyhow!("UNITY_NO_RESPONSE"));
+    }
+    read_bytes(reader, &mut prefix[1..]).await?;
     let size = u32::from_le_bytes(prefix) as usize;
     if size == 0 || size > MAX_CONTROL_BYTES {
         return Err(anyhow!("UNITY_INVALID_RESPONSE"));
@@ -456,6 +461,39 @@ pub async fn hello(registry: &Registry) -> Result<LiveEditor> {
         bridge_version: response.bridge_version,
         busy: response.busy,
     })
+}
+
+/// Whether Unity's own importer reads a package that starts with these bytes. Unity 2022.3
+/// imports nothing, and reports no error, when the gzip header stores a file name with an
+/// extension other than `.tar` (`.unitypackage`, `.gz`, as some packers write). Unity's own
+/// exporter stores `archtemp.tar`.
+pub fn native_import_reads(header: &[u8]) -> bool {
+    let [0x1f, 0x8b, 8, flags, ..] = header else {
+        return false;
+    };
+    if flags & 0x08 == 0 {
+        return header.len() >= 10;
+    }
+    let start = if flags & 0x04 == 0 {
+        10
+    } else {
+        match header.get(10..12) {
+            Some(&[low, high]) => 12 + usize::from(u16::from_le_bytes([low, high])),
+            _ => return false,
+        }
+    };
+    let Some(name) = header.get(start..).and_then(|rest| {
+        rest.iter()
+            .position(|&byte| byte == 0)
+            .map(|end| rest[..end].to_ascii_lowercase())
+    }) else {
+        return false;
+    };
+    let base = name
+        .rsplit(|&byte| byte == b'/' || byte == b'\\')
+        .next()
+        .unwrap_or_default();
+    base.ends_with(b".tar") || !base.contains(&b'.')
 }
 
 /// Opens one App-managed unitypackage in Unity's own Import Unity Package window.

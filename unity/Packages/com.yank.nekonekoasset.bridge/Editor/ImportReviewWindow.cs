@@ -45,6 +45,8 @@ namespace NekoNekoAsset.Bridge
         private bool hasLooseFiles;
         private int importerCheckVersion;
         private PackageAssetNode importerHighlightNode;
+        private double shownAt;
+        private bool interacted;
 
         public static ImportReviewWindow Show(
             IReadOnlyList<LoadedPackage> packages,
@@ -98,6 +100,7 @@ namespace NekoNekoAsset.Bridge
             else window.RefreshImporterConflictPreview(true);
             // A utility review window keeps cancellation/status available to the receiver.
             // The nested conflict window is modal only while a choice is being reviewed.
+            window.shownAt = EditorApplication.timeSinceStartup;
             window.ShowUtility();
             return window;
         }
@@ -129,6 +132,11 @@ namespace NekoNekoAsset.Bridge
 
         private string L(string key) => (localization ?? (localization = new BridgeLocalization("en"))).Text(key);
 
+        // Arrows only: letters, Space, Tab, Enter and the character events Unity sends with
+        // KeyCode.None can all be typing meant for another field.
+        private static bool NavigationKey(KeyCode key) => key == KeyCode.UpArrow || key == KeyCode.DownArrow
+            || key == KeyCode.LeftArrow || key == KeyCode.RightArrow;
+
         private void OnGUI()
         {
             bool commitDestinationOnReturn = Event.current.type == EventType.KeyDown
@@ -144,6 +152,22 @@ namespace NekoNekoAsset.Bridge
                 CancelPending();
                 GUIUtility.ExitGUI();
                 return;
+            }
+            // This window takes focus when preparation ends: typing meant for another field (letters, a
+            // double or held Enter) must not import unreviewed files, so Enter counts only after a click,
+            // scroll or arrow key here.
+            if ((Event.current.type == EventType.MouseDown || Event.current.type == EventType.ScrollWheel
+                    || (Event.current.type == EventType.KeyDown && NavigationKey(Event.current.keyCode)))
+                && EditorApplication.timeSinceStartup - shownAt > .5) interacted = true;
+            // Enter imports unless a path field has the keyboard.
+            if (commitDestinationOnReturn && interacted && !destinationEditing && !destinationFocused && !EditorGUIUtility.editingTextField)
+            {
+                Event.current.Use();
+                if (CanImport())
+                {
+                    ConfirmSelection();
+                    if (completed) GUIUtility.ExitGUI();
+                }
             }
             // Loose rows keep the same shape when their destination changes. Commit
             // before an outside click so that click focuses the current source nodes.
@@ -162,16 +186,23 @@ namespace NekoNekoAsset.Bridge
                     using (new EditorGUILayout.VerticalScope(hasLooseFiles
                         ? GUILayout.Width((position.width - 14f) * .5f) : GUILayout.ExpandWidth(true)))
                     {
-                        GUILayout.Label(".unitypackage", EditorStyles.boldLabel);
+                        // Column headings only tell the two kinds apart when both arrived.
+                        if (hasLooseFiles) GUILayout.Label(".unitypackage", EditorStyles.boldLabel);
                         importerScroll = EditorGUILayout.BeginScrollView(importerScroll);
                         foreach (LoadedPackage package in loadedPackages)
                             if (!package.IsLooseFiles) DrawPackageCard(package);
                         EditorGUILayout.EndScrollView();
+                        if (Event.current.type == EventType.Repaint)
+                        {
+                            float height = GUILayoutUtility.GetLastRect().height;
+                            // Rows were sliced with the previous height; a resized view repaints to fill in.
+                            if (Mathf.Abs(height - importerViewHeight) >= 1f) { importerViewHeight = height; Repaint(); }
+                        }
                     }
                 if (hasLooseFiles)
                     using (new EditorGUILayout.VerticalScope())
                     {
-                        GUILayout.Label(L("looseFiles"), EditorStyles.boldLabel);
+                        if (hasPackages) GUILayout.Label(L("looseFiles"), EditorStyles.boldLabel);
                         using (new EditorGUILayout.HorizontalScope())
                         {
                             bool unified = GUILayout.Toggle(!individualDestinations, L("unified"), EditorStyles.radioButton);
@@ -386,6 +417,24 @@ namespace NekoNekoAsset.Bridge
             => ProjectPackagePath.TryNormalize(candidate, out string normalized, out _)
                 && (normalized == "Assets" || normalized.StartsWith("Assets/", StringComparison.Ordinal));
 
+        private bool CanImport()
+        {
+            int selected = 0;
+            foreach (LoadedPackage package in loadedPackages)
+            {
+                EnsurePackageTally(package);
+                selected += package.SelectedCount;
+            }
+            return selected > 0 && !confirming && !importBlocked && !PreviewPending;
+        }
+
+        private string Errors(List<string> errors)
+        {
+            var lines = new string[errors.Count];
+            for (int i = 0; i < errors.Count; i++) lines[i] = localization.Message(errors[i]);
+            return string.Join("\n", lines);
+        }
+
         private void DrawFooter()
         {
             int selected = 0, total = 0;
@@ -467,7 +516,7 @@ namespace NekoNekoAsset.Bridge
                 if (!plan.CanApply)
                 {
                     importBlocked = true;
-                    error = string.Join("\n", plan.Errors);
+                    error = Errors(plan.Errors);
                     return;
                 }
                 if (plan.OrderedItems.Count == 0)
