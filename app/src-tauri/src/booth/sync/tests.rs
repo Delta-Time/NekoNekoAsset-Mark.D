@@ -422,6 +422,80 @@ fn selected_update_cannot_recreate_a_removed_accounts_grants() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+#[test]
+fn a_downloads_follow_up_update_leaves_the_files_it_verified_verified() {
+    let path =
+        std::env::temp_dir().join(format!("nna-booth-keep-verified-{}", uuid::Uuid::new_v4()));
+    let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
+    let service = BoothService::new(catalogue.clone()).unwrap();
+    let account = "synthetic-account";
+    catalogue
+        .put("account", account, json!({"id":account,"store":"BOOTH"}))
+        .unwrap();
+    let file = |id: &str, name: &str| parser::File {
+        id: id.into(),
+        variant_id: Some("800001".into()),
+        name: Some(name.into()),
+        size_bytes: None,
+        source_url: format!("https://booth.pm/downloadables/{id}?variation_id=800001"),
+        revision: "unknown".into(),
+        format: None,
+    };
+    let row = parser::Row {
+        source_record_id: "purchase:synthetic-variant".into(),
+        product_id: Some("900001".into()),
+        order_id: Some("910001".into()),
+        name: Some("Synthetic source title".into()),
+        manifest_complete: true,
+        product_line_total_jpy: Some(100),
+        acquired_date_text: Some("2026/10/11 09:30".into()),
+        files: vec![file("700001", "kept.zip"), file("700002", "added.zip")],
+        ..Default::default()
+    };
+    let (kept, added) = (
+        "synthetic-account:700001:800001",
+        "synthetic-account:700002:800001",
+    );
+    // The download verified the file before its store refused a sibling.
+    catalogue.put("remote_file",kept,json!({"id":kept,"productId":"900001","accountId":account,"sourceFileId":"700001","variantId":"800001","name":"kept.zip","sizeBytes":10,"revision":"sha256:verified","revisionBasis":"contentHash","requiresContentVerification":false})).unwrap();
+    let entry = ProductPublication {
+        account: account.into(),
+        source: "purchase".into(),
+        product: "900001".into(),
+        rows: vec![row.clone()],
+        routes: BTreeMap::from([(row.source_record_id.clone(), "/orders/910001".into())]),
+        draft: json!({"id":"900001","store":"BOOTH","title":"Synthetic source title","publicMetadataState":"complete"}),
+        files: BTreeSet::from([kept.to_owned(), added.to_owned()]),
+        checkpoint_key: "authored-source".into(),
+        force_verify: true,
+        needs_enrichment: false,
+    };
+    // The download's follow-up keeps it verified; an Update the user asks for still verifies.
+    for (keep, verify) in [(true, false), (false, true)] {
+        let id = format!("authored-update-{keep}");
+        let job = json!({"id":id,"type":"boothUpdate","accountId":account,"state":"running","args":{"accountId":account,"productIds":["900001"],"keepVerified":keep}});
+        catalogue.put("job", &id, job.clone()).unwrap();
+        let mut checkpoints = BTreeMap::from([(
+            "authored-source".to_owned(),
+            Checkpoint::fresh(account, "purchase", "selected").unwrap(),
+        )]);
+        service
+            .commit_product_group_mode(&job, "900001", &[entry.clone()], &mut checkpoints, true)
+            .unwrap();
+        let saved = catalogue.get("remote_file", kept).unwrap().unwrap();
+        assert_eq!(saved["revision"], "sha256:verified");
+        assert_eq!(saved["requiresContentVerification"], verify);
+        // A file the update finds is verified by its download either way.
+        assert_eq!(
+            catalogue.get("remote_file", added).unwrap().unwrap()["requiresContentVerification"],
+            true
+        );
+    }
+    drop(service);
+    drop(catalogue);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[tokio::test]
 async fn source_diagnostics_keep_checked_journal_reasons_and_changed_head() {
     let page = parser::Page {

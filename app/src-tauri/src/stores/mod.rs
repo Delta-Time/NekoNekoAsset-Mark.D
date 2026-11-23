@@ -527,6 +527,10 @@ impl StoreService {
                 if let Some(scope) = args.get("accountId") {
                     provider_args["accountId"] = scope.clone();
                 }
+                // Only a BOOTH update can keep a verified file as it is.
+                if provider == StoreProvider::Booth && args["keepVerified"] == true {
+                    provider_args["keepVerified"] = json!(true);
+                }
                 let result = match provider {
                     StoreProvider::Booth => self.booth.command(app, action, provider_args).await?,
                     StoreProvider::Gumroad => {

@@ -34,6 +34,9 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
 /// Startup queues these again: a download restarts only its unfinished file and a
 /// local import only its uncopied ones, so an App update need not wait for them.
 pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
+/// A queued download whose store refused a file, waiting for that store's list to be read
+/// again; its product stays in progress meanwhile.
+const STORE_UPDATE: &str = "storeUpdate";
 
 use crate::{catalogue::Catalogue, stores::StoreService};
 use anyhow::{bail, ensure, Result};
@@ -41,7 +44,7 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     path::{Path, PathBuf},
     sync::{
@@ -641,7 +644,30 @@ impl StorageService {
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
-            let before = job.clone();
+            let mut before = job.clone();
+            if job["stage"] == STORE_UPDATE {
+                if !job["updateJobIds"].is_array() || self.store_update_active(&job)? {
+                    continue;
+                }
+                let fields = job.as_object_mut().unwrap();
+                fields.remove("stage");
+                fields.remove("updateJobIds");
+                // One refused file has nothing left to fetch; a product goes on with its new list.
+                if !job["selectedFileIds"].is_null() {
+                    changed |= self.put_queued_download(
+                        &before,
+                        &mut job,
+                        "needsAction",
+                        Some("store_file_unavailable"),
+                    )?;
+                    continue;
+                }
+                if !self.put_queued_download(&before, &mut job, "queued", None)? {
+                    continue;
+                }
+                changed = true;
+                before = job.clone();
+            }
             if !self.download_has_local_session(&job, &accounts)? {
                 if job["stage"] != "authRequired" || job["errorCode"] != "auth_required" {
                     job["stage"] = json!("authRequired");
@@ -664,6 +690,100 @@ impl StorageService {
             return Ok((Some(job), changed));
         }
         Ok((None, changed))
+    }
+    fn store_update_active(&self, job: &Value) -> Result<bool> {
+        for id in strings(&job["updateJobIds"]) {
+            if self.catalogue.get("job", &id)?.is_some_and(|update| {
+                matches!(update["state"].as_str(), Some("queued" | "running"))
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    /// A file its store refused may have been replaced, so the download goes back to the
+    /// queue, once, until its store's list has been read again. A cancel requested
+    /// meanwhile ends it instead.
+    fn wait_for_store_list(
+        &self,
+        job: &mut Value,
+        result: &Result<()>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        let refused = result
+            .as_ref()
+            .is_err_and(|error| io::stable_error(error) == "store_file_unavailable")
+            || job["failures"].as_object().is_some_and(|failures| {
+                failures
+                    .values()
+                    .any(|failure| failure["errorCode"] == "store_file_unavailable")
+            });
+        if !refused || job["storeUpdated"] == true || cancel.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let id = io::required_string(job, "id")?.to_owned();
+        let Some(before) = self
+            .catalogue
+            .get("job", &id)?
+            .filter(|stored| stored["state"] == "running" && stored["cancelRequested"] != true)
+        else {
+            return Ok(false);
+        };
+        job["stage"] = json!(STORE_UPDATE);
+        job["storeUpdated"] = json!(true);
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.clone(), job.clone())],
+            vec![("job".into(), id, Some(before))],
+        )
+    }
+    /// Once nothing else can download, one update per store reads again the lists of the
+    /// products waiting for one: an update slows its store's transfers to one, and one
+    /// store's busy or signed-out account must not fail another's.
+    async fn start_store_updates(&self, app: &tauri::AppHandle) -> Result<bool> {
+        let waiting: Vec<_> = self
+            .catalogue
+            .queued_jobs(Some("download"), None)?
+            .into_iter()
+            .filter(|job| job["stage"] == STORE_UPDATE && !job["updateJobIds"].is_array())
+            .collect();
+        if waiting.is_empty() {
+            return Ok(false);
+        }
+        let mut stores: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for job in &waiting {
+            let product = job["productId"].as_str().unwrap_or("");
+            // Store product IDs carry their store; BOOTH's are bare numbers.
+            let store = product.split_once(':').map_or("booth", |(store, _)| store);
+            stores.entry(store).or_default().insert(product);
+        }
+        let mut updates = HashMap::new();
+        for products in stores.values() {
+            // The files the download just verified need no second verification.
+            let jobs = self
+                .stores
+                .command(
+                    app,
+                    "update_products",
+                    json!({"productIds":products,"keepVerified":true}),
+                )
+                .await
+                .map_or_else(|_| json!([]), |answer| answer["jobIds"].clone());
+            for product in products {
+                updates.insert(*product, jobs.clone());
+            }
+        }
+        for before in &waiting {
+            let mut job = before.clone();
+            job["updateJobIds"] = updates
+                .get(before["productId"].as_str().unwrap_or(""))
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            self.put_queued_download(before, &mut job, "queued", None)?;
+        }
+        Ok(true)
     }
     /// Held for the App lifetime in the library data folder. Windows denies other
     /// handles' reads of this byte-range lock, so a library move skips it.
@@ -771,6 +891,14 @@ impl StorageService {
                     {
                         service.changed(&app, Some(&id));
                         let result = service.run_download(&app, &mut job, &cancel).await;
+                        if service
+                            .wait_for_store_list(&mut job, &result, &cancel)
+                            .unwrap_or(false)
+                        {
+                            service.changed(&app, Some(&id));
+                            service.cancellations.lock().unwrap().remove(&id);
+                            continue;
+                        }
                         let (state, error) = match &result {
                             Ok(()) => ("completed", None),
                             Err(e) if io::stable_error(e) == "cancelled" => ("cancelled", None),
@@ -811,6 +939,9 @@ impl StorageService {
                     }
                     service.cancellations.lock().unwrap().remove(&id);
                 } else {
+                    if service.start_store_updates(&app).await.unwrap_or(false) {
+                        service.changed(&app, None);
+                    }
                     drop(operation);
                     drop(work);
                     tokio::time::sleep(Duration::from_secs(1)).await;

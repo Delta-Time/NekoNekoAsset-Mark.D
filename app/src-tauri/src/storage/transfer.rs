@@ -581,13 +581,19 @@ impl StorageService {
         io::check_cancel(cancel)?;
         // A failed sibling never discards completed bytes. Extract only after all volumes have arrived.
         let mut error = None;
+        let mut verified = HashSet::new();
         job["failures"] = json!({});
         for (file, result) in results {
-            if let Err(failure) = result {
-                let id = file["id"].as_str().unwrap_or("");
-                job["failures"][id] = json!({"fileId":id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
-                if error.is_none() {
-                    error = Some(failure);
+            let id = file["id"].as_str().unwrap_or("");
+            match result {
+                Ok(()) => {
+                    verified.insert(id.to_owned());
+                }
+                Err(failure) => {
+                    job["failures"][id] = json!({"fileId":id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
+                    if error.is_none() {
+                        error = Some(failure);
+                    }
                 }
             }
         }
@@ -598,27 +604,7 @@ impl StorageService {
         let (all_files, _) = self.remote_files(&product)?;
         let files = self.job_files(job, all_files.clone())?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
-        let mut processed = Vec::new();
-        for before in &attempted_files {
-            let current = files.iter().find(|f| f["id"] == before["id"]);
-            let bound = if let Some(current) = current {
-                self.catalogue
-                    .get("artifact", &artifact_id(current))?
-                    .is_some_and(|a| {
-                        matches!(
-                            a["status"].as_str(),
-                            Some("ready" | "downloaded" | "extractionFailed")
-                        )
-                    })
-            } else {
-                false
-            };
-            processed.push(if bound {
-                current.unwrap().clone()
-            } else {
-                before.clone()
-            });
-        }
+        let processed = self.settled_files(&attempted_files, &files, &verified)?;
         job["manifestFingerprint"] = json!(fingerprint(&processed));
         if processed.len() != files.len() && error.is_none() {
             error = Some(anyhow::anyhow!("manifest_changed"));
@@ -634,6 +620,44 @@ impl StorageService {
         // Catalogue keeps a partial product partial until every required file is Ready.
         job["progress"] = json!(100.0);
         Ok(())
+    }
+
+    /// The list a download settled: each file it attempted, as its current record when an
+    /// artifact holds that revision's bytes, else as attempted. A store read since the job
+    /// verified a file asks for that again, which the job did not do, so the settled record
+    /// stays the verified one and automatic downloads still ask for the new request.
+    pub(super) fn settled_files(
+        &self,
+        attempted: &[Value],
+        files: &[Value],
+        verified: &HashSet<String>,
+    ) -> Result<Vec<Value>> {
+        let mut settled = Vec::new();
+        for before in attempted {
+            let current = files.iter().find(|f| f["id"] == before["id"]);
+            let bound = if let Some(current) = current {
+                self.catalogue
+                    .get("artifact", &artifact_id(current))?
+                    .is_some_and(|a| {
+                        matches!(
+                            a["status"].as_str(),
+                            Some("ready" | "downloaded" | "extractionFailed")
+                        )
+                    })
+            } else {
+                false
+            };
+            settled.push(if bound {
+                let mut current = current.unwrap().clone();
+                if verified.contains(current["id"].as_str().unwrap_or("")) {
+                    current["requiresContentVerification"] = json!(false);
+                }
+                current
+            } else {
+                before.clone()
+            });
+        }
+        Ok(settled)
     }
 
     /// Makes each downloaded file Ready, extracting archives and recording failures on the job.
@@ -844,6 +868,7 @@ impl StorageService {
                         recovered["status"] = json!("downloaded");
                         self.catalogue.put("artifact", &existing_id, recovered)?;
                     }
+                    self.remove_kept_original(root, &root_path, artifact).await;
                     return Ok(());
                 }
             }
@@ -1374,9 +1399,13 @@ impl StorageService {
         if sibling_error.is_some() {
             artifact["errorCode"] = json!("source_tree_incomplete");
         }
-        updates.push(("artifact".into(), final_id, artifact));
+        updates.push(("artifact".into(), final_id, artifact.clone()));
         self.commit_download_records(updates, source_expected)?;
         self.delete_pending_download_record(io::required_string(file, "id")?)?;
+        // Bytes whose extraction stands already go, as extracting them would remove them.
+        if source_tree.is_none() {
+            self.remove_kept_original(root, root_path, &artifact).await;
+        }
         self.changed(app, Some(job_id));
         if let Some(error) = sibling_error {
             return Err(error);
@@ -1807,18 +1836,45 @@ impl StorageService {
             }
         }
         self.catalogue.put_many(group_updates)?;
-        // Every group member is durably ready before any source volume deletion.
-        let group_records = self
-            .catalogue
-            .related("artifact", io::required_string(artifact, "productId")?)?;
-        for source in extracted.source_paths {
+        let product = io::required_string(artifact, "productId")?.to_owned();
+        for record in self
+            .remove_extracted_originals(
+                root,
+                &root_path,
+                &product,
+                &product_directory,
+                extracted.source_paths,
+            )
+            .await?
+        {
+            if record["id"] == id.as_str() {
+                *artifact = record;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the archives an extraction made usable, returning the records it changed.
+    /// A path goes only once every record naming it is Ready and its bytes still match;
+    /// a failed delete leaves usable extracted state and the original available.
+    pub(super) async fn remove_extracted_originals(
+        &self,
+        root: &Value,
+        root_path: &Path,
+        product: &str,
+        product_directory: &str,
+        sources: Vec<PathBuf>,
+    ) -> Result<Vec<Value>> {
+        let group_records = self.catalogue.related("artifact", product)?;
+        let mut changed = Vec::new();
+        for source in sources {
             let records: Vec<_> = group_records
                 .iter()
                 .filter(|&a| {
                     a["rootId"] == root["id"]
                         && a["relativePath"]
                             .as_str()
-                            .and_then(|r| io::safe_join(&root_path, r).ok())
+                            .and_then(|r| io::safe_join(root_path, r).ok())
                             .as_ref()
                             == Some(&source)
                 })
@@ -1844,12 +1900,11 @@ impl StorageService {
                 })
                 .collect();
             self.catalogue.put_many(pending)?;
-            // Deletion failure leaves usable extracted state and the original available.
             let removed = std::fs::remove_file(&source).is_ok();
             if removed {
                 io::remove_empty_parents(
                     source.parent().unwrap(),
-                    &io::safe_join(&root_path, &product_directory)?,
+                    &io::safe_join(root_path, product_directory)?,
                 );
             }
             let mut updates = Vec::new();
@@ -1860,14 +1915,46 @@ impl StorageService {
                     .unwrap()
                     .remove("originalDeletionPending");
                 let peer_id = io::required_string(&record, "id")?.to_owned();
-                updates.push(("artifact".into(), peer_id.clone(), record.clone()));
-                if peer_id == id {
-                    *artifact = record;
-                }
+                updates.push(("artifact".into(), peer_id, record.clone()));
+                changed.push(record);
             }
             self.catalogue.put_many(updates)?;
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    /// An archive still beside its Ready extraction, as a download that reused that
+    /// extraction kept it, goes the way extraction removes one. Failing leaves it.
+    pub(super) async fn remove_kept_original(
+        &self,
+        root: &Value,
+        root_path: &Path,
+        artifact: &Value,
+    ) {
+        if artifact["status"] != "ready"
+            || !artifact["extractedPath"].is_string()
+            || artifact["originalAvailable"] != true
+        {
+            return;
+        }
+        let (Some(product), Some(relative)) = (
+            artifact["productId"].as_str(),
+            artifact["relativePath"].as_str(),
+        ) else {
+            return;
+        };
+        let Some(directory) = artifact["productDirectory"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| self.managed_product_directory(product).ok())
+        else {
+            return;
+        };
+        if let Ok(source) = io::safe_join(root_path, relative) {
+            let _ = self
+                .remove_extracted_originals(root, root_path, product, &directory, vec![source])
+                .await;
+        }
     }
 }
 

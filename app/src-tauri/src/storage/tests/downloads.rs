@@ -1303,3 +1303,113 @@ async fn network_wait_is_cancellable_without_waiting_for_timeout() {
     );
     assert!(start.elapsed() < Duration::from_secs(2));
 }
+
+#[tokio::test]
+async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let c = &f.service.catalogue;
+    let cancel = AtomicBool::new(false);
+    let refused: Result<()> = Err(anyhow::anyhow!("store_file_unavailable"));
+    let stored = |id: &str| c.get("job", id).unwrap().unwrap();
+    // A refusal among the files, even behind another failure, sends the job back once.
+    let running = json!({"id":"b-product","type":"download","productId":"42","state":"running","selectedFileIds":null,"fileIds":["test-file-0","test-file-1"],"failures":{"test-file-0":{"fileId":"test-file-0","errorCode":"store_file_unavailable"}}});
+    c.put("job", "b-product", running.clone()).unwrap();
+    let mut job = running.clone();
+    let other: Result<()> = Err(anyhow::anyhow!("network_failed"));
+    assert!(f
+        .service
+        .wait_for_store_list(&mut job, &other, &cancel)
+        .unwrap());
+    assert_eq!(stored("b-product")["state"], "queued");
+    assert_eq!(stored("b-product")["stage"], "storeUpdate");
+    // Its product stays in progress, and nothing runs before its update even starts.
+    let status = || c.command("product_details", json!({"id":"42"})).unwrap()["status"].clone();
+    assert_eq!(status(), "processing");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    let before = stored("b-product");
+    let mut started = before.clone();
+    started["updateJobIds"] = json!(["update"]);
+    assert!(f
+        .service
+        .put_queued_download(&before, &mut started, "queued", None)
+        .unwrap());
+    // A single refused file waits on the same update.
+    c.put("job","a-single",json!({"id":"a-single","type":"download","productId":"42","state":"queued","stage":"storeUpdate","storeUpdated":true,"selectedFileIds":["test-file-0"],"fileIds":["test-file-0"],"updateJobIds":["update"]})).unwrap();
+    c.put(
+        "job",
+        "update",
+        json!({"id":"update","type":"boothUpdate","state":"running"}),
+    )
+    .unwrap();
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    assert_eq!(status(), "processing");
+    // Once it ends, the single file's refusal stands and the product download goes on.
+    c.put(
+        "job",
+        "update",
+        json!({"id":"update","type":"boothUpdate","state":"completed"}),
+    )
+    .unwrap();
+    let (next, changed) = f.service.queued_download().unwrap();
+    assert!(changed);
+    let next = next.unwrap();
+    assert_eq!(next["id"], "b-product");
+    assert!(next.get("stage").is_none() && next.get("updateJobIds").is_none());
+    assert_eq!(stored("a-single")["state"], "needsAction");
+    assert_eq!(stored("a-single")["errorCode"], "store_file_unavailable");
+    // Refused again on its second pass, or cancelled, it ends as before.
+    let mut again = next.clone();
+    again["state"] = json!("running");
+    c.put("job", "b-product", again.clone()).unwrap();
+    assert!(!f
+        .service
+        .wait_for_store_list(&mut again, &refused, &cancel)
+        .unwrap());
+    let mut cancelled = running.clone();
+    cancelled["id"] = json!("c-cancelled");
+    cancelled["cancelRequested"] = json!(true);
+    c.put("job", "c-cancelled", cancelled.clone()).unwrap();
+    assert!(!f
+        .service
+        .wait_for_store_list(&mut cancelled, &refused, &cancel)
+        .unwrap());
+    let mut job = running;
+    job["id"] = json!("d-cancelling");
+    c.put("job", "d-cancelling", job.clone()).unwrap();
+    cancel.store(true, Ordering::Release);
+    assert!(!f
+        .service
+        .wait_for_store_list(&mut job, &refused, &cancel)
+        .unwrap());
+    assert_eq!(stored("d-cancelling")["state"], "running");
+}
+
+#[test]
+fn a_file_flagged_again_after_its_download_verified_it_is_still_asked_for() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    f.artifact(0);
+    let mut flagged = f
+        .service
+        .catalogue
+        .get("remote_file", "test-file-0")
+        .unwrap()
+        .unwrap();
+    flagged["requiresContentVerification"] = json!(true);
+    let listed = vec![flagged];
+    // The job verified the file before a store read flagged it again.
+    let verified = HashSet::from(["test-file-0".to_owned()]);
+    let settled = f
+        .service
+        .settled_files(&listed, &listed, &verified)
+        .unwrap();
+    assert_eq!(settled[0]["requiresContentVerification"], false);
+    assert_ne!(fingerprint(&settled), fingerprint(&listed));
+    // A file whose download failed settles as listed, so only an explicit retry asks again.
+    let settled = f
+        .service
+        .settled_files(&listed, &listed, &HashSet::new())
+        .unwrap();
+    assert_eq!(fingerprint(&settled), fingerprint(&listed));
+}

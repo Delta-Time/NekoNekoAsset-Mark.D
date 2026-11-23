@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { dialog as nativeDialog, errorCode, invokeAction } from '../../backend';
-import type { Job } from '../../backend';
 import { licenseText } from '../../license-i18n';
 import type { Library } from '../library/useLibrary';
 import type { Notices } from '../shell/useNotice';
@@ -40,8 +39,6 @@ export function useProductActions({
       names: string[];
     } | null>(null),
     [deletingDownloads, setDeletingDownloads] = useState<ReadonlySet<string>>(new Set());
-  const watchedDownloads = useRef(new Set<string>()),
-    staleProducts = useRef(new Set<string>());
   const activeDownloads = (productId: string) =>
     nativeState.jobs.filter(
       (job) =>
@@ -78,53 +75,11 @@ export function useProductActions({
       setDeletingDownloads((old) => new Set([...old].filter((id) => !ids.includes(id))));
     }
   };
-  /** Downloads started here update their product when the store no longer offers a file. */
-  const watchDownloads = (result: unknown) => {
-    for (const id of (result as { jobIds?: unknown[] } | undefined)?.jobIds ?? [])
-      if (typeof id === 'string') watchedDownloads.current.add(id);
-  };
-  // One update per store covers every such product once those downloads settle, because a
-  // store update slows that store's transfers to one. An asset downloaded whole then gets
-  // its updated list through the download request it already holds.
-  useEffect(() => {
-    let active = false;
-    for (const job of nativeState.jobs as (Job & {
-      failures?: Record<string, { errorCode?: string } | undefined>;
-    })[]) {
-      if (!watchedDownloads.current.has(job.id)) continue;
-      // A download waiting for its account's sign-in holds up no other update.
-      if (['queued', 'running'].includes(job.state)) {
-        if (job.errorCode !== 'auth_required') active = true;
-        continue;
-      }
-      watchedDownloads.current.delete(job.id);
-      if (
-        job.productId &&
-        (job.errorCode === 'store_file_unavailable' ||
-          Object.values(job.failures ?? {}).some(
-            (item) => item?.errorCode === 'store_file_unavailable',
-          ))
-      )
-        staleProducts.current.add(job.productId);
-    }
-    if (active || !staleProducts.current.size) return;
-    // Store IDs carry their store (BOOTH's are bare numbers), so a busy or signed-out
-    // account of one store cannot fail another store's update.
-    const stores = new Map<string, string[]>();
-    for (const id of staleProducts.current) {
-      const store = id.includes(':') ? id.slice(0, id.indexOf(':')) : 'booth';
-      stores.set(store, [...(stores.get(store) ?? []), id]);
-    }
-    staleProducts.current.clear();
-    for (const productIds of stores.values())
-      run(onNative('booth', 'update_products', { productIds }));
-  }, [nativeState.jobs]);
   const download = (ids: string[]) => {
-    if (ids.length)
-      run(onNative('storage', 'enqueue_products', { productIds: ids }).then(watchDownloads));
+    if (ids.length) run(onNative('storage', 'enqueue_products', { productIds: ids }));
   };
   const downloadFile = (fileId: string, redownload: boolean) =>
-    run(onNative('storage', 'enqueue_file', { fileId, redownload }).then(watchDownloads));
+    run(onNative('storage', 'enqueue_file', { fileId, redownload }));
   const update = (ids: string[]) => {
     if (ids.length) run(onNative('booth', 'update_products', { productIds: ids }));
   };
@@ -165,7 +120,6 @@ export function useProductActions({
     hasDownloadedFiles,
     requestDeleteDownloads,
     deleteDownloads,
-    watchDownloads,
     download,
     downloadFile,
     update,

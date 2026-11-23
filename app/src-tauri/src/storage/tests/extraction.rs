@@ -962,3 +962,38 @@ fn restart_discards_only_owned_partial_and_preserves_completed_artifact() {
         (&json!("partial"), &json!("notDownloaded"))
     );
 }
+
+#[tokio::test]
+async fn an_archive_kept_beside_its_ready_extraction_is_removed_like_an_extracted_one() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let root = f
+        .service
+        .catalogue
+        .get("root", "test-root")
+        .unwrap()
+        .unwrap();
+    let library = f.path.join("library");
+    let (artifact, original, extracted) = f.extracted_archive(0, true);
+    f.service
+        .remove_kept_original(&root, &library, &artifact)
+        .await;
+    assert!(!original.exists());
+    assert!(extracted.join("model.fbx").is_file());
+    let record = f
+        .service
+        .catalogue
+        .get("artifact", artifact["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(record["originalAvailable"], false);
+    assert_eq!(record["status"], "ready");
+    assert!(record.get("originalDeletionPending").is_none());
+    // Another record naming the same bytes that is not Ready keeps them.
+    let (second, original, _) = f.extracted_archive(1, true);
+    f.service.catalogue.put("artifact","historical-1",json!({"id":"historical-1","productId":"42","fileId":"test-file-1","rootId":"test-root","relativePath":second["relativePath"],"status":"downloaded","originalAvailable":true})).unwrap();
+    f.service
+        .remove_kept_original(&root, &library, &second)
+        .await;
+    assert!(original.is_file());
+}

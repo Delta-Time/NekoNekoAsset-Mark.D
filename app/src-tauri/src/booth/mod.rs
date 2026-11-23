@@ -599,7 +599,11 @@ impl BoothService {
             .collect::<Result<_>>()?;
         ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
         let mut jobs = Vec::new();
-        for scope in self.update_scopes(&ids)? {
+        for mut scope in self.update_scopes(&ids)? {
+            // A download's follow-up keeps the files that download just verified.
+            if args["keepVerified"] == true {
+                scope["keepVerified"] = json!(true);
+            }
             if let Some(active) = self.active_update(&scope)? {
                 jobs.push(active["id"].clone());
                 continue;

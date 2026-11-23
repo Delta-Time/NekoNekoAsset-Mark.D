@@ -74,7 +74,7 @@ export default function AppDialogs({
   workflowProps: WorkflowProps;
 }) {
   const { flow, dialog, setDialog, licenseOpen, setLicenseOpen, licenseButton } = nav;
-  const { productConfirm, watchDownloads, deleteDownloads, setProductConfirm } = actions;
+  const { productConfirm, deleteDownloads, setProductConfirm } = actions;
   const {
     loaded,
     setupDone,
@@ -282,11 +282,9 @@ export default function AppDialogs({
           names={productConfirm.names}
           onConfirm={async () => {
             if (productConfirm.kind === 'downloadAll')
-              watchDownloads(
-                await invokeAction('storage', 'enqueue_products', {
-                  productIds: productConfirm.ids,
-                }),
-              );
+              await invokeAction('storage', 'enqueue_products', {
+                productIds: productConfirm.ids,
+              });
             else await deleteDownloads({ productIds: productConfirm.ids }, productConfirm.ids);
           }}
           onClose={() => setProductConfirm(null)}

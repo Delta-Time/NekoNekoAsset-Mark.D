@@ -3435,6 +3435,8 @@ impl BoothService {
                 }
                 let entitlement = format!("{}:{}:{product}", entry.account, entry.source);
                 let previous = batch.get("entitlement", &entitlement)?;
+                // A download's follow-up keeps the files that download just verified.
+                let force_verify = entry.force_verify && job["args"]["keepVerified"] != true;
                 for row in &entry.rows {
                     self.plan_row_mode(
                         &mut batch,
@@ -3445,7 +3447,7 @@ impl BoothService {
                             .routes
                             .get(&row.source_record_id)
                             .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
-                        entry.force_verify,
+                        force_verify,
                         false,
                         Some(field(job, "id")?),
                     )?;
