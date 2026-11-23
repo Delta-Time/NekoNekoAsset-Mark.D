@@ -1,10 +1,5 @@
 use super::*;
 
-/// A conflict choice as the UI sends it.
-fn choice(value: Value) -> super::super::api::ConflictChoice {
-    serde_json::from_value(value).unwrap()
-}
-
 #[test]
 fn fetched_source_thumbnail_register_rejects_unsafe_history_and_retains_empty() -> Result<()> {
     let safe = "https://booth.pximg.net/synthetic-fetched.png";
@@ -127,16 +122,6 @@ fn collections_independent_additions_and_delete_vs_edit_survive_restart() -> Res
     a.merge(&mut b)?;
     a = load_doc(&a.save(), "a")?;
     assert!(entity(&a, "collection", "c").is_none());
-    resolve(
-        &mut a,
-        &choice(json!({"kind":"collection","id":"c","field":DELETED,"value":false})),
-    )?;
-    assert_eq!(
-        entity(&a, "collection", "c").unwrap()["name"],
-        "Offline edit"
-    );
-    let restored = entity(&a, "collection", "c").unwrap();
-    write_entity(&mut a, "collection", "c", Some(&restored), None)?;
     write_entity(
         &mut a,
         "collection",
@@ -183,91 +168,7 @@ fn private_fields_and_history_are_rejected() -> Result<()> {
 }
 
 #[test]
-fn concurrent_field_clear_is_retained_and_can_be_selected() -> Result<()> {
-    let mut a = new_doc("a")?;
-    let first = json!({"id":"p","notes":"Before"});
-    write_entity(&mut a, "overlay", "p", None, Some(&first))?;
-    let mut b = load_doc(&a.save(), "b")?;
-    write_entity(
-        &mut a,
-        "overlay",
-        "p",
-        Some(&first),
-        Some(&json!({"id":"p"})),
-    )?;
-    write_entity(
-        &mut b,
-        "overlay",
-        "p",
-        Some(&first),
-        Some(&json!({"id":"p","notes":null})),
-    )?;
-    a.merge(&mut b)?;
-    let conflicts = conflicts(&a)?;
-    assert_eq!(conflicts.len(), 1);
-    let missing = conflicts[0]["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["value"]["present"] == false)
-        .unwrap()["opId"]
-        .clone();
-    resolve(
-        &mut a,
-        &choice(json!({"kind":"overlay","id":"p","field":"notes","opId":missing})),
-    )?;
-    assert!(entity(&a, "overlay", "p").unwrap().get("notes").is_none());
-    Ok(())
-}
-
-#[test]
-fn cached_conflicts_refresh_only_previous_keys_and_local_write_resolves() -> Result<()> {
-    let mut a = new_doc("a")?;
-    let first = json!({"id":"p","name":"Before","notes":"Before"});
-    write_entity(&mut a, "overlay", "p", None, Some(&first))?;
-    let mut b = load_doc(&a.save(), "b")?;
-    write_entity(
-        &mut a,
-        "overlay",
-        "p",
-        Some(&first),
-        Some(&json!({"id":"p","name":"A","notes":"A"})),
-    )?;
-    write_entity(
-        &mut b,
-        "overlay",
-        "p",
-        Some(&first),
-        Some(&json!({"id":"p","name":"B","notes":"B"})),
-    )?;
-    a.merge(&mut b)?;
-    let previous = conflicts(&a)?;
-    assert_eq!(previous.len(), 2);
-    assert_eq!(remaining_conflicts(&a, &previous)?, previous);
-    let notes = previous
-        .iter()
-        .find(|c| c["field"] == "notes")
-        .unwrap()
-        .clone();
-    assert_eq!(
-        remaining_conflicts(&a, &[notes.clone()])?,
-        vec![notes.clone()]
-    );
-    let before = entity(&a, "overlay", "p").unwrap();
-    let mut after = before.clone();
-    after["notes"] = json!("Resolved locally");
-    write_entity(&mut a, "overlay", "p", Some(&before), Some(&after))?;
-    assert!(remaining_conflicts(&a, &[notes])?.is_empty());
-    let remaining = remaining_conflicts(&a, &previous)?;
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0]["field"], "name");
-    assert_eq!(remaining, conflicts(&a)?);
-    assert!(remaining_conflicts(&a, &[])?.is_empty());
-    Ok(())
-}
-
-#[test]
-fn existing_winner_resolution_native_delete_survives_validation_and_restart() -> Result<()> {
+fn existing_winner_put_native_delete_survives_validation_and_restart() -> Result<()> {
     let mut a = new_doc("winner-a")?;
     let initial = json!({"id":"p","name":"Initial"});
     write_entity(&mut a, "overlay", "p", None, Some(&initial))?;
@@ -287,18 +188,13 @@ fn existing_winner_resolution_native_delete_survives_validation_and_restart() ->
         Some(&json!({"id":"p","name":"B"})),
     )?;
     a.merge(&mut b)?;
-    let conflict = conflicts(&a)?.remove(0);
-    let winner = conflict["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|value| value["value"] == conflict["effectiveValue"])
-        .unwrap();
+    let name = key("overlay", "p", "name");
+    assert_eq!(register_values(&a, &name)?.len(), 2);
+    let winner = effective(&a, &name)?.unwrap();
     let heads = a.get_heads();
-    resolve(
-        &mut a,
-        &choice(json!({"kind":"overlay","id":"p","field":"name","opId":winner["opId"]})),
-    )?;
+    // A restore puts the backup's value over diverged history. When that value is
+    // already the winner, Automerge records a native delete of the other value.
+    a.put(ROOT, name.as_str(), winner.to_string())?;
     let changes = a.get_changes(&heads);
     assert!(changes.iter().any(
         |change| serde_json::to_value(change.decode()).unwrap()["ops"]
@@ -310,16 +206,9 @@ fn existing_winner_resolution_native_delete_survives_validation_and_restart() ->
     for change in &changes {
         validate_change(change)?;
     }
-    assert_eq!(
-        changed_fields(&mut a, &heads)?,
-        vec![("overlay".into(), "p".into(), "name".into())]
-    );
     let a = load_doc(&a.save(), "winner-a")?;
-    assert!(conflicts(&a)?.is_empty());
-    assert_eq!(
-        entity(&a, "overlay", "p").unwrap()["name"],
-        conflict["effectiveValue"]["value"]
-    );
+    assert_eq!(register_values(&a, &name)?.len(), 1);
+    assert_eq!(entity(&a, "overlay", "p").unwrap()["name"], winner["value"]);
     let delete =
         json!({"action":"del","obj":"_root","key":key("overlay","p","name"),"pred":["1@aa"]});
     validate_operation(&delete)?;
@@ -367,114 +256,7 @@ fn existing_winner_resolution_native_delete_survives_validation_and_restart() ->
 }
 
 #[test]
-fn incremental_projection_matches_full_merge_delete_and_collection_changes() -> Result<()> {
-    fn full(doc: &AutoCommit) -> Result<BTreeMap<(String, String), Value>> {
-        Ok(entities(doc)?
-            .into_iter()
-            .map(|(kind, id, value)| ((kind, id), value))
-            .collect())
-    }
-    fn apply(
-        doc: &mut AutoCommit,
-        heads: &[automerge::ChangeHash],
-        rows: &mut BTreeMap<(String, String), Value>,
-    ) -> Result<()> {
-        let mut grouped: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-        for (kind, id, field) in changed_fields(doc, heads)? {
-            grouped.entry((kind, id)).or_default().push(field);
-        }
-        for ((kind, id), fields) in grouped {
-            let identity = (kind.clone(), id.clone());
-            let next = project_entity(doc, &kind, &id, rows.get(&identity).cloned(), &fields)?;
-            if let Some(next) = next {
-                rows.insert(identity, next);
-            } else {
-                rows.remove(&identity);
-            }
-        }
-        assert_eq!(*rows, full(doc)?);
-        Ok(())
-    }
-    let mut a = new_doc("a")?;
-    let overlay = json!({"id":"p","name":"Before","notes":"Before"});
-    let collection = json!({"id":"c","name":"Collection","productIds":["keep"]});
-    write_entity(&mut a, "overlay", "p", None, Some(&overlay))?;
-    write_entity(&mut a, "collection", "c", None, Some(&collection))?;
-    let mut b = load_doc(&a.save(), "b")?;
-    write_entity(
-        &mut a,
-        "overlay",
-        "p",
-        Some(&overlay),
-        Some(&json!({"id":"p","name":"A","notes":"Before"})),
-    )?;
-    write_entity(
-        &mut a,
-        "collection",
-        "c",
-        Some(&collection),
-        Some(&json!({"id":"c","name":"Collection","productIds":["keep","a"]})),
-    )?;
-    let mut rows = full(&a)?;
-    let heads = a.get_heads();
-    write_entity(
-        &mut b,
-        "overlay",
-        "p",
-        Some(&overlay),
-        Some(&json!({"id":"p","name":"Before","notes":null})),
-    )?;
-    write_entity(
-        &mut b,
-        "collection",
-        "c",
-        Some(&collection),
-        Some(&json!({"id":"c","name":"Collection","productIds":["keep","b"]})),
-    )?;
-    a.merge(&mut b)?;
-    apply(&mut a, &heads, &mut rows)?;
-    assert_eq!(
-        rows[&("collection".into(), "c".into())]["productIds"],
-        json!(["a", "b", "keep"])
-    );
-    let heads = a.get_heads();
-    let before = entity(&a, "collection", "c").unwrap();
-    let mut after = before.clone();
-    after["productIds"] = json!(["keep"]);
-    write_entity(&mut a, "collection", "c", Some(&before), Some(&after))?;
-    apply(&mut a, &heads, &mut rows)?;
-    let heads = a.get_heads();
-    let before = entity(&a, "overlay", "p").unwrap();
-    write_entity(&mut a, "overlay", "p", Some(&before), None)?;
-    apply(&mut a, &heads, &mut rows)?;
-    assert!(project_entity(&a, "overlay", "p", None, &[])?.is_none());
-    let heads = a.get_heads();
-    let mut recreated = before.clone();
-    recreated["notes"] = json!("Recreated note");
-    write_entity(&mut a, "overlay", "p", None, Some(&recreated))?;
-    apply(&mut a, &heads, &mut rows)?;
-    let heads = a.get_heads();
-    let before = entity(&a, "collection", "c").unwrap();
-    write_entity(&mut a, "collection", "c", Some(&before), None)?;
-    apply(&mut a, &heads, &mut rows)?;
-    let heads = a.get_heads();
-    resolve(
-        &mut a,
-        &choice(json!({"kind":"collection","id":"c","field":DELETED,"value":false})),
-    )?;
-    a.commit();
-    let before = entity(&a, "collection", "c").unwrap();
-    let mut after = before.clone();
-    after["name"] = json!("Edited after recovery");
-    write_entity(&mut a, "collection", "c", Some(&before), Some(&after))?;
-    apply(&mut a, &heads, &mut rows)?;
-    let heads = a.get_heads();
-    assert!(changed_fields(&mut a, &heads)?.is_empty());
-    Ok(())
-}
-
-#[test]
-fn snapshot_restores_conflicts_fresh_and_causally_preserves_modified_field_intent() -> Result<()> {
+fn snapshot_restores_fresh_and_causally_preserves_modified_field_intent() -> Result<()> {
     let mut a = new_doc("backup-a")?;
     let original =
         json!({"id":"p","name":"Initial","notes":"Retained","thumbnailPath":"thumbs/initial.png"});
@@ -499,34 +281,13 @@ fn snapshot_restores_conflicts_fresh_and_causally_preserves_modified_field_inten
     a.merge(&mut b)?;
     write_entity(&mut a, "collection", "hidden", Some(&hidden), None)?;
     let desired = entities(&a)?;
-    let saved_conflicts = conflicts(&a)?;
-    assert_eq!(saved_conflicts.len(), 2);
     let bytes = a.save();
     validate_snapshot(&bytes)?;
     let mut fresh = new_doc("fresh-device")?;
     restore_snapshot(&mut fresh, &bytes, &desired)?;
     assert_eq!(entities(&fresh)?, desired);
-    assert_eq!(conflicts(&fresh)?, saved_conflicts);
     fresh = load_doc(&fresh.save(), "fresh-device")?;
-    assert_eq!(conflicts(&fresh)?, saved_conflicts);
-    let name_conflict = saved_conflicts
-        .iter()
-        .find(|c| c["field"] == "name")
-        .unwrap();
-    let alternative = name_conflict["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["value"] != name_conflict["effectiveValue"])
-        .unwrap();
-    resolve(
-        &mut fresh,
-        &choice(json!({"kind":"overlay","id":"p","field":"name","opId":alternative["opId"]})),
-    )?;
-    assert_eq!(
-        entity(&fresh, "overlay", "p").unwrap()["name"],
-        alternative["value"]["value"]
-    );
+    assert_eq!(entities(&fresh)?, desired);
 
     let mut existing = load_doc(&bytes, "existing-device")?;
     let before = entity(&existing, "overlay", "p").unwrap();
@@ -551,34 +312,39 @@ fn snapshot_restores_conflicts_fresh_and_causally_preserves_modified_field_inten
     restore_snapshot(&mut existing, &bytes, &remapped)?;
     assert_eq!(*existing.get_actor(), actor);
     assert_eq!(entities(&existing)?, remapped);
-    let restored = conflicts(&existing)?;
-    assert_eq!(restored.len(), 1);
-    assert_eq!(restored[0]["field"], "name");
-    assert_eq!(
-        restored[0]["effectiveValue"],
-        name_conflict["effectiveValue"]
-    );
-    let old_choices: BTreeSet<_> = name_conflict["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v["value"].to_string())
-        .collect();
-    let new_choices: BTreeSet<_> = restored[0]["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v["value"].to_string())
-        .collect();
-    assert_eq!(old_choices, new_choices);
-    resolve(
-        &mut existing,
-        &choice(json!({"kind":"collection","id":"hidden","field":DELETED,"value":false})),
-    )?;
-    assert_eq!(entity(&existing, "collection", "hidden").unwrap(), hidden);
+    // The deleted collection keeps its retained fields.
+    assert!(project(&existing, true)?.contains(&("collection".into(), "hidden".into(), hidden)));
     let before = existing.save();
     assert!(validate_snapshot(b"invalid snapshot").is_err());
     assert!(restore_snapshot(&mut existing, b"invalid snapshot", &remapped).is_err());
     assert_eq!(existing.save(), before);
+    Ok(())
+}
+
+#[test]
+fn snapshot_with_concurrent_values_restores_the_automerge_winner() -> Result<()> {
+    let mut a = new_doc("concurrent-a")?;
+    let original = json!({"id":"p","name":"Initial","notes":"Kept"});
+    write_entity(&mut a, "overlay", "p", None, Some(&original))?;
+    let name = key("overlay", "p", "name");
+    let mut b = a.fork().with_actor(ActorId::from(b"concurrent-b".to_vec()));
+    let mut diverged = a.fork().with_actor(ActorId::from(b"diverged".to_vec()));
+    a.put(ROOT, name.as_str(), present(&json!("A")).to_string())?;
+    b.put(ROOT, name.as_str(), present(&json!("B")).to_string())?;
+    a.merge(&mut b)?;
+    assert_eq!(register_values(&a, &name)?.len(), 2);
+    let winner = effective(&a, &name)?.unwrap()["value"].clone();
+    let desired = entities(&a)?;
+    assert_eq!(desired[0].2["name"], winner);
+    let bytes = a.save();
+    let mut fresh = new_doc("fresh-device")?;
+    restore_snapshot(&mut fresh, &bytes, &desired)?;
+    diverged.put(ROOT, name.as_str(), present(&json!("C")).to_string())?;
+    restore_snapshot(&mut diverged, &bytes, &desired)?;
+    for mut restored in [fresh, diverged] {
+        assert_eq!(entities(&restored)?, desired);
+        let restarted = load_doc(&restored.save(), "restarted-device")?;
+        assert_eq!(entities(&restarted)?, desired);
+    }
     Ok(())
 }

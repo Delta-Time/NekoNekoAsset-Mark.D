@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const DELETED: &str = "@deleted";
 const MEMBER: &str = "@member:";
-const RECOVER: &str = "@recover"; // Projection hint only; never stored in Automerge.
 const KINDS: &[&str] = &[
     "product",
     "overlay",
@@ -353,9 +352,8 @@ pub fn write_entity(
     }
     // All fallible input checks precede mutation; SQLite supplies transactionality.
     for (key, value) in edits {
-        // Recreated rows must emit even unchanged retained fields so a peer whose
-        // SQLite row was deleted can incrementally reconstruct the complete row.
-        // Automerge otherwise optimizes an equal put away.
+        // Recreated rows emit even unchanged retained fields, so the recreating
+        // change holds the complete row. Automerge otherwise optimizes an equal put away.
         if recreating {
             doc.delete(ROOT, key.as_str())?;
         }
@@ -406,132 +404,6 @@ pub fn entities(doc: &AutoCommit) -> Result<Vec<(String, String, Value)>> {
     project(doc, false)
 }
 
-/// Enumerates only operations introduced since the supplied known heads. Callers
-/// group these field keys by entity and apply them to their existing SQLite rows.
-pub fn changed_fields(
-    doc: &mut AutoCommit,
-    heads: &[automerge::ChangeHash],
-) -> Result<Vec<(String, String, String)>> {
-    let mut fields = BTreeSet::new();
-    for change in doc.get_changes(heads) {
-        let expanded = serde_json::to_value(change.decode())?;
-        let ops = expanded["ops"].as_array().context("sync_change_invalid")?;
-        for op in ops {
-            let (kind, id, field) = validate_operation(op)?;
-            if ops.len() == 1
-                && field == DELETED
-                && semantic_register(doc, &key(&kind, &id, &field))? == Some(json!(false))
-            {
-                fields.insert((kind.clone(), id.clone(), RECOVER.to_owned()));
-            }
-            fields.insert((kind, id, field));
-        }
-    }
-    Ok(fields.into_iter().collect())
-}
-
-/// Projects a changed entity without enumerating the document. `base` must be the
-/// row corresponding to the heads used by `changed_fields`; `fields` includes all
-/// changed keys for this entity. Ordinary absent/null and member add-win semantics
-/// match the full projection.
-pub fn project_entity(
-    doc: &AutoCommit,
-    kind: &str,
-    id: &str,
-    base: Option<Value>,
-    fields: &[String],
-) -> Result<Option<Value>> {
-    check_identity(kind, id)?;
-    let tombstones = register_values(doc, &key(kind, id, DELETED))?;
-    for (_, value) in &tombstones {
-        validate_register(kind, DELETED, value)?;
-    }
-    if tombstones.iter().any(|(_, value)| *value == true) {
-        return Ok(None);
-    }
-    // Explicit user recovery of a tombstone writes only this flag. This rare path
-    // needs retained fields after SQLite has removed the deleted row. Ordinary
-    // recreation emits every field and never takes this enumeration fallback.
-    let recover_retained = base.is_none()
-        && (fields.iter().any(|field| field == RECOVER)
-            || (fields.len() == 1 && fields[0] == DELETED));
-    let mut recovered_fields = Vec::new();
-    if recover_retained {
-        for field_key in doc.keys(ROOT) {
-            let (record_kind, record_id, field) = parse_key(&field_key)?;
-            if record_kind == kind && record_id == id {
-                recovered_fields.push(field);
-            }
-        }
-    }
-    let fields = if recover_retained {
-        recovered_fields.as_slice()
-    } else {
-        fields
-    };
-    let mut exists = base.is_some() || !tombstones.is_empty();
-    let mut record = match base {
-        Some(Value::Object(record)) => record,
-        Some(_) => bail!("sync_entity_invalid"),
-        None => Map::new(),
-    };
-    let mut member_ids = if kind == "collection" {
-        members(record.get("productIds"))?
-    } else {
-        BTreeSet::new()
-    };
-    let mut has_members_field = record.contains_key("productIds");
-    let mut members_changed = false;
-    for field in fields.iter().collect::<BTreeSet<_>>() {
-        if field == DELETED || field == RECOVER {
-            continue;
-        }
-        let field_key = key(kind, id, field);
-        let values = register_values(doc, &field_key)?;
-        exists |= !values.is_empty();
-        for (_, value) in &values {
-            validate_register(kind, field, value)?;
-        }
-        if let Some(member) = field.strip_prefix(MEMBER) {
-            validate_register(kind, field, &json!(false))?;
-            let pair: Vec<String> = serde_json::from_str(member)?;
-            if values.iter().any(|(_, value)| *value == true) {
-                member_ids.insert(pair[1].clone());
-            } else {
-                member_ids.remove(&pair[1]);
-            }
-            members_changed = true;
-        } else if kind == "collection" && field == "productIds" {
-            // This register records presence, not the entire set. Clearing it must
-            // not discard unchanged member registers or concurrent additions.
-            has_members_field = effective(doc, &field_key)?
-                .map(|value| value["present"] == true)
-                .unwrap_or(false);
-            members_changed = true;
-        } else if let Some(value) = effective(doc, &field_key)? {
-            if value["present"] == true {
-                record.insert(field.clone(), value["value"].clone());
-            } else {
-                record.remove(field);
-            }
-        } else {
-            record.remove(field);
-        }
-    }
-    if !exists {
-        return Ok(None);
-    }
-    if members_changed {
-        if has_members_field || !member_ids.is_empty() {
-            record.insert("productIds".into(), json!(member_ids));
-        } else {
-            record.remove("productIds");
-        }
-    }
-    record.insert("id".into(), json!(id));
-    Ok(Some(Value::Object(record)))
-}
-
 fn project(doc: &AutoCommit, include_deleted: bool) -> Result<Vec<(String, String, Value)>> {
     let mut records: BTreeMap<(String, String), Map<String, Value>> = BTreeMap::new();
     let mut deleted = BTreeSet::new();
@@ -580,91 +452,6 @@ fn project(doc: &AutoCommit, include_deleted: bool) -> Result<Vec<(String, Strin
             (kind, id, Value::Object(value))
         })
         .collect())
-}
-
-pub fn conflicts(doc: &AutoCommit) -> Result<Vec<Value>> {
-    let mut results = Vec::new();
-    for field_key in doc.keys(ROOT) {
-        if let Some(conflict) = field_conflict(doc, &field_key)? {
-            results.push(conflict);
-        }
-    }
-    Ok(results)
-}
-
-/// Refresh only previously divergent registers after a local mutation. Import,
-/// merge and restore must use `conflicts` to discover newly introduced conflicts.
-pub fn remaining_conflicts(doc: &AutoCommit, previous: &[Value]) -> Result<Vec<Value>> {
-    let mut keys = BTreeSet::new();
-    for conflict in previous {
-        let kind = conflict["kind"].as_str().context("sync_kind_required")?;
-        let id = conflict["id"].as_str().context("sync_id_required")?;
-        let field = conflict["field"]
-            .as_str()
-            .filter(|f| !f.is_empty())
-            .context("sync_field_required")?;
-        check_identity(kind, id)?;
-        keys.insert(key(kind, id, field));
-    }
-    let mut results = Vec::new();
-    for field_key in keys {
-        if let Some(conflict) = field_conflict(doc, &field_key)? {
-            results.push(conflict);
-        }
-    }
-    Ok(results)
-}
-
-fn field_conflict(doc: &AutoCommit, field_key: &str) -> Result<Option<Value>> {
-    let (kind, id, field) = parse_key(field_key)?;
-    let values = register_values(doc, field_key)?;
-    if values.len() <= 1 {
-        return Ok(None);
-    }
-    for (_, value) in &values {
-        validate_register(&kind, &field, value)?;
-    }
-    // Equal values written independently carry no user-visible disagreement.
-    if values.iter().all(|(_, v)| *v == values[0].1) {
-        return Ok(None);
-    }
-    let current = if field == DELETED || field.starts_with(MEMBER) {
-        Some(json!(values.iter().any(|(_, v)| *v == true)))
-    } else {
-        effective(doc, field_key)?
-    };
-    Ok(Some(serde_json::to_value(super::api::Conflict {
-        kind,
-        id,
-        field,
-        values: values
-            .into_iter()
-            .map(|(op_id, value)| super::api::ConflictValue { op_id, value })
-            .collect(),
-        effective_value: current.unwrap_or(Value::Null),
-    })?))
-}
-
-/// Choose a retained opId, or explicitly set a register value. Regular field values
-/// use {present:true,value:...}/{present:false}; @deleted and member fields are bool.
-pub fn resolve(doc: &mut AutoCommit, choice: &super::api::ConflictChoice) -> Result<()> {
-    let kind = choice.kind.as_deref().context("sync_kind_required")?;
-    let id = choice.id.as_deref().context("sync_id_required")?;
-    let field = choice.field.as_deref().context("sync_field_required")?;
-    check_identity(kind, id)?;
-    let field_key = key(kind, id, field);
-    let value = if let Some(op) = choice.op_id.as_deref() {
-        register_values(doc, &field_key)?
-            .into_iter()
-            .find(|(id, _)| id == op)
-            .map(|(_, value)| value)
-            .context("sync_conflict_changed")?
-    } else {
-        choice.value.clone().context("sync_value_required")?
-    };
-    validate_register(kind, field, &value)?;
-    doc.put(ROOT, field_key, value.to_string())?;
-    Ok(())
 }
 
 // Validate EVERY historical operation, not only the current winners: otherwise an
@@ -790,64 +577,9 @@ fn distinct_registers(values: &[(String, Value)]) -> BTreeMap<String, Value> {
         .collect()
 }
 
-fn restore_register_conflict(
-    doc: &mut AutoCommit,
-    field_key: &str,
-    choices: &BTreeMap<String, Value>,
-    winner: &Value,
-) -> Result<()> {
-    let (_, _, field) = parse_key(field_key)?;
-    ensure!(
-        choices.len() > 1 && choices.contains_key(&winner.to_string()),
-        "sync_snapshot_conflict_invalid"
-    );
-    let heads = doc.get_heads();
-    let baseline = doc.fork_at(&heads)?;
-    // Every branch starts at the same heads and writes delete+set, so the set
-    // counters are equal. Automerge's greatest ActorId chooses the scalar
-    // winner; fresh actors avoid sequence reuse with this or any other device.
-    let mut actors: BTreeSet<Vec<u8>> = BTreeSet::new();
-    while actors.len() < choices.len() {
-        actors.insert(Sha256::digest(uuid::Uuid::new_v4().as_bytes()).to_vec());
-    }
-    let mut values: Vec<Value> = choices
-        .values()
-        .filter(|value| *value != winner)
-        .cloned()
-        .collect();
-    values.push(winner.clone());
-    for (actor, value) in actors.into_iter().zip(values) {
-        let mut branch = baseline.clone();
-        branch.set_actor(ActorId::from(actor));
-        // A plain put of the baseline winner is optimized away by Automerge.
-        // Removing it first guarantees a new concurrent set on EVERY branch.
-        branch.delete(ROOT, field_key)?;
-        branch.put(ROOT, field_key, value.to_string())?;
-        branch.commit();
-        doc.merge(&mut branch)?;
-    }
-    ensure!(
-        distinct_registers(&register_values(doc, field_key)?) == *choices,
-        "sync_snapshot_conflict_mismatch"
-    );
-    ensure!(
-        semantic_register(doc, field_key)?.as_ref() == Some(winner),
-        "sync_snapshot_winner_mismatch"
-    );
-    // Bool registers use the documented delete/add-win projection. Ordinary
-    // registers additionally require Automerge's actual scalar winner to match.
-    if field != DELETED && !field.starts_with(MEMBER) {
-        ensure!(
-            effective(doc, field_key)?.as_ref() == Some(winner),
-            "sync_snapshot_winner_mismatch"
-        );
-    }
-    Ok(())
-}
-
 /// Restore portable semantics onto existing causal history. The caller's actor
-/// remains unchanged. Saved conflicts survive unless the corresponding desired
-/// field intentionally differs from the saved winner (e.g. thumbnail remapping).
+/// remains unchanged. A register with concurrent values in the snapshot keeps
+/// its effective value, which for a field is Automerge's winner.
 /// Work happens in a candidate; validation/postcondition failures leave `doc` intact.
 pub fn restore_snapshot(
     doc: &mut AutoCommit,
@@ -855,10 +587,6 @@ pub fn restore_snapshot(
     desired: &[(String, String, Value)],
 ) -> Result<()> {
     let mut snapshot = validated_snapshot(bytes)?;
-    let saved_live: BTreeSet<(String, String)> = entities(&snapshot)?
-        .into_iter()
-        .map(|(kind, id, _)| (kind, id))
-        .collect();
     let mut wanted = BTreeMap::new();
     for (kind, id, value) in desired {
         check_identity(kind, id)?;
@@ -894,8 +622,8 @@ pub fn restore_snapshot(
     let mut candidate = doc.clone();
     candidate.merge(&mut snapshot)?;
     let mut writes = 0;
-    // Restore all retained registers, including nonconflicted fields of deleted
-    // entities. Live-only JSON records cannot represent this recovery information.
+    // Restore all retained registers, including fields of deleted entities, which
+    // live-only JSON records cannot represent.
     for (field_key, (winner, choices)) in &saved {
         if semantic_register(&candidate, field_key)?.as_ref() != Some(winner)
             || distinct_registers(&register_values(&candidate, field_key)?) != *choices
@@ -943,32 +671,6 @@ pub fn restore_snapshot(
         writes += 1;
         if writes % 128 == 0 {
             candidate.commit();
-        }
-    }
-    for (field_key, (winner, choices)) in &saved {
-        if choices.len() <= 1 {
-            continue;
-        }
-        let (kind, id, field) = parse_key(field_key)?;
-        let identity = (kind.clone(), id.clone());
-        let desired = wanted.get(&identity);
-        let preserve = if field == DELETED {
-            *winner == json!(desired.is_none())
-        } else if let Some(record) = desired {
-            if let Some(member) = field.strip_prefix(MEMBER) {
-                let pair: Vec<String> = serde_json::from_str(member)?;
-                *winner == json!(members(record.get("productIds"))?.contains(&pair[1]))
-            } else {
-                *winner == record.get(&field).map(present).unwrap_or_else(absent)
-            }
-        } else {
-            !saved_live.contains(&identity)
-        };
-        if preserve
-            && (semantic_register(&candidate, field_key)?.as_ref() != Some(winner)
-                || distinct_registers(&register_values(&candidate, field_key)?) != *choices)
-        {
-            restore_register_conflict(&mut candidate, field_key, choices, winner)?;
         }
     }
     let actual: BTreeMap<(String, String), Value> = entities(&candidate)?

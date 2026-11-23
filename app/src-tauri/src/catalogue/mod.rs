@@ -1952,7 +1952,7 @@ impl Catalogue {
         let checkpoint = if checkpoint {
             let bytes = doc.save();
             let digest = Self::digest(&bytes);
-            Some((bytes, digest, sync::conflicts(&doc)?))
+            Some((bytes, digest))
         } else {
             None
         };
@@ -1970,7 +1970,7 @@ impl Catalogue {
         if &Self::document_version(&conn)? != version {
             return Ok(false);
         }
-        if let Some((bytes, digest, conflicts)) = checkpoint {
+        if let Some((bytes, digest)) = checkpoint {
             // First untrusted load validates every operation exactly once. Persist a
             // complete checkpoint and digests only after successful validation.
             let tx = conn.transaction()?;
@@ -1983,11 +1983,6 @@ impl Catalogue {
                 "INSERT INTO sync_trust(key,digest) VALUES('base',?1)",
                 [digest],
             )?;
-            let previous = self.current_conflicts(&tx)?;
-            Self::save_conflicts(&tx, &conflicts)?;
-            if previous != conflicts {
-                Self::bump_revision(&tx)?;
-            }
             tx.commit()?;
         }
         *cache = Some(doc);
@@ -2099,7 +2094,7 @@ impl Catalogue {
             // and locking. Retry against its unchanged durable history.
         }
     }
-    /// Accounts, roots, jobs, preferences, coverage and conflicts, as stored.
+    /// Accounts, roots, jobs, preferences and coverage, as stored.
     fn state_snapshot(&self, conn: &Connection) -> Result<api::StateSnapshot> {
         Ok(api::StateSnapshot {
             accounts: rows(conn, "account")?,
@@ -2107,29 +2102,7 @@ impl Catalogue {
             jobs: rows(conn, "job")?,
             preferences: raw(conn, "preferences", "app")?,
             source_coverage: rows(conn, "source_coverage")?,
-            conflicts: self.current_conflicts(conn)?,
         })
-    }
-    fn current_conflicts(&self, conn: &Connection) -> Result<Vec<Value>> {
-        if let Some(body) = conn
-            .query_row(
-                "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            return Ok(serde_json::from_str(&body)?);
-        }
-        Ok(vec![])
-    }
-    fn save_conflicts(conn: &Connection, conflicts: &[Value]) -> Result<()> {
-        #[cfg(test)]
-        for conflict in conflicts {
-            crate::ipc::assert_view::<api::Conflict>("conflict", conflict, true, |_| vec![]);
-        }
-        conn.execute("INSERT INTO meta(key,value) VALUES('conflicts',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(conflicts)?])?;
-        Ok(())
     }
     fn mutate<T>(
         &self,
@@ -2178,50 +2151,6 @@ impl Catalogue {
             ],
         )?;
         Ok(())
-    }
-    fn mutate_sync<T>(
-        &self,
-        run: impl FnOnce(
-            &Transaction<'_>,
-            &mut automerge::AutoCommit,
-            &mut projection::ProjectionChanges,
-        ) -> Result<T>,
-    ) -> Result<T> {
-        self.check_library_access()?;
-        let (mut conn, mut cache) = self.lock_document()?;
-        let mut doc = cache.take().unwrap();
-        // Cache entry history is already durable. Save only changes made by
-        // this transaction, without serializing old history to prime a cursor.
-        let before_heads = doc.get_heads();
-        let tx = conn.transaction()?;
-        let before_changes = tx.total_changes();
-        let mut projections = projection::ProjectionChanges::default();
-        let result = run(&tx, &mut doc, &mut projections)?;
-        Self::reconcile_projection(&tx, &projections)?;
-        let bytes = doc.save_after(&before_heads);
-        let changed = before_changes != tx.total_changes() || !bytes.is_empty();
-        if !bytes.is_empty() {
-            let previous: Option<String> = tx
-                .query_row(
-                    "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let previous: Vec<Value> = previous
-                .map(|v| serde_json::from_str(&v))
-                .transpose()?
-                .unwrap_or_default();
-            Self::save_conflicts(&tx, &sync::remaining_conflicts(&doc, &previous)?)?;
-            Self::persist_delta(&tx, &bytes)?;
-            tx.execute("INSERT INTO meta(key,value) VALUES('sync_revision',1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
-        }
-        if changed {
-            Self::bump_revision(&tx)?;
-        }
-        tx.commit()?;
-        *cache = Some(doc);
-        Ok(result)
     }
     fn bump_revision(conn: &Connection) -> Result<()> {
         Self::bump_revision_scoped(conn, false)
@@ -2452,18 +2381,6 @@ impl Catalogue {
             (portable::manifest(&conn)?, cache.as_ref().unwrap().clone())
         };
         let bytes = doc.save();
-        let mut media: BTreeSet<_> = strings(&manifest["media"]).into_iter().collect();
-        for conflict in sync::conflicts(&doc)? {
-            if conflict["kind"] == "overlay" && conflict["field"] == "thumbnailPath" {
-                for alternative in conflict["values"].as_array().into_iter().flatten() {
-                    if let Some(path) = alternative["value"]["value"].as_str() {
-                        portable::validate_relative(path)?;
-                        media.insert(path.to_owned());
-                    }
-                }
-            }
-        }
-        manifest["media"] = json!(media);
         manifest["syncSnapshot"] = json!({"version":1,"encoding":"hex","sha256":format!("{:x}",Sha256::digest(&bytes)),"data":hex::encode(bytes)});
         Ok(manifest)
     }
@@ -2602,14 +2519,6 @@ impl Catalogue {
             Request::SaveSearch(request) => self.manage("saved_search", request),
             Request::CustomCategory(request) => self.custom_category(request),
             Request::Preferences { patch } => self.preferences(Value::Object(patch)),
-            Request::ResolveConflict(choice) => self.on_sync_worker(move |catalogue| {
-                catalogue.mutate_sync(|tx, doc, projections| {
-                    let heads = doc.get_heads();
-                    sync::resolve(doc, &choice)?;
-                    Self::project_document(tx, doc, projections, &heads)?;
-                    Ok(json!({"ok":true}))
-                })
-            }),
         }?;
         self.resolve_previews(&mut result)?;
         Ok(result)
@@ -2876,17 +2785,7 @@ impl Catalogue {
                 let id = text(&entry, "id");
                 let current = raw(tx, "overlay", id)?.unwrap_or(json!({"id":id}));
                 let fields = strings(&entry["fields"]);
-                let conflict_keys = fields
-                    .iter()
-                    .map(|field| json!({"kind":"overlay","id":id,"field":field}))
-                    .collect::<Vec<_>>();
-                if self.current_conflicts(tx)?.iter().any(|conflict| {
-                    conflict_keys.iter().any(|key| {
-                        key["kind"] == conflict["kind"]
-                            && key["id"] == conflict["id"]
-                            && key["field"] == conflict["field"]
-                    })
-                }) || fields
+                if fields
                     .iter()
                     .any(|f| current.get(f) != entry["after"].get(f))
                     // A deleted custom category cannot come back through undo.
@@ -3121,70 +3020,5 @@ impl Catalogue {
             select()?;
             Ok(preferences)
         })
-    }
-    fn project_document(
-        tx: &Connection,
-        doc: &mut automerge::AutoCommit,
-        projections: &mut projection::ProjectionChanges,
-        heads: &[automerge::ChangeHash],
-    ) -> Result<()> {
-        let fields = sync::changed_fields(doc, heads)?;
-        Self::project_fields(tx, doc, projections, fields)
-    }
-    fn project_fields(
-        tx: &Connection,
-        doc: &automerge::AutoCommit,
-        projections: &mut projection::ProjectionChanges,
-        fields: Vec<(String, String, String)>,
-    ) -> Result<()> {
-        let mut changes = std::collections::BTreeMap::<(String, String), Vec<String>>::new();
-        for (kind, id, field) in fields {
-            changes.entry((kind, id)).or_default().push(field);
-        }
-        let mut affected = BTreeSet::new();
-        for ((kind, id), fields) in changes {
-            ensure!(
-                SYNC_KINDS.contains(&kind.as_str()),
-                "catalogue.invalid_sync_kind"
-            );
-            let before = raw(tx, &kind, &id)?;
-            let after = sync::project_entity(doc, &kind, &id, before.clone(), &fields)?;
-            if before == after {
-                continue;
-            }
-            Self::collect_projection_dependencies(
-                tx,
-                &kind,
-                &id,
-                before.as_ref(),
-                after.as_ref(),
-                projections,
-                &mut affected,
-            )?;
-            if kind == "product" || kind == "overlay" {
-                affected.insert(id.clone());
-            }
-            for value in before.iter().chain(after.iter()) {
-                if let Some(p) = value["productId"].as_str() {
-                    affected.insert(p.to_owned());
-                }
-            }
-            match after {
-                Some(value) => {
-                    validate(&kind, &id, &value)?;
-                    set_raw(tx, &kind, &id, &value)?;
-                }
-                None => {
-                    tx.execute(
-                        "DELETE FROM entities WHERE kind=?1 AND id=?2",
-                        params![kind, id],
-                    )?;
-                }
-            }
-        }
-        for id in affected {
-            projections.refresh(tx, &id)?;
-        }
-        Ok(())
     }
 }

@@ -230,7 +230,6 @@ function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
   const root = c.nativeState?.roots.find((r) => r.id === rootId) as
     | Record<string, unknown>
     | undefined;
-  const conflicts = c.nativeState?.conflicts ?? [];
   const operationBusy = (c.nativeState?.jobs ?? []).some(
     (job) => job.type.startsWith('storage:') && isActive(job),
   );
@@ -242,14 +241,6 @@ function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
           (job.state === 'cancelled' && unfinishedLocalImport(job))),
     )
     .slice(-3);
-  const valueText = (value: unknown) => {
-    if (value && typeof value === 'object' && 'present' in value) {
-      const register = value as { present: boolean; value?: unknown };
-      if (!register.present) return L('cleared');
-      value = register.value;
-    }
-    return typeof value === 'string' ? value : JSON.stringify(value);
-  };
   return (
     <>
       {root?.previousMigration && (
@@ -298,54 +289,6 @@ function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
           )}
         </div>
       ))}
-      {conflicts.length > 0 && (
-        <div className="wf-section">
-          <span>{L('conflict')}</span>
-          {conflicts.map((conflict, index) => {
-            const options = Array.isArray(conflict.values)
-              ? (conflict.values as { opId: string; value: unknown }[])
-              : [];
-            return (
-              <div
-                key={String(conflict.kind) + String(conflict.id) + String(conflict.field)}
-                className="wf-section"
-              >
-                <small>
-                  {c.products.find((p) => p.id === conflict.id)?.title ?? String(conflict.id)} ·{' '}
-                  {L(String(conflict.field))}
-                </small>
-                <Row label={L('current')}>{valueText(conflict.effectiveValue)}</Row>
-                <Field label={L('alternative')}>
-                  <select
-                    aria-label={L('alternative') + ' ' + (index + 1)}
-                    disabled={task.busy}
-                    defaultValue=""
-                    onChange={(e) => {
-                      const opId = e.target.value;
-                      if (opId)
-                        void task.run(async () => {
-                          await native(c, 'catalogue', 'resolve_conflict', {
-                            kind: conflict.kind,
-                            id: conflict.id,
-                            field: conflict.field,
-                            opId,
-                          });
-                        });
-                    }}
-                  >
-                    <option value="">{L('recover')}</option>
-                    {options.map((option) => (
-                      <option key={option.opId} value={option.opId}>
-                        {valueText(option.value)}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-            );
-          })}
-        </div>
-      )}
       <Status value={task.error} L={L} error />
     </>
   );

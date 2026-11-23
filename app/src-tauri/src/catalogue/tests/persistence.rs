@@ -169,10 +169,7 @@ fn sqlite_commands_and_bootstrap_do_not_load_sync_history() {
     assert!(c
         .command("bootstrap", json!({"includeProducts":false}))
         .is_ok());
-    assert!(c.command("state", json!({})).unwrap()["conflicts"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(c.command("state", json!({})).is_ok());
     assert!(c.document_cache.lock().unwrap().is_none());
     let conn = c.inner.lock().unwrap();
     assert_eq!(

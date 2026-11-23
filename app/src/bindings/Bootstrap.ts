@@ -2,7 +2,6 @@
 import type { Account } from './Account';
 import type { AvatarOption } from './AvatarOption';
 import type { Collection } from './Collection';
-import type { Conflict } from './Conflict';
 import type { CustomCategory } from './CustomCategory';
 import type { Job } from './Job';
 import type { ListCounts } from './ListCounts';
@@ -44,5 +43,4 @@ export type Bootstrap = {
    */
   preferences: Preferences | null;
   sourceCoverage: Array<SourceCoverage>;
-  conflicts: Array<Conflict>;
 };

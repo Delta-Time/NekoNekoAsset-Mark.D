@@ -47,24 +47,25 @@ Attention. Original archive availability is independent of Ready.
 Foreground edits atomically commit entities/projections plus durable `sync_outbox`
 intents. One worker materializes ordered Automerge changes. It loads history only
 when an intent is queued, and a load of more than 256 deltas rewrites the same
-document as one checksummed checkpoint. Conflict resolution, manifests and restore
-flush it first. Decode/serialization runs outside brief database locks and prepared
-documents install only against matching generations. Same-field alternatives,
-tombstones and causal history survive restart and explicit conflict resolution.
+document as one checksummed checkpoint. Manifests and restore flush it first.
+Decode/serialization runs outside brief database locks and prepared documents
+install only against matching generations. Tombstones and causal history survive
+restart. Nothing surfaces or resolves same-field conflicts; the `meta` row
+`conflicts` that earlier versions kept is neither read nor written.
 
 Credentials, device paths/preferences, jobs and artifacts do not enter the CRDT
 history. Version-1 portable manifests retain validated metadata/media and a
-complete checksummed Automerge snapshot with conflict alternatives; absolute root
-mappings and authentication are excluded. Restore validates everything first,
-creates a recovery copy and atomically replaces records/projections/history.
-Storage's independently verified payload restore installs mappings and verified
-artifacts.
+complete checksummed Automerge snapshot; absolute root mappings and authentication
+are excluded. Restore validates everything first, creates a recovery copy and
+atomically replaces records/projections/history. A field holding several
+concurrent values in the snapshot restores as Automerge's winner. Storage's
+independently verified payload restore installs mappings and verified artifacts.
 
 ## Verification and provenance
 
 Focused native checks cover deterministic persistence, atomic publication,
 search/index bounds, overlays, membership/readiness, spending, cancellation,
-restore and offline/restart/replay/conflict behavior. Synthetic isolated profiles
+restore and offline/restart/replay behavior. Synthetic isolated profiles
 exercise multi-device logic without proving two physical PCs/NAS. Existing
 ignored scale checks measure authored 10,000-product/300,000-file fixtures; they
 are explicit measurement tools, not default gates or UI acceptance.

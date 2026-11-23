@@ -32,7 +32,7 @@ pub enum CatalogueRequest {
         #[ts(optional)]
         include_products: Option<bool>,
     },
-    /// Accounts, roots, jobs, preferences, coverage and conflicts.
+    /// Accounts, roots, jobs, preferences and coverage.
     State,
     AvatarOptions,
     AccountCounts,
@@ -68,7 +68,6 @@ pub enum CatalogueRequest {
         #[ts(as = "Preferences")]
         patch: Map<String, Value>,
     },
-    ResolveConflict(ConflictChoice),
 }
 
 impl CatalogueRequest {
@@ -329,20 +328,6 @@ pub struct CustomCategoryRequest {
     pub name: Option<String>,
 }
 
-/// Settles one conflict: a retained `opId`, or an explicit `value`.
-#[derive(Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, optional_fields)]
-pub struct ConflictChoice {
-    pub kind: Option<String>,
-    pub id: Option<String>,
-    pub field: Option<String>,
-    pub op_id: Option<String>,
-    #[serde(default, deserialize_with = "crate::ipc::present")]
-    #[ts(optional)]
-    pub value: Option<Value>,
-}
-
 /// One page of the library list.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -400,8 +385,6 @@ pub struct StateSnapshot {
     pub preferences: Option<Value>,
     #[ts(as = "Vec<SourceCoverage>")]
     pub source_coverage: Vec<Value>,
-    #[ts(as = "Vec<Conflict>")]
-    pub conflicts: Vec<Value>,
 }
 
 /// Everything the shell loads when a library opens.

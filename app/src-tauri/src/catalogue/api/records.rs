@@ -539,27 +539,6 @@ pub(crate) fn assert_record(kind: &str, value: &Value) {
     }
 }
 
-/// Two devices changed one field differently; the user keeps one of the values.
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct Conflict {
-    pub kind: String,
-    pub id: String,
-    pub field: String,
-    pub values: Vec<ConflictValue>,
-    /// The value in effect now.
-    pub effective_value: Value,
-}
-
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct ConflictValue {
-    pub op_id: String,
-    pub value: Value,
-}
-
 /// Checks the tag and avatar options the shell reads.
 #[cfg(test)]
 pub(crate) fn assert_options(tags: &Value, options: &[&Vec<Value>]) {

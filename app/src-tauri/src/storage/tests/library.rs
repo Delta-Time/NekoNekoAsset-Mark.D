@@ -437,7 +437,7 @@ fn full_backup_restore_preserves_files_empty_dirs_media_and_human_metadata() {
 }
 
 #[test]
-fn backup_export_refuses_missing_current_or_conflict_thumbnail_payloads() {
+fn backup_export_refuses_missing_thumbnail_payloads() {
     let f = Fixture::new();
     f.seed(1, true);
     f.artifact(0);
@@ -465,7 +465,7 @@ fn backup_export_refuses_missing_current_or_conflict_thumbnail_payloads() {
         .as_object_mut()
         .unwrap()
         .remove("thumbnailPath");
-    manifest["media"] = json!(["media/retained-conflict.png"]);
+    manifest["media"] = json!(["media/unreferenced.png"]);
     assert!(f.service.backup_payload(&manifest).is_err());
 }
 

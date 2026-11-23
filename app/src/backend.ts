@@ -184,7 +184,6 @@ export const emptyState: NativeState = {
   collections: [],
   savedSearches: [],
   sourceCoverage: [],
-  conflicts: [],
 };
 /** What a file dialog picked, with the first path as `path`. */
 interface DialogResult {

@@ -412,7 +412,6 @@ pub(super) fn restore(
         "INSERT INTO sync_trust(key,digest) VALUES('base',?1)",
         [Catalogue::digest(&bytes)],
     )?;
-    Catalogue::save_conflicts(&tx, &sync::conflicts(&doc)?)?;
     tx.execute("INSERT INTO meta(key,value) VALUES('sync_revision',1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
     tx.execute("INSERT INTO meta(key,value) VALUES('last_restore_backup',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[backup.to_string_lossy().as_ref()])?;
     Catalogue::bump_revision(&tx)?;

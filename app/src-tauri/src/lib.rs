@@ -697,7 +697,6 @@ fn unconfigured_bootstrap(locale: String) -> Result<Value, UiError> {
                 json!({"locale":locale,"setupComplete":false,"autoDownloadAll":false}),
             ),
             source_coverage: vec![],
-            conflicts: vec![],
         },
         collections: vec![],
         saved_searches: vec![],
