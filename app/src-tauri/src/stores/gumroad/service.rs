@@ -801,16 +801,8 @@ impl GumroadService {
             .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
             .insert(account.clone())
         {
-            if job["type"] == "gumroadSync"
-                && self.inner.catalogue.list("job")?.iter().any(|active| {
-                    active["accountId"] == account
-                        && active["type"] == "gumroadLogin"
-                        && matches!(
-                            active["state"].as_str(),
-                            Some("queued" | "running" | "completed")
-                        )
-                })
-            {
+            // A sync waits for its login or a cancelled task to finish; it stays queued.
+            if job["type"] == "gumroadSync" {
                 let service = self.clone();
                 tauri::async_runtime::spawn(async move {
                     let _work = work;
@@ -958,10 +950,11 @@ impl GumroadService {
         }
         for _ in 0..3 {
             let mut batch = RecordBatch::new(&self.inner.catalogue);
-            let current = batch
-                .get("job", id)?
-                .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-            let error = if current["state"] == "cancelled" {
+            // Clear history can remove a cancelled job's row while its task winds down.
+            // Its account and source still end; the row stays cleared.
+            let current = batch.get("job", id)?;
+            let cleared = current.is_none();
+            let error = if current.is_none_or(|current| current["state"] == "cancelled") {
                 Some("CANCELLED")
             } else {
                 error
@@ -1018,7 +1011,9 @@ impl GumroadService {
                     batch.stage("account", account_id, account)?;
                 }
             }
-            batch.stage("job", id, terminal)?;
+            if !cleared {
+                batch.stage("job", id, terminal)?;
+            }
             if batch.try_commit()?.is_some() {
                 if matches!(job["type"].as_str(), Some("gumroadSync" | "gumroadUpdate")) {
                     self.inner.catalogue.refresh_avatar_defaults()?;

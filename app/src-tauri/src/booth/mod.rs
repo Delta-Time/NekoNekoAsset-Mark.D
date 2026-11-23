@@ -684,18 +684,11 @@ impl BoothService {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
             if blocked(&running, &key) {
-                let login_finishing = job["type"] == "boothSync"
-                    && self.inner.catalogue.list("job")?.iter().any(|active| {
-                        active["accountId"] == job["accountId"]
-                            && active["type"] == "boothLogin"
-                            && matches!(
-                                active["state"].as_str(),
-                                Some("queued" | "running" | "completed")
-                            )
-                    });
-                // An update waits for the account's sync or update to end, as a sync
-                // waits for its login; it stays queued meanwhile.
-                if job["type"] == "boothUpdate" || (login_finishing && running.contains(&key)) {
+                // An update waits for the account's sync or update to end, as a sync waits
+                // for its login or a cancelled task to finish; it stays queued meanwhile.
+                if job["type"] == "boothUpdate"
+                    || (job["type"] == "boothSync" && running.contains(&key))
+                {
                     let service = self.clone();
                     tauri::async_runtime::spawn(async move {
                         let _work = work;
@@ -846,9 +839,11 @@ impl BoothService {
         }
         for _ in 0..4 {
             let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
-            let current = batch
-                .get("job", id)?
-                .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+            let current = batch.get("job", id)?;
+            // Clear history can remove a cancelled job's row while its task winds down.
+            // Its account and sources still end; the row stays cleared.
+            let cleared = current.is_none();
+            let current = current.unwrap_or_else(|| json!({"state":"cancelled"}));
             // Source scanners report through local job copies. Keep the latest
             // durable counters when cancellation/failure ends the parent task.
             let mut terminal = current.clone();
@@ -947,8 +942,21 @@ impl BoothService {
                         }
                     }
                 }
+            } else if error == Some("AUTH_CHALLENGE") {
+                // A sync's sources record this themselves. The account keeps the sign-in it
+                // needs, so clearing Activity does not hide it.
+                if let Some(account_id) = job["accountId"].as_str() {
+                    if let Some(mut account) = batch.get("account", account_id)? {
+                        account["state"] = json!("needsAction");
+                        account["status"] = json!("needsAction");
+                        account["errorCode"] = json!("AUTH_CHALLENGE");
+                        batch.stage("account", account_id, account)?;
+                    }
+                }
             }
-            batch.stage("job", id, terminal)?;
+            if !cleared {
+                batch.stage("job", id, terminal)?;
+            }
             if batch.try_commit()?.is_some() {
                 if matches!(job["type"].as_str(), Some("boothSync" | "boothUpdate")) {
                     self.inner.catalogue.refresh_avatar_defaults()?;
@@ -958,12 +966,13 @@ impl BoothService {
         }
         bail!("CONCURRENT_UPDATE")
     }
+    /// Clear history removes only finished rows, so a job whose row is gone was cancelled.
     fn cancelled(&self, job: &Value) -> Result<bool> {
         Ok(self
             .inner
             .catalogue
             .get("job", field(job, "id")?)?
-            .is_some_and(|j| j["state"] == "cancelled"))
+            .is_none_or(|j| j["state"] == "cancelled"))
     }
     /// Waits until nothing blocks this job's account; false once the job is cancelled.
     async fn wait_for_turn(&self, job: &Value, key: &str) -> Result<bool> {

@@ -16,6 +16,13 @@ These cover the whole core. Folders below add their own `AGENTS.md`.
   libraries keep their normal Open behavior. Recommend a spacious drive;
   auto-download defaults OFF.
 
+## Jobs
+
+- Activity lists jobs as notices for the user. Clear history deletes every finished
+  job, so nothing may decide from one or from its absence: keep what work remembers
+  in its own records (download intents, artifacts, checkpoints, coverage, accounts).
+  A running task whose job row is gone was cancelled.
+
 ## Stores
 
 `booth/` is BOOTH; `stores/` holds Gumroad, Jinxxy and what all three share. What

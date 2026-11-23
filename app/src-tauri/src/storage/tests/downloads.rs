@@ -787,6 +787,92 @@ async fn automatic_delta_preserves_selected_intent_and_rechecks_updates_after_ac
 }
 
 #[tokio::test]
+async fn clearing_activity_never_queues_a_product_download_again() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let c = &f.service.catalogue;
+    c.put(
+        "product",
+        "43",
+        json!({"id":"43","title":"Other synthetic product"}),
+    )
+    .unwrap();
+    c.put("remote_file","other-file",json!({"id":"other-file","productId":"43","accountId":"test-account","name":"other.psd","revision":"r1"})).unwrap();
+    c.put("entitlement","other-entitlement",json!({"id":"other-entitlement","productId":"43","accountId":"test-account","fileIds":["other-file"],"manifestComplete":true})).unwrap();
+    let queued = |product: &str| {
+        c.related("job", product)
+            .unwrap()
+            .into_iter()
+            .filter(|job| job["state"] == "queued")
+            .count()
+    };
+
+    // Downloaded by an earlier version, whose intent kept no list, and Activity cleared.
+    c.put(
+        "download_intent",
+        "42",
+        json!({"id":"42","wantDownload":true}),
+    )
+    .unwrap();
+    f.artifact(0);
+    f.service.reevaluate_automatic().await.unwrap();
+    assert_eq!(queued("42"), 0);
+
+    // A failed or cancelled download waits for a retry however often Activity is cleared.
+    for state in ["failed", "cancelled"] {
+        let ids = f
+            .service
+            .enqueue(&json!({"productIds":["43"]}))
+            .await
+            .unwrap();
+        let mut job = c
+            .get("job", ids["jobIds"][0].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        f.service.put_job(&mut job, state, None).unwrap();
+        c.command("clear_activity", json!({})).unwrap();
+        assert!(c.related("job", "43").unwrap().is_empty());
+        f.service.reevaluate_automatic().await.unwrap();
+        assert_eq!(queued("43"), 0);
+    }
+
+    // A job that met a changed list while it ran leaves that list behind.
+    let ids = f
+        .service
+        .enqueue(&json!({"productIds":["43"]}))
+        .await
+        .unwrap();
+    let mut file = c.get("remote_file", "other-file").unwrap().unwrap();
+    file["revision"] = json!("r2");
+    c.put("remote_file", "other-file", file).unwrap();
+    let (files, _) = f.service.remote_files("43").unwrap();
+    let mut job = c
+        .get("job", ids["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    job["manifestFingerprint"] = json!(fingerprint(&files));
+    f.service.remember_attempt(&job).unwrap();
+    f.service
+        .put_job(&mut job, "failed", Some("network_failed"))
+        .unwrap();
+    assert_eq!(
+        c.get("download_intent", "43").unwrap().unwrap()["wantDownload"],
+        true
+    );
+    c.command("clear_activity", json!({})).unwrap();
+    f.service.reevaluate_automatic().await.unwrap();
+    assert_eq!(queued("43"), 0);
+
+    // A new revision of a downloaded file still queues, once.
+    let mut file = c.get("remote_file", "test-file-0").unwrap().unwrap();
+    file["revision"] = json!("r2");
+    c.put("remote_file", "test-file-0", file).unwrap();
+    f.service.reevaluate_automatic().await.unwrap();
+    f.service.reevaluate_automatic().await.unwrap();
+    assert_eq!(queued("42"), 1);
+}
+
+#[tokio::test]
 async fn automatic_jobs_exclude_explicitly_disconnected_account_files() {
     let f = Fixture::new();
     f.seed(1, true);

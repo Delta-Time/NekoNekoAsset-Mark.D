@@ -215,6 +215,61 @@ fn auth_required_expires_sync_account_without_erasing_identity_or_assets() {
 }
 
 #[test]
+fn clearing_activity_stops_a_cancelled_job_and_keeps_account_facts() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    catalogue.put("account", A, json!({"id":A,"store":"BOOTH","status":"connected","state":"connected","authenticatedAt":"2026-01-01T00:00:00Z"})).unwrap();
+    let coverage = format!("{A}:library");
+    catalogue
+        .put(
+            "source_coverage",
+            &coverage,
+            json!({"id":coverage,"accountId":A,"source":"library","status":"running"}),
+        )
+        .unwrap();
+    // Cancel marks the row at once and Clear removes it while the task still runs.
+    let job =
+        json!({"id":"authored-cleared-sync","type":"boothSync","accountId":A,"state":"cancelled"});
+    catalogue
+        .put("job", "authored-cleared-sync", job.clone())
+        .unwrap();
+    catalogue.command("clear_activity", json!({})).unwrap();
+    assert!(fixture.service.cancelled(&job).unwrap());
+    fixture.service.finish_job(&job, None).unwrap();
+    assert!(catalogue
+        .get("job", "authored-cleared-sync")
+        .unwrap()
+        .is_none());
+    let ended = catalogue.get("account", A).unwrap().unwrap();
+    assert_eq!(ended["syncState"], "incomplete");
+    assert_eq!(ended["lastSyncErrorCode"], "CANCELLED");
+    assert_eq!(
+        catalogue
+            .get("source_coverage", &coverage)
+            .unwrap()
+            .unwrap()["status"],
+        "incomplete"
+    );
+    // A challenge an update met still asks for sign-in once Activity is cleared.
+    let update = json!({"id":"authored-challenged-update","type":"boothUpdate","accountId":A,"state":"running"});
+    catalogue
+        .put("job", "authored-challenged-update", update.clone())
+        .unwrap();
+    fixture
+        .service
+        .finish_job(&update, Some("AUTH_CHALLENGE"))
+        .unwrap();
+    catalogue.command("clear_activity", json!({})).unwrap();
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["status"],
+        "needsAction"
+    );
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn terminal_sync_persists_cancel_error_and_success_with_account_attempt_end() {
     let fixture = Fixture::new();
     let catalogue = &fixture.service.inner.catalogue;

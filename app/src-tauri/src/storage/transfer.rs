@@ -504,6 +504,13 @@ impl StorageService {
         let files = selected_download_files(files, &job["selectedFileIds"])?;
         let attempted_files = files.clone();
         ensure!(!files.is_empty(), "manifest_incomplete");
+        // Queued before its files were all Ready; an interrupted extraction still runs.
+        if job["automatic"] == true && self.all_at_revision(&files, &["ready"])? {
+            job["fileIds"] = json!(files.iter().map(|f| f["id"].clone()).collect::<Vec<_>>());
+            job["manifestFingerprint"] = json!(fingerprint(&files));
+            job["progress"] = json!(100.0);
+            return Ok(());
+        }
         validate_source_tree_paths(&files)?;
         job["fileIds"] = json!(files.iter().map(|f| f["id"].clone()).collect::<Vec<_>>());
         self.catalogue

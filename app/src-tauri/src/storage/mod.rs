@@ -479,6 +479,51 @@ impl StorageService {
         }
         Ok(remaining)
     }
+    /// Every file's artifact at its current revision has one of `statuses`. Automatic
+    /// downloads leave such files alone; checking their bytes again is left to a
+    /// Download the user asks for.
+    fn all_at_revision(&self, files: &[Value], statuses: &[&str]) -> Result<bool> {
+        for file in files {
+            let known = file["revision"]
+                .as_str()
+                .is_some_and(|revision| !revision.is_empty() && revision != "unknown");
+            if !known || file["requiresContentVerification"] == true {
+                return Ok(false);
+            }
+            let Some(artifact) = self.catalogue.get("artifact", &artifact_id(file))? else {
+                return Ok(false);
+            };
+            if !statuses.contains(&artifact["status"].as_str().unwrap_or("")) {
+                return Ok(false);
+            }
+        }
+        Ok(!files.is_empty())
+    }
+    /// The intent remembers which list a product's last download asked for, so
+    /// clearing Activity never makes an automatic download ask for it again.
+    fn remember_attempt(&self, job: &Value) -> Result<()> {
+        let Some(product) = job["productId"].as_str() else {
+            return Ok(());
+        };
+        if job["type"] != "download" || !job["selectedFileIds"].is_null() {
+            return Ok(());
+        }
+        // Every product download writes the intent; one removed since stays removed.
+        while let Some(before) = self.catalogue.get("download_intent", product)? {
+            if before["manifestFingerprint"] == job["manifestFingerprint"] {
+                break;
+            }
+            let mut intent = before.clone();
+            intent["manifestFingerprint"] = job["manifestFingerprint"].clone();
+            if self.catalogue.put_many_if_unchanged(
+                vec![("download_intent".into(), product.to_owned(), intent)],
+                vec![("download_intent".into(), product.to_owned(), Some(before))],
+            )? {
+                break;
+            }
+        }
+        Ok(())
+    }
     /// What a download job covers of its product's current list.
     fn job_files(&self, job: &Value, files: Vec<Value>) -> Result<Vec<Value>> {
         let files = if job["automatic"] == true {
@@ -691,6 +736,8 @@ impl StorageService {
                                 )
                             }
                         };
+                        // Before the job ends, so a delete of its files cannot start in between.
+                        let _ = service.remember_attempt(&job);
                         let _ = service.put_job(&mut job, state, error);
                         service.changed(&app, Some(&id));
                         if let Some(product) = job["productId"].as_str() {
@@ -775,11 +822,9 @@ impl StorageService {
         let accounts = self.available_download_accounts()?;
         let mut pending = Vec::new();
         for id in product_ids {
+            let intent = self.catalogue.get("download_intent", id)?;
             // Deleting downloaded files opts out of download-all until the next Download.
-            let wanted = self
-                .catalogue
-                .get("download_intent", id)?
-                .map(|intent| intent["wantDownload"].clone());
+            let wanted = intent.as_ref().map(|intent| intent["wantDownload"].clone());
             if wanted == Some(json!(false)) || (!all && wanted != Some(json!(true))) {
                 continue;
             }
@@ -798,16 +843,24 @@ impl StorageService {
             // still holding that file.
             let with_ended = fingerprint(&files);
             let files = self.without_last_failure(files, skipped_failures(false))?;
-            if files.is_empty() {
+            // Bytes already here leave nothing to fetch, as Downloaded counts them.
+            let here = ["ready", "downloaded", "extracting", "extractionFailed"];
+            if files.is_empty() || self.all_at_revision(&files, &here)? {
                 continue;
             }
             let fingerprint = fingerprint(&files);
-            // Failed/cancelled work requires an explicit retry; only a changed manifest queues again.
-            if self.catalogue.related("job", id)?.iter().any(|job| {
-                job["type"] == "download"
-                    && (job["manifestFingerprint"] == fingerprint
-                        || job["manifestFingerprint"] == with_ended)
-            }) {
+            let asked = |value: &Value| *value == fingerprint || *value == with_ended;
+            // Failed/cancelled work requires an explicit retry; only a changed manifest
+            // queues again. Jobs from before the intent remembered its list still count.
+            if intent
+                .as_ref()
+                .is_some_and(|intent| asked(&intent["manifestFingerprint"]))
+                || self
+                    .catalogue
+                    .related("job", id)?
+                    .iter()
+                    .any(|job| job["type"] == "download" && asked(&job["manifestFingerprint"]))
+            {
                 continue;
             }
             pending.push(id.clone());
@@ -866,8 +919,12 @@ impl StorageService {
             }
             if product["provider"] == "local" {
                 ensure!(selected.is_null(), "local_source_required");
-                if let Some(job_id) = self.retry_local_product_locked(&id, &jobs)? {
-                    result.push(json!(job_id));
+                match self.retry_local_product_locked(&id, &jobs) {
+                    Ok(job) => result.extend(job.map(Value::from)),
+                    // Several products at once go on without one whose source must be
+                    // chosen again; asked for alone, it says so.
+                    Err(error) if bulk && error.to_string() == "local_source_required" => {}
+                    Err(error) => return Err(error),
                 }
                 continue;
             }
@@ -889,14 +946,8 @@ impl StorageService {
                 continue;
             }
             let files = selected_download_files(files, &selected)?;
-            if selected.is_null() {
-                writes.push((
-                    "download_intent".into(),
-                    id.clone(),
-                    json!({"id":id,"wantDownload":true}),
-                ));
-            }
-            if let Some(job) = active.iter().find(|job| {
+            let fingerprint = fingerprint(&files);
+            let running = active.iter().find(|job| {
                 job["productId"] == id
                     && if selected.is_null() {
                         job["selectedFileIds"].is_null()
@@ -905,7 +956,18 @@ impl StorageService {
                             || (job["selectedFileIds"].is_null()
                                 && strings(&job["fileIds"]).contains(&strings(&selected)[0]))
                     }
-            }) {
+            });
+            if selected.is_null() {
+                // The list a job asks for; one already active asks for its own.
+                let asked =
+                    running.map_or(json!(fingerprint), |job| job["manifestFingerprint"].clone());
+                writes.push((
+                    "download_intent".into(),
+                    id.clone(),
+                    json!({"id":id,"wantDownload":true,"manifestFingerprint":asked}),
+                ));
+            }
+            if let Some(job) = running {
                 ensure!(
                     args["redownload"] != true || job["redownload"] == true,
                     "storage_busy"
@@ -913,7 +975,6 @@ impl StorageService {
                 result.push(job["id"].clone());
                 continue;
             }
-            let fingerprint = fingerprint(&files);
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
             writes.push(("job".into(), job_id.clone(), job));

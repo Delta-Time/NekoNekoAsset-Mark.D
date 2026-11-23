@@ -29,6 +29,39 @@ fn startup_recovery_isolates_orphan_jobs_and_keeps_later_jobs_resumable() {
 }
 
 #[test]
+fn clearing_activity_stops_a_cancelled_sync_and_keeps_account_facts() {
+    let path = std::env::temp_dir().join(format!("gumroad-cleared-{}", uuid::Uuid::new_v4()));
+    let catalogue = Catalogue::open(&path).unwrap();
+    let service = GumroadService::new(catalogue.clone()).unwrap();
+    let account = "d0140000-0000-4000-8000-000000000003";
+    catalogue
+        .put(
+            "account",
+            account,
+            json!({"id":account,"store":"Gumroad","state":"connected","status":"connected"}),
+        )
+        .unwrap();
+    // Cancel marks the row at once and Clear removes it while the task still runs.
+    let job = json!({"id":"authored-cleared-sync","type":"gumroadSync","store":"Gumroad","accountId":account,"state":"cancelled","progress":{"stage":"collecting"}});
+    catalogue
+        .put("job", "authored-cleared-sync", job.clone())
+        .unwrap();
+    catalogue.command("clear_activity", json!({})).unwrap();
+    assert!(service.cancelled(&job).is_err());
+    service.finish_job(&job, None).unwrap();
+    assert!(catalogue
+        .get("job", "authored-cleared-sync")
+        .unwrap()
+        .is_none());
+    let ended = catalogue.get("account", account).unwrap().unwrap();
+    assert_eq!(ended["syncState"], "incomplete");
+    assert_eq!(ended["lastSyncErrorCode"], "CANCELLED");
+    drop(service);
+    drop(catalogue);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn stale_retry_cannot_overwrite_the_first_retry_attempt() {
     let path = std::env::temp_dir().join(format!("gumroad-retry-{}", uuid::Uuid::new_v4()));
     let catalogue = Catalogue::open(&path).unwrap();

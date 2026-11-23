@@ -1057,6 +1057,15 @@ async fn local_import_download_routes_to_original_job_repairs_missing_copy_and_n
         .unwrap_err();
     assert!(error.to_string().contains("local_source_required"));
     assert!(f.service.catalogue.list("job").unwrap().is_empty());
+    // Asked for with other assets, it stays out and the others still queue.
+    f.seed(1, true);
+    let response = f
+        .service
+        .enqueue(&json!({"productIds":[product, "42"]}))
+        .await
+        .unwrap();
+    assert_eq!(response["jobIds"].as_array().unwrap().len(), 1);
+    assert_eq!(f.service.catalogue.related("job", "42").unwrap().len(), 1);
 }
 
 #[test]
