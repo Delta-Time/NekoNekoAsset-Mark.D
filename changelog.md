@@ -17,6 +17,7 @@
 - Assets added by one import keep the order they were added in.
 - When a store no longer offers a file because its author replaced it, the asset stays in progress while the App reads the store's new list and downloads the new files, instead of showing Downloaded first. Automatic downloads do this too, and files the download had just checked are not downloaded again.
 - File sizes in the inspector read as GB and MB, like Storage and the Unity window.
+- Your selection stays when you switch category, collection, search or filters, so you can select assets from several categories and import, download or edit them together. Esc or Clear selection clears it.
 - With Hide unavailable assets on, a free asset whose free offer ended before you downloaded it is hidden too, and an ended free offer no longer shows Attention. If a sync later finds the offer open again, the asset shows again and can be downloaded.
 - Installing over an existing copy no longer asks whether to uninstall it first.
 - Unity Bridge 0.4.0 imports much faster: in a test with a 1,231-file package, Unity was busy for about 10 seconds instead of about a minute, and the App followed the import throughout instead of showing Result unconfirmed.

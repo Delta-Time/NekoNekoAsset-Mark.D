@@ -33,8 +33,8 @@ export default function ProductItem({
   filters: Filters;
   q: (key: string) => string;
 }) {
-  const { selectedSet, select, visibleSelected, keySelect } = selectedProducts;
-  const { setSelected, setFocusId, revealed, setRevealed } = selection;
+  const { selectedSet, select, keySelect } = selectedProducts;
+  const { selected, setSelected, setFocusId, revealed, setRevealed } = selection;
   const { setContext } = nav;
   const { density, columns, locale } = uiPrefs;
   const { categoryLabel } = categories;
@@ -88,7 +88,7 @@ export default function ProductItem({
       onClick={(e) => select(p, e)}
       onContextMenu={(e) => {
         e.preventDefault();
-        const ids = selectedSet.has(p.id) ? visibleSelected : [p.id];
+        const ids = selectedSet.has(p.id) ? selected : [p.id];
         if (!selectedSet.has(p.id)) {
           setSelected(ids);
           setFocusId(p.id);

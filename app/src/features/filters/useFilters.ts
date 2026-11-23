@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { defaultSortDirection } from '../../model';
 import type { SortDirection } from '../../model';
 import { invokeAction } from '../../backend';
@@ -10,7 +10,7 @@ import type { Navigation } from '../shell/useNavigation';
 import type { Library } from '../library/useLibrary';
 
 /** What the library lists: search, sidebar scope, toolbar filters, sort, collection and saved
- * search. Changing any of them clears the selection. */
+ * search. Changing them keeps the selection, except entering or leaving Hidden assets. */
 export function useFilters({
   selection,
   notices,
@@ -22,7 +22,7 @@ export function useFilters({
   nav: Navigation;
   library: Library;
 }) {
-  const { pendingSuggestionProduct, clearSelection } = selection;
+  const { pendingSuggestionProduct, clearSelection, leaveView, setSelected } = selection;
   const { run } = notices;
   const { setView, setTab, setInspector } = nav;
   const { licenseEnabled } = library;
@@ -31,6 +31,15 @@ export function useFilters({
     [direction, setDirection] = useState<SortDirection>('desc');
   const [collection, setCollection] = useState(''),
     [savedScope, setSavedScope] = useState<number | null>(null);
+  // Hidden assets are a place of their own, with Unhide as their action: a selection does not
+  // cross into them or out of them, whichever control moved there.
+  const hidden = query.quick === 'hidden',
+    place = useRef(hidden);
+  useLayoutEffect(() => {
+    if (place.current === hidden) return;
+    place.current = hidden;
+    setSelected([]);
+  }, [hidden]);
   const updateQuery = (patch: Partial<Query>) => {
     pendingSuggestionProduct.current = '';
     setQuery((old) => ({
@@ -38,7 +47,7 @@ export function useFilters({
       ...(patch.category || patch.avatar || patch.quick ? leavingHidden(old) : {}),
       ...patch,
     }));
-    clearSelection();
+    leaveView();
     setSavedScope(null);
   };
   const openSuggestedProduct = (id: string) =>
@@ -53,6 +62,7 @@ export function useFilters({
         });
         setCollection('');
         setSavedScope(null);
+        // Opening one suggested product selects only it, as clicking it would.
         clearSelection();
         setView('library');
         setTab('details');
@@ -65,13 +75,13 @@ export function useFilters({
     setDirection('desc');
     setCollection('');
     setSavedScope(null);
-    clearSelection();
+    leaveView();
   };
   const changeSort = (value: string) => {
     setSort(value);
     setDirection(defaultSortDirection(value));
     setSavedScope(null);
-    clearSelection();
+    leaveView();
   };
   const defaultAccounts = query.includeOffline && query.accountIds === null;
   const filtersActive =

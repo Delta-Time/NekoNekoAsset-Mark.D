@@ -136,6 +136,21 @@ export function useResults({
     },
     onError: (error: unknown) => notify(q(errorCode(error))),
   };
+  /** Keeps a list answer's summaries: in the cache sent as known next time, and among every
+   * summary seen, so the two always hold the same products. */
+  const absorb = (result: { products: Product[]; fingerprints?: Record<string, string> }) => {
+    for (const product of result.products)
+      summaryCache.current.set(product.id, {
+        fingerprint: result.fingerprints?.[product.id] ?? '',
+        product,
+      });
+    if (result.products.length)
+      setProducts((old) => {
+        const cache = new Map(old.map((product) => [product.id, product]));
+        for (const product of result.products) cache.set(product.id, product);
+        return [...cache.values()];
+      });
+  };
   if (!queryTask.current)
     queryTask.current = coalescedRefresh(async () => {
       if (
@@ -163,11 +178,7 @@ export function useResults({
           knownSummaries,
         });
         if (epoch !== libraryEpoch.current) return;
-        for (const product of result.products)
-          summaryCache.current.set(product.id, {
-            fingerprint: result.fingerprints?.[product.id] ?? '',
-            product,
-          });
+        absorb(result);
         if (!current()) return;
         const products = result.matchedIds.flatMap((id) => {
           const product = summaryCache.current.get(id)?.product;
@@ -177,12 +188,6 @@ export function useResults({
         setFailedQueryKey('');
         setCatalogueTotal(result.total);
         setCatalogueCounts(result.counts);
-        if (result.products.length)
-          setProducts((old) => {
-            const cache = new Map(old.map((product) => [product.id, product]));
-            for (const product of result.products) cache.set(product.id, product);
-            return [...cache.values()];
-          });
       } catch (error) {
         if (current()) {
           if (!hasCurrent) setQueryResult(null);
@@ -223,6 +228,9 @@ export function useResults({
     setQueryBusy,
     setFailedQueryKey,
     summaryCache,
+    absorb,
+    hideUnavailable,
+    hideTermsOnly,
     queryKey,
     accountScopeKey,
     filtered,

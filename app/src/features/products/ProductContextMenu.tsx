@@ -47,7 +47,7 @@ export default function ProductContextMenu({
   notices: Notices;
   q: (key: string) => string;
 }) {
-  const { context, setDialog, openUnity, setFlow, setContext } = nav;
+  const { context, setDialog, openUnity, openAi, setContext } = nav;
   const {
     exportZip,
     update,
@@ -62,11 +62,17 @@ export default function ProductContextMenu({
     requestDeleteDownloads,
   } = actions;
   const { aiEnabled, licenseEnabled } = library;
-  const { setSelected } = selection;
+  const { addToSelection } = selection;
   const { matchedIds } = results;
   const { locale } = uiPrefs;
-  const { localSelection, requestLocalDelete, onlineSelection, hiddenSelection, hideProducts } =
-    edits;
+  const {
+    editSelection,
+    localSelection,
+    requestLocalDelete,
+    onlineSelection,
+    hiddenSelection,
+    hideProducts,
+  } = edits;
   const { run } = notices;
   return (
     context && (
@@ -77,7 +83,7 @@ export default function ProductContextMenu({
             id: 'edit',
             label: q('edit'),
             icon: <SlidersHorizontal size={14} />,
-            onClick: () => setDialog(context.ids.length > 1 ? 'batch' : 'edit'),
+            onClick: () => editSelection(context.ids),
           },
           {
             id: 'collection',
@@ -102,7 +108,7 @@ export default function ProductContextMenu({
             label: q('aiTags'),
             icon: <Tags size={14} />,
             disabled: !aiEnabled,
-            onClick: () => setFlow('ai'),
+            onClick: () => openAi(context.ids),
           },
           {
             id: 'spending',
@@ -114,7 +120,7 @@ export default function ProductContextMenu({
             id: 'selectAll',
             label: q('selectAll'),
             icon: <CheckCircle2 size={14} />,
-            onClick: () => setSelected(matchedIds),
+            onClick: () => addToSelection(matchedIds),
           },
           {
             id: 'update',

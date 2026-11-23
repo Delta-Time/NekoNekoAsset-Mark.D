@@ -66,9 +66,9 @@ export default function InspectorPane({
   const { setInspectorWidth, locale } = uiPrefs;
   const { view, settingsRoute, setSettingsRoute, tab, setTab } = nav;
   const { notify, run } = notices;
-  const { visibleSelected, active, availability, availabilityKey } = selectedProducts;
+  const { active, availability, availabilityKey } = selectedProducts;
   const { aiEnabled, nativeState, accounts } = library;
-  const { edit } = edits;
+  const { editProduct } = edits;
   const {
     dismissAttention,
     downloadFile,
@@ -80,7 +80,7 @@ export default function InspectorPane({
     deletingDownloads,
   } = actions;
   const { query, updateQuery } = filters;
-  const { revealed, setRevealed } = selection;
+  const { selected, revealed, setRevealed } = selection;
   const { resize, wide, paneWidth } = layout;
   const { onPreferences } = preferenceSync;
   const { categoryLabel } = categories;
@@ -156,7 +156,7 @@ export default function InspectorPane({
               )}
             </div>
           </>
-        ) : visibleSelected.length > 1 ? (
+        ) : selected.length > 1 ? (
           <BatchSummary
             selectedProducts={selectedProducts}
             library={library}
@@ -191,13 +191,12 @@ export default function InspectorPane({
                 nav={nav}
                 edits={edits}
                 library={library}
-                selectedProducts={selectedProducts}
                 notices={notices}
                 q={q}
               />
             }
             onDismissAttention={() => dismissAttention([active.id])}
-            onEdit={edit}
+            onEdit={editProduct}
             onTagClick={(tag) => updateQuery({ search: tag })}
             onFileRetry={downloadFile}
             onDownloadAll={() => download([active.id])}

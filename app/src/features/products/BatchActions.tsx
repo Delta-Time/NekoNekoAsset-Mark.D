@@ -48,14 +48,14 @@ export default function BatchActions({
   const { productMap } = selectedProducts;
   const { batchEnabled, aiEnabled, licenseEnabled } = library;
   const {
-    edit,
+    editSelection,
     localSelection,
     requestLocalDelete,
     onlineSelection,
     hiddenSelection,
     hideProducts,
   } = edits;
-  const { setDialog, setFlow, openUnity } = nav;
+  const { setDialog, openAi, openUnity } = nav;
   const { exportZip, update, syncLicenses, download, allUnavailable } = actions;
   const { run } = notices;
   const { locale } = uiPrefs;
@@ -70,7 +70,7 @@ export default function BatchActions({
     <div className="scope-actions" role="group" aria-label={q('selected')}>
       <div className="scope-actions-left">
         {batchEnabled.edit && (
-          <Button title={q('edit')} onClick={edit} disabled={!ids.length}>
+          <Button title={q('edit')} onClick={() => editSelection(ids)} disabled={!ids.length}>
             <SlidersHorizontal size={14} />
             <span>{q('edit')}</span>
           </Button>
@@ -92,7 +92,7 @@ export default function BatchActions({
           </Button>
         )}
         {aiEnabled && batchEnabled.ai && (
-          <Button title={q('aiTags')} onClick={() => setFlow('ai')} disabled={!ids.length}>
+          <Button title={q('aiTags')} onClick={() => openAi(ids)} disabled={!ids.length}>
             <Tags size={14} />
             <span>{q('aiTags')}</span>
           </Button>

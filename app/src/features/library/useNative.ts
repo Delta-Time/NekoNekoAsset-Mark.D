@@ -22,6 +22,7 @@ import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Navigation } from '../shell/useNavigation';
 import type { Results } from '../results/useResults';
 import type { Notices } from '../shell/useNotice';
+import type { Selection } from '../selection/useSelection';
 import type { DialogKind, DialogOptions } from '../../bindings';
 
 type LooseInvoke = (
@@ -46,6 +47,7 @@ export function useNative({
   nav,
   results,
   notices,
+  selection,
   q,
 }: {
   library: Library;
@@ -55,6 +57,7 @@ export function useNative({
   nav: Navigation;
   results: Results;
   notices: Notices;
+  selection: Selection;
   q: (key: string) => string;
 }) {
   const {
@@ -106,6 +109,7 @@ export function useNative({
     setFailedQueryKey,
   } = results;
   const { notify } = notices;
+  const { clearSelection } = selection;
   const licenseActive = useRef(false);
   const eventText = useRef(q);
   eventText.current = q;
@@ -211,6 +215,8 @@ export function useNative({
         setAccounts([]);
         setProducts([]);
         summaryCache.current.clear();
+        // Another library's products are not this one's, even under the same store IDs.
+        clearSelection();
         setQueryResult(null);
         setQueryBusy(false);
         setFailedQueryKey('');

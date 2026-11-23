@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import type { PointerEvent } from 'react';
 
-/** Appearance › One-handed drag: a press on a selected product drags the selection onto a sidebar category;
- * a press anywhere else in the results draws a selection box. Ctrl/Shift add the box to the selection. */
+/** Appearance › One-handed drag: a press on a selected product drags the selected products in view onto a
+ * sidebar category; a press anywhere else in the results draws a selection box. Ctrl/Shift add the box to
+ * the whole selection. */
 export type DragGestures = {
   selected: ReadonlySet<string>;
   select: (ids: string[], anchor?: string) => void;
@@ -71,9 +72,11 @@ export function useDragGestures(
     if (e.clientX >= right || e.clientY >= bottom) return;
     const id = pressed.closest<HTMLElement>('[data-product-id]')?.dataset.productId,
       moving = !!id && g.selected.has(id),
-      before = [...g.selected];
+      before = [...g.selected],
+      listed = new Set(latest.current.items.map((item) => item.id));
+    // A drag moves what it shows: products selected in other views stay where they are.
     const base = e.ctrlKey || e.metaKey || e.shiftKey ? before : [],
-      ids = moving ? before : [],
+      ids = moving ? before.filter((item) => listed.has(item)) : [],
       pointerId = e.pointerId,
       root = document.documentElement;
     const local = (x: number, y: number) => {

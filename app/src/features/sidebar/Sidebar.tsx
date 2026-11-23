@@ -64,7 +64,7 @@ export default function Sidebar({
   const { refreshAvatarOptions } = native;
   const { collections } = collectionStore;
   const { saved } = library;
-  const { clearSelection } = selection;
+  const { leaveView } = selection;
   return (
     <aside className="sidebar" style={{ width: navWidth, flexBasis: navWidth }}>
       <div className="quick-scopes">
@@ -229,7 +229,7 @@ export default function Sidebar({
                   setDirection(search.direction || defaultSortDirection(search.sort || 'acquired'));
                   setCollection('');
                   setSavedScope(i);
-                  clearSelection();
+                  leaveView();
                 }}
               >
                 <Bookmark size={13} />

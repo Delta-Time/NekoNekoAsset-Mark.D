@@ -56,7 +56,7 @@ export default function LibraryToolbar({
   const { locale } = uiPrefs;
   const { accounts, licenseEnabled } = library;
   const { licenseButton, setLicenseOpen, setInspector } = nav;
-  const { clearSelection } = selection;
+  const { leaveView } = selection;
   const { resultsPending, matchedIds } = results;
   const { categoryLabel } = categories;
   const { avatarLabel } = avatars;
@@ -183,7 +183,7 @@ export default function LibraryToolbar({
         onChange={(e) => {
           setDirection(e.target.value as SortDirection);
           setSavedScope(null);
-          clearSelection();
+          leaveView();
         }}
       >
         <option value="asc">{q('ascending')}</option>
@@ -227,7 +227,7 @@ export default function LibraryToolbar({
       {collection &&
         filterChip('collection', q('collectionFilter'), collection, () => {
           setCollection('');
-          clearSelection();
+          leaveView();
         })}
       {!defaultAccounts &&
         filterChip(
@@ -272,7 +272,7 @@ export default function LibraryToolbar({
           () => {
             setSort('acquired');
             setDirection('desc');
-            clearSelection();
+            leaveView();
           },
         )}
       {filtersActive && (

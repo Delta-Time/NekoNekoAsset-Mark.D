@@ -40,11 +40,11 @@ export default function BatchSummary({
   selection: Selection;
   q: (key: string) => string;
 }) {
-  const { selectedSet, visibleSelected } = selectedProducts;
+  const { selectedSet } = selectedProducts;
   const { locale } = uiPrefs;
   const { products } = results;
   const { query } = filters;
-  const { revealed } = selection;
+  const { revealed, selected } = selection;
   return (
     <div className="selection-summary">
       <div className="batch-stack" aria-hidden="true">
@@ -70,11 +70,11 @@ export default function BatchSummary({
           ))}
       </div>
       <h2 className="batch-count">
-        <b>{visibleSelected.length.toLocaleString(locale)}</b>
+        <b>{selected.length.toLocaleString(locale)}</b>
         <span>{q('selected')}</span>
       </h2>
       <BatchActions
-        ids={visibleSelected}
+        ids={selected}
         selectedProducts={selectedProducts}
         library={library}
         edits={edits}

@@ -12,6 +12,12 @@ export function useNavigation() {
     setUnitySeed({ productIds: [...new Set(productIds)], leafRefs });
     setFlow('unity');
   };
+  // The products AI tagging works on, named by whatever opened it: the selection or one product.
+  const [aiSeed, setAiSeed] = useState<string[]>([]);
+  const openAi = (productIds: string[]) => {
+    setAiSeed([...new Set(productIds)]);
+    setFlow('ai');
+  };
   const [flow, setFlow] = useState<string | null>(null),
     [dialog, setDialog] = useState<string | null>(null),
     [tab, setTab] = useState<'details' | 'files'>('details');
@@ -32,6 +38,8 @@ export function useNavigation() {
     setSettingsRoute,
     unitySeed,
     openUnity,
+    aiSeed,
+    openAi,
     flow,
     setFlow,
     dialog,

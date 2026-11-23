@@ -11,7 +11,7 @@ import type { Selection } from '../selection/useSelection';
 import type { Navigation } from '../shell/useNavigation';
 
 /** Edits to products: overlay patches with undo, hiding and unhiding store products, deleting
- * local ones, and opening the edit dialog for the selection. */
+ * local ones, and opening the edit dialog for the details pane's product or the selection. */
 export function useProductEdits({
   native,
   notices,
@@ -33,7 +33,7 @@ export function useProductEdits({
 }) {
   const { onNative, refreshAvatarOptions, reload } = native;
   const { notify } = notices;
-  const { productMap, setProductDetails, visibleSelected } = selectedProducts;
+  const { productMap, setProductDetails, active } = selectedProducts;
   const { query } = filters;
   const { setQueryResult, setProducts, summaryCache } = results;
   const { setSelected, setFocusId } = selection;
@@ -181,7 +181,13 @@ export function useProductEdits({
     await onNative('catalogue', 'undo', { token: undo });
     setUndo(null);
   };
-  const edit = () => setDialog(visibleSelected.length > 1 ? 'batch' : 'edit');
+  /** The editor for the product the details pane shows. */
+  const editProduct = () => setDialog('edit');
+  /** The selection's editor. One selected product is the details pane's wherever it is, so it
+   * gets its own editor; batch edit covers anything else, so the edit never lands elsewhere. */
+  const editSelection = (ids: string[]) => {
+    if (ids.length) setDialog(ids.length === 1 && ids[0] === active?.id ? 'edit' : 'batch');
+  };
   return {
     deleteLocalSelection,
     setDeleteLocalSelection,
@@ -195,7 +201,8 @@ export function useProductEdits({
     hideProducts,
     deleteLocalProducts,
     undoAction,
-    edit,
+    editProduct,
+    editSelection,
   };
 }
 export type ProductEdits = ReturnType<typeof useProductEdits>;

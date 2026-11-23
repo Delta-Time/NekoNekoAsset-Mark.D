@@ -104,7 +104,10 @@ export default function AppDialogs({
     setUpdateAvailable,
     prepareUpdate,
   } = updates;
-  const { chosen, active } = selectedProducts;
+  const { active } = selectedProducts;
+  // Batch edit, collections and spending cover every selected product, in view or not; the
+  // other editors get only the product they edit.
+  const { selected } = selection;
   const {
     setThemePreview,
     selectedThemeTokens,
@@ -166,7 +169,9 @@ export default function AppDialogs({
         }
         locale={locale}
         products={products}
-        selected={chosen}
+        selected={
+          dialog === 'batch' || dialog === 'collection' ? selected : active ? [active.id] : []
+        }
         active={active}
         onClose={() => {
           setDialog(null);
@@ -245,7 +250,7 @@ export default function AppDialogs({
       {dialog === 'spending' && (
         <SpendingDialog
           locale={locale}
-          productIds={chosen}
+          productIds={selected}
           accountIds={query.accountIds ?? undefined}
           onClose={() => setDialog(null)}
         />

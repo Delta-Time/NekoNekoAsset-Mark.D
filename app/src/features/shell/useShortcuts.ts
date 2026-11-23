@@ -37,7 +37,7 @@ export function useShortcuts({
   const { zoomTarget, uiScale } = uiPrefs;
   const { deleteLocalSelection, undoAction, undo } = edits;
   const { flow, dialog, context, view, setContext } = nav;
-  const { setSelected, clearSelection } = selection;
+  const { addToSelection, clearSelection } = selection;
   const { matchedIds } = results;
   const { run } = notices;
   const searchRef = useRef<HTMLInputElement>(null);
@@ -67,7 +67,7 @@ export function useShortcuts({
         ['library', 'settings'].includes(view)
       ) {
         e.preventDefault();
-        setSelected(matchedIds);
+        addToSelection(matchedIds);
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !flow && !dialog) {
@@ -79,7 +79,9 @@ export function useShortcuts({
         run(undoAction());
       }
       if (e.key === 'Escape' && !flow && !dialog) {
+        // Escape in a field, such as the search beside a selection, only leaves the field.
         if (context) setContext(null);
+        else if (editing) (document.activeElement as HTMLElement | null)?.blur();
         else clearSelection();
       }
     };

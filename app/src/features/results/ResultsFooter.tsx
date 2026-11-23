@@ -37,15 +37,15 @@ export default function ResultsFooter({
   results: Results;
   q: (key: string) => string;
 }) {
-  const { visibleSelected } = selectedProducts;
+  const { selectedSet } = selectedProducts;
   const { batchEnabled } = library;
   const { setProductConfirm } = actions;
   const { locale, thumb, setThumb, density, setDensity, columns, setColumns } = uiPrefs;
-  const { setSelected } = selection;
+  const { selected, setSelected, addToSelection } = selection;
   const { matchedIds, queryBusy, queryResult, queryKey } = results;
   return (
     <footer className="result-footer">
-      {visibleSelected.length > 0 && (
+      {selected.length > 0 && (
         <div
           className="selection-actions"
           onKeyUpCapture={(e) => {
@@ -71,15 +71,15 @@ export default function ResultsFooter({
               <X size={13} />
             </Button>
             <strong className="selection-count">
-              <b key={visibleSelected.length}>{visibleSelected.length.toLocaleString(locale)}</b>
+              <b key={selected.length}>{selected.length.toLocaleString(locale)}</b>
               <span>{q('selected')}</span>
             </strong>
             {batchEnabled.selectAll && (
               <Button
                 title={q('selectAll')}
-                onClick={() => setSelected(matchedIds)}
+                onClick={() => addToSelection(matchedIds)}
                 disabled={
-                  !matchedIds.length || queryBusy || visibleSelected.length >= matchedIds.length
+                  !matchedIds.length || queryBusy || matchedIds.every((id) => selectedSet.has(id))
                 }
               >
                 <CheckCircle2 size={14} />
@@ -88,7 +88,7 @@ export default function ResultsFooter({
             )}
           </div>
           <BatchActions
-            ids={visibleSelected}
+            ids={selected}
             selectedProducts={selectedProducts}
             library={library}
             edits={edits}
@@ -130,7 +130,17 @@ export default function ResultsFooter({
           <option value={74}>{q('standard')}</option>
           <option value={90}>{q('comfortable')}</option>
         </select>
-        <details className="column-menu">
+        <details
+          className="column-menu"
+          onKeyDown={(e) => {
+            // Escape closes the open menu and keeps the selection.
+            if (e.key === 'Escape' && e.currentTarget.open) {
+              e.stopPropagation();
+              e.currentTarget.open = false;
+              e.currentTarget.querySelector('summary')?.focus();
+            }
+          }}
+        >
           <summary aria-label={q('columns')} title={q('columns')}>
             <Columns2 size={14} />
             <span>{q('columns')}</span>

@@ -6,7 +6,6 @@ import type { ProductActions } from './useProductActions';
 import type { Navigation } from '../shell/useNavigation';
 import type { ProductEdits } from './useProductEdits';
 import type { Library } from '../library/useLibrary';
-import type { SelectedProducts } from '../selection/useSelectedProducts';
 import type { Notices } from '../shell/useNotice';
 
 /** The details pane's actions for one product: download, cancel or import, Edit, and the More menu. */
@@ -16,7 +15,6 @@ export default function SingleActions({
   nav,
   edits,
   library,
-  selectedProducts,
   notices,
   q,
 }: {
@@ -25,7 +23,6 @@ export default function SingleActions({
   nav: Navigation;
   edits: ProductEdits;
   library: Library;
-  selectedProducts: SelectedProducts;
   notices: Notices;
   q: (key: string) => string;
 }) {
@@ -42,10 +39,11 @@ export default function SingleActions({
     dismissAttention,
     exportZip,
   } = actions;
-  const { openUnity, setFlow } = nav;
-  const { edit, onlineSelection, requestLocalDelete, hideProducts } = edits;
+  const { openUnity, openAi } = nav;
+  const { editProduct, onlineSelection, requestLocalDelete, hideProducts } = edits;
   const { licenseEnabled, aiEnabled } = library;
-  const { chosen } = selectedProducts;
+  // The details pane acts on the product it shows; the selection has its own actions.
+  const ids = [p.id];
   const { run } = notices;
   const ready = getProductDisplayStatus(p) === 'ready' && isProductDownloaded(p),
     downloads = activeDownloads(p.id);
@@ -76,11 +74,21 @@ export default function SingleActions({
           <span>{q(ready ? 'importUnity' : 'download')}</span>
         </Button>
       )}
-      <Button onClick={edit}>
+      <Button onClick={editProduct}>
         <SlidersHorizontal size={14} />
         {q('edit')}
       </Button>
-      <details className="action-menu">
+      <details
+        className="action-menu"
+        onKeyDown={(e) => {
+          // Escape closes the open menu and keeps the selection.
+          if (e.key === 'Escape' && e.currentTarget.open) {
+            e.stopPropagation();
+            e.currentTarget.open = false;
+            e.currentTarget.querySelector('summary')?.focus();
+          }
+        }}
+      >
         <summary aria-label={q('more')}>
           <MoreHorizontal size={16} />
         </summary>
@@ -89,38 +97,36 @@ export default function SingleActions({
             'update',
             ...(licenseEnabled ? ['syncLicenses'] : []),
             'download',
-            ...(chosen.some((id) => activeDownloads(id).length) ? ['cancelDownload'] : []),
+            ...(ids.some((id) => activeDownloads(id).length) ? ['cancelDownload'] : []),
             ...(aiEnabled ? ['ai'] : []),
             'importUnity',
             'exportZip',
-            ...(needsAttention(chosen) ? ['dismissAttention'] : []),
+            ...(needsAttention(ids) ? ['dismissAttention'] : []),
             ...(p.provider === 'local'
               ? ['delete']
               : [
                   p.hidden ? 'unhide' : 'hide',
-                  ...(onlineSelection(chosen) && hasDownloadedFiles(chosen)
-                    ? ['deleteDownloads']
-                    : []),
+                  ...(onlineSelection(ids) && hasDownloadedFiles(ids) ? ['deleteDownloads'] : []),
                 ]),
           ].map((key) => (
             <button
               key={key}
               className={key === 'delete' || key === 'deleteDownloads' ? 'danger' : undefined}
-              disabled={key === 'download' && allUnavailable(chosen)}
+              disabled={key === 'download' && allUnavailable(ids)}
               onClick={(e) => {
                 e.currentTarget.closest('details')?.removeAttribute('open');
                 if (key === 'delete') requestLocalDelete([p.id]);
                 else if (key === 'hide' || key === 'unhide')
                   run(hideProducts([p.id], key === 'hide'));
-                else if (key === 'update') update(chosen);
-                else if (key === 'syncLicenses') syncLicenses(chosen);
-                else if (key === 'download') download(chosen);
-                else if (key === 'cancelDownload') cancelDownloads(chosen);
-                else if (key === 'deleteDownloads') requestDeleteDownloads(chosen);
-                else if (key === 'dismissAttention') dismissAttention(chosen);
-                else if (key === 'ai') setFlow('ai');
-                else if (key === 'importUnity') openUnity(chosen);
-                else exportZip(chosen);
+                else if (key === 'update') update(ids);
+                else if (key === 'syncLicenses') syncLicenses(ids);
+                else if (key === 'download') download(ids);
+                else if (key === 'cancelDownload') cancelDownloads(ids);
+                else if (key === 'deleteDownloads') requestDeleteDownloads(ids);
+                else if (key === 'dismissAttention') dismissAttention(ids);
+                else if (key === 'ai') openAi(ids);
+                else if (key === 'importUnity') openUnity(ids);
+                else exportZip(ids);
               }}
             >
               {q(key)}

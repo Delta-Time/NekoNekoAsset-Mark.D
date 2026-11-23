@@ -3,7 +3,6 @@ import { configuredLibraryRoot } from '../library/library-root';
 import type { UiPreferences } from '../preferences/useUiPreferences';
 import type { Results } from '../results/useResults';
 import type { Library } from '../library/useLibrary';
-import type { SelectedProducts } from '../selection/useSelectedProducts';
 import type { Appearance } from '../appearance/useAppearance';
 import type { Native } from '../library/useNative';
 import type { Navigation } from '../shell/useNavigation';
@@ -18,7 +17,6 @@ export function useWorkflowProps({
   uiPrefs,
   results,
   library,
-  selectedProducts,
   appearance,
   native,
   nav,
@@ -30,7 +28,6 @@ export function useWorkflowProps({
   uiPrefs: UiPreferences;
   results: Results;
   library: Library;
-  selectedProducts: SelectedProducts;
   appearance: Appearance;
   native: Native;
   nav: Navigation;
@@ -54,10 +51,9 @@ export function useWorkflowProps({
     autoAll,
     accounts,
   } = library;
-  const { chosen } = selectedProducts;
   const { themeOptions } = appearance;
   const { openSelectedLibrary, onNative } = native;
-  const { unitySeed, setFlow, setView, flow, importSeed } = nav;
+  const { unitySeed, aiSeed, setFlow, setView, flow, importSeed } = nav;
   const { notify } = notices;
   const { latestLocalImport } = localFiles;
   const { clearFilters, updateQuery } = filters;
@@ -66,7 +62,7 @@ export function useWorkflowProps({
     locale,
     products,
     catalogueVersion: snapshotVersion,
-    selected: chosen,
+    selected: aiSeed,
     onLocaleChange: setLocale,
     themeOptions,
     themeId: theme,

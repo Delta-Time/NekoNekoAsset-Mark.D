@@ -51,7 +51,15 @@ export default function App() {
   const filters = useFilters({ selection, notices, nav, library });
   const collectionStore = useCollections({ notices, filters, q });
   const results = useResults({ library, filters, collectionStore, notices, q });
-  const selectedProducts = useSelectedProducts({ results, selection, library, nav, notices, q });
+  const selectedProducts = useSelectedProducts({
+    results,
+    selection,
+    library,
+    nav,
+    notices,
+    filters,
+    q,
+  });
   const native = useNative({
     library,
     filters,
@@ -60,6 +68,7 @@ export default function App() {
     nav,
     results,
     notices,
+    selection,
     q,
   });
   const { openSelectedLibrary, chooseLibrary } = native;
@@ -114,7 +123,6 @@ export default function App() {
     uiPrefs,
     results,
     library,
-    selectedProducts,
     appearance,
     native,
     nav,

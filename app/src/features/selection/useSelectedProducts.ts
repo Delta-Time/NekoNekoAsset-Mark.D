@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import type { Product } from '../../model';
 import { errorCode, invokeAction } from '../../backend';
@@ -7,15 +7,19 @@ import type { Selection } from './useSelection';
 import type { Library } from '../library/useLibrary';
 import type { Navigation } from '../shell/useNavigation';
 import type { Notices } from '../shell/useNotice';
+import type { Filters } from '../filters/useFilters';
+import { useSelectionCheck } from './useSelectionCheck';
 
-/** The selection within the current results, the active product with its full details and
- * openable files, and selection by click and keyboard. */
+/** The selection against the current results, the active product with its full details and
+ * openable files, and selection by click and keyboard. Products selected in other views stay
+ * selected, and the details pane shows the selection wherever it is. */
 export function useSelectedProducts({
   results,
   selection,
   library,
   nav,
   notices,
+  filters,
   q,
 }: {
   results: Results;
@@ -23,33 +27,61 @@ export function useSelectedProducts({
   library: Library;
   nav: Navigation;
   notices: Notices;
+  filters: Filters;
   q: (key: string) => string;
 }) {
   const { matchedIds, queryResult, queryKey, products, filtered, accountScopeKey } = results;
-  const { selected, focusId, setFocusId, anchor, setSelected, pendingSuggestionProduct } =
-    selection;
+  const {
+    selected,
+    focusId,
+    setFocusId,
+    anchor,
+    setSelected,
+    addToSelection,
+    pendingSuggestionProduct,
+  } = selection;
   const { nativeState, snapshotVersion } = library;
   const { view, setView, setTab, setInspector } = nav;
   const { notify } = notices;
-  const selectedScope = useMemo(() => new Set(matchedIds), [queryResult, queryKey]);
-  const visibleSelected = selected.filter((id) => selectedScope.has(id));
-  const selectedSet = useMemo(() => new Set(visibleSelected), [selectedScope, selected]);
+  const inView = useMemo(() => new Set(matchedIds), [queryResult, queryKey]);
+  const visibleSelected = selected.filter((id) => inView.has(id));
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  // Every summary seen this session, so products selected in other views are found too.
   const productMap = useMemo(
     () => new Map(products.map((product) => [product.id, product])),
     [products],
   );
-  const activeSummary =
-    filtered.find(
-      (p) =>
-        p.id ===
-        (visibleSelected.length === 1 ? visibleSelected[0] : focusId || visibleSelected[0]),
-    ) || filtered[0];
-  const detailsKey = JSON.stringify([activeSummary?.id, accountScopeKey]);
+  useSelectionCheck({ library, results, filters, selection, inView });
+  // R-18 Hide and Only are a privacy setting, not browsing: products they hide leave the selection.
+  const sensitive = filters.query.sensitive;
+  useLayoutEffect(() => {
+    if (sensitive !== 'hide' && sensitive !== 'only') return;
+    setSelected((ids) => {
+      const kept = ids.filter((id) => {
+        const product = productMap.get(id);
+        return !product || product.sensitive === (sensitive === 'only');
+      });
+      return kept.length === ids.length ? ids : kept;
+    });
+  }, [sensitive]);
+  // One selected product is the details pane's, in view or not; without a selection it shows the
+  // focused product, else the first in view. Several selected show their summary instead.
+  const only = selected.length === 1 ? selected[0] : '';
+  const activeSummary = only
+    ? (productMap.get(only) ?? filtered.find((p) => p.id === only))
+    : filtered.find((p) => p.id === (focusId || visibleSelected[0])) || filtered[0];
+  // The account filter limits acquisition and owned prices to its accounts. A product selected
+  // under another filter that none of its accounts meet is read with every account instead.
+  const scoped: string[] | null = JSON.parse(accountScopeKey);
+  const detailsAccounts =
+    scoped && activeSummary && !activeSummary.accountIds.some((id) => scoped.includes(id))
+      ? null
+      : scoped;
+  const detailsKey = JSON.stringify([activeSummary?.id, detailsAccounts]);
   const [productDetails, setProductDetails] = useState<{ key: string; product: Product } | null>(
     null,
   );
-  const active = productDetails?.key === detailsKey ? productDetails.product : activeSummary,
-    chosen = visibleSelected.length ? visibleSelected : active ? [active.id] : [];
+  const active = productDetails?.key === detailsKey ? productDetails.product : activeSummary;
   const [availability, setAvailability] = useState<{
     key: string;
     folderAvailable: boolean;
@@ -73,10 +105,16 @@ export function useSelectedProducts({
       setInspector(true);
     } else if (view === 'activity') setView('library');
     setFocusId(p.id);
-    if (e?.shiftKey && anchor.current) {
-      const a = filtered.findIndex((p) => p.id === anchor.current),
-        b = filtered.findIndex((item) => item.id === p.id);
-      setSelected(filtered.slice(Math.max(0, Math.min(a, b)), Math.max(a, b) + 1).map((p) => p.id));
+    if (e?.shiftKey) {
+      // The range from the anchor replaces this view's part of the selection; products
+      // selected in other views stay. Without an anchor in view the range is the product.
+      const a = filtered.findIndex((item) => item.id === anchor.current),
+        b = filtered.findIndex((item) => item.id === p.id),
+        range = filtered
+          .slice(a < 0 ? b : Math.min(a, b), Math.max(a, b) + 1)
+          .map((item) => item.id);
+      setSelected((ids) => [...ids.filter((id) => !inView.has(id)), ...range]);
+      if (a < 0) anchor.current = p.id;
     } else if (e?.ctrlKey || e?.metaKey) {
       setSelected((ids) => (ids.includes(p.id) ? ids.filter((id) => id !== p.id) : [...ids, p.id]));
       anchor.current = p.id;
@@ -136,7 +174,7 @@ export function useSelectedProducts({
       !editing
     ) {
       e.preventDefault();
-      setSelected(matchedIds);
+      addToSelection(matchedIds);
     }
   };
   useEffect(() => {
@@ -147,18 +185,20 @@ export function useSelectedProducts({
     let current = true;
     void invokeAction('catalogue', 'product_details', {
       id: activeSummary.id,
-      accountIds: JSON.parse(accountScopeKey),
+      accountIds: detailsAccounts ?? undefined,
     })
       .then((product) => {
         if (current) setProductDetails({ key: detailsKey, product });
       })
       .catch((error) => {
-        if (current) notify(q(errorCode(error)));
+        // A product removed elsewhere leaves with the next list answer and selection check.
+        const code = errorCode(error);
+        if (current && code !== 'catalogue.product_missing') notify(q(code));
       });
     return () => {
       current = false;
     };
-  }, [activeSummary?.id, accountScopeKey, snapshotVersion]);
+  }, [detailsKey, snapshotVersion]);
   useEffect(() => {
     if (!active || active.filesLoaded === false) {
       setAvailability(null);
@@ -181,24 +221,20 @@ export function useSelectedProducts({
       if (queryResult?.key !== queryKey) return;
       const id = pendingSuggestionProduct.current;
       pendingSuggestionProduct.current = '';
-      if (selectedScope.has(id)) {
+      if (inView.has(id)) {
         setSelected([id]);
         setFocusId(id);
         anchor.current = id;
         return;
       }
     }
-    if (selected.some((id) => !selectedScope.has(id)))
-      setSelected((old) => old.filter((id) => selectedScope.has(id)));
-    if (focusId && !selectedScope.has(focusId)) setFocusId('');
-  }, [selectedScope, queryResult, queryKey]);
+    if (focusId && !inView.has(focusId)) setFocusId('');
+  }, [inView, queryResult, queryKey]);
   return {
-    visibleSelected,
     selectedSet,
     productMap,
     setProductDetails,
     active,
-    chosen,
     availability,
     availabilityKey,
     select,
