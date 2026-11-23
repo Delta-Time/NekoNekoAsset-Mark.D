@@ -70,6 +70,20 @@ fn anything_besides_the_terms_keeps_the_asset() {
         vec![file("利用規約・説明書.pdf")],
         vec![file("license_patch.zip")],
         vec![file("利用規約_photo.zip")],
+        // Royalty-free material, a terms template or an asset that comes with its terms is
+        // an asset of its own, however the name separates its words.
+        vec![file("ライセンスフリー素材.zip")],
+        vec![file("ﾗｲｾﾝｽﾌﾘｰBGM.zip")],
+        vec![file("ライセンス・フリー素材.zip")],
+        vec![file("ライセンス　フリー.zip")],
+        vec![file("Royalty_Free_License.zip")],
+        vec![file("License Free Pack.zip")],
+        vec![file("License_Free_BGM.zip")],
+        vec![file("license.free.zip")],
+        vec![file("利用規約テンプレート.docx")],
+        vec![file("license_template.txt")],
+        vec![from("Hair_v1_利用規約同梱.zip", "800001")],
+        vec![file("Avatar_利用規約付き.zip")],
         // A document that names no terms is a manual or a guide.
         vec![file("manual.pdf")],
         vec![file("撮影ガイドライン.pdf")],

@@ -43,11 +43,37 @@ pub(super) fn order_by(key: &str, dir: &str) -> String {
     )
 }
 
+/// BOOTH's clock: its receipts and histories show Japan time, which keeps no daylight saving.
+pub(crate) fn booth_clock() -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(9 * 3600).expect("UTC+9 is an offset")
+}
+
+/// When the App records adding an asset, on `clock`: the minute shown, written like a BOOTH
+/// receipt date, and the time to the millisecond that orders it, which keeps that clock's
+/// offset so it keys by the same clock as the minute it shows. A local import takes this
+/// device's clock, as its minute always has; a free BOOTH item takes BOOTH's, like the
+/// receipts it sorts among.
+pub(crate) fn added_time<Tz: chrono::TimeZone>(
+    at: chrono::DateTime<chrono::Utc>,
+    clock: &Tz,
+) -> (String, String)
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local = at.with_timezone(clock);
+    (
+        local.format("%Y/%m/%d %H:%M").to_string(),
+        local.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+    )
+}
+
 pub(super) fn date_key(value: &str) -> Option<String> {
     let value = value.trim();
     if let Ok(date) = chrono::DateTime::parse_from_rfc3339(value) {
+        // A time keys by the clock it was written in, like the unzoned receipt dates beside
+        // it: stores give UTC, and the App writes its own times with their clock's offset.
         return Some(
-            date.with_timezone(&chrono::Utc)
+            date.naive_local()
                 .format("%Y-%m-%dT%H:%M:%S%.9fZ")
                 .to_string(),
         );

@@ -105,7 +105,8 @@ account's free-history row, under the record ID BOOTH's free history gives it
 (`free_history_record_id`), so the history a later sync reads merges with it. Its
 `acquiredDateText` is the minute it was added and `acquiredAt` the millisecond, one
 millisecond after the item before it at least, so items added together keep their
-order; a later observation keeps both. A `download_intent` then downloads it like
+order; both are Japan time, like BOOTH's receipt dates they sort among, and a later
+observation keeps both. A `download_intent` then downloads it like
 Download does. An item the account holds already is only downloaded.
 
 Account pages follow the BOOTH account's language and have no locale in their URLs;

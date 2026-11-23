@@ -527,6 +527,54 @@ impl StorageService {
         }
         Ok(())
     }
+    /// Intents written before 0.4.0 kept no list; only their download jobs did. Copy each
+    /// product's latest one while Activity still lists it, so a failed or cancelled download
+    /// keeps waiting for a retry after the first Clear history.
+    fn remember_listed_attempts(&self) -> Result<()> {
+        let mut jobs: Vec<_> = self
+            .catalogue
+            .list("job")?
+            .into_iter()
+            .filter(|job| {
+                job["type"] == "download"
+                    && job["selectedFileIds"].is_null()
+                    && job["manifestFingerprint"].is_string()
+                    && job["productId"].is_string()
+            })
+            .collect();
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        // In the order they ran, so each product keeps its latest.
+        jobs.sort_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
+        let latest: HashMap<&str, &Value> = jobs
+            .iter()
+            .map(|job| (job["productId"].as_str().unwrap_or(""), job))
+            .collect();
+        // One write, read again should another change an intent first.
+        for _ in 0..4 {
+            let (mut writes, mut expected) = (Vec::new(), Vec::new());
+            for intent in self.catalogue.list("download_intent")? {
+                let Some(id) = intent["id"].as_str().map(str::to_owned) else {
+                    continue;
+                };
+                let Some(job) = latest.get(id.as_str()) else {
+                    continue;
+                };
+                if !intent["manifestFingerprint"].is_null() {
+                    continue;
+                }
+                let mut remembered = intent.clone();
+                remembered["manifestFingerprint"] = job["manifestFingerprint"].clone();
+                writes.push(("download_intent".to_owned(), id.clone(), remembered));
+                expected.push(("download_intent".to_owned(), id, Some(intent)));
+            }
+            if writes.is_empty() || self.catalogue.put_many_if_unchanged(writes, expected)? {
+                break;
+            }
+        }
+        Ok(())
+    }
     /// What a download job covers of its product's current list.
     fn job_files(&self, job: &Value, files: Vec<Value>) -> Result<Vec<Value>> {
         let files = if job["automatic"] == true {
@@ -638,6 +686,8 @@ impl StorageService {
         }
         let setup = (|| -> Result<()> {
             self.lock_process()?;
+            // First, before anything slower lets a Clear history remove those jobs.
+            let _ = self.remember_listed_attempts();
             for mut job in self.catalogue.list("job")? {
                 if matches!(job["state"].as_str(), Some("running" | "queued")) {
                     if job["type"] == "storage:import_local"

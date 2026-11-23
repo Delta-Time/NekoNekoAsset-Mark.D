@@ -873,6 +873,62 @@ async fn clearing_activity_never_queues_a_product_download_again() {
 }
 
 #[tokio::test]
+async fn an_earlier_versions_unfinished_download_waits_after_the_first_clear() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let c = &f.service.catalogue;
+    c.put(
+        "product",
+        "43",
+        json!({"id":"43","title":"Other synthetic product"}),
+    )
+    .unwrap();
+    c.put("remote_file","other-file",json!({"id":"other-file","productId":"43","accountId":"test-account","name":"other.psd","revision":"r1"})).unwrap();
+    c.put("entitlement","other-entitlement",json!({"id":"other-entitlement","productId":"43","accountId":"test-account","fileIds":["other-file"],"manifestComplete":true})).unwrap();
+    // Cancelled under an earlier version: its job keeps the list, its intent none.
+    let ids = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
+    let mut job = c
+        .get("job", ids["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    f.service.put_job(&mut job, "cancelled", None).unwrap();
+    c.put(
+        "download_intent",
+        "42",
+        json!({"id":"42","wantDownload":true}),
+    )
+    .unwrap();
+    // An intent that already keeps a list keeps its own.
+    let ids = f
+        .service
+        .enqueue(&json!({"productIds":["43"]}))
+        .await
+        .unwrap();
+    let mut other = c
+        .get("job", ids["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    f.service.put_job(&mut other, "failed", None).unwrap();
+    let kept = c.get("download_intent", "43").unwrap().unwrap();
+    assert!(kept["manifestFingerprint"].is_string());
+
+    f.service.remember_listed_attempts().unwrap();
+    assert_eq!(
+        c.get("download_intent", "42").unwrap().unwrap()["manifestFingerprint"],
+        job["manifestFingerprint"]
+    );
+    assert_eq!(c.get("download_intent", "43").unwrap().unwrap(), kept);
+    c.command("clear_activity", json!({})).unwrap();
+    assert!(c.list("job").unwrap().is_empty());
+    f.service.reevaluate_automatic().await.unwrap();
+    assert!(c.list("job").unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn automatic_jobs_exclude_explicitly_disconnected_account_files() {
     let f = Fixture::new();
     f.seed(1, true);

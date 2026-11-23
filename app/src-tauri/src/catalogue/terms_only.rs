@@ -7,8 +7,9 @@
 //! must hold: the listing also sells a paid variation, and each file is the terms. A file
 //! is the terms when its own name says so and it is a document, an archive or an image,
 //! or when it is a document from a 0-yen variation whose name says so; a name that also
-//! names something else (a trial, a manual, a patch, photos) is not. A free listing whose
-//! only file is a document is a free document, and stays.
+//! names something else (a trial, a manual, a patch, photos, royalty-free material, a
+//! template, an asset that comes with its terms) is not. A free listing whose only file is
+//! a document is a free document, and stays.
 //!
 //! Public listings sampled on 2026-11-23: of 25 paid listings with a 0-yen variation,
 //! three offered only their terms, each as a ZIP whose own name said so.
@@ -47,9 +48,13 @@ fn terms_word(text: &str) -> bool {
     .any(|word| text.contains(word))
 }
 
-/// Words that name something besides the terms in the same file or variation.
+/// Words that name something besides the terms in the same file or variation, matched
+/// across the spaces, `_`, `-`, `.` and `・` that names put between words.
 fn content_word(text: &str) -> bool {
-    let text = normalized(text);
+    let text: String = normalized(text)
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-' | '.' | '・'))
+        .collect();
     [
         "体験",
         "お試し",
@@ -70,6 +75,16 @@ fn content_word(text: &str) -> bool {
         "photo",
         "テクスチャ",
         "texture",
+        // Royalty-free material, a terms template, or an asset that comes with its terms.
+        "ライセンスフリー",
+        "licensefree",
+        "royalty",
+        "ロイヤリティ",
+        "ロイヤルティ",
+        "テンプレ",
+        "template",
+        "同梱",
+        "付き",
     ]
     .iter()
     .any(|word| text.contains(word))

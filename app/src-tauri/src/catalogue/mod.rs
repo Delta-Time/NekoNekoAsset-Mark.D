@@ -1,6 +1,6 @@
 //! Local SQLite catalogue. Edits, projections and durable sync intents commit together.
 mod accounts;
-mod acquisition;
+pub(crate) mod acquisition;
 pub(crate) mod api;
 mod avatars;
 mod custom_categories;
@@ -1177,9 +1177,18 @@ impl Catalogue {
             worker: Arc::new(worker::Worker::default()),
             is_sync_worker: false,
         };
+        // Rewriting projections and search entries spills the default 2 MB cache, and each
+        // spill syncs the journal: 88 s against 25 s on a cold 2,351-product hard disk.
+        let cache_size = |size: i64| -> Result<()> {
+            this.inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+                .pragma_update(None, "cache_size", size)?;
+            Ok(())
+        };
         // Downloads a store stopped offering before 0.3.5 left Files while their
         // bytes stayed, before 0.3.13 a file its store refused stayed listed with
-        // nothing on disk, and before 0.3.14 a file whose free offer ended had no
+        // nothing on disk, and before 0.4.0 a file whose free offer ended had no
         // mark and one whose last download failed did not show it. Refresh those
         // once; later opens find none.
         let unlisted: BTreeSet<String> = {
@@ -1192,12 +1201,15 @@ impl Catalogue {
             ids.into_iter().collect()
         };
         if !unlisted.is_empty() {
-            this.mutate(|tx, projections| {
+            cache_size(-65536)?;
+            let refreshed = this.mutate(|tx, projections| {
                 for id in &unlisted {
                     projections.refresh(tx, id)?;
                 }
                 Ok(())
-            })?;
+            });
+            cache_size(-2000)?;
+            refreshed?;
         }
         // Stored compatibility holds what the rules of the writing build resolved.
         // Re-resolve once per rule version; no store or source record is read.
@@ -1212,15 +1224,6 @@ impl Catalogue {
             )
             .optional()?;
         if resolved.as_deref() != Some(crate::taxonomy::VERSION) {
-            // Rewriting search entries spills the default 2 MB cache, and each spill
-            // syncs the journal: 88 s against 25 s on a cold 2,351-product hard disk.
-            let cache_size = |size: i64| -> Result<()> {
-                this.inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
-                    .pragma_update(None, "cache_size", size)?;
-                Ok(())
-            };
             cache_size(-65536)?;
             let resolved = this.mutate(|tx, projections| {
                 tx.execute("INSERT INTO meta(key,value) VALUES('taxonomy_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[crate::taxonomy::VERSION])?;

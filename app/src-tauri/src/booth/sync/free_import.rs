@@ -216,17 +216,15 @@ impl BoothService {
         {
             return Ok(Some(("FREE_TERMS_ONLY", title)));
         }
-        let at = import.next_time();
+        use crate::catalogue::acquisition::{added_time, booth_clock};
+        // On BOOTH's clock, like the receipt dates it sorts among.
+        let (shown, at) = added_time(import.next_time(), &booth_clock());
         let row = parser::Row {
             source_record_id: free_history::free_history_record_id(product),
             product_id: Some(product.to_owned()),
             name: title,
-            acquired_date_text: Some(
-                at.with_timezone(&chrono::Local)
-                    .format("%Y/%m/%d %H:%M")
-                    .to_string(),
-            ),
-            acquired_at: Some(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            acquired_date_text: Some(shown),
+            acquired_at: Some(at),
             files: evidence.files.clone(),
             manifest_complete: true,
             ..Default::default()

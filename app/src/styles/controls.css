@@ -472,7 +472,7 @@
   opacity: 0.8;
   transform: none;
 }
-.app .results-loading > svg {
+.app .empty-state.results-loading > svg {
   color: var(--muted);
 }
 /* Appearance › One-handed drag: the selection box and the dragged count float above the panes and ignore the pointer. */

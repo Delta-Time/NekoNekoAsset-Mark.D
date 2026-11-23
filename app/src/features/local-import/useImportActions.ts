@@ -169,7 +169,8 @@ export function useImportActions({
       });
     });
   useEffect(() => {
-    if (seed?.sources?.length) addSources(seed.sources, 'unknown');
+    // Files dropped on the dialog while it takes BOOTH links stay out, as above.
+    if (mode !== 'booth' && seed?.sources?.length) addSources(seed.sources, 'unknown');
   }, [seed?.sources]);
   const chooseSources = (folder: boolean) =>
     run(async () => {

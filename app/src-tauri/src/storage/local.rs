@@ -218,27 +218,23 @@ fn apply_initial_category(overlay: &mut Value, metadata: &Value) {
         overlay["category"] = metadata["category"].clone();
     }
 }
-/// When the user added it, on this device's clock, written like a BOOTH receipt date.
-fn added_date(job: &Value) -> String {
+fn job_time(job: &Value) -> chrono::DateTime<chrono::Utc> {
     job["createdAt"]
         .as_str()
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-        .map(|at| at.with_timezone(&chrono::Local))
-        .unwrap_or_else(chrono::Local::now)
-        .format("%Y/%m/%d %H:%M")
-        .to_string()
+        .map(|at| at.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now)
+}
+/// When the user added it, on this device's clock, written like a BOOTH receipt date.
+fn added_date(job: &Value) -> String {
+    crate::catalogue::acquisition::added_time(job_time(job), &chrono::Local).0
 }
 /// When the user added it, to the millisecond: the job's time plus a millisecond for each asset
 /// the import listed before it, so assets added together keep their order within the minute
 /// `added_date` shows.
 fn added_at(job: &Value, index: usize) -> String {
-    let at = job["createdAt"]
-        .as_str()
-        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-        .map(|at| at.with_timezone(&chrono::Utc))
-        .unwrap_or_else(chrono::Utc::now);
-    (at + chrono::Duration::milliseconds(index as i64))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    let at = job_time(job) + chrono::Duration::milliseconds(index as i64);
+    crate::catalogue::acquisition::added_time(at, &chrono::Local).1
 }
 /// The link to read once for a product added with a date; earlier imports stay as they are.
 fn listing_to_read(product: &Value) -> Option<&str> {

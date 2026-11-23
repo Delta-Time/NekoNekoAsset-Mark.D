@@ -30,7 +30,9 @@ filenames. Character grams bound CJK/substring candidates; exact checks reject
 false positives. Indexed per-product lookups avoid scanning all file entities.
 Title/acquired/price/status sorting keeps unknowns last. A local import shows the minute it
 was added and sorts by its `acquiredAt`, a millisecond apart per asset of one import, so a
-batch keeps its order; local assets imported earlier sort by the minute. Acquisition-date order has
+batch keeps its order; local assets imported earlier sort by the minute. That time keeps its
+clock's offset (the device's; BOOTH's Japan time for a free BOOTH item added by its link) and
+keys by that clock, like the unzoned receipt dates it sorts among. Acquisition-date order has
 one home, `acquisition.rs`: an undated free download sorts by its `~`-prefixed place
 in BOOTH's free history, after every date. The list copy also marks the free BOOTH
 downloads that hold only a listing's terms of use (`terms_only.rs`: every file named

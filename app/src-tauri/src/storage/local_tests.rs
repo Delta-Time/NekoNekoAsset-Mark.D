@@ -388,6 +388,19 @@ fn new_local_product_shows_when_it_was_added_and_a_price_read_from_its_link() {
 }
 
 #[test]
+fn an_import_orders_by_the_clock_its_minute_shows() {
+    let job = json!({"createdAt":"2026-11-23T11:00:07.123Z"});
+    let first = chrono::DateTime::parse_from_rfc3339(&added_at(&job, 0)).unwrap();
+    // This device's clock, like the minute shown and the receipt dates it sorts among.
+    assert_eq!(
+        first.naive_local().format("%Y/%m/%d %H:%M").to_string(),
+        added_date(&job)
+    );
+    let second = chrono::DateTime::parse_from_rfc3339(&added_at(&job, 1)).unwrap();
+    assert_eq!(second - first, chrono::Duration::milliseconds(1));
+}
+
+#[test]
 fn store_product_accepts_added_files_without_changing_its_store_record() {
     let (path, service) = fixture();
     fs::write(

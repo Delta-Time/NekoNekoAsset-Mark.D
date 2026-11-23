@@ -49,6 +49,56 @@ fn acquisition_dates_accept_complete_provider_timestamps_without_rewriting_raw_t
 }
 
 #[test]
+fn an_added_time_sorts_by_the_clock_it_shows() {
+    // Store times in UTC key as before; a time with an offset keys by its own clock.
+    for (raw, expected) in [
+        (
+            "2026-10-08T01:02:03+00:00",
+            "2026-10-08T01:02:03.000000000Z",
+        ),
+        ("2026-11-23T05:05:07.123Z", "2026-11-23T05:05:07.123000000Z"),
+        (
+            "2026-11-23T20:00:00.001+09:00",
+            "2026-11-23T20:00:00.001000000Z",
+        ),
+    ] {
+        assert_eq!(acquisition::date_key(raw).as_deref(), Some(expected));
+    }
+    // Added in Japan at 20:00, it sorts after a receipt from 15:00 the same day.
+    let rows = acquisition::normalize_provenance(&[
+        json!({"id":"receipt","acquiredDateText":"2026/11/23 15:00"}),
+        json!({"id":"added","acquiredDateText":"2026/11/23 20:00","acquiredAt":"2026-11-23T20:00:00.000+09:00"}),
+    ]);
+    assert!(rows[1]["acquiredSortKey"].as_str() > rows[0]["acquiredSortKey"].as_str());
+    let mut local = json!({"provenance":[]});
+    acquisition::apply_default(
+        &mut local,
+        "2026/11/23 20:00",
+        Some("2026-11-23T20:00:00.001+09:00"),
+    );
+    assert_eq!(local["acquired"], "2026/11/23 20:00");
+    assert!(local["acquiredSortKey"].as_str() > rows[0]["acquiredSortKey"].as_str());
+    // A free BOOTH item is added on BOOTH's clock, whatever this device's.
+    let at = chrono::DateTime::parse_from_rfc3339("2026-11-23T11:00:07.123Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let (shown, time) = acquisition::added_time(at, &acquisition::booth_clock());
+    assert_eq!(shown, "2026/11/23 20:00");
+    assert_eq!(time, "2026-11-23T20:00:07.123+09:00");
+    // A local import uses this device's, and keys within the minute it shows.
+    let (shown, time) = acquisition::added_time(at, &chrono::Local);
+    let shown_key = acquisition::date_key(&shown).unwrap();
+    let time_key = acquisition::date_key(&time).unwrap();
+    assert_eq!(time_key[..16], shown_key[..16]);
+    assert!(time_key > shown_key);
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(&time).unwrap(),
+        at,
+        "the same instant"
+    );
+}
+
+#[test]
 fn paid_price_requires_unambiguous_scoped_item_evidence_and_preserves_zero() {
     let proof = |id: &str, account: &str, amount: Value, currency: &str| json!({"id":id,"accountId":account,"paidPrice":amount,"paidCurrency":currency,"paidPriceBasis":"productLineTotal"});
     let unproven = json!({"id":"raw","accountId":"a","paidAmountText":"¥ 900","paidPrice":900,"paidCurrency":"JPY","orderTotal":900});
