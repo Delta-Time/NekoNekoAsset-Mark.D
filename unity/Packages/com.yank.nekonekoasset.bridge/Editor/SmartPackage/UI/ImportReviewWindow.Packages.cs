@@ -384,7 +384,7 @@ namespace NekoNekoAsset.Bridge
             float left = header.xMax;
             if (package.DuplicateCount > 0) left = DrawTallyBadge(localization.Format("identicalCount", package.DuplicateCount), IdenticalColor, left, header.y);
             if (package.UpdateCount > 0) left = DrawTallyBadge(localization.Format("updateCount", package.UpdateCount), UpdateColor, left, header.y);
-            if (package.GuidConflictCount > 0) left = DrawTallyBadge(localization.Format("movedCount", package.GuidConflictCount), ConflictColor, left, header.y);
+            if (package.GuidConflictCount > 0) left = DrawTallyBadge(localization.Format("guidConflictCount", package.GuidConflictCount), ConflictColor, left, header.y);
             if (package.PathConflictCount > 0) left = DrawTallyBadge(localization.Format("pathTakenCount", package.PathConflictCount), ConflictColor, left, header.y);
             if (package.BlockedCount > 0) left = DrawTallyBadge(localization.Format("blockedCount", package.BlockedCount), ConflictColor, left, header.y);
             return header.xMax - left;

@@ -21,8 +21,8 @@
 - With Hide unavailable assets on, a free asset whose free offer ended before you downloaded it is hidden too, and an ended free offer no longer shows Attention. If a sync later finds the offer open again, the asset shows again and can be downloaded.
 - Installing over an existing copy no longer asks whether to uninstall it first.
 - Unity Bridge 0.4.0 imports much faster: in a test with a 1,231-file package, Unity was busy for about 10 seconds instead of about a minute, and the App followed the import throughout instead of showing Result unconfirmed.
-- The Bridge's review stays smooth with thousands of files and tells an update of a file apart from a moved GUID or a path another file took. With Conflicts set to Ask, a plain update no longer asks, as in Unity's own importer.
-- The Bridge shows its preparation in Unity's background tasks, where you can cancel it, and a successful import shows its counts and Show in Project instead of listing every file. Its messages appear in your language, and Enter imports.
+- The Bridge's review stays smooth with thousands of files and tells an update of a file apart from a GUID conflict or a path another file took. With Conflicts set to Ask, a plain update no longer asks, as in Unity's own importer.
+- The Bridge shows its preparation in Unity's background tasks, where you can cancel it. A successful import opens no result window; when something fails, the window lists only the files that failed and why. Results say Imported instead of Applied, its messages appear in your language, and Enter imports once you have clicked, scrolled or used an arrow key in the review.
 
 ### Fixed
 
@@ -39,7 +39,7 @@
 
 ### Release notes
 
-- This release includes Unity Bridge 0.4.0. If Unity or the computer stops in the middle of an import, a few files the import had already written can stay in the project without being listed as applied; cleanup never removes them.
+- This release includes Unity Bridge 0.4.0. If Unity or the computer stops in the middle of an import, a few files the import had already written can stay in the project without being listed as imported; cleanup never removes them.
 - Most of the App's code was reorganized to make it easier to maintain; apart from the changes above it behaves as 0.3.13. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
 - The first start of 0.4.0 records, from the jobs Activity still lists, where existing local assets were imported from and which file list each earlier download asked for.
 - Bounded source verification does not establish full-library throughput or complete uncapped source coverage.

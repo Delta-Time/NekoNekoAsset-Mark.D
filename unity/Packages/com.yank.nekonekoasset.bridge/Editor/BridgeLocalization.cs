@@ -59,7 +59,7 @@ namespace NekoNekoAsset.Bridge
                 case SmartPackage.ImportConflictKind.New: return Text("new");
                 case SmartPackage.ImportConflictKind.Duplicate: return Text("identical");
                 case SmartPackage.ImportConflictKind.Update: return Text("update");
-                case SmartPackage.ImportConflictKind.GuidConflict: return Text("moved");
+                case SmartPackage.ImportConflictKind.GuidConflict: return Text("guidConflict");
                 case SmartPackage.ImportConflictKind.Blocked: return Text("blocked");
                 default: return Text("pathTaken");
             }
@@ -68,12 +68,9 @@ namespace NekoNekoAsset.Bridge
         private static readonly Dictionary<string, string[]> Labels = new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
             ["resultTitle"] = new[] { "Import results", "インポート結果", "가져오기 결과", "导入结果", "匯入結果" },
-            ["completed"] = new[] { "Completed", "完了", "완료", "已完成", "已完成" },
             ["failed"] = new[] { "Failed", "失敗", "실패", "失败", "失敗" },
-            ["applied"] = new[] { "Applied", "適用済み", "적용됨", "已应用", "已套用" },
-            ["skipped"] = new[] { "Skipped", "スキップ", "건너뜀", "已跳过", "已略過" },
             ["close"] = new[] { "Close", "閉じる", "닫기", "关闭", "關閉" },
-            ["resultCounts"] = new[] { "Applied: {0}  Skipped: {1}  Failed: {2}", "適用: {0}  スキップ: {1}  失敗: {2}", "적용: {0}  건너뜀: {1}  실패: {2}", "已应用: {0}  已跳过: {1}  失败: {2}", "已套用: {0}  已略過: {1}  失敗: {2}" },
+            ["resultCounts"] = new[] { "Imported: {0}  Skipped: {1}  Failed: {2}", "インポート済み: {0}  スキップ: {1}  失敗: {2}", "가져옴: {0}  건너뜀: {1}  실패: {2}", "已导入: {0}  已跳过: {1}  失败: {2}", "已匯入: {0}  已略過: {1}  失敗: {2}" },
             ["partlyImported"] = new[] { "Partly imported", "一部のみインポート", "일부만 가져옴", "部分已导入", "部分已匯入" },
             ["showInProject"] = new[] { "Show in Project", "プロジェクトで表示", "프로젝트에서 보기", "在项目中显示", "在專案中顯示" },
             ["receiving"] = new[] { "Receiving files", "ファイルを受信中", "파일 받는 중", "正在接收文件", "正在接收檔案" },
@@ -101,12 +98,12 @@ namespace NekoNekoAsset.Bridge
             ["new"] = new[] { "New", "新規", "새 파일", "新增", "新增" },
             ["identical"] = new[] { "Identical", "同一", "동일", "相同", "相同" },
             ["update"] = new[] { "Update", "更新", "업데이트", "更新", "更新" },
-            ["moved"] = new[] { "Moved", "移動済み", "이동됨", "已移动", "已移動" },
+            ["guidConflict"] = new[] { "GUID conflict", "GUID競合", "GUID 충돌", "GUID 冲突", "GUID 衝突" },
             ["pathTaken"] = new[] { "Path taken", "パス競合", "경로 사용 중", "路径已占用", "路徑已占用" },
             ["blocked"] = new[] { "Blocked", "インポート不可", "가져올 수 없음", "无法导入", "無法匯入" },
             ["blockedCount"] = new[] { "{0} Blocked", "インポート不可 {0}件", "가져올 수 없음 {0}", "{0} 无法导入", "{0} 無法匯入" },
             ["updateCount"] = new[] { "{0} Update", "更新 {0}件", "업데이트 {0}", "{0} 更新", "{0} 更新" },
-            ["movedCount"] = new[] { "{0} Moved", "移動済み {0}件", "이동됨 {0}", "{0} 已移动", "{0} 已移動" },
+            ["guidConflictCount"] = new[] { "{0} GUID conflict", "GUID競合 {0}件", "GUID 충돌 {0}", "{0} GUID 冲突", "{0} GUID 衝突" },
             ["pathTakenCount"] = new[] { "{0} Path taken", "パス競合 {0}件", "경로 사용 중 {0}", "{0} 路径已占用", "{0} 路徑已占用" },
             ["identicalCount"] = new[] { "{0} Identical", "同一 {0}件", "동일 {0}", "{0} 相同", "{0} 相同" },
             ["selectedCount"] = new[] { "{0} / {1} selected", "選択中 {0} / {1}", "{0} / {1} 선택", "已选 {0} / {1}", "已選 {0} / {1}" },
@@ -141,9 +138,13 @@ namespace NekoNekoAsset.Bridge
         private static readonly string[][] Messages =
         {
             new[] { "Some files were not imported; inspect the per-file results.", "一部のファイルをインポートできませんでした。ファイルごとの結果を確認してください。", "일부 파일을 가져오지 못했습니다. 파일별 결과를 확인하세요.", "部分文件未能导入，请查看每个文件的结果。", "部分檔案未能匯入，請查看每個檔案的結果。" },
-            new[] { "Import interrupted; applied entries remain and backups are retained.", "インポートが中断されました。適用済みのファイルとバックアップは残っています。", "가져오기가 중단되었습니다. 적용된 파일과 백업은 유지됩니다.", "导入已中断，已应用的文件和备份已保留。", "匯入已中斷，已套用的檔案和備份已保留。" },
+            new[] { "Import interrupted; imported files remain and backups are retained.", "インポートが中断されました。インポート済みのファイルとバックアップは残っています。", "가져오기가 중단되었습니다. 가져온 파일과 백업은 유지됩니다.", "导入已中断，已导入的文件和备份已保留。", "匯入已中斷，已匯入的檔案和備份已保留。" },
             new[] { "Not attempted after an earlier failure.", "前のファイルが失敗したため実行されませんでした。", "앞선 실패로 인해 시도하지 않았습니다.", "因先前的失败而未执行。", "因先前的失敗而未執行。" },
-            new[] { "Could not refresh or verify imported outputs; applied files and backups remain.", "インポートしたファイルを更新・確認できませんでした。適用済みのファイルとバックアップは残っています。", "가져온 파일을 새로 고치거나 확인하지 못했습니다. 적용된 파일과 백업은 유지됩니다.", "无法刷新或验证导入的文件，已应用的文件和备份已保留。", "無法重新整理或驗證匯入的檔案，已套用的檔案和備份已保留。" },
+            new[] { "Could not refresh or verify the imported files; they and their backups remain.", "インポートしたファイルを更新・確認できませんでした。ファイルとバックアップは残っています。", "가져온 파일을 새로 고치거나 확인하지 못했습니다. 파일과 백업은 유지됩니다.", "无法刷新或验证导入的文件，文件和备份已保留。", "無法重新整理或驗證匯入的檔案，檔案和備份已保留。" },
+            new[] { "Missing after Unity refreshed the project.", "Unityのプロジェクト更新後に見つかりません。", "Unity가 프로젝트를 새로 고친 후 찾을 수 없습니다.", "Unity 刷新项目后找不到此文件。", "Unity 重新整理專案後找不到此檔案。" },
+            new[] { "Changed while Unity refreshed the project.", "Unityのプロジェクト更新中に変更されました。", "Unity가 프로젝트를 새로 고치는 동안 변경되었습니다.", "此文件在 Unity 刷新项目时被更改。", "此檔案在 Unity 重新整理專案時被變更。" },
+            new[] { "Its GUID changed while Unity refreshed the project.", "Unityのプロジェクト更新中にGUIDが変更されました。", "Unity가 프로젝트를 새로 고치는 동안 GUID가 변경되었습니다.", "此文件的 GUID 在 Unity 刷新项目时被更改。", "此檔案的 GUID 在 Unity 重新整理專案時被變更。" },
+            new[] { "File operation failed.", "ファイル操作に失敗しました。", "파일 작업에 실패했습니다.", "文件操作失败。", "檔案操作失敗。" },
             new[] { "Editor restarted or staging was interrupted; no automatic replay.", "エディターの再起動などで中断されました。自動ではやり直しません。", "에디터 재시작 등으로 중단되었습니다. 자동으로 다시 실행하지 않습니다.", "编辑器重启或暂存被中断，不会自动重试。", "編輯器重新啟動或暫存被中斷，不會自動重試。" },
             new[] { "Transfer interrupted or failed verification.", "転送が中断されたか、検証に失敗しました。", "전송이 중단되었거나 확인에 실패했습니다.", "传输中断或验证失败。", "傳輸中斷或驗證失敗。" },
             new[] { "Could not prepare verified package/file review.", "インポートを準備できませんでした。", "가져오기를 준비할 수 없습니다.", "无法准备导入。", "無法準備匯入。" },

@@ -11,11 +11,13 @@ namespace NekoNekoAsset.Bridge
     public static partial class BridgeRuntime
     {
         private const string PendingImportResultKey = SessionKey + ".PendingImportResult";
+        internal const string PerFileFailures = "Some files were not imported; inspect the per-file results.";
 
         private static void ShowImportResult(StoredBridgeRequest request)
         {
+            // A clean import opens nothing; the App's Activity row still shows its counts.
             if (Application.isBatchMode || stopped || request == null || !Terminal(request.receipt.stage)
-                || request.receipt.stage == "cancelled") return;
+                || request.receipt.stage == "cancelled" || BridgeImportResultWindow.Clean(request)) return;
             string requestId = request.receipt.requestId;
             SessionState.SetString(PendingImportResultKey, requestId);
             EditorApplication.delayCall += () => {
@@ -37,7 +39,7 @@ namespace NekoNekoAsset.Bridge
         internal static StoredBridgeRequest ImportResultRequest(string requestId)
             => TryGetRequest(requestId, out StoredBridgeRequest request) ? request : null;
 
-        // Applied, skipped and failed files as the review counts them: a result whose path holds
+        // Imported, skipped and failed files as the review counts them: a result whose path holds
         // other results is a folder, and a loose file's .meta goes with its file. The App agrees.
         internal static int[] FileCounts(List<BridgeFileResult> results)
         {
@@ -108,6 +110,7 @@ namespace NekoNekoAsset.Bridge
         private Vector2 scroll;
         private string cleanupSummary;
         private int[] counts;
+        private List<BridgeFileResult> failures;
         internal static void Show(StoredBridgeRequest request, string locale)
         {
             var window = CreateInstance<BridgeImportResultWindow>();
@@ -115,19 +118,25 @@ namespace NekoNekoAsset.Bridge
             window.locale = locale;
             window.labels = new BridgeLocalization(locale);
             window.titleContent = new GUIContent(window.labels.Text("resultTitle"));
-            if (Succeeded(request))
-            {
-                // A success needs no path list: its counts and the way to the imported files.
-                window.minSize = new Vector2(360, 76);
-                Rect main = EditorGUIUtility.GetMainWindowPosition();
-                window.position = new Rect(main.x + (main.width - 420f) * .5f, main.y + (main.height - 96f) * .5f, 420f, 96f);
-            }
-            else window.minSize = new Vector2(440, 280);
+            window.minSize = new Vector2(440, 280);
             window.ShowUtility();
         }
 
-        private static bool Succeeded(StoredBridgeRequest request)
-            => request.receipt.stage == "completed" && !request.receipt.results.Any(result => result.state == "failed");
+        // Completed with no failed file and no error. A Bridge before 0.2.6 stored a compiler note
+        // once every file was imported; Unity's Console owns those, so that is clean too.
+        internal static bool Clean(StoredBridgeRequest request)
+            => !request.receipt.results.Any(result => result.state == "failed")
+                && ((request.receipt.stage == "completed" && string.IsNullOrEmpty(request.receipt.error))
+                    || (!request.appliedFailed && BridgeRuntime.LegacyCompilationError(request.receipt.error)));
+
+        // What failed, once: a loose file's .meta row fails with its file and repeats its reason.
+        internal static List<BridgeFileResult> Failures(List<BridgeFileResult> results)
+        {
+            List<BridgeFileResult> failed = results.Where(result => result.state == "failed").ToList();
+            var paths = new HashSet<string>(failed.Select(result => result.path ?? ""), StringComparer.OrdinalIgnoreCase);
+            return failed.Where(result => !(result.path ?? "").EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+                || !paths.Contains(result.path.Substring(0, result.path.Length - 5))).ToList();
+        }
 
         private void OnEnable()
         {
@@ -144,23 +153,25 @@ namespace NekoNekoAsset.Bridge
                 GUIUtility.ExitGUI();
             }
             request = BridgeRuntime.ImportResultRequest(request.receipt.requestId) ?? request;
-            if (counts == null) counts = BridgeRuntime.FileCounts(request.receipt.results);
-            int applied = counts[0], skipped = counts[1], failed = counts[2];
-            bool succeeded = Succeeded(request);
-            GUILayout.Label(labels.Text(succeeded ? "completed" : applied > 0 ? "partlyImported" : "failed"), EditorStyles.boldLabel);
-            GUILayout.Label(labels.Format("resultCounts", applied, skipped, failed));
-            if (succeeded) GUILayout.FlexibleSpace();
-            else
+            if (failures == null)
             {
-                if (!string.IsNullOrEmpty(request.receipt.error)
-                    && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(request.receipt.error)))
-                    EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
-                scroll = EditorGUILayout.BeginScrollView(scroll);
-                foreach (BridgeFileResult result in request.receipt.results) if (result.state == "failed") DrawResult(result);
-                foreach (BridgeFileResult result in request.receipt.results) if (result.state != "failed") DrawResult(result);
-                EditorGUILayout.EndScrollView();
-                if (!string.IsNullOrEmpty(cleanupSummary)) GUILayout.Label(cleanupSummary, EditorStyles.wordWrappedMiniLabel);
+                counts = BridgeRuntime.FileCounts(request.receipt.results);
+                failures = Failures(request.receipt.results);
             }
+            int imported = counts[0], skipped = counts[1];
+            GUILayout.Label(labels.Text(imported > 0 ? "partlyImported" : "failed"), EditorStyles.boldLabel);
+            // Failed counts the rows listed below, a failed folder included, so the two always agree.
+            if (request.receipt.results.Count > 0) GUILayout.Label(labels.Format("resultCounts", imported, skipped, failures.Count));
+            string error = request.receipt.error;
+            // The listed failures already say what the generic per-file sentence says.
+            if (!string.IsNullOrEmpty(error) && !(failures.Count > 0 && error == labels.Message(BridgeRuntime.PerFileFailures))
+                && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(error)))
+                EditorGUILayout.HelpBox(error, MessageType.Warning);
+            // Only what failed, and why; the counts cover the rest.
+            scroll = EditorGUILayout.BeginScrollView(scroll);
+            foreach (BridgeFileResult result in failures) DrawFailure(result);
+            EditorGUILayout.EndScrollView();
+            if (!string.IsNullOrEmpty(cleanupSummary)) GUILayout.Label(cleanupSummary, EditorStyles.wordWrappedMiniLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (request.receipt.stage != "completed" && request.ownedWrites != null && request.ownedWrites.Count > 0 && !request.cleanupDone)
@@ -171,18 +182,14 @@ namespace NekoNekoAsset.Bridge
                         cleanupSummary = labels.Format("cleanupCounts", counts[0], counts[1]);
                     }
                 GUILayout.FlexibleSpace();
-                if (applied + skipped > 0 && GUILayout.Button(labels.Text("showInProject"))) ShowInProject();
+                if (imported + skipped > 0 && GUILayout.Button(labels.Text("showInProject"))) ShowInProject();
                 if (GUILayout.Button(labels.Text("close"))) Close();
             }
         }
 
-        private void DrawResult(BridgeFileResult result)
+        private static void DrawFailure(BridgeFileResult result)
         {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.SelectableLabel(result.path, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-                GUILayout.Label(labels.Text(result.state), GUILayout.Width(65));
-            }
+            EditorGUILayout.SelectableLabel(result.path, GUILayout.Height(EditorGUIUtility.singleLineHeight));
             if (!string.IsNullOrEmpty(result.message)) GUILayout.Label(result.message, EditorStyles.wordWrappedMiniLabel);
         }
 

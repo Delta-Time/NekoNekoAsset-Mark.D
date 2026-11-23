@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using NekoNekoAsset.Bridge.SmartPackage;
 using UnityEditor;
@@ -243,6 +244,69 @@ namespace NekoNekoAsset.Bridge
             return BridgeFiles.Diagnostic(string.IsNullOrEmpty(entry) ? reason : entry + ": " + reason, 256);
         }
 
+        // The per-file sentence only over listed failures; a run that stopped before any file
+        // failed (its working folder could not be made, say) keeps the engine's own reason.
+        private static string RunError(BridgeLocalization labels, string projectRoot, List<BridgeFileResult> results, List<string> errors)
+            => results.Any(result => result.state == "failed") ? labels.Message(PerFileFailures)
+                : ProjectReason(labels, projectRoot, errors.FirstOrDefault());
+
+        // A reason in the request's language within the wire bound; an exception without a message
+        // still gives one. OS and engine errors can name absolute paths: this project's folder is cut
+        // from them in any case and with either separator, except at a drive or share root, whose cut
+        // would make every other path there look like the project's own.
+        private static string ProjectReason(BridgeLocalization labels, string projectRoot, string reason)
+        {
+            if (reason == null) return null;
+            string root = (projectRoot ?? "").TrimEnd('\\', '/');
+            if (root.Length > 0 && !string.Equals(root, Path.GetPathRoot(projectRoot).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                reason = Regex.Replace(reason, Regex.Escape(root.Replace('\\', '/')).Replace("/", @"[\\/]") + @"[\\/]", "",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (string.IsNullOrWhiteSpace(reason)) reason = "File operation failed.";
+            return BridgeFiles.Diagnostic(labels.Reason(reason), 256);
+        }
+
+        // Every output's check after refresh: the same one comparison per output, without stopping at
+        // the first that fails. Each failure's reason is keyed to the rows of the entry that produced
+        // the output, its file and a loose file's .meta; an output an older Bridge stored names none.
+        private static Dictionary<string, string> OutputFailures(BridgeLocalization labels, string projectRoot, List<BridgeOutputCheck> outputs)
+        {
+            var failures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BridgeOutputCheck output in outputs)
+            {
+                string reason = null;
+                try
+                {
+                    string path = BridgeFiles.Under(projectRoot, output.path);
+                    if (output.isFolder ? !Directory.Exists(path) : !File.Exists(path)) reason = "Missing after Unity refreshed the project.";
+                    // Smart Package fingerprints are Base64; transport hashes are hexadecimal.
+                    else if (!output.isFolder && !string.IsNullOrEmpty(output.assetHash)
+                        && BridgeFiles.HashFile(path) != BridgeFiles.Hex(Convert.FromBase64String(output.assetHash)))
+                        reason = "Changed while Unity refreshed the project.";
+                    else if (!string.IsNullOrEmpty(output.guid) && !string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(path + ".meta")), output.guid, StringComparison.OrdinalIgnoreCase))
+                        reason = "Its GUID changed while Unity refreshed the project.";
+                }
+                catch (Exception error) { reason = error.Message; }
+                if (reason == null) continue;
+                reason = ProjectReason(labels, projectRoot, reason);
+                failures[RowKey(output.entryId, output.path)] = reason;
+                if (output.metaEntryId != null) failures[RowKey(output.metaEntryId, output.path + ".meta")] = reason;
+            }
+            return failures;
+        }
+
+        private static string RowKey(string entryId, string path) => entryId + "\n" + path;
+
+        // Only the rows of the entry that produced a failed output read failed with why: another
+        // package's row at that path keeps its state (a variant the user skipped stays skipped), and a
+        // row that already failed keeps its reason. An identical skip whose file a project script
+        // changed fails too, deliberately: the project no longer holds the package's file.
+        private static void MarkFailed(List<BridgeFileResult> results, Dictionary<string, string> failures)
+        {
+            foreach (BridgeFileResult result in results)
+                if (result.state != "failed" && failures.TryGetValue(RowKey(result.entryId, result.path), out string message))
+                { result.state = "failed"; result.message = message; }
+        }
+
         private static void PublishPreparationProgress(StoredBridgeRequest request, bool force = false)
         {
             BridgePreparationProgress progress = request.preparationProgress;
@@ -338,7 +402,7 @@ namespace NekoNekoAsset.Bridge
                         nextBar = CheckpointClock.ElapsedMilliseconds + 100;
                         EditorUtility.DisplayProgressBar(title, index + " / " + total + "  " + item.TargetPath, total == 0 ? 1 : (float)index / total);
                     },
-                    ItemCompleted = item => RecordItem(request, item)
+                    ItemCompleted = item => RecordItem(request, item, registry.projectRoot)
                 });
                 request.engineDirectory = result.OwnedStagingDirectory;
                 foreach (ImportItemResult item in result.Items)
@@ -351,7 +415,7 @@ namespace NekoNekoAsset.Bridge
                     return;
                 }
                 request.appliedFailed = result.Status == ImportRunStatus.PartiallyFailed || result.Status == ImportRunStatus.PreflightFailed;
-                if (request.appliedFailed) request.receipt.error = labels.Message("Some files were not imported; inspect the per-file results.");
+                if (request.appliedFailed) request.receipt.error = RunError(labels, registry.projectRoot, request.receipt.results, result.Errors);
                 request.receipt.stage = "refreshing";
                 Save(request); // Checkpoint precedes refresh/reload and survives process exit.
                 AssetDatabase.StopAssetEditing();
@@ -364,7 +428,7 @@ namespace NekoNekoAsset.Bridge
             catch (Exception)
             {
                 request.appliedFailed = true;
-                request.receipt.error = labels.Message("Import interrupted; applied entries remain and backups are retained.");
+                request.receipt.error = labels.Message("Import interrupted; imported files remain and backups are retained.");
                 request.receipt.stage = "interrupted";
                 SaveTerminal(request);
             }
@@ -381,27 +445,26 @@ namespace NekoNekoAsset.Bridge
             }
         }
 
-        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item)
+        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item, string projectRoot)
         {
             string entryId = Path.GetFileName(string.IsNullOrEmpty(item.Item.Entry.SourceAssetPath)
                 ? item.Item.Package.FilePath : item.Item.Entry.SourceAssetPath);
             string state = item.Status == ImportItemStatus.Applied ? "applied"
                 : item.Status == ImportItemStatus.IdenticalSkipped || item.Status == ImportItemStatus.PolicySkipped ? "skipped" : "failed";
             string message = item.Status == ImportItemStatus.NotAttempted ? "Not attempted after an earlier failure." : item.Error;
-            message = BridgeFiles.Diagnostic(Labels(request).Reason(message), 256);
+            message = ProjectReason(Labels(request), projectRoot, message);
             PutResult(request, new BridgeFileResult { entryId = entryId, path = item.TargetPath, state = state, message = message });
-            if (!string.IsNullOrEmpty(item.Item.Entry.SourceMetaPath))
-            {
-                string metaId = Path.GetFileName(item.Item.Entry.SourceMetaPath);
-                if (BridgeFiles.IsUuid(metaId))
-                    PutResult(request, new BridgeFileResult { entryId = metaId, path = item.TargetPath + ".meta", state = state, message = message });
-            }
+            string metaId = Path.GetFileName(item.Item.Entry.SourceMetaPath ?? "");
+            if (BridgeFiles.IsUuid(metaId))
+                PutResult(request, new BridgeFileResult { entryId = metaId, path = item.TargetPath + ".meta", state = state, message = message });
+            else metaId = null;
             if (item.Status == ImportItemStatus.Applied || item.Status == ImportItemStatus.IdenticalSkipped)
             {
+                // The last entry to write or match a path owns its check after refresh, with its rows.
                 request.outputs.RemoveAll(output => string.Equals(output.path, item.TargetPath, StringComparison.OrdinalIgnoreCase));
                 request.outputs.Add(new BridgeOutputCheck { path = item.TargetPath, assetHash = item.AssetHash,
                     guid = string.IsNullOrEmpty(item.IdentityGuid) ? null : item.IdentityGuid,
-                    isFolder = item.Item.Entry.IsFolder });
+                    isFolder = item.Item.Entry.IsFolder, entryId = entryId, metaEntryId = metaId });
             }
             foreach (string parent in item.CreatedParents)
                 if (!request.createdParents.Contains(parent)) request.createdParents.Add(parent);
@@ -445,23 +508,17 @@ namespace NekoNekoAsset.Bridge
                 // Refresh alone does not register new or changed embedded package manifests.
                 if (request.outputs.Any(output => output.path.StartsWith("Packages/", StringComparison.Ordinal)))
                     UnityEditor.PackageManager.Client.Resolve();
-                foreach (BridgeOutputCheck output in request.outputs)
-                {
-                    string path = BridgeFiles.Under(registry.projectRoot, output.path);
-                    if (output.isFolder ? !Directory.Exists(path) : !File.Exists(path)) throw new IOException("Imported output missing.");
-                    // Smart Package fingerprints are Base64; transport hashes are hexadecimal.
-                    if (!output.isFolder && !string.IsNullOrEmpty(output.assetHash)
-                        && BridgeFiles.HashFile(path) != BridgeFiles.Hex(Convert.FromBase64String(output.assetHash)))
-                        throw new IOException("Imported output changed during refresh.");
-                    if (!string.IsNullOrEmpty(output.guid) && !string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(path + ".meta")), output.guid, StringComparison.OrdinalIgnoreCase))
-                        throw new IOException("Imported GUID changed during refresh.");
-                }
+                // A project script can rewrite or remove imported files during refresh: each one reads
+                // failed with why, so the result window counts and lists them all.
+                Dictionary<string, string> failures = OutputFailures(Labels(request), registry.projectRoot, request.outputs);
+                MarkFailed(request.receipt.results, failures);
+                if (failures.Count > 0) throw new IOException("Imported files changed during refresh.");
                 request.receipt.stage = request.appliedFailed ? "failed" : "completed";
             }
             catch (Exception)
             {
                 request.receipt.stage = "failed";
-                request.receipt.error = Labels(request).Message("Could not refresh or verify imported outputs; applied files and backups remain.");
+                request.receipt.error = Labels(request).Message("Could not refresh or verify the imported files; they and their backups remain.");
             }
             // Record only Unity-recognized metadata for unchanged new loose outputs,
             // even when another output made refresh/verification fail.
