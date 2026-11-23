@@ -142,24 +142,6 @@ export function useProductActions({
     const targets = ids.filter((id) => productMap.get(id)?.status === 'attention');
     if (targets.length) run(onNative('catalogue', 'dismiss_attention', { productIds: targets }));
   };
-  /** Files the latest finished download of a product found the store no longer offers. */
-  const refusedFiles = (productId: string) => {
-    const job = nativeState.jobs
-      .filter(
-        (job) =>
-          job.type === 'download' &&
-          job.productId === productId &&
-          !['queued', 'running'].includes(job.state),
-      )
-      .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0] as
-      | (Job & { failures?: Record<string, { errorCode?: string } | undefined> })
-      | undefined;
-    return Object.entries(job?.failures ?? {})
-      .filter(([, failure]) =>
-        ['store_file_unavailable', 'free_offer_unavailable'].includes(failure?.errorCode ?? ''),
-      )
-      .map(([id]) => id);
-  };
   const exportZip = async (ids: string[]) => {
     if (!ids.length) return;
     try {
@@ -190,7 +172,6 @@ export function useProductActions({
     syncLicenses,
     needsAttention,
     dismissAttention,
-    refusedFiles,
     exportZip,
   };
 }

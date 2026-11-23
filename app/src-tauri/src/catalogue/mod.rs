@@ -59,6 +59,7 @@ const KINDS: &[&str] = &[
     "source_coverage",
     "device",
     "download_intent",
+    "local_source",
 ];
 /// Saved deltas loaded at once before the history is rewritten as one checkpoint.
 const COMPACT_HISTORY_AFTER: usize = 256;
@@ -1177,8 +1178,10 @@ impl Catalogue {
             is_sync_worker: false,
         };
         // Downloads a store stopped offering before 0.3.5 left Files while their
-        // bytes stayed, and before 0.3.13 a file its store refused stayed listed
-        // with nothing on disk. Refresh those once; later opens find none.
+        // bytes stayed, before 0.3.13 a file its store refused stayed listed with
+        // nothing on disk, and before 0.3.14 a file whose free offer ended had no
+        // mark and one whose last download failed did not show it. Refresh those
+        // once; later opens find none.
         let unlisted: BTreeSet<String> = {
             let conn = this
                 .inner
@@ -2530,11 +2533,27 @@ impl Catalogue {
             let jobs = rows(tx, "job")?;
             let mut cleared = 0usize;
             let mut active = 0usize;
-            for job in jobs {
+            for mut job in jobs {
                 // This job owns staged folders until deletion or rollback
                 // finishes; clearing history must not discard its recovery.
                 if job["type"] == "storage:delete_local_products" && job["state"] != "completed" {
                     active += 1;
+                    continue;
+                }
+                // A local import that stopped before adding all its assets keeps the copies
+                // and plan its Retry continues from. It only leaves Activity; Storage keeps it.
+                let products = strings(&job["productIds"]);
+                let completed = strings(&job["completedProductIds"]);
+                if job["type"] == "storage:import_local"
+                    && matches!(text(&job, "state"), "failed" | "needsAction" | "cancelled")
+                    && (products.is_empty() || products.iter().any(|id| !completed.contains(id)))
+                {
+                    if job["activityCleared"] != true {
+                        job["activityCleared"] = json!(true);
+                        let id = text(&job, "id").to_owned();
+                        Self::write(tx, projections, "job", &id, Some(job))?;
+                        cleared += 1;
+                    }
                     continue;
                 }
                 match text(&job, "state") {

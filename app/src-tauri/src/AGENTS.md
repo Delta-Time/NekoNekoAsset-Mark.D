@@ -20,8 +20,11 @@ These cover the whole core. Folders below add their own `AGENTS.md`.
 
 - Activity lists jobs as notices for the user. Clear history deletes every finished
   job, so nothing may decide from one or from its absence: keep what work remembers
-  in its own records (download intents, artifacts, checkpoints, coverage, accounts).
-  A running task whose job row is gone was cancelled.
+  in its own records (download intents, local sources, artifacts, checkpoints,
+  coverage, accounts). A running task whose job row is gone was cancelled. A local
+  import that stopped before adding all its assets only leaves Activity, since its
+  Retry continues from what it copied; Discard in Storage drops it with the copies of
+  the assets it did not add.
 
 ## Stores
 

@@ -44,7 +44,7 @@ export default function ActivityView({
   return (
     <ActivityHistory
       locale={locale}
-      jobs={nativeState.jobs}
+      jobs={nativeState.jobs.filter((job) => !job.activityCleared)}
       accounts={accounts}
       products={products}
       aiEnabled={aiEnabled}

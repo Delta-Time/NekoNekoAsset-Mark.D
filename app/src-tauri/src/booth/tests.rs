@@ -1440,12 +1440,30 @@ fn completed_job_keeps_its_incomplete_count_and_the_account_reconnects() {
     let reconnected = catalogue.get("account", A).unwrap().unwrap();
     assert_eq!(reconnected["status"], "connected");
     assert_eq!(reconnected["syncState"], "complete");
+    // The account keeps the count, so clearing Activity does not hide it.
+    catalogue.command("clear_activity", json!({})).unwrap();
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["lastSyncIncompleteProducts"],
+        3
+    );
     // A later attempt that left nothing behind does not keep an earlier count.
     job["progress"] = json!({"stage":"finalizing"});
     catalogue.put("job", "authored-partial", stored).unwrap();
     fixture.service.finish_job(&job, None).unwrap();
     let later = catalogue.get("job", "authored-partial").unwrap().unwrap();
     assert!(later["progress"].get("incompleteProducts").is_none());
+    let account = catalogue.get("account", A).unwrap().unwrap();
+    assert!(account.get("lastSyncIncompleteProducts").is_none());
+    // Nor does one that failed: its error shows instead.
+    job["progress"] = json!({"stage":"publishing","incompleteProducts":2});
+    catalogue.put("job", "authored-partial", later).unwrap();
+    fixture
+        .service
+        .finish_job(&job, Some("RATE_LIMITED"))
+        .unwrap();
+    let account = catalogue.get("account", A).unwrap().unwrap();
+    assert_eq!(account["syncState"], "incomplete");
+    assert!(account.get("lastSyncIncompleteProducts").is_none());
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();

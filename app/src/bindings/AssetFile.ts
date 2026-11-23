@@ -31,4 +31,8 @@ export type AssetFile = {
    */
   kept?: boolean;
   userAdded?: boolean;
+  /**
+   * Its last download found the store's free offer ended.
+   */
+  offerEnded?: boolean;
 };

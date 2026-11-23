@@ -1141,8 +1141,8 @@ async fn verified_files_survive_retry_and_partial_completion_requires_a_fault_fo
         .get("job", queued["jobIds"][0].as_str().unwrap())
         .unwrap()
         .unwrap();
-    // Match a failed stream: pending bytes have no bound revision; the failed job
-    // supplies Attention while all 29 completed artifact facts remain intact.
+    // Match a failed stream: pending bytes have no bound revision; the record of the
+    // failed attempt supplies Attention while all 29 completed artifact facts remain intact.
     let pending_id = format!("pending-{}", io::key("test-file-29"));
     f.service
         .catalogue
@@ -1191,6 +1191,21 @@ async fn verified_files_survive_retry_and_partial_completion_requires_a_fault_fo
         .unwrap();
     f.service
         .put_job(&mut retry_job, "cancelled", None)
+        .unwrap();
+    // A retry cancelled before it reached the file leaves the failure it was to fix.
+    assert_eq!(projection()["status"], "attention");
+    // One cancelled while it ran leaves only that cancellation, which is no fault.
+    f.service
+        .catalogue
+        .put(
+            "artifact",
+            &pending_id,
+            json!({
+                "id":pending_id,"productId":"42","fileId":"test-file-29",
+                "rootId":"test-root","revision":null,"status":"notDownloaded",
+                "originalAvailable":false,"errorCode":"cancelled"
+            }),
+        )
         .unwrap();
     assert_eq!(projection()["status"], "partial");
     assert_eq!(projection()["fullyDownloaded"], false);

@@ -916,6 +916,7 @@ impl BoothService {
                             "incomplete"
                         });
                         account["lastSyncErrorCode"] = json!(error);
+                        crate::stores::record_sync_incomplete(&mut account, job, error.is_none());
                         if error == Some("AUTH_REQUIRED")
                             && self.inner.catalogue.library_root().is_none()
                         {

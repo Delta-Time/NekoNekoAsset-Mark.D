@@ -35,6 +35,18 @@ fn artifact(conn: &Connection, index: usize, status: &str, error: Option<&str>) 
     set_raw(conn,"artifact",&id,&json!({"id":id,"productId":"p","fileId":id,"revision":"r1","status":status,"errorCode":error})).unwrap();
 }
 
+/// The record a file's last download attempt leaves: `downloading` while it runs, then
+/// `notDownloaded` with the reason it ended.
+fn attempt(conn: &Connection, index: usize, error: Option<&str>) {
+    let id = format!("pending-f{index}");
+    let status = if error.is_some() {
+        "notDownloaded"
+    } else {
+        "downloading"
+    };
+    set_raw(conn,"artifact",&id,&json!({"id":id,"productId":"p","fileId":format!("f{index}"),"revision":null,"status":status,"errorCode":error,"originalAvailable":false})).unwrap();
+}
+
 fn job(conn: &Connection, id: &str, state: &str, updated: &str, error: Option<&str>) {
     set_raw(conn,"job",id,&json!({"id":id,"productId":"p","type":"download","state":state,"updatedAt":updated,"errorCode":error})).unwrap();
 }
@@ -70,7 +82,7 @@ fn ordinary_unstarted_partial_pending_and_cancelled_work_is_not_attention() {
 }
 
 #[test]
-fn genuine_file_or_latest_job_failure_is_attention_and_cancel_does_not_hide_missing() {
+fn genuine_file_or_last_attempt_failure_is_attention_and_cancel_does_not_hide_missing() {
     let conn = fixture(1, true);
     for state in [
         "failed",
@@ -87,7 +99,10 @@ fn genuine_file_or_latest_job_failure_is_attention_and_cancel_does_not_hide_miss
         artifact(&conn, 0, state, Some("hash_mismatch"));
         assert_eq!(projected(&conn)["status"], "attention");
     }
-    artifact(&conn, 0, "notDownloaded", None);
+    conn.execute("DELETE FROM entities WHERE kind='artifact'", [])
+        .unwrap();
+    // A finished download job decides nothing, since Clear history removes it; the
+    // record its failed attempt left is the file's own fact.
     for state in ["failed", "needsAction"] {
         job(
             &conn,
@@ -96,10 +111,24 @@ fn genuine_file_or_latest_job_failure_is_attention_and_cancel_does_not_hide_miss
             "2026-01-01T00:00:00Z",
             Some("network_failed"),
         );
-        assert_eq!(projected(&conn)["status"], "attention");
+        assert_eq!(projected(&conn)["status"], "notDownloaded");
     }
-    job(&conn, "new", "cancelled", "2026-01-02T00:00:00Z", None);
-    assert_eq!(projected(&conn)["status"], "notDownloaded");
+    attempt(&conn, 0, Some("network_failed"));
+    let product = projected(&conn);
+    assert_eq!(product["status"], "attention");
+    assert_eq!(
+        (
+            &product["files"][0]["status"],
+            &product["files"][0]["errorCode"]
+        ),
+        (&json!("failed"), &json!("network_failed"))
+    );
+    // A new attempt replaces the failure. A cancelled one is no fault, nor is one that
+    // closing the App interrupted (its job resumes at the next start).
+    for later in [None, Some("cancelled"), Some("interrupted")] {
+        attempt(&conn, 0, later);
+        assert_eq!(projected(&conn)["status"], "notDownloaded", "{later:?}");
+    }
     artifact(&conn, 0, "missing", None);
     assert_eq!(projected(&conn)["status"], "attention");
 }
@@ -118,13 +147,7 @@ fn dismissing_attention_keeps_file_facts_and_the_next_failure_raises_it_again() 
         "extractionFailed",
         Some("archive_password_required"),
     );
-    job(
-        &conn,
-        "first",
-        "needsAction",
-        "2026-01-01T00:00:00Z",
-        Some("store_access_denied"),
-    );
+    attempt(&conn, 0, Some("store_access_denied"));
     assert_eq!(projected(&conn)["status"], "attention");
     dismiss(&conn);
     let product = projected(&conn);
@@ -141,14 +164,8 @@ fn dismissing_attention_keeps_file_facts_and_the_next_failure_raises_it_again() 
     assert_eq!(projected(&conn)["files"][0]["status"], "extractionFailed");
     file["requiresContentVerification"] = json!(false);
     set_raw(&conn, "remote_file", "f0", &file).unwrap();
-    // A new attempt that fails is a new job, whatever the earlier one said.
-    job(
-        &conn,
-        "second",
-        "failed",
-        "2026-01-02T00:00:00Z",
-        Some("network_failed"),
-    );
+    // A new attempt that fails leaves a new record, whatever the earlier one said.
+    attempt(&conn, 0, Some("network_failed"));
     assert_eq!(projected(&conn)["status"], "attention");
     dismiss(&conn);
     assert_eq!(projected(&conn)["status"], "partial");
@@ -378,6 +395,7 @@ fn a_file_its_store_refused_counts_as_dropped_and_raises_no_attention() {
         &conn,
         json!({"f1":refusal,"f2":{"fileId":"f2","errorCode":"network_failed"}}),
     );
+    attempt(&conn, 2, Some("network_failed"));
     assert_eq!(projected(&conn)["status"], "attention");
     failed(&conn, json!({"f1":refusal}));
     artifact(&conn, 2, "ready", None);

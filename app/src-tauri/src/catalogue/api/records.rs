@@ -66,6 +66,14 @@ pub struct Account {
     )]
     #[ts(optional)]
     pub last_sync_at: Option<Option<String>>,
+    /// `complete` when the last sync ended without an error, otherwise `incomplete`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sync_state: Option<String>,
+    /// Assets the last completed sync left as they were; absent when it left none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_sync_incomplete_products: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub disconnected: Option<bool>,
@@ -153,6 +161,11 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cancel_requested: Option<bool>,
+    /// A local import that stopped before adding all its assets, taken out of Activity
+    /// by Clear history while Storage still offers its Retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub activity_cleared: Option<bool>,
     #[serde(
         default,
         deserialize_with = "crate::ipc::nullable",

@@ -945,4 +945,20 @@ fn restart_discards_only_owned_partial_and_preserves_completed_artifact() {
             .unwrap()["status"],
         "notDownloaded"
     );
+    // Its download job resumes at this start, so the interrupted file is no fault.
+    let product = f
+        .service
+        .catalogue
+        .command("product_details", json!({"id":"42"}))
+        .unwrap();
+    let file = product["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["id"] == "test-file-1")
+        .unwrap();
+    assert_eq!(
+        (&product["status"], &file["status"]),
+        (&json!("partial"), &json!("notDownloaded"))
+    );
 }

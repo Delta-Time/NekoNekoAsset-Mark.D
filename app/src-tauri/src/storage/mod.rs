@@ -291,8 +291,11 @@ impl StorageService {
     }
     fn put_job(&self, job: &mut Value, state: &str, error: Option<&str>) -> Result<()> {
         if state == "queued" {
-            // A retry reuses this record, and its failure must raise Attention again.
-            job.as_object_mut().unwrap().remove("attentionDismissed");
+            // A retry reuses this record: it shows in Activity again, and its failure
+            // must raise Attention again.
+            let job = job.as_object_mut().unwrap();
+            job.remove("attentionDismissed");
+            job.remove("activityCleared");
         }
         job["state"] = json!(state);
         job["updatedAt"] = json!(now());
@@ -655,6 +658,8 @@ impl StorageService {
                 }
             }
             self.reconcile_archive_cleanup()?;
+            // Should it fail, those products keep their sources in their jobs, as before.
+            let _ = self.record_listed_local_sources();
             Ok(())
         })();
         if let Err(e) = setup {
@@ -1080,6 +1085,10 @@ impl StorageService {
                     return self.enqueue_file(&args).await;
                 }
                 self.enqueue(&retry).await
+            }
+            "discard_import" => {
+                let id = io::required_string(&args, "jobId")?;
+                self.discard_local_import(id).await
             }
             "configure_root" => self.configure_root(&args).await,
             "remap_root" | "migrate_root" | "cleanup_old_root" | "export_backup"

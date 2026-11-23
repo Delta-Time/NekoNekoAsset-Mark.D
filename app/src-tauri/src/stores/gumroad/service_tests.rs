@@ -1669,9 +1669,10 @@ fn product_local_failures_complete_the_job_and_count_distinct_assets() {
     assert_eq!(terminal["state"], "completed");
     assert!(terminal["errorCode"].is_null());
     assert_eq!(terminal["progress"]["incompleteProducts"], 3);
+    let account = catalogue.get("account", account_id).unwrap().unwrap();
     assert_eq!(
-        catalogue.get("account", account_id).unwrap().unwrap()["state"],
-        "connected"
+        (&account["state"], &account["lastSyncIncompleteProducts"]),
+        (&json!("connected"), &json!(3))
     );
     let mut clean = job;
     record_incomplete(&mut clean, &BTreeSet::new());

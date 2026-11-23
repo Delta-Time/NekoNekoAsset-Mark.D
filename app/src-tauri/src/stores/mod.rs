@@ -178,6 +178,22 @@ impl StoreError {
     }
 }
 
+/// Keeps how many assets a completed sync left as they were on its account, beside the
+/// sync's other outcome, so the count outlives the job row Clear history removes.
+pub(crate) fn record_sync_incomplete(account: &mut Value, job: &Value, completed: bool) {
+    match job["progress"]["incompleteProducts"]
+        .as_u64()
+        .filter(|count| completed && *count > 0)
+    {
+        Some(count) => account["lastSyncIncompleteProducts"] = json!(count),
+        None => {
+            if let Some(fields) = account.as_object_mut() {
+                fields.remove("lastSyncIncompleteProducts");
+            }
+        }
+    }
+}
+
 pub(super) fn active_bound_account(account: &Value) -> bool {
     account["identityVerified"] == true
         && account["disconnected"] != true

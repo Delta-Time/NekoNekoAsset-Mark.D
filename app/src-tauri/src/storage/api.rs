@@ -23,6 +23,8 @@ pub enum StorageRequest {
     CancelDownloads(OptionalProductIds),
     DeleteDownloads(DownloadRemoval),
     RetryJob(Retry),
+    /// Drops a stopped local import and its copies of the assets it did not add.
+    DiscardImport(StorageJob),
     /// Sets the library folder.
     ConfigureRoot(FolderPath),
     /// Points a root at the folder its files moved to.
@@ -333,6 +335,14 @@ pub struct CancelRequested {
     pub cancel_requested: bool,
 }
 
+/// The local import a discard dropped.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportDiscarded {
+    pub job_id: String,
+}
+
 /// How many downloads were asked to stop.
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -426,6 +436,7 @@ struct StorageResponses {
     cancel_downloads: DownloadsCancelled,
     delete_downloads: DeletedFiles,
     retry_job: Retried,
+    discard_import: ImportDiscarded,
     configure_root: crate::catalogue::api::Root,
     remap_root: OperationJob,
     migrate_root: Moved,

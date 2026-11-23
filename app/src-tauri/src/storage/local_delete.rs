@@ -126,7 +126,7 @@ impl StorageService {
 
     fn delete_plan(&self, ids: &[String], job_id: &str) -> Result<Vec<DeleteDirectory>> {
         let artifacts = self.catalogue.list("artifact")?;
-        let jobs = self.catalogue.list("job")?;
+        let imports = self.local_import_directories()?;
         let mut directories = BTreeSet::new();
         for id in ids {
             let product = self
@@ -163,18 +163,11 @@ impl StorageService {
                 ));
             }
             // Membership may be empty, with user-edited bytes retained by file
-            // removal. The durable import plan still owns its stable directory.
-            for job in jobs.iter().filter(|j| j["type"] == "storage:import_local") {
-                for group in job["localPlan"]["groups"].as_array().into_iter().flatten() {
-                    if group["product_id"] == *id {
-                        let prefix = io::required_string(group, "prefix")?;
-                        product_directory(prefix)?;
-                        directories.insert((
-                            id.clone(),
-                            io::required_string(job, "rootId")?.to_owned(),
-                            prefix.to_owned(),
-                        ));
-                    }
+            // removal. Its imports still own their stable directories.
+            for (product, root, prefix) in &imports {
+                if product == id {
+                    product_directory(prefix)?;
+                    directories.insert((id.clone(), root.clone(), prefix.clone()));
                 }
             }
         }
@@ -221,7 +214,7 @@ impl StorageService {
         Ok(plan)
     }
 
-    fn require_unshared_delete_path(&self, product: &str, target: &Path) -> Result<()> {
+    pub(super) fn require_unshared_delete_path(&self, product: &str, target: &Path) -> Result<()> {
         for artifact in self
             .catalogue
             .list("artifact")?
@@ -239,20 +232,9 @@ impl StorageService {
                 }
             }
         }
-        for job in self
-            .catalogue
-            .list("job")?
-            .into_iter()
-            .filter(|j| j["type"] == "storage:import_local")
-        {
-            for group in job["localPlan"]["groups"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|g| g["product_id"] != product)
-            {
-                let root = self.delete_root(job["rootId"].as_str())?;
-                let path = io::safe_join(&root, io::required_string(group, "prefix")?)?;
+        for (other, root, prefix) in self.local_import_directories()? {
+            if other != product {
+                let path = io::safe_join(&self.delete_root(Some(&root))?, &prefix)?;
                 ensure!(
                     !contains(target, &path) && !contains(&path, target),
                     "local_delete_shared_path"

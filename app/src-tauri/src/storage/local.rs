@@ -2,6 +2,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     time::UNIX_EPOCH,
@@ -46,6 +47,70 @@ struct LocalPlan {
     draft_id: String,
     groups: Vec<LocalGroup>,
     metadata: Value,
+}
+const SOURCE_KIND: &str = "local_source";
+/// Where a local product's files were copied from, kept out of jobs so that Download
+/// still repairs a copy after Clear history. Each published group adds an entry. It
+/// leaves with its product and stays out of exports and backups: its paths belong to
+/// the device that imported them.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalSource {
+    id: String,
+    product_id: String,
+    entries: Vec<SourceEntry>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceEntry {
+    draft_id: String,
+    origin_device_id: String,
+    root_id: String,
+    group: LocalGroup,
+}
+impl LocalSource {
+    fn new(product: &str) -> Self {
+        Self {
+            id: product.to_owned(),
+            product_id: product.to_owned(),
+            entries: vec![],
+        }
+    }
+    /// Adds a published group in place of an entry from the same draft. Earlier entries
+    /// lose the files it removes or copies again, and go once they hold none, so a
+    /// later file of the same name never finds an old original.
+    fn add(&mut self, job: &Value, plan: &LocalPlan, group: &LocalGroup, root: &str) {
+        let product = &self.product_id;
+        let replaced: HashSet<String> = group
+            .remove_file_ids
+            .iter()
+            .cloned()
+            .chain(
+                group
+                    .files
+                    .iter()
+                    .map(|file| file_id(product, &file.relative)),
+            )
+            .collect();
+        let draft = &plan.draft_id;
+        self.entries.retain(|entry| entry.draft_id != *draft);
+        for entry in &mut self.entries {
+            entry
+                .group
+                .files
+                .retain(|file| !replaced.contains(&file_id(product, &file.relative)));
+        }
+        self.entries.retain(|entry| !entry.group.files.is_empty());
+        let mut group = group.clone();
+        // A repair runs the group again without the rest of its plan.
+        group.metadata.get_or_insert_with(|| plan.metadata.clone());
+        self.entries.push(SourceEntry {
+            draft_id: draft.clone(),
+            origin_device_id: job["originDeviceId"].as_str().unwrap_or("").to_owned(),
+            root_id: root.to_owned(),
+            group,
+        });
+    }
 }
 
 /// Selections often sit below redirected or junctioned folders (OneDrive moves Desktop and
@@ -694,6 +759,123 @@ impl StorageService {
         })
     }
 
+    /// Drops an import that stopped: what it copied for assets it did not add, its saved
+    /// progress and the job. The originals and the assets it added stay.
+    pub(super) async fn discard_local_import(&self, id: &str) -> Result<Value> {
+        let _operation = self
+            .operations
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
+        let _gate = self.queue_gate.lock().await;
+        let job = self
+            .catalogue
+            .get("job", id)?
+            .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
+        ensure!(
+            job["type"] == JOB_TYPE
+                && job["localPlan"].is_object()
+                && matches!(
+                    job["state"].as_str(),
+                    Some("failed" | "needsAction" | "cancelled")
+                ),
+            "invalid_job"
+        );
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.discard_local_copies(&job)).await??;
+        super::api::answer(super::api::ImportDiscarded {
+            job_id: id.to_owned(),
+        })
+    }
+
+    /// Files go before records, so a discard that stops part way can run again.
+    fn discard_local_copies(&self, job: &Value) -> Result<()> {
+        let plan: LocalPlan = serde_json::from_value(job["localPlan"].clone())?;
+        let root = self.root(job["rootId"].as_str())?;
+        let root_path = self.root_path(&root)?;
+        let artifacts = self.catalogue.list("artifact")?;
+        let mut checkpoints = Vec::new();
+        for (index, group) in plan.groups.iter().enumerate() {
+            checkpoints.extend(
+                group
+                    .files
+                    .iter()
+                    .map(|file| checkpoint_id(&plan.draft_id, group, file)),
+            );
+            if job["completedGroupIndexes"]
+                .as_array()
+                .is_some_and(|done| done.contains(&json!(index)))
+            {
+                continue;
+            }
+            let directory = io::safe_join(&root_path, &group.prefix)?;
+            let product = self.catalogue.get("product", &group.product_id)?;
+            if product.is_none() && !group.membership {
+                // The folder of an asset it never added holds only what this import put there.
+                if fs::symlink_metadata(&directory).is_ok() {
+                    super::local_delete::product_directory(&group.prefix)?;
+                    self.require_unshared_delete_path(&group.product_id, &directory)?;
+                    super::local_delete::remove_checked_tree(&directory)?;
+                }
+                continue;
+            }
+            // Beside an asset's own files only its unchanged copies go that no record uses.
+            for file in &group.files {
+                let Some(copy) = self
+                    .catalogue
+                    .get("checkpoint", &checkpoint_id(&plan.draft_id, group, file))?
+                else {
+                    continue;
+                };
+                let relative = io::required_string(&copy, "relativePath")?;
+                let used = artifacts.iter().any(|a| {
+                    a["rootId"] == root["id"]
+                        && (a["relativePath"] == relative
+                            || a["extractedPath"]
+                                .as_str()
+                                .is_some_and(|p| path_contains(Path::new(p), Path::new(relative))))
+                });
+                let path = io::safe_join(&root_path, relative)?;
+                let size = copy["sizeBytes"].as_u64().unwrap_or(u64::MAX);
+                if !used && io::verify(&path, io::required_string(&copy, "hash")?, size).is_ok() {
+                    fs::remove_file(&path)?;
+                }
+            }
+            let kept = product
+                .as_ref()
+                .map(|p| strings(&p["localManifest"]["directories"]))
+                .unwrap_or_default();
+            let mut created: Vec<_> = group
+                .directories
+                .iter()
+                .map(|d| format!("{}/{d}", group.prefix))
+                .filter(|d| !kept.contains(d))
+                .collect();
+            created.sort_by_key(|d| std::cmp::Reverse(d.len()));
+            for relative in created {
+                let _ = fs::remove_dir(io::safe_join(&root_path, &relative)?);
+            }
+            if product.is_none() {
+                let _ = fs::remove_dir(&directory);
+            }
+        }
+        let partials = io::safe_join(
+            &root_path,
+            &format!(".nna-import-partials/{}", plan.draft_id),
+        )?;
+        if fs::symlink_metadata(&partials).is_ok() {
+            super::local_delete::remove_checked_tree(&partials)?;
+        }
+        if let Some(parent) = partials.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+        for id in checkpoints {
+            self.catalogue.delete("checkpoint", &id)?;
+        }
+        self.catalogue
+            .delete("job", io::required_string(job, "id")?)?;
+        Ok(())
+    }
+
     /// Called under the existing queue gate; local products never request store tickets.
     pub(super) fn retry_local_product_locked(
         &self,
@@ -718,12 +900,21 @@ impl StorageService {
         if ready {
             return Ok(None);
         }
+        // An import already queued or running for it does the work.
+        if let Some(job) = jobs.iter().find(|job| {
+            job["type"] == JOB_TYPE
+                && matches!(job["state"].as_str(), Some("queued" | "running"))
+                && strings(&job["productIds"]).iter().any(|id| id == product)
+        }) {
+            return Ok(job["id"].as_str().map(str::to_owned));
+        }
         let source = self
             .catalogue
             .get("product", product)?
             .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
+        let entries = self.source_entries(product)?;
         if source["localManifest"]["lastMutationId"].is_string() {
-            // Build only from current membership and bounded persisted source plans.
+            // Build only from current membership and its recorded sources.
             // Never replay an old import or its old remove delta after a user edit.
             ensure!(!files.is_empty(), "local_source_required");
             let artifacts = self.catalogue.related("artifact", product)?;
@@ -736,27 +927,21 @@ impl StorageService {
             let root = self.root(artifact["rootId"].as_str())?;
             let mut current_files = Vec::new();
             for file in &files {
-                let selected = jobs
+                // The newest entry wins: a removed file's name can be added again.
+                let selected = entries
                     .iter()
-                    .filter(|job| job["type"] == JOB_TYPE)
-                    .filter(|job| {
-                        self.catalogue.library_root().is_none()
-                            || job["originDeviceId"] == self.catalogue.device_id()
-                    })
-                    .filter_map(|job| {
-                        serde_json::from_value::<LocalPlan>(job["localPlan"].clone()).ok()
-                    })
-                    .flat_map(|plan| plan.groups)
-                    .filter(|group| group.product_id == product && group.prefix == prefix)
-                    .flat_map(|group| group.files)
+                    .rev()
+                    .filter(|entry| entry.group.prefix == prefix)
+                    .flat_map(|entry| &entry.group.files)
                     .find(|candidate| {
                         file_id(product, &candidate.relative) == file["id"].as_str().unwrap_or("")
                     });
-                current_files
-                    .push(selected.ok_or_else(|| anyhow::anyhow!("local_source_required"))?);
+                current_files.push(
+                    selected
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("local_source_required"))?,
+                );
             }
-            let draft = uuid::Uuid::new_v4().to_string();
-            let id = format!("local-import:{draft}");
             let group = LocalGroup {
                 product_id: product.to_owned(),
                 title: source["title"].as_str().unwrap_or("Local").to_owned(),
@@ -773,26 +958,31 @@ impl StorageService {
                     .as_str()
                     .map(str::to_owned),
             };
-            let plan = LocalPlan {
-                draft_id: draft,
-                groups: vec![group],
-                metadata: json!({}),
-            };
-            let job = json!({"id":id,"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"rootId":root["id"],"requestFingerprint":io::key(&serde_json::to_string(&plan)?),"productIds":[product],"completedProductIds":[],"localPlan":plan,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
-            self.catalogue.put("job", &id, job)?;
-            return Ok(Some(id));
+            return self
+                .queue_local_repair(group, io::required_string(&root, "id")?)
+                .map(Some);
         }
+        // The import that added it resumes while it is listed. Otherwise its recorded
+        // group runs again in a job of its own.
+        let added = |group: &Value| group["product_id"] == product && group["membership"] != true;
         let owner = jobs.iter().find(|job| {
             job["type"] == JOB_TYPE
                 && (self.catalogue.library_root().is_none()
                     || job["originDeviceId"] == self.catalogue.device_id())
                 && job["localPlan"]["groups"]
                     .as_array()
-                    .is_some_and(|groups| groups.iter().any(|g| g["product_id"] == product))
+                    .is_some_and(|groups| groups.iter().any(added))
         });
-        let id = owner
-            .and_then(|j| j["id"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("local_source_required"))?;
+        let Some(id) = owner.and_then(|j| j["id"].as_str()) else {
+            let entry = entries
+                .into_iter()
+                .rev()
+                .find(|entry| !entry.group.membership)
+                .ok_or_else(|| anyhow::anyhow!("local_source_required"))?;
+            return self
+                .queue_local_repair(entry.group, &entry.root_id)
+                .map(Some);
+        };
         let mut job = self
             .catalogue
             .get("job", id)?
@@ -802,7 +992,7 @@ impl StorageService {
         }
         let index = job["localPlan"]["groups"]
             .as_array()
-            .and_then(|groups| groups.iter().position(|g| g["product_id"] == product))
+            .and_then(|groups| groups.iter().position(added))
             .ok_or_else(|| anyhow::anyhow!("local_source_required"))?;
         job["completedProductIds"] = json!(strings(&job["completedProductIds"])
             .into_iter()
@@ -819,6 +1009,136 @@ impl StorageService {
         self.cancellation(id).store(false, Ordering::Release);
         self.put_job(&mut job, "queued", None)?;
         Ok(Some(id.to_owned()))
+    }
+
+    /// Copies one group again in a job of its own.
+    fn queue_local_repair(&self, group: LocalGroup, root: &str) -> Result<String> {
+        let draft = uuid::Uuid::new_v4().to_string();
+        let id = format!("local-import:{draft}");
+        let product = group.product_id.clone();
+        let plan = LocalPlan {
+            draft_id: draft,
+            groups: vec![group],
+            metadata: json!({}),
+        };
+        let job = json!({"id":id,"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"rootId":root,"requestFingerprint":io::key(&serde_json::to_string(&plan)?),"productIds":[product],"completedProductIds":[],"localPlan":plan,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
+        self.catalogue.put("job", &id, job)?;
+        Ok(id)
+    }
+
+    /// The product's source record with a published group added.
+    fn with_source(
+        &self,
+        job: &Value,
+        plan: &LocalPlan,
+        group: &LocalGroup,
+        root: &str,
+    ) -> Result<Value> {
+        let mut record = match self.catalogue.get(SOURCE_KIND, &group.product_id)? {
+            Some(value) => serde_json::from_value(value)?,
+            None => LocalSource::new(&group.product_id),
+        };
+        record.add(job, plan, group, root);
+        Ok(serde_json::to_value(record)?)
+    }
+
+    /// This device's recorded sources of a product, oldest first.
+    fn source_entries(&self, product: &str) -> Result<Vec<SourceEntry>> {
+        let Some(value) = self.catalogue.get(SOURCE_KIND, product)? else {
+            return Ok(vec![]);
+        };
+        let record: LocalSource = serde_json::from_value(value)?;
+        Ok(record
+            .entries
+            .into_iter()
+            .filter(|entry| {
+                self.catalogue.library_root().is_none()
+                    || entry.origin_device_id == self.catalogue.device_id()
+            })
+            .collect())
+    }
+
+    /// Products imported before they kept a source record have their sources only in
+    /// import jobs. Recording what those jobs published lets Clear history remove them.
+    pub(super) fn record_listed_local_sources(&self) -> Result<()> {
+        let mut jobs: Vec<_> = self
+            .catalogue
+            .list("job")?
+            .into_iter()
+            .filter(|job| job["type"] == JOB_TYPE)
+            .collect();
+        // In the order they ran, so each edit replaces what came before it.
+        jobs.sort_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
+        // None: a product that already has its record, or is not local.
+        let mut records: BTreeMap<String, Option<LocalSource>> = BTreeMap::new();
+        for job in &jobs {
+            let (Ok(plan), Some(root)) = (
+                serde_json::from_value::<LocalPlan>(job["localPlan"].clone()),
+                job["rootId"].as_str(),
+            ) else {
+                continue;
+            };
+            let completed = job["completedGroupIndexes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for (index, group) in plan.groups.iter().enumerate() {
+                // A product exists once its import published it; an edit, once complete.
+                if group.membership && !completed.contains(&json!(index)) {
+                    continue;
+                }
+                let id = &group.product_id;
+                if !records.contains_key(id) {
+                    let local = self
+                        .catalogue
+                        .get("product", id)?
+                        .is_some_and(|product| product["provider"] == "local");
+                    let missing = local && self.catalogue.get(SOURCE_KIND, id)?.is_none();
+                    records.insert(id.clone(), missing.then(|| LocalSource::new(id)));
+                }
+                if let Some(Some(record)) = records.get_mut(id) {
+                    record.add(job, &plan, group, root);
+                }
+            }
+        }
+        let mut writes = Vec::new();
+        for (id, record) in records {
+            if let Some(record) = record {
+                writes.push((SOURCE_KIND.to_owned(), id, serde_json::to_value(record)?));
+            }
+        }
+        if !writes.is_empty() {
+            self.catalogue.put_many(writes)?;
+        }
+        Ok(())
+    }
+
+    /// The product directories local imports own: each published group's, from its
+    /// product's source record, and each group of an import still listed.
+    pub(super) fn local_import_directories(&self) -> Result<Vec<(String, String, String)>> {
+        let mut directories = Vec::new();
+        for record in self.catalogue.list(SOURCE_KIND)? {
+            for entry in record["entries"].as_array().into_iter().flatten() {
+                directories.push((
+                    io::required_string(&record, "productId")?.to_owned(),
+                    io::required_string(entry, "rootId")?.to_owned(),
+                    io::required_string(&entry["group"], "prefix")?.to_owned(),
+                ));
+            }
+        }
+        for job in self.catalogue.list("job")? {
+            if job["type"] != JOB_TYPE {
+                continue;
+            }
+            for group in job["localPlan"]["groups"].as_array().into_iter().flatten() {
+                directories.push((
+                    io::required_string(group, "product_id")?.to_owned(),
+                    io::required_string(&job, "rootId")?.to_owned(),
+                    io::required_string(group, "prefix")?.to_owned(),
+                ));
+            }
+        }
+        Ok(directories)
     }
 
     fn copy_local_file(
@@ -1113,17 +1433,26 @@ impl StorageService {
             next_job.clone(),
         ));
         // The record was built before its files were copied. What an earlier run of a retry
-        // recorded, or a price read meanwhile, stays.
+        // or repair recorded, or a price read meanwhile, stays.
         for (kind, id, value) in &mut writes {
             if kind == "product" {
                 if let Some(latest) = self.catalogue.get("product", id)? {
-                    for key in ["acquired", "priceObservedAt", "priceSourceUrl"]
-                        .iter()
-                        .chain(&PRICE_FIELDS)
+                    for key in [
+                        "acquired",
+                        "acquiredAt",
+                        "priceObservedAt",
+                        "priceSourceUrl",
+                    ]
+                    .iter()
+                    .chain(&PRICE_FIELDS)
                     {
                         if let Some(recorded) = latest.get(*key) {
                             value[*key] = recorded.clone();
                         }
+                    }
+                    // A product added before acquiredAt existed keeps sorting by its minute.
+                    if latest.get("acquiredAt").is_none() {
+                        value.as_object_mut().unwrap().remove("acquiredAt");
                     }
                 }
             }
@@ -1241,6 +1570,9 @@ impl StorageService {
         }
         if !store_product {
             writes.push(("product".into(), group.product_id.clone(), product));
+            let root = io::required_string(root, "id")?;
+            let source = self.with_source(job, plan, group, root)?;
+            writes.push((SOURCE_KIND.into(), group.product_id.clone(), source));
         }
         let mut artifacts = Vec::new();
         for ((file, copy), id) in group.files.iter().zip(copies).zip(&file_ids) {

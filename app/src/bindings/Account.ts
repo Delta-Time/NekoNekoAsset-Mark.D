@@ -24,6 +24,14 @@ export type Account = {
   authenticatedAt?: string | null;
   lastSync?: string | null;
   lastSyncAt?: string | null;
+  /**
+   * `complete` when the last sync ended without an error, otherwise `incomplete`.
+   */
+  syncState?: string;
+  /**
+   * Assets the last completed sync left as they were; absent when it left none.
+   */
+  lastSyncIncompleteProducts?: number;
   disconnected?: boolean;
   /**
    * Whether this device still holds a sign-in for it.

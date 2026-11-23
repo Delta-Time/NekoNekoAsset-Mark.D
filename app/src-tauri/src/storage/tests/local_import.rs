@@ -942,12 +942,25 @@ async fn local_import_retry_clears_cancellation_without_creating_another_job() {
     job["attentionDismissed"] = json!(["authored"]);
     f.service.put_job(&mut job, "cancelled", None).unwrap();
     f.service.cancellation(&id).store(true, Ordering::Release);
+    // Clear history only takes an import that has not added its asset out of Activity,
+    // once; Storage keeps it for this Retry.
+    for cleared in [1, 0] {
+        let result = f
+            .service
+            .catalogue
+            .command("clear_activity", json!({}))
+            .unwrap();
+        assert_eq!(result["cleared"], cleared);
+    }
+    let kept = f.service.catalogue.get("job", &id).unwrap().unwrap();
+    assert_eq!(kept["activityCleared"], true);
     let response = f.service.retry_local_import(&id).await.unwrap();
     assert_eq!(response["jobId"], id);
     let mut resumed = f.service.catalogue.get("job", &id).unwrap().unwrap();
     assert_eq!(resumed["state"], "queued");
     assert_eq!(resumed["cancelRequested"], false);
     assert!(resumed.get("attentionDismissed").is_none());
+    assert!(resumed.get("activityCleared").is_none());
     assert!(!f.service.cancellation(&id).load(Ordering::Acquire));
     f.service
         .run_local_import(
@@ -958,6 +971,106 @@ async fn local_import_retry_clears_cancellation_without_creating_another_job() {
         .unwrap();
     assert_eq!(f.service.catalogue.list("job").unwrap().len(), 1);
     assert_eq!(f.service.catalogue.list("product").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn local_import_discard_removes_only_copies_of_assets_it_did_not_add() {
+    let f = Fixture::new();
+    let library = f.path.join("library");
+    let added = f.path.join("added");
+    let stopped = f.path.join("stopped");
+    let extra = f.path.join("extra");
+    std::fs::create_dir_all(stopped.join("nested/empty")).unwrap();
+    for directory in [&added, &extra] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(directory.join("1-copied.txt"), b"synthetic copied payload").unwrap();
+    }
+    std::fs::write(
+        stopped.join("nested/1-copied.txt"),
+        b"synthetic copied payload",
+    )
+    .unwrap();
+    std::fs::write(stopped.join("nested/2-changed.txt"), b"synthetic payload").unwrap();
+    std::fs::write(extra.join("2-changed.txt"), b"synthetic payload").unwrap();
+    // The second asset's source changes after the plan, so the import stops part way.
+    let mut job = local_job(&f, &[added, stopped.clone()], "batch");
+    let id = job["id"].as_str().unwrap().to_owned();
+    std::fs::write(
+        stopped.join("nested/2-changed.txt"),
+        b"synthetic changed payload",
+    )
+    .unwrap();
+    let error = f
+        .service
+        .run_local_import(
+            &mut job,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("local_source_changed"));
+    f.service
+        .put_job(&mut job, "failed", Some("local_source_changed"))
+        .unwrap();
+    let product = job["completedProductIds"][0].as_str().unwrap().to_owned();
+    let groups = &job["localPlan"]["groups"];
+    let never_added = library.join(groups[1]["prefix"].as_str().unwrap());
+    assert!(f
+        .service
+        .catalogue
+        .get("product", groups[1]["product_id"].as_str().unwrap())
+        .unwrap()
+        .is_none());
+    assert!(never_added.join("stopped/nested/1-copied.txt").is_file());
+    // A crash can leave a partial copy behind.
+    let partials = library.join(".nna-import-partials");
+    let draft = id.strip_prefix("local-import:").unwrap();
+    std::fs::create_dir_all(partials.join(draft)).unwrap();
+    std::fs::write(partials.join(draft).join("left.part"), b"synthetic partial").unwrap();
+    // Adding files to the asset it added stops part way too.
+    let accepted = f
+        .service
+        .mutate_local_files(&json!({"draftId":uuid::Uuid::new_v4().to_string(),"productId":product,"addSources":[&extra]}))
+        .await
+        .unwrap();
+    let add_id = accepted["jobId"].as_str().unwrap().to_owned();
+    let mut add = f.service.catalogue.get("job", &add_id).unwrap().unwrap();
+    let queued = f.service.discard_local_import(&add_id).await.unwrap_err();
+    assert!(queued.to_string().contains("invalid_job"));
+    std::fs::write(extra.join("2-changed.txt"), b"synthetic changed payload").unwrap();
+    f.service
+        .run_local_import(
+            &mut add,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    f.service
+        .put_job(&mut add, "failed", Some("local_source_changed"))
+        .unwrap();
+    let directory = library.join(groups[0]["prefix"].as_str().unwrap());
+    assert!(directory.join("extra/1-copied.txt").is_file());
+    for discarded in [&id, &add_id] {
+        let answer = f.service.discard_local_import(discarded).await.unwrap();
+        assert_eq!(answer["jobId"], *discarded);
+        assert!(f.service.catalogue.get("job", discarded).unwrap().is_none());
+    }
+    // The asset it added keeps every file; the rest of what the imports copied is gone.
+    let artifacts = f.service.catalogue.related("artifact", &product).unwrap();
+    assert_eq!(artifacts.len(), 1);
+    for artifact in &artifacts {
+        assert!(library
+            .join(artifact["relativePath"].as_str().unwrap())
+            .is_file());
+    }
+    assert!(!directory.join("extra").exists());
+    assert!(!never_added.exists());
+    assert!(!partials.exists());
+    assert!(f.service.catalogue.list("checkpoint").unwrap().is_empty());
+    assert_eq!(f.service.catalogue.list("product").unwrap().len(), 1);
+    // Originals stay.
+    assert!(stopped.join("nested/1-copied.txt").is_file());
+    assert!(extra.join("1-copied.txt").is_file());
 }
 
 #[tokio::test]
@@ -1031,25 +1144,87 @@ async fn local_import_download_routes_to_original_job_repairs_missing_copy_and_n
         .list("download_intent")
         .unwrap()
         .is_empty());
-    // Portable metadata has no device source plan; it must request explicit local sources.
+    // Clear history removes the import job; the product's own source record still
+    // copies the file again from its original folder, in a job of its own.
     f.service
         .catalogue
-        .delete("job", job["id"].as_str().unwrap())
+        .command("clear_activity", json!({}))
         .unwrap();
+    assert!(f.service.catalogue.list("job").unwrap().is_empty());
     let missing = f
         .service
         .catalogue
         .get("artifact", missing["id"].as_str().unwrap())
         .unwrap()
         .unwrap();
-    std::fs::remove_file(
-        io::safe_join(
-            &f.path.join("library"),
-            missing["relativePath"].as_str().unwrap(),
-        )
-        .unwrap(),
+    let managed = io::safe_join(
+        &f.path.join("library"),
+        missing["relativePath"].as_str().unwrap(),
     )
     .unwrap();
+    std::fs::remove_file(&managed).unwrap();
+    let before = f
+        .service
+        .catalogue
+        .get("product", &product)
+        .unwrap()
+        .unwrap();
+    let response = f
+        .service
+        .enqueue(&json!({"productIds":[product]}))
+        .await
+        .unwrap();
+    let repair_id = response["jobIds"][0].as_str().unwrap().to_owned();
+    assert_ne!(repair_id, job["id"].as_str().unwrap());
+    // Asked again while it waits, the same job answers.
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":[product]}))
+            .await
+            .unwrap()["jobIds"],
+        json!([repair_id])
+    );
+    let mut repair = f.service.catalogue.get("job", &repair_id).unwrap().unwrap();
+    f.service
+        .run_local_import(
+            &mut repair,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    f.service.put_job(&mut repair, "completed", None).unwrap();
+    assert_eq!(
+        std::fs::read(&managed).unwrap(),
+        b"original available for repair"
+    );
+    let after = f
+        .service
+        .catalogue
+        .get("product", &product)
+        .unwrap()
+        .unwrap();
+    for key in ["acquired", "acquiredAt", "title", "category"] {
+        assert_eq!(after[key], before[key]);
+    }
+    assert_eq!(f.service.catalogue.list("product").unwrap().len(), 1);
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":[product]}))
+            .await
+            .unwrap()["jobIds"],
+        json!([])
+    );
+    // A restored backup or another device has no record of these sources here; it must
+    // ask for them again.
+    f.service
+        .catalogue
+        .command("clear_activity", json!({}))
+        .unwrap();
+    f.service
+        .catalogue
+        .delete("local_source", &product)
+        .unwrap();
+    std::fs::remove_file(&managed).unwrap();
     let error = f
         .service
         .enqueue(&json!({"productIds":[product]}))

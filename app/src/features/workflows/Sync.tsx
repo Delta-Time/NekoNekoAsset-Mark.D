@@ -134,11 +134,9 @@ export function Sync(c: Ctx) {
           const busy = historyJobs.some((j) => j.accountId === a.id && isActive(j));
           const signInRequired = needsLogin(a);
           const latest = history.at(-1);
-          const settled = !job && latest?.state === 'completed';
-          const left =
-            settled && latest.progress && typeof latest.progress === 'object'
-              ? (latest.progress.incompleteProducts ?? 0)
-              : 0;
+          // How the last sync ended stays on the account when Activity is cleared.
+          const settled = !job && a.syncState === 'complete';
+          const left = settled ? (a.lastSyncIncompleteProducts ?? 0) : 0;
           const error = job
             ? undefined
             : latest && ['failed', 'needsAction'].includes(latest.state)

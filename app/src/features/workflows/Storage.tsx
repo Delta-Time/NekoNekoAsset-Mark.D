@@ -226,6 +226,7 @@ export function Storage(c: Ctx) {
 function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
   const task = useAction();
   const [cleanup, setCleanup] = useState(false);
+  const [discarding, setDiscarding] = useState('');
   const { L } = c;
   const root = c.nativeState?.roots.find((r) => r.id === rootId) as
     | Record<string, unknown>
@@ -274,18 +275,53 @@ function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
       )}
       {problems.map((job) => (
         <div className="wf-section" key={job.id}>
-          <Status value={job.errorCode ?? job.state} L={L} error={job.state !== 'cancelled'} />
+          {discarding === job.id ? (
+            <Status value="confirmDiscardImport" L={L} />
+          ) : (
+            <Status value={job.errorCode ?? job.state} L={L} error={job.state !== 'cancelled'} />
+          )}
           {job.type === 'storage:import_local' && (
-            <button
-              disabled={task.busy || operationBusy}
-              onClick={() =>
-                task.run(async () => {
-                  await native(c, 'storage', 'retry_job', { jobId: job.id });
-                })
-              }
-            >
-              {L('retry')}
-            </button>
+            <Buttons>
+              {/* Cancel takes Discard's place, so a double click never confirms. */}
+              {discarding === job.id ? (
+                <>
+                  <button disabled={task.busy} onClick={() => setDiscarding('')}>
+                    {L('cancel')}
+                  </button>
+                  <button
+                    className="danger"
+                    disabled={task.busy || operationBusy}
+                    onClick={() =>
+                      task.run(async () => {
+                        await native(c, 'storage', 'discard_import', { jobId: job.id });
+                        setDiscarding('');
+                      })
+                    }
+                  >
+                    {L('discardImport')}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    disabled={task.busy || operationBusy}
+                    onClick={() => setDiscarding(job.id)}
+                  >
+                    {L('discardImport')}
+                  </button>
+                  <button
+                    disabled={task.busy || operationBusy}
+                    onClick={() =>
+                      task.run(async () => {
+                        await native(c, 'storage', 'retry_job', { jobId: job.id });
+                      })
+                    }
+                  >
+                    {L('retry')}
+                  </button>
+                </>
+              )}
+            </Buttons>
           )}
         </div>
       ))}

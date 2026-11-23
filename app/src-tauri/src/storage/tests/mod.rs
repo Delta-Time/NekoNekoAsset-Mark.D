@@ -258,6 +258,7 @@ fn storage_requests_give_back_the_arguments_they_were_sent() {
         ("delete_downloads", json!({"productIds":["1"],"fileId":"f"})),
         ("retry_job", json!({"jobId":"j"})),
         ("retry_job", json!({"fileId":"f"})),
+        ("discard_import", json!({"jobId":"j"})),
         ("configure_root", json!({"path":"D:/Authored"})),
         ("migrate_root", json!({"rootId":"r","path":"D:/Moved"})),
         ("cleanup_old_root", json!({"rootId":"r"})),

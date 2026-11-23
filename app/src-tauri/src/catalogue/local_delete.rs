@@ -26,6 +26,7 @@ impl Catalogue {
                     "remote_file",
                     "artifact",
                     "download_intent",
+                    "local_source",
                 ] {
                     for record in related(tx, kind, id)? {
                         Self::write(tx, projections, kind, text(&record, "id"), None)?;

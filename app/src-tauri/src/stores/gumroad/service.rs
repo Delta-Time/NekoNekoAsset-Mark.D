@@ -986,6 +986,7 @@ impl GumroadService {
                         "incomplete"
                     });
                     account["lastSyncErrorCode"] = json!(error);
+                    crate::stores::record_sync_incomplete(&mut account, job, error.is_none());
                     batch.stage("account", account_id, account)?;
                 }
                 if error.is_some() {

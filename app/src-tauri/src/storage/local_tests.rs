@@ -122,6 +122,12 @@ fn local_membership_add_remove_preserves_metadata_originals_and_modified_bytes()
         .join("library")
         .join(remaining["relativePath"].as_str().unwrap());
     fs::remove_file(&managed).unwrap();
+    // The edited product's sources outlive both jobs.
+    service
+        .catalogue
+        .command("clear_activity", json!({}))
+        .unwrap();
+    assert!(service.catalogue.list("job").unwrap().is_empty());
     let repair_id = service
         .retry_local_product_locked(id, &service.catalogue.list("job").unwrap())
         .unwrap()

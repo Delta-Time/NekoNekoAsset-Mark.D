@@ -34,7 +34,6 @@ export default function InspectorFiles({
   localFilesBusy,
   onFileOpen,
   openableFileIds,
-  offerEndedFileIds,
   onFileRetry,
   retryDisabled,
   busyFileIds,
@@ -58,7 +57,6 @@ export default function InspectorFiles({
   localFilesBusy: boolean;
   onFileOpen: ((fileId: string) => void) | undefined;
   openableFileIds: readonly string[];
-  offerEndedFileIds: readonly string[];
   onFileRetry: ((fileId: string, redownload: boolean) => void) | undefined;
   retryDisabled: boolean;
   busyFileIds: readonly string[];
@@ -210,14 +208,14 @@ export default function InspectorFiles({
                     file.status === 'extractionFailed'
                       ? 'failedExtraction'
                       : file.status === 'failed'
-                        ? file.errorCode === 'store_file_unavailable'
+                        ? file.offerEnded || file.errorCode === 'store_file_unavailable'
                           ? 'fileUnavailable'
                           : 'failedTransfer'
                         : 'fileMissing',
                   )}
                 </small>
               )}
-              {!file.kept && offerEndedFileIds.includes(file.id) && (
+              {file.offerEnded && file.status !== 'failed' && (
                 <small className="asset-inspector-file-error">{L('fileUnavailable')}</small>
               )}
               {sources.length > 0 && (

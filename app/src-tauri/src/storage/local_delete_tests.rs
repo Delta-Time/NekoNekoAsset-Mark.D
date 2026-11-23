@@ -358,11 +358,23 @@ async fn delete_local_products_keeps_empty_product_folder_ownership_after_activi
         .unwrap();
     // File membership removal intentionally retained these edited managed bytes.
     fs::write(dir.join("retained-edited.txt"), b"authored retained edit").unwrap();
+    assert!(f
+        .service
+        .catalogue
+        .get("local_source", &a)
+        .unwrap()
+        .is_some());
     f.service
         .delete_local_products(&json!({"productIds":[a]}), None)
         .await
         .unwrap();
     assert!(!dir.exists() && original.exists());
+    assert!(f
+        .service
+        .catalogue
+        .get("local_source", &a)
+        .unwrap()
+        .is_none());
     // Pure metadata local records own no physical directory to guess.
     f.service
         .catalogue

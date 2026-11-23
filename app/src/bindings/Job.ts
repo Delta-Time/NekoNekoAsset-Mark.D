@@ -31,6 +31,11 @@ export type Job = {
   progress?: JobProgress | null;
   errorCode?: string | null;
   cancelRequested?: boolean;
+  /**
+   * A local import that stopped before adding all its assets, taken out of Activity
+   * by Clear history while Storage still offers its Retry.
+   */
+  activityCleared?: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
   completedAt?: string | null;

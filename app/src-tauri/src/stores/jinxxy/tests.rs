@@ -437,8 +437,12 @@ fn incomplete_inventory_grant_keeps_known_files_and_does_not_block_healthy_publi
     );
     let account_row = catalogue.get("account", account).unwrap().unwrap();
     assert_eq!(
-        (&account_row["status"], &account_row["syncState"]),
-        (&json!("connected"), &json!("complete"))
+        (
+            &account_row["status"],
+            &account_row["syncState"],
+            &account_row["lastSyncIncompleteProducts"]
+        ),
+        (&json!("connected"), &json!("complete"), &json!(1))
     );
     let partial_grant = catalogue
         .get("entitlement", &partial_entitlement)

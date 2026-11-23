@@ -4,6 +4,7 @@ import type { DeletedFiles } from './DeletedFiles';
 import type { DeletedProducts } from './DeletedProducts';
 import type { DownloadJobs } from './DownloadJobs';
 import type { DownloadsCancelled } from './DownloadsCancelled';
+import type { ImportDiscarded } from './ImportDiscarded';
 import type { LocalJob } from './LocalJob';
 import type { Moved } from './Moved';
 import type { Opened } from './Opened';
@@ -27,6 +28,7 @@ export type StorageResponses = {
   cancel_downloads: DownloadsCancelled;
   delete_downloads: DeletedFiles;
   retry_job: Retried;
+  discard_import: ImportDiscarded;
   configure_root: Root;
   remap_root: OperationJob;
   migrate_root: Moved;

@@ -24,7 +24,20 @@ fn status_filter_survives_every_sort_order() {
     let c = fixture.open();
     product(&c, "wanted");
     product(&c, "other");
-    c.put("job", "authored-failure", json!({"id":"authored-failure","productId":"wanted","type":"download","state":"failed","errorCode":"network_failed"})).unwrap();
+    // The record a failed download of its file left.
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"wanted","fileIds":["f"],"manifestComplete":true}),
+    )
+    .unwrap();
+    c.put(
+        "remote_file",
+        "f",
+        json!({"id":"f","productId":"wanted","name":"authored.zip","revision":"r1"}),
+    )
+    .unwrap();
+    c.put("artifact","pending-f",json!({"id":"pending-f","productId":"wanted","fileId":"f","revision":null,"status":"notDownloaded","errorCode":"network_failed","originalAvailable":false})).unwrap();
     for sort in ["title", "acquired", "price", "status"] {
         assert_eq!(
             c.command("query", json!({"status":"attention","sort":sort}))

@@ -310,6 +310,169 @@ fn a_refused_file_leaves_the_list_and_search_and_reopen_drops_one_listed_before(
 }
 
 #[test]
+fn a_file_whose_free_offer_ended_keeps_its_mark_through_clear_and_reopen() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"}),
+    )
+    .unwrap();
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["ended","open"],"manifestComplete":true}),
+    )
+    .unwrap();
+    for id in ["ended", "open"] {
+        c.put(
+            "remote_file",
+            id,
+            json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"}),
+        )
+        .unwrap();
+    }
+    let marked = |c: &Catalogue| -> Vec<String> {
+        projection(c, "p")["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|file| file["offerEnded"] == true)
+            .map(|file| text(file, "id").to_owned())
+            .collect()
+    };
+    // The record a download leaves when the item page says the free offer ended, and
+    // the one its next attempt starts with.
+    let ended = json!({"id":"pending-ended","productId":"p","fileId":"ended","revision":null,"status":"notDownloaded","errorCode":"free_offer_unavailable","originalAvailable":false});
+    let retrying = json!({"id":"pending-ended","productId":"p","fileId":"ended","revision":null,"status":"downloading","originalAvailable":false});
+    c.put("artifact", "pending-ended", ended.clone()).unwrap();
+    c.put("job","download",json!({"id":"download","productId":"p","type":"download","state":"needsAction","updatedAt":"2026-01-02T00:00:00Z","errorCode":"free_offer_unavailable","failures":{"ended":{"fileId":"ended","errorCode":"free_offer_unavailable"}}})).unwrap();
+    assert_eq!(marked(&c), ["ended"]);
+    c.command("clear_activity", json!({})).unwrap();
+    assert_eq!(marked(&c), ["ended"]);
+    c.put("artifact", "pending-ended", retrying).unwrap();
+    assert!(marked(&c).is_empty());
+    c.put("artifact", "pending-ended", ended).unwrap();
+    // A full refresh marks it as the file's own update does.
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product, renamed"}),
+    )
+    .unwrap();
+    assert_eq!(marked(&c), ["ended"]);
+    {
+        // The projection an earlier version stored: the file without its mark.
+        let conn = c.inner.lock().unwrap();
+        conn.execute(
+            "UPDATE products SET body=json_remove(body,'$.files[0].offerEnded') WHERE id='p'",
+            [],
+        )
+        .unwrap();
+    }
+    assert!(marked(&c).is_empty());
+    drop(c);
+    let reopened = fixture.open();
+    assert_eq!(marked(&reopened), ["ended"]);
+    // Later opens find nothing left to mark.
+    let revisions = reopened.change_domains().unwrap();
+    drop(reopened);
+    assert_eq!(fixture.open().change_domains().unwrap(), revisions);
+}
+
+#[test]
+fn a_failed_download_keeps_attention_through_clear_until_dismissed_or_retried() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put(
+        "product",
+        "p",
+        json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"}),
+    )
+    .unwrap();
+    c.put(
+        "entitlement",
+        "e",
+        json!({"id":"e","productId":"p","fileIds":["a","b"],"manifestComplete":true}),
+    )
+    .unwrap();
+    for id in ["a", "b"] {
+        c.put(
+            "remote_file",
+            id,
+            json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"}),
+        )
+        .unwrap();
+    }
+    let state = |c: &Catalogue| {
+        let product = projection(c, "p");
+        let file = &product["files"][0];
+        (
+            text(&product, "status").to_owned(),
+            text(file, "status").to_owned(),
+            text(file, "errorCode").to_owned(),
+        )
+    };
+    let owned = |status: &str, file: &str, error: &str| {
+        (status.to_owned(), file.to_owned(), error.to_owned())
+    };
+    // The record a download of `a` leaves: running, then failed.
+    let attempt = |c: &Catalogue, error: Option<&str>| {
+        let status = if error.is_some() {
+            "notDownloaded"
+        } else {
+            "downloading"
+        };
+        c.put("artifact","pending-a",json!({"id":"pending-a","productId":"p","fileId":"a","revision":null,"status":status,"errorCode":error,"originalAvailable":false})).unwrap();
+    };
+    attempt(&c, Some("network_failed"));
+    c.put("job","download",json!({"id":"download","productId":"p","type":"download","state":"needsAction","updatedAt":"2026-01-02T00:00:00Z","errorCode":"network_failed","failures":{"a":{"fileId":"a","errorCode":"network_failed"}}})).unwrap();
+    let failed = owned("attention", "failed", "network_failed");
+    assert_eq!(state(&c), failed);
+    c.command("clear_activity", json!({})).unwrap();
+    assert_eq!(state(&c), failed);
+    // Dismissing keeps the reason; clearing Activity again changes nothing.
+    c.command("dismiss_attention", json!({"productIds":["p"]}))
+        .unwrap();
+    let dismissed = owned("notDownloaded", "failed", "network_failed");
+    assert_eq!(state(&c), dismissed);
+    c.command("clear_activity", json!({})).unwrap();
+    assert_eq!(state(&c), dismissed);
+    // A new attempt replaces the record, and one that fails raises Attention again.
+    attempt(&c, None);
+    assert_eq!(state(&c), owned("notDownloaded", "notDownloaded", ""));
+    attempt(&c, Some("store_access_denied"));
+    assert_eq!(
+        state(&c),
+        owned("attention", "failed", "store_access_denied")
+    );
+    // One that succeeds leaves the file's bytes and no record.
+    c.delete("artifact", "pending-a").unwrap();
+    c.put("artifact","a-r1",json!({"id":"a-r1","productId":"p","fileId":"a","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
+    assert_eq!(state(&c), owned("partial", "ready", ""));
+    // A projection an earlier version stored shows `b`'s failed attempt as not downloaded.
+    c.put("artifact","pending-b",json!({"id":"pending-b","productId":"p","fileId":"b","revision":null,"status":"notDownloaded","errorCode":"network_failed","originalAvailable":false})).unwrap();
+    assert_eq!(projection(&c, "p")["status"], "attention");
+    {
+        let conn = c.inner.lock().unwrap();
+        conn.execute("UPDATE products SET body=json_remove(json_set(body,'$.files[1].status','notDownloaded','$.status','partial'),'$.files[1].errorCode'),status='partial' WHERE id='p'", []).unwrap();
+    }
+    assert_eq!(projection(&c, "p")["status"], "partial");
+    drop(c);
+    let reopened = fixture.open();
+    let product = projection(&reopened, "p");
+    assert_eq!(
+        (&product["status"], &product["files"][1]["status"]),
+        (&json!("attention"), &json!("failed"))
+    );
+    // Later opens find nothing left to show.
+    let revisions = reopened.change_domains().unwrap();
+    drop(reopened);
+    assert_eq!(fixture.open().change_domains().unwrap(), revisions);
+}
+
+#[test]
 fn current_revision_and_incomplete_manifest_never_ready() {
     let f = Fixture::new();
     let c = f.open();

@@ -313,16 +313,29 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
-/// Store products whose projection predates refused files counting as dropped: a
-/// file the store refused as no longer offered is still an ordinary row.
+/// Store products whose projection predates what a failed download shows: a file the
+/// store refused as no longer offered is still an ordinary row, a file whose free offer
+/// ended has no mark, or a file without bytes does not show how its last attempt failed.
 pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT a.product_id FROM entities a
          JOIN products p ON p.id=a.product_id, json_each(p.body,'$.files') f
          WHERE a.kind='artifact'
-           AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
+           AND COALESCE(json_extract(a.body,'$.errorCode'),'') NOT IN ('','cancelled','interrupted')
            AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
-           AND COALESCE(json_extract(f.value,'$.kept'),0)=0",
+           AND COALESCE(json_extract(f.value,'$.kept'),0)=0
+           AND (json_extract(a.body,'$.errorCode')='store_file_unavailable'
+             OR (json_extract(a.body,'$.errorCode')='free_offer_unavailable'
+               AND json_extract(f.value,'$.offerEnded') IS NULL)
+             OR (a.id GLOB 'pending-*'
+               AND json_extract(a.body,'$.status') NOT IN
+                 ('ready','queued','downloading','extracting','processing','cancelled')
+               AND json_extract(f.value,'$.status')<>'failed'
+               AND NOT EXISTS(SELECT 1 FROM entities r
+                 WHERE r.kind='artifact' AND r.product_id=a.product_id
+                   AND json_extract(r.body,'$.fileId')=json_extract(a.body,'$.fileId')
+                   AND json_extract(r.body,'$.revision')=json_extract(f.value,'$.revision')
+                   AND json_extract(f.value,'$.revision') NOT IN ('','unknown'))))",
     )?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -371,6 +384,41 @@ fn offered_sources(
 /// The store refused this file as no longer offered on its last download.
 fn refused_download(artifact: &Value) -> bool {
     text(artifact, "errorCode") == "store_file_unavailable"
+}
+/// The file's free offer had ended on its last download, so product downloads leave it
+/// out until its product is downloaded alone.
+fn offer_ended(artifact: &Value) -> bool {
+    text(artifact, "errorCode") == "free_offer_unavailable"
+}
+/// The record a file's last download attempt left, when that attempt failed. Closing the
+/// App interrupts an attempt without fault: its download job resumes at the next start.
+fn failed_attempt(artifact: &Value) -> bool {
+    text(artifact, "id").starts_with("pending-")
+        && text(artifact, "errorCode") != "interrupted"
+        && artifact_failed(artifact)
+}
+/// What a failed last attempt adds to its file's row, until a new attempt replaces that
+/// record (Clear history leaves it): with no bytes at the file's revision the row shows
+/// that failure, and a dismissed earlier failure never hides a later one.
+fn apply_attempt(file: &mut Value, attempt: Option<&Value>, artifact: Option<&Value>) {
+    let Some(attempt) = attempt else {
+        return;
+    };
+    match artifact {
+        None => {
+            file["status"] = json!("failed");
+            file["errorCode"] = attempt["errorCode"].clone();
+            if attempt["attentionDismissed"] == true {
+                file["attentionDismissed"] = json!(true);
+            }
+        }
+        Some(artifact) if artifact_failed(artifact) && attempt["attentionDismissed"] != true => {
+            if let Some(fields) = file.as_object_mut() {
+                fields.remove("attentionDismissed");
+            }
+        }
+        Some(_) => {}
+    }
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     artifact["attentionDismissed"] != true && artifact_failed(artifact)
@@ -455,9 +503,12 @@ pub(super) fn job_changes_product(before: Option<&Value>, after: Option<&Value>)
     !(unchanged && matches!(text(after, "state"), "queued" | "running"))
 }
 
-fn latest_file_job(jobs: &[Value]) -> Option<&Value> {
+/// The product's latest local import, whose failure raises Attention until it is retried
+/// or dismissed. A download's failure is its file's own fact instead, so neither depends
+/// on finished downloads that Clear history removes.
+fn latest_import(jobs: &[Value]) -> Option<&Value> {
     jobs.iter()
-        .filter(|job| file_job(job))
+        .filter(|job| job["type"] == "storage:import_local")
         .max_by_key(|job| text(job, "updatedAt"))
 }
 
@@ -467,15 +518,6 @@ fn job_needs_attention(job: &Value, product: &str) -> bool {
         && !strings(&job["attentionDismissed"])
             .iter()
             .any(|id| id == product)
-        && !only_refused(job)
-}
-
-/// A download that failed only on files its store no longer offers leaves nothing
-/// to retry: a product download never asks for them again.
-fn only_refused(job: &Value) -> bool {
-    job["failures"]
-        .as_object()
-        .is_some_and(|failures| !failures.is_empty() && failures.values().all(refused_download))
 }
 
 /// Records to rewrite so one product's current failures stop raising Attention. No
@@ -493,7 +535,7 @@ pub(super) fn dismissed_attention(
         }
     }
     let jobs = product_jobs(conn, id, local_import_jobs)?;
-    let failed = latest_file_job(&jobs).filter(|job| job_needs_attention(job, id));
+    let failed = latest_import(&jobs).filter(|job| job_needs_attention(job, id));
     // Local import summaries are partial, and one import can hold several products.
     if let Some(mut job) = failed
         .map(|job| raw(conn, "job", text(job, "id")))
@@ -511,7 +553,7 @@ pub(super) fn dismissed_attention(
 fn update_status(product: &mut Value, jobs: &[Value]) {
     let empty = vec![];
     let files = product["files"].as_array().unwrap_or(&empty);
-    let latest = latest_file_job(jobs);
+    let latest = latest_import(jobs);
     let downloaded = files.iter().filter(|file| byte_complete(file)).count();
     let all_ready = !files.is_empty() && files.iter().all(|file| text(file, "status") == "ready");
     let status = if jobs.iter().any(|job| {
@@ -625,6 +667,12 @@ fn refresh_local(
                 by_revision.get(&(fid, revision)).copied()
             };
             let failed = artifact.is_some_and(artifact_failed);
+            let ended = artifacts
+                .iter()
+                .any(|artifact| text(artifact, "fileId") == fid && offer_ended(artifact));
+            let attempt = artifacts
+                .iter()
+                .find(|artifact| text(artifact, "fileId") == fid && failed_attempt(artifact));
             let state =
                 artifact
                     .map(|artifact| text(artifact, "status"))
@@ -661,10 +709,14 @@ fn refresh_local(
                 "attentionDismissed",
                 "verifiedHash",
                 "rootStatus",
+                "offerEnded",
             ] {
                 file.as_object_mut().unwrap().remove(field);
             }
             file["originalAvailable"] = json!(false);
+            if ended {
+                file["offerEnded"] = json!(true);
+            }
             if let Some(artifact) = artifact {
                 for field in [
                     "rootId",
@@ -684,6 +736,7 @@ fn refresh_local(
                     file["rootStatus"] = root["status"].clone();
                 }
             }
+            apply_attempt(file, attempt, artifact);
         }
     }
     if roots_changed {
@@ -820,6 +873,16 @@ fn effective_with_jobs(
         .filter(|artifact| refused_download(artifact))
         .map(|artifact| text(artifact, "fileId"))
         .collect();
+    let ended: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|artifact| offer_ended(artifact))
+        .map(|artifact| text(artifact, "fileId"))
+        .collect();
+    let attempts: BTreeMap<&str, &Value> = artifacts
+        .iter()
+        .filter(|artifact| failed_attempt(artifact))
+        .map(|artifact| (text(artifact, "fileId"), artifact))
+        .collect();
     let mut roots = BTreeMap::new();
     for root in artifacts
         .iter()
@@ -879,6 +942,8 @@ fn effective_with_jobs(
         kept,
         remote_map,
         &refused,
+        &ended,
+        &attempts,
         &artifact_map,
         &roots,
     );
@@ -1180,6 +1245,8 @@ fn apply_files(
     kept: Vec<String>,
     mut remote_map: BTreeMap<String, Value>,
     refused: &BTreeSet<&str>,
+    ended: &BTreeSet<&str>,
+    attempts: &BTreeMap<&str, &Value>,
     artifact_map: &BTreeMap<(&str, &str), &Value>,
     roots: &BTreeMap<&str, Value>,
 ) -> Vec<Value> {
@@ -1240,6 +1307,9 @@ fn apply_files(
         } else {
             status
         };
+        let attempt = (!retained)
+            .then(|| attempts.get(fid.as_str()).copied())
+            .flatten();
         known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {
@@ -1252,6 +1322,8 @@ fn apply_files(
             }
             // Counted like `downloaded`, so the rest are downloads the store offers again.
             kept_count += usize::from(byte_complete(&file));
+        } else if ended.contains(fid.as_str()) {
+            file["offerEnded"] = json!(true);
         }
         if let Some(a) = artifact {
             for key in [
@@ -1276,6 +1348,7 @@ fn apply_files(
                 file.as_object_mut().unwrap().remove("errorCode");
             }
         }
+        apply_attempt(&mut file, attempt, artifact);
         if known && !text(&f, "accountId").is_empty() {
             for avatar in crate::taxonomy::account_variant_avatars(
                 source,

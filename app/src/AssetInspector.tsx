@@ -22,7 +22,6 @@ interface AssetInspectorProps {
   accounts?: Account[];
   actions: ReactNode;
   onDismissAttention?: () => void;
-  offerEndedFileIds?: readonly string[];
   onEdit: () => void;
   onTagClick?: (tag: string) => void;
   onFileRetry?: (fileId: string, redownload: boolean) => void;
@@ -61,7 +60,6 @@ export default function AssetInspector({
   accounts = [],
   actions,
   onDismissAttention,
-  offerEndedFileIds = [],
   onEdit,
   onTagClick,
   onFileRetry,
@@ -128,7 +126,6 @@ export default function AssetInspector({
       localFilesBusy={localFilesBusy}
       onFileOpen={onFileOpen}
       openableFileIds={openableFileIds}
-      offerEndedFileIds={offerEndedFileIds}
       onFileRetry={onFileRetry}
       retryDisabled={retryDisabled}
       busyFileIds={busyFileIds}

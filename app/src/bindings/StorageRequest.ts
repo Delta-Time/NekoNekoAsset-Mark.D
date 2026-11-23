@@ -31,6 +31,7 @@ export type StorageRequest =
   | ({ action: 'cancel_downloads' } & OptionalProductIds)
   | ({ action: 'delete_downloads' } & DownloadRemoval)
   | ({ action: 'retry_job' } & Retry)
+  | ({ action: 'discard_import' } & StorageJob)
   | ({ action: 'configure_root' } & FolderPath)
   | ({ action: 'remap_root' } & RootMove)
   | ({ action: 'migrate_root' } & RootMove)

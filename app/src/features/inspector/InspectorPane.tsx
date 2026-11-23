@@ -71,7 +71,6 @@ export default function InspectorPane({
   const { edit } = edits;
   const {
     dismissAttention,
-    refusedFiles,
     downloadFile,
     download,
     cancelDownloads,
@@ -198,7 +197,6 @@ export default function InspectorPane({
               />
             }
             onDismissAttention={() => dismissAttention([active.id])}
-            offerEndedFileIds={refusedFiles(active.id)}
             onEdit={edit}
             onTagClick={(tag) => updateQuery({ search: tag })}
             onFileRetry={downloadFile}

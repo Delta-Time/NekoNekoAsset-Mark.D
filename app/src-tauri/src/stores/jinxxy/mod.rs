@@ -1722,6 +1722,7 @@ impl JinxxyService {
                         "incomplete"
                     });
                     account["lastSyncErrorCode"] = json!(error);
+                    super::record_sync_incomplete(&mut account, job, state == "completed");
                     if error == Some("AUTH_REQUIRED")
                         && self.inner.catalogue.library_root().is_none()
                     {

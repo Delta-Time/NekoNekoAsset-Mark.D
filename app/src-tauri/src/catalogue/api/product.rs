@@ -306,6 +306,10 @@ pub struct AssetFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub user_added: Option<bool>,
+    /// Its last download found the store's free offer ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub offer_ended: Option<bool>,
     /// Extraction output and other artifact facts only the catalogue reads.
     #[serde(flatten)]
     #[ts(skip)]

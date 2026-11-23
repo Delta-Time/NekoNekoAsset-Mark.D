@@ -360,7 +360,7 @@ pub(super) fn restore(
     tx.execute_batch("DELETE FROM undo; DELETE FROM am_changes;")?;
     // Local job continuity is explicit; jobs from the backup are never imported.
     tx.execute(
-        "DELETE FROM entities WHERE kind IN ('job','checkpoint','download_intent') AND (?1 IS NULL OR kind<>'job' OR id<>?1)",
+        "DELETE FROM entities WHERE kind IN ('job','checkpoint','download_intent','local_source') AND (?1 IS NULL OR kind<>'job' OR id<>?1)",
         [active_restore_job_id],
     )?;
     for (kind, id, mut value) in records {
