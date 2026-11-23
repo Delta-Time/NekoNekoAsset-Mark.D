@@ -3633,39 +3633,109 @@ fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {
     };
     assert!(free_history_positions(&detail).is_empty());
     assert!(free_history_positions(&library).is_empty());
-    let mut orders: BTreeMap<_, _> = positions
-        .iter()
-        .map(|(record, position)| {
-            let order = free_history_order("2026-11-01T09:00:00.123+09:00", *position).unwrap();
-            (format!("a:{record}"), order)
-        })
-        .collect();
-    assert!(orders["a:free:900002"] > orders["a:free:900001"]);
-    assert!(orders["a:free:900001"] > orders["a:free:900003"]);
-    // A later pass sorts after everything an earlier one listed, wherever its rows are.
-    assert!(free_history_order("2026-11-02T00:00:00Z", 5000).unwrap() > orders["a:free:900002"]);
+    let acquire = |account: &str, id: &str| {
+        let acquisition = format!("{account}:free:{id}");
+        catalogue.put("acquisition", &acquisition, json!({"id":acquisition,"sourceRecordId":format!("free:{id}"),"productId":id,"accountId":account,"source":"free","variantIds":[]})).unwrap();
+    };
+    let pass = |started: &str, rows: &[(&str, u64)]| free_history::FreePlaces {
+        started: started.into(),
+        records: rows
+            .iter()
+            .map(|(id, place)| (format!("free:{id}"), *place))
+            .collect(),
+    };
+    let stage = |places: Vec<(&str, free_history::FreePlaces)>, only: Option<&BTreeSet<String>>| {
+        let places: BTreeMap<_, _> = places
+            .into_iter()
+            .map(|(account, pass)| (account.to_owned(), pass))
+            .collect();
+        let mut batch = crate::booth::RecordBatch::new(&catalogue);
+        let changed = stage_free_orders(&mut batch, &places, only).unwrap();
+        batch.commit().unwrap();
+        changed
+    };
+    let order = |id: &str| {
+        catalogue.get("acquisition", id).unwrap().unwrap()["freeHistoryOrder"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+    // Each account's first pass places its whole history alike, so accounts synced one after
+    // another interleave by place instead of sorting by which synced first.
     for id in ["900001", "900002", "900003"] {
-        let acquisition = format!("a:free:{id}");
-        catalogue.put("acquisition", &acquisition, json!({"id":acquisition,"sourceRecordId":format!("free:{id}"),"productId":id,"accountId":"a","source":"free","variantIds":[]})).unwrap();
+        acquire("a", id);
     }
-    // An order once given stays; a purchase or a record that does not exist gets none.
-    let kept = "20261020000000999999999999";
-    catalogue.put("acquisition","a:free:900003",json!({"id":"a:free:900003","sourceRecordId":"free:900003","productId":"900003","accountId":"a","source":"free","variantIds":[],"freeHistoryOrder":kept})).unwrap();
-    catalogue.put("acquisition","a:purchase:900001",json!({"id":"a:purchase:900001","productId":"900001","accountId":"a","source":"purchase","variantIds":[]})).unwrap();
-    orders.insert("a:purchase:900001".into(), kept.into());
-    orders.insert("a:free:900009".into(), kept.into());
-    let mut batch = crate::booth::RecordBatch::new(&catalogue);
-    assert_eq!(
-        stage_free_orders(&mut batch, &orders).unwrap(),
-        BTreeSet::from(["900001".to_owned(), "900002".to_owned()])
+    for id in ["900011", "900012"] {
+        acquire("b", id);
+    }
+    // A purchase or a record that does not exist gets no place.
+    catalogue.put("acquisition","a:purchase:900004",json!({"id":"a:purchase:900004","productId":"900004","accountId":"a","source":"purchase","variantIds":[]})).unwrap();
+    let mut a = pass(
+        "2026-11-01T09:00:00.123+09:00",
+        &[
+            ("900002", 0),
+            ("900001", 1),
+            ("900003", 1000),
+            ("900009", 1001),
+        ],
     );
-    batch.commit().unwrap();
-    let order =
-        |id: &str| catalogue.get("acquisition", id).unwrap().unwrap()["freeHistoryOrder"].clone();
-    assert_eq!(order("a:free:900002"), json!(orders["a:free:900002"]));
-    assert_eq!(order("a:free:900003"), json!(kept));
-    assert!(order("a:purchase:900001").is_null());
+    // A row listed twice keeps its older place.
+    a.add("free:900003".into(), 2);
+    let b = pass("2026-11-01T10:00:00Z", &[("900012", 0), ("900011", 1)]);
+    assert_eq!(
+        stage(vec![("a", a), ("b", b)], None),
+        BTreeSet::from(["900001", "900002", "900003", "900011", "900012"].map(str::to_owned))
+    );
+    assert!(order("a:free:900002") > order("a:free:900001"));
+    assert!(order("a:free:900001") > order("a:free:900003"));
+    assert_eq!(order("a:free:900002"), order("b:free:900012"));
+    assert_eq!(order("a:free:900001"), order("b:free:900011"));
+    let first = order("a:free:900002");
+    // A later pass puts what it found above every placed row after all of them, from its own
+    // start, and a row an earlier pass listed without placing just above the nearest placed
+    // row under it. An order once given stays.
+    acquire("a", "900005");
+    acquire("a", "900006");
+    let later = pass(
+        "2026-11-02T00:00:00Z",
+        &[
+            ("900005", 0),
+            ("900002", 1),
+            ("900001", 2),
+            ("900006", 3),
+            ("900003", 1002),
+        ],
+    );
+    assert_eq!(
+        stage(vec![("a", later)], None),
+        BTreeSet::from(["900005".to_owned(), "900006".to_owned()])
+    );
+    assert!(order("a:free:900005") > order("b:free:900012"));
+    assert!(order("a:free:900001") > order("a:free:900006"));
+    assert!(order("a:free:900006") > order("a:free:900003"));
+    assert_eq!(order("a:free:900002"), first);
+    assert!(order("a:purchase:900004").is_empty());
+    // A selected Update orders only its own products, and none where no sync has.
+    acquire("a", "900007");
+    acquire("c", "900021");
+    let selected = || {
+        vec![
+            (
+                "a",
+                pass("2026-11-03T00:00:00Z", &[("900007", 0), ("900005", 1)]),
+            ),
+            ("c", pass("2026-11-03T00:00:00Z", &[("900021", 0)])),
+        ]
+    };
+    let both = BTreeSet::from(["900021".to_owned(), "900005".to_owned()]);
+    assert!(stage(selected(), Some(&both)).is_empty());
+    assert!(order("c:free:900021").is_empty());
+    assert!(order("a:free:900007").is_empty());
+    let own = BTreeSet::from(["900007".to_owned()]);
+    assert_eq!(stage(selected(), Some(&own)), own);
+    assert!(order("a:free:900007") > order("a:free:900005"));
     // The next observation of the row rebuilds the record and keeps its order.
+    let kept = order("a:free:900001");
     service
         .record_row(
             "a",
@@ -3675,7 +3745,7 @@ fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {
             false,
         )
         .unwrap();
-    assert_eq!(order("a:free:900001"), json!(orders["a:free:900001"]));
+    assert_eq!(order("a:free:900001"), kept);
     let _ = std::fs::remove_dir_all(path);
 }
 #[test]

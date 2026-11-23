@@ -6,9 +6,11 @@ import { needsStoreSignIn } from '../workflows/jobs';
 /** The BOOTH item ID of a listing link: booth.pm/items/<id>, with or without a language, or a
  * shop's own <shop>.booth.pm/items/<id>. */
 function boothItemId(text: string): string | null {
+  const link = text.trim();
   let url: URL;
   try {
-    url = new URL(text.trim());
+    // A link copied without its scheme, such as booth.pm/ja/items/1, still names its listing.
+    url = new URL(/^[a-z][a-z\d+.-]*:/i.test(link) ? link : `https://${link}`);
   } catch {
     return null;
   }

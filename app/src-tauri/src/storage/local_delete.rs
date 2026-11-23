@@ -321,7 +321,7 @@ impl StorageService {
             ensure!(
                 self.catalogue.library_root().is_none()
                     || job["originDeviceId"] == self.catalogue.device_id(),
-                "local_source_required"
+                "local_other_device"
             );
             job
         } else {

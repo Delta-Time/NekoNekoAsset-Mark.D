@@ -78,7 +78,7 @@ async fn shared_device_without_session_keeps_facts_and_does_not_start_downloads(
             .await
             .unwrap_err()
             .to_string(),
-        "local_source_required"
+        "local_other_device"
     );
     drop(service);
     drop(catalogue);

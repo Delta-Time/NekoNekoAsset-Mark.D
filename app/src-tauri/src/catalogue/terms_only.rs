@@ -113,11 +113,20 @@ fn price(variant: &Value) -> Option<f64> {
     variant["price"].as_f64()
 }
 
+/// Whether a listing whose public variations are `variants` sells one for a price: only then
+/// can its free files be only its terms. The projection keeps it as `listingSellsPaid`, so
+/// a listing that starts or stops selling one refreshes its list row.
+pub(crate) fn sells_paid(variants: &Value) -> bool {
+    variants
+        .as_array()
+        .is_some_and(|variants| variants.iter().any(|v| price(v).is_some_and(|p| p > 0.0)))
+}
+
 /// Whether `files` hold only the terms of a listing whose public variations are `variants`
 /// (BOOTH's `publicVariants`).
 pub(crate) fn terms_only(files: &[TermsFile<'_>], variants: &Value) -> bool {
+    let sells_paid = sells_paid(variants);
     let variants = variants.as_array().map(Vec::as_slice).unwrap_or_default();
-    let sells_paid = variants.iter().any(|v| price(v).is_some_and(|p| p > 0.0));
     let variation =
         |id: Option<&str>| id.and_then(|id| variants.iter().find(|v| v["id"].as_str() == Some(id)));
     let terms = |file: &TermsFile<'_>| {

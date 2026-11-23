@@ -77,6 +77,11 @@ export type Product = {
    * BOOTH's labelled starting price; never an owned quote.
    */
   listingStartingPrice?: number | null;
+  /**
+   * Whether the BOOTH listing sells a variation for a price, so its free files can be only
+   * its terms of use.
+   */
+  listingSellsPaid?: boolean;
   ownedCurrentPrices?: Array<OwnedCurrentPrice>;
   ownedPaidPrices?: Array<OwnedPaidPrice>;
   /**

@@ -500,6 +500,16 @@ fn free_downloads_of_only_a_listings_terms_follow_their_preference() {
     );
     assert_eq!(hidden["counts"]["all"], 3);
     assert_eq!(hidden["total"], 5);
+    // A free import asks the same of a listing the account holds already.
+    for (id, terms) in [
+        ("a-terms", true),
+        ("b-bought", false),
+        ("c-free-document", false),
+        ("d-asset", false),
+        ("e-hidden-terms", true),
+    ] {
+        assert_eq!(c.terms_only(id).unwrap(), terms, "{id}");
+    }
     // The Hidden scope still lists every product the user hid.
     assert_eq!(
         c.command("query", json!({"hiddenOnly":true,"hideTermsOnly":true}))
@@ -532,6 +542,22 @@ fn free_downloads_of_only_a_listings_terms_follow_their_preference() {
         query(true)["matchedIds"],
         json!(["a-terms", "b-bought", "c-free-document", "d-asset"])
     );
+    // A listing that starts selling a paid variation leaves its free terms only terms, and
+    // one that stops selling it shows them again, while the list stays open.
+    let listing = |variants: &Value| json!({"id":"c-free-document","provider":"booth","sourceTitle":"c-free-document","sourceCategory":{"name":"Hair"},"publicVariants":variants});
+    c.put("product", "c-free-document", listing(&paid)).unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-terms", "b-bought", "d-asset"])
+    );
+    assert!(c.terms_only("c-free-document").unwrap());
+    c.put("product", "c-free-document", listing(&free_only))
+        .unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-terms", "b-bought", "c-free-document", "d-asset"])
+    );
+    assert!(!c.terms_only("c-free-document").unwrap());
 }
 
 #[test]

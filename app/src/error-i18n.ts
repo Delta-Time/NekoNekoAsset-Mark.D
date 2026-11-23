@@ -66,3 +66,8 @@ export function nativeErrorText(locale: Locale, code: string): string | undefine
     key = 'operationFailed';
   return message(locale, 'error', key);
 }
+
+/** A native error's own text, or Action failed when it names nothing more specific. */
+export function nativeErrorOrFailed(locale: Locale, code: string): string {
+  return nativeErrorText(locale, code) ?? message(locale, 'error', 'operationFailed') ?? code;
+}

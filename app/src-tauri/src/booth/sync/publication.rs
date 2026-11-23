@@ -191,9 +191,9 @@ pub(super) struct Publications {
     // These booleans never enter a source checkpoint or catalogue record.
     pub(super) source_closures: BTreeMap<(String, String), (bool, bool)>,
     pub(super) additive_versions: BTreeMap<String, String>,
-    /// Free acquisitions this pass listed and their `free_history_order`, written at the
-    /// final commit to those that have none yet.
-    pub(super) free_orders: BTreeMap<String, String>,
+    /// Each account's free-history rows this job listed and their places, from which the
+    /// final commit orders the free acquisitions that have no order yet.
+    pub(super) free_places: BTreeMap<String, super::free_history::FreePlaces>,
 }
 
 pub(super) fn source_incomplete_product_count(

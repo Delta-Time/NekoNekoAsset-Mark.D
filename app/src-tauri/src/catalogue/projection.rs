@@ -1157,6 +1157,7 @@ fn apply_prices(p: &mut Value, source: &Value, provider: &str) {
             .or_else(|| formatted.map(str::to_owned)));
     } else {
         // Read the BOOTH listing evidence; owned variant pricing is applied below.
+        p["listingSellsPaid"] = json!(super::terms_only::sells_paid(&source["publicVariants"]));
         p["listingStartingPrice"] = json!(crate::booth::listing_starting_price(
             &source["listingPriceText"]
         )
@@ -1706,6 +1707,7 @@ pub(super) fn summary(product: &Value) -> Value {
         "priceCurrency",
         "currentPriceText",
         "listingStartingPrice",
+        "listingSellsPaid",
         "ownedCurrentPrices",
         "ownedPaidPrices",
         "paidPrice",

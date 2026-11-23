@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Locale } from './model';
 import { shellText } from './shell-i18n';
 import { t } from './i18n';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { errorCode } from './backend';
 import { contentLang } from './content-lang';
 
@@ -94,7 +94,7 @@ export default function ConfirmProducts({
       await onConfirm();
       onClose();
     } catch (error) {
-      setError(nativeErrorText(locale, errorCode(error)) ?? L('operationFailed'));
+      setError(nativeErrorOrFailed(locale, errorCode(error)));
     } finally {
       inFlight.current = false;
       setBusy(false);

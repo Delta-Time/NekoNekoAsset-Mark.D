@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Locale } from './model';
 import { shellText } from './shell-i18n';
 import { t } from './i18n';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { errorCode } from './backend';
 
 export default function DeleteLocalProducts({
@@ -93,7 +93,7 @@ export default function DeleteLocalProducts({
           'local_delete_retry_required',
         ].includes(code.split('.').at(-1) ?? code),
       );
-      setError(nativeErrorText(locale, code) ?? L('operationFailed'));
+      setError(nativeErrorOrFailed(locale, code));
     } finally {
       inFlight.current = false;
       setBusy(false);

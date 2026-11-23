@@ -1239,6 +1239,17 @@ impl Catalogue {
     pub fn data_dir(&self) -> PathBuf {
         self.dir.clone()
     }
+    /// Whether the list leaves this product out as only a listing's terms of use while
+    /// Hide free assets that are only terms of use is on.
+    pub(crate) fn terms_only(&self, id: &str) -> Result<bool> {
+        query::terms_only_product(
+            &*self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+            id,
+        )
+    }
     pub(crate) fn begin_catalogue_work(&self) -> Result<CatalogueWorkPermit> {
         self.check_library_access()?;
         let mut state = self

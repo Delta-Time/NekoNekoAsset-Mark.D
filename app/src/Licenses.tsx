@@ -7,7 +7,7 @@ import type { LicenseDetail } from './bindings';
 import { licenseText } from './license-i18n';
 import { editorText } from './editor-i18n';
 import { resetText } from './settings-reset-i18n';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { t } from './i18n';
 import Toggle from './Toggle';
 import './licenses.css';
@@ -47,7 +47,7 @@ export function licenseSummary(locale: Locale, cells: LicenseCells) {
     .join(', ');
 }
 function licenseError(locale: Locale, code: string) {
-  return licenseText(locale, code) ?? nativeErrorText(locale, code) ?? t(locale, 'operationFailed');
+  return licenseText(locale, code) ?? nativeErrorOrFailed(locale, code);
 }
 
 /** Focus stays inside the dialog; Escape closes it and focus returns to its trigger. */

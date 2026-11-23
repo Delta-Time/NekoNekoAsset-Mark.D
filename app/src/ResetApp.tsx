@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Locale } from './model';
 import { t } from './i18n';
 import { errorCode } from './backend';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { resetText, resetErrorText } from './settings-reset-i18n';
 import './settings-reset.css';
 
@@ -141,9 +141,7 @@ function ResetConfirmation({
       setError(
         code === 'storage_busy'
           ? L('busy')
-          : (resetErrorText(locale, code) ??
-              nativeErrorText(locale, code) ??
-              t(locale, 'operationFailed')),
+          : (resetErrorText(locale, code) ?? nativeErrorOrFailed(locale, code)),
       );
       inFlight.current = false;
       setBusy(false);

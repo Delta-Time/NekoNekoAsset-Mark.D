@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { Locale, SensitiveMode } from './model';
 import type { Preferences } from './backend';
 import { t } from './i18n';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { uxText } from './ux-i18n';
 import { shellText } from './shell-i18n';
 import Toggle from './Toggle';
@@ -75,7 +75,7 @@ export default function FeaturesSettings({
       await onPreferences(patch);
       return true;
     } catch {
-      setError(nativeErrorText(locale, 'operationFailed') ?? t(locale, 'operationFailed'));
+      setError(nativeErrorOrFailed(locale, 'operationFailed'));
       return false;
     } finally {
       setBusy(false);

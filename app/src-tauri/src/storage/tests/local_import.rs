@@ -1232,6 +1232,22 @@ async fn local_import_download_routes_to_original_job_repairs_missing_copy_and_n
         .unwrap_err();
     assert!(error.to_string().contains("local_source_required"));
     assert!(f.service.catalogue.list("job").unwrap().is_empty());
+    // Asked for with assets that have nothing to fetch, it still says so.
+    f.service
+        .catalogue
+        .put(
+            "product",
+            "43",
+            json!({"id":"43","title":"Synthetic listing without files"}),
+        )
+        .unwrap();
+    let error = f
+        .service
+        .enqueue(&json!({"productIds":[product, "43"]}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("local_source_required"));
+    assert!(f.service.catalogue.list("job").unwrap().is_empty());
     // Asked for with other assets, it stays out and the others still queue.
     f.seed(1, true);
     let response = f

@@ -18,8 +18,8 @@ use checkpoints::{
     source_has_incomplete_product, Checkpoint, SourceScan,
 };
 use free_history::{
-    augment_free_row, eligible_free_rows, free_history_order, free_history_positions,
-    remember_free_history, saved_free_history, settled_free_absence, stage_free_orders,
+    augment_free_row, eligible_free_rows, free_history_positions, remember_free_history,
+    saved_free_history, settled_free_absence, stage_free_orders,
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use publication::{
@@ -577,7 +577,13 @@ impl BoothService {
                     .source_closures
                     .extend(collected.source_closures);
                 publications.final_records.extend(collected.final_records);
-                publications.free_orders.extend(collected.free_orders);
+                for (account, places) in collected.free_places {
+                    publications
+                        .free_places
+                        .entry(account)
+                        .or_default()
+                        .merge(places);
+                }
                 publications
                     .incomplete_scopes
                     .extend(collected.incomplete_scopes);
@@ -1017,8 +1023,11 @@ impl BoothService {
             let mut draft = batch
                 .get("product", product)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            job["progress"] = json!({"stage":"enriching","source":source,"products":products.len(),"detailsCompleted":checkpoint.details_completed,"mode":"selected"});
-            self.progress(app, job)?;
+            // A free import reports its own progress, listing by listing.
+            if job["args"]["freeImport"] != true {
+                job["progress"] = json!({"stage":"enriching","source":source,"products":products.len(),"detailsCompleted":checkpoint.details_completed,"mode":"selected"});
+                self.progress(app, job)?;
+            }
             let needs_enrichment = if let Some(observation) = enriched.get(product) {
                 draft = observation.clone();
                 false
@@ -2207,16 +2216,17 @@ impl BoothService {
                 .get("checkpoint", journal_id)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
-            // A row listed twice keeps its older place.
-            for (record, position) in free_history_positions(&page) {
-                if let Some(order) = free_history_order(&pass_started, position) {
-                    let saved = publications
-                        .free_orders
-                        .entry(format!("{account}:{record}"))
-                        .or_insert_with(|| order.clone());
-                    if order < *saved {
-                        *saved = order;
-                    }
+            let places = free_history_positions(&page);
+            if !places.is_empty() {
+                let pass = publications
+                    .free_places
+                    .entry(account.to_owned())
+                    .or_default();
+                if pass.started.is_empty() {
+                    pass.started = pass_started.clone();
+                }
+                for (record, place) in places {
+                    pass.add(record, place);
                 }
             }
             // A row read in updated order joins through its own record. If the App went on to
@@ -3269,8 +3279,12 @@ impl BoothService {
         for checkpoint in publications.checkpoints.values() {
             trace_source_closure(checkpoint, publications);
         }
-        job["progress"] = publication_progress(publications, "finalizing", completed, published);
-        self.progress(app, job)?;
+        // A free import closes with its own count of the listings it read.
+        if job["args"]["freeImport"] != true {
+            job["progress"] =
+                publication_progress(publications, "finalizing", completed, published);
+            self.progress(app, job)?;
+        }
         for _ in 0..4 {
             let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
             let current = batch
@@ -3282,7 +3296,16 @@ impl BoothService {
             for (kind, id, value) in &final_records {
                 batch.stage(kind, id, value.clone())?;
             }
-            let ordered = stage_free_orders(&mut batch, &publications.free_orders)?;
+            // A selected Update orders only its own products.
+            let only: Option<BTreeSet<String>> = (job["type"] == "boothUpdate").then(|| {
+                job["args"]["productIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| id.as_str().map(str::to_owned))
+                    .collect()
+            });
+            let ordered = stage_free_orders(&mut batch, &publications.free_places, only.as_ref())?;
             if batch.try_commit()?.is_some() {
                 source_changed(app, ordered);
                 return Ok(());

@@ -92,38 +92,125 @@ pub(super) fn free_history_positions(page: &parser::Page) -> Vec<(String, u64)> 
         .collect()
 }
 
-/// A sort key for an undated free download, kept from the pass that first listed it: a
-/// later pass sorts after an earlier one, and within one pass BOOTH's newest-first
-/// position decides. Larger is newer.
-pub(super) fn free_history_order(started_at: &str, position: u64) -> Option<String> {
+/// What one account's free-history pass listed: when the pass began, and each record's
+/// place, 0 being the newest download.
+#[derive(Clone, Debug, Default)]
+pub(super) struct FreePlaces {
+    pub(super) started: String,
+    pub(super) records: BTreeMap<String, u64>,
+}
+
+impl FreePlaces {
+    /// Adds a row's place; a row listed twice keeps its older place.
+    pub(super) fn add(&mut self, record: String, place: u64) {
+        let kept = self.records.entry(record).or_insert(place);
+        *kept = (*kept).max(place);
+    }
+
+    pub(super) fn merge(&mut self, other: FreePlaces) {
+        if self.started.is_empty() {
+            self.started = other.started;
+        }
+        for (record, place) in other.records {
+            self.add(record, place);
+        }
+    }
+}
+
+/// The prefix of the places an account's first pass gives its whole history. It sorts before
+/// every pass's start, so accounts synced one after another interleave by place instead of by
+/// which was synced first.
+const FIRST_PASS: &str = "00000000000000";
+
+/// The prefix a later pass gives the downloads it finds above every placed one: its start.
+fn pass_prefix(started_at: &str) -> Option<String> {
     let started = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    Some(
+        started
+            .with_timezone(&chrono::Utc)
+            .format("%Y%m%d%H%M%S")
+            .to_string(),
+    )
+}
+
+/// A sort key for an undated free download: a prefix, then BOOTH's newest-first place, so a
+/// later pass sorts after an earlier one and within one prefix the place decides. Larger is
+/// newer.
+pub(super) fn free_history_order(prefix: &str, place: u64) -> Option<String> {
     Some(format!(
-        "{}{:012}",
-        started.with_timezone(&chrono::Utc).format("%Y%m%d%H%M%S"),
-        999_999_999_999u64.checked_sub(position)?
+        "{prefix}{:012}",
+        999_999_999_999u64.checked_sub(place)?
     ))
 }
 
-/// Gives each free acquisition a pass listed its order, unless it has one already. Returns
-/// the products whose acquisitions changed.
+/// Gives each free acquisition a pass listed its order, unless it has one already, and never
+/// rewrites one. A row above every placed row is new: it takes the pass's start, or for an
+/// account none of whose rows is placed yet, the `FIRST_PASS` prefix. A row below a placed
+/// one, which an earlier pass listed without placing (its page could not be read then), sorts
+/// just above the nearest placed row under it. With `only`, a selected Update places just
+/// those products, and only in an account a sync has placed. Returns the products whose
+/// acquisitions changed.
 pub(super) fn stage_free_orders(
     batch: &mut crate::booth::RecordBatch<'_>,
-    orders: &BTreeMap<String, String>,
+    places: &BTreeMap<String, FreePlaces>,
+    only: Option<&BTreeSet<String>>,
 ) -> Result<BTreeSet<String>> {
     let mut products = BTreeSet::new();
-    for (id, order) in orders {
-        let Some(mut acquisition) = batch.get("acquisition", id)? else {
-            continue;
-        };
-        if acquisition["source"] != "free" || !acquisition["freeHistoryOrder"].is_null() {
+    for (account, pass) in places {
+        let mut rows: Vec<(u64, &String)> = pass
+            .records
+            .iter()
+            .map(|(record, place)| (*place, record))
+            .collect();
+        rows.sort();
+        let mut acquisitions = Vec::with_capacity(rows.len());
+        for (_, record) in &rows {
+            let id = format!("{account}:{record}");
+            let acquisition = batch
+                .get("acquisition", &id)?
+                .filter(|acquisition| acquisition["source"] == "free");
+            acquisitions.push((id, acquisition));
+        }
+        let kept: Vec<Option<String>> = acquisitions
+            .iter()
+            .map(|(_, acquisition)| {
+                acquisition
+                    .as_ref()
+                    .and_then(|acquisition| acquisition["freeHistoryOrder"].as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        // A free-history pass reads the whole list (only the Library stops early), so a pass
+        // that lists no placed row is the account's first. An early stop here would have to
+        // read this from the account's stored keys instead.
+        let placed = kept.iter().any(Option::is_some);
+        if only.is_some() && !placed {
             continue;
         }
-        acquisition["freeHistoryOrder"] = json!(order);
-        if let Some(product) = acquisition["productId"].as_str() {
-            products.insert(product.to_owned());
+        for (index, ((place, _), (id, acquisition))) in rows.iter().zip(acquisitions).enumerate() {
+            let Some(mut acquisition) = acquisition else {
+                continue;
+            };
+            let product = acquisition["productId"].as_str().unwrap_or("").to_owned();
+            if kept[index].is_some() || only.is_some_and(|only| !only.contains(&product)) {
+                continue;
+            }
+            let above = kept[..index].iter().any(Option::is_some);
+            let below = kept[index + 1..].iter().flatten().next();
+            let prefix = match (above, below) {
+                (false, _) if placed => pass_prefix(&pass.started),
+                (true, Some(below)) => Some(below.clone()),
+                _ => Some(FIRST_PASS.to_owned()),
+            };
+            let Some(order) = prefix.and_then(|prefix| free_history_order(&prefix, *place)) else {
+                continue;
+            };
+            acquisition["freeHistoryOrder"] = json!(order);
+            batch.stage("acquisition", &id, acquisition)?;
+            products.insert(product);
         }
-        batch.stage("acquisition", id, acquisition)?;
     }
+    products.remove("");
     Ok(products)
 }
 

@@ -64,6 +64,11 @@ pub struct Product {
     )]
     #[ts(optional)]
     pub listing_starting_price: Option<Option<f64>>,
+    /// Whether the BOOTH listing sells a variation for a price, so its free files can be only
+    /// its terms of use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub listing_sells_paid: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub owned_current_prices: Option<Vec<OwnedCurrentPrice>>,

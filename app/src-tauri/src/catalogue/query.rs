@@ -153,6 +153,54 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
     }
 }
 
+/// Whether a candidate's files are only its listing's terms of use.
+fn files_terms_only(product: &Value, source: &Value) -> bool {
+    let files = product["files"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    // A file the user added is theirs, whatever it is called.
+    let listed: Option<Vec<_>> = files
+        .iter()
+        .map(|file| {
+            (file["userAdded"] != true).then(|| super::terms_only::TermsFile {
+                name: file["name"].as_str().unwrap_or(""),
+                variant_id: file["provenance"][0]["variantId"].as_str(),
+            })
+        })
+        .collect();
+    listed.is_some_and(|files| super::terms_only::terms_only(&files, &source["publicVariants"]))
+}
+
+/// Whether the list leaves this product out as only a listing's terms of use while that
+/// preference is on: `TERMS_CANDIDATES`, then the files, as `mark_terms_only` reads them.
+pub(super) fn terms_only_product(conn: &Connection, id: &str) -> Result<bool> {
+    let row: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT p.summary,p.body,s.body FROM products p LEFT JOIN entities s ON s.kind='product' AND s.id=p.id WHERE p.id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((summary, body, source)) = row else {
+        return Ok(false);
+    };
+    let summary: Value = serde_json::from_str(&summary)?;
+    let candidate = summary["provider"] == "booth"
+        && (1.0..=20.0).contains(&summary["total"].as_f64().unwrap_or(0.0))
+        && summary["provenance"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|row| row["source"] == "free"));
+    if !candidate {
+        return Ok(false);
+    }
+    let product: Value = serde_json::from_str(&body)?;
+    let source = source
+        .and_then(|body| serde_json::from_str(&body).ok())
+        .unwrap_or(Value::Null);
+    Ok(files_terms_only(&product, &source))
+}
+
 /// Marks the copied rows that hold only a listing's terms of use, from each candidate's files
 /// and its listing's variations; a partial refresh reads only the rows it copied again.
 fn mark_terms_only(conn: &Connection, partial: bool) -> Result<()> {
@@ -170,23 +218,7 @@ fn mark_terms_only(conn: &Connection, partial: bool) -> Result<()> {
             .get::<_, Option<String>>(2)?
             .and_then(|body| serde_json::from_str(&body).ok())
             .unwrap_or(Value::Null);
-        let files = product["files"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        // A file the user added is theirs, whatever it is called.
-        let listed: Option<Vec<_>> = files
-            .iter()
-            .map(|file| {
-                (file["userAdded"] != true).then(|| super::terms_only::TermsFile {
-                    name: file["name"].as_str().unwrap_or(""),
-                    variant_id: file["provenance"][0]["variantId"].as_str(),
-                })
-            })
-            .collect();
-        if listed
-            .is_some_and(|files| super::terms_only::terms_only(&files, &source["publicVariants"]))
-        {
+        if files_terms_only(&product, &source) {
             marked.push(row.get::<_, String>(0)?);
         }
     }

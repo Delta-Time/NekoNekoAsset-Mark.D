@@ -689,12 +689,20 @@ impl StorageService {
             // First, before anything slower lets a Clear history remove those jobs.
             let _ = self.remember_listed_attempts();
             for mut job in self.catalogue.list("job")? {
+                let other_device = job["type"] == "storage:import_local"
+                    && self.catalogue.library_root().is_some()
+                    && job["originDeviceId"] != self.catalogue.device_id();
+                // Earlier versions marked it with the code for sources nobody recorded.
+                if other_device
+                    && job["state"] == "needsAction"
+                    && job["errorCode"] == "local_source_required"
+                {
+                    self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
+                    continue;
+                }
                 if matches!(job["state"].as_str(), Some("running" | "queued")) {
-                    if job["type"] == "storage:import_local"
-                        && self.catalogue.library_root().is_some()
-                        && job["originDeviceId"] != self.catalogue.device_id()
-                    {
-                        self.put_job(&mut job, "needsAction", Some("local_source_required"))?;
+                    if other_device {
+                        self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
                         continue;
                     }
                     if RESUMED_AT_STARTUP.contains(&job["type"].as_str().unwrap_or("")) {
@@ -959,6 +967,7 @@ impl StorageService {
             })
             .collect();
         let mut writes = Vec::new();
+        let mut source_required = false;
         for id in ids.into_iter().collect::<HashSet<_>>() {
             let Some(product) = self.catalogue.get("product", &id)? else {
                 if automatic {
@@ -977,8 +986,10 @@ impl StorageService {
                 match self.retry_local_product_locked(&id, &jobs) {
                     Ok(job) => result.extend(job.map(Value::from)),
                     // Several products at once go on without one whose source must be
-                    // chosen again; asked for alone, it says so.
-                    Err(error) if bulk && error.to_string() == "local_source_required" => {}
+                    // chosen again; asked for alone, or with nothing else to do, it says so.
+                    Err(error) if bulk && error.to_string() == "local_source_required" => {
+                        source_required = true;
+                    }
                     Err(error) => return Err(error),
                 }
                 continue;
@@ -1034,6 +1045,9 @@ impl StorageService {
             let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
             writes.push(("job".into(), job_id.clone(), job));
             result.push(json!(job_id));
+        }
+        if source_required && result.is_empty() && !automatic {
+            bail!("local_source_required");
         }
         self.catalogue.put_many(writes)?;
         api::answer(api::DownloadJobs {

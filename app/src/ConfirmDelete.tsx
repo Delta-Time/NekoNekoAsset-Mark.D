@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Locale } from './model';
 import { errorCode } from './backend';
-import { nativeErrorText } from './error-i18n';
+import { nativeErrorOrFailed } from './error-i18n';
 import { editorText } from './editor-i18n';
 import './editor-styles.css';
 
@@ -94,11 +94,7 @@ export default function ConfirmDelete({
       onClose();
     } catch (error) {
       const code = errorCode(error);
-      setError(
-        code === 'entryUnavailable'
-          ? L(code)
-          : (nativeErrorText(locale, code) ?? L('operationFailed')),
-      );
+      setError(code === 'entryUnavailable' ? L(code) : nativeErrorOrFailed(locale, code));
       inFlight.current = false;
       setBusy(false);
     }

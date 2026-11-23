@@ -132,6 +132,8 @@ impl BoothService {
             job["addedProductIds"] = json!(import.added);
             job["failures"] = Value::Object(import.skipped.clone());
         }
+        // Keep the last listing's answer even if the final commit fails.
+        self.progress(app, job)?;
         self.publish_collected(app, job, &mut import.publications)
             .await?;
         job["progress"] = json!({"stage":"finalizing","mode":"selected","detailsCompleted":ids.len(),"published":import.added.len()});
@@ -160,6 +162,15 @@ impl BoothService {
             .chain(self.inner.catalogue.related("entitlement", product)?.iter())
             .any(|record| record["accountId"] == account);
         if held {
+            // Terms of use the list leaves out are not worth a download here either.
+            if hide_terms && self.inner.catalogue.terms_only(product)? {
+                let title = self
+                    .inner
+                    .catalogue
+                    .get("product", product)?
+                    .and_then(|listing| listing["sourceTitle"].as_str().map(str::to_owned));
+                return Ok(Some(("FREE_TERMS_ONLY", title)));
+            }
             self.want_download(product)?;
             source_changed(app, std::iter::once(product.to_owned()));
             return Ok(None);
