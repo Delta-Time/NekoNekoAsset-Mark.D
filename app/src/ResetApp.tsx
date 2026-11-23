@@ -59,7 +59,7 @@ export default function ResetApp({
     </div>
   );
 }
-export function ResetConfirmation({
+function ResetConfirmation({
   locale,
   deleteLibrary,
   libraryPath,

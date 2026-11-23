@@ -7,7 +7,7 @@ import './SpendingDialog.css';
 import { contentLang } from './content-lang';
 import type { SpendingSummary, SpendingTotal } from './bindings';
 
-export interface SpendingDialogProps {
+interface SpendingDialogProps {
   locale: Locale;
   productIds: string[];
   accountIds?: string[];
@@ -55,7 +55,7 @@ const FIREWORK_THRESHOLDS: Record<string, number[]> = {
   ILS: [20, 200, 2000, 10000, 20000],
   ISK: [800, 8000, 80000, 400000, 800000],
 };
-export function fireworkTier(totals: SpendingTotal[]): number {
+function fireworkTier(totals: SpendingTotal[]): number {
   let tier = 0;
   for (const total of totals) {
     if (
@@ -74,7 +74,7 @@ export function fireworkTier(totals: SpendingTotal[]): number {
   }
   return tier;
 }
-export function formatSpendingTotal(total: SpendingTotal, locale: Locale): string {
+function formatSpendingTotal(total: SpendingTotal, locale: Locale): string {
   if (
     !/^-?\d+$/.test(total.minorUnits) ||
     !Number.isInteger(total.fractionDigits) ||

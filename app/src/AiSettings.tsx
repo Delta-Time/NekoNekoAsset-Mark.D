@@ -10,7 +10,7 @@ import { useAiJobs } from './features/ai/useAiJobs';
 import { usePersonalizationDraft } from './features/ai/usePersonalizationDraft';
 import { useAiEntries } from './features/ai/useAiEntries';
 
-export interface AiSettingsProps {
+interface AiSettingsProps {
   locale: Locale;
   nativeState?: NativeState;
 }

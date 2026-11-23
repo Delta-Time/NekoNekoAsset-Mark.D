@@ -9,7 +9,7 @@ import { LicenseSettings } from './Licenses';
 import { licenseText } from './license-i18n';
 import './features.css';
 
-export const DEFAULT_BATCH_ACTIONS: Record<string, boolean> = {
+const DEFAULT_BATCH_ACTIONS: Record<string, boolean> = {
   edit: true,
   collection: true,
   unity: true,

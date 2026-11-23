@@ -2,12 +2,11 @@ import type { CSSProperties } from 'react';
 import { Check } from 'lucide-react';
 import { message, table } from './messages';
 import type { Locale } from './model';
-import { isLightTheme } from './model';
 import { wf } from './workflow-i18n';
 import './theme-picker.css';
 
 export type ThemeOption = { id: string; name: string; tokens: Record<string, string> };
-export type ThemePickerProps = {
+type ThemePickerProps = {
   locale: Locale;
   options: ThemeOption[];
   value: string;
@@ -321,7 +320,6 @@ export default function ThemePicker({ locale, options, value, onChange }: ThemeP
                   type="button"
                   key={option.id}
                   className="nna-theme-option"
-                  data-tone={isLightTheme(option.tokens) ? 'light' : 'dark'}
                   role="radio"
                   aria-checked={checked}
                   aria-label={name}

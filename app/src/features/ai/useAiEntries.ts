@@ -194,4 +194,3 @@ export function useAiEntries({
     testSaved,
   };
 }
-export type AiEntries = ReturnType<typeof useAiEntries>;

@@ -68,7 +68,6 @@ export function useLocalFiles({
             .pop()
             ?.replace(/\.[^.]+$/, ''),
           sources: paths,
-          sourceKind: 'local',
         });
         setFlow('import');
       })

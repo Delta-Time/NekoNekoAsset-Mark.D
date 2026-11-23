@@ -121,8 +121,6 @@ export default function App() {
     notices,
     localFiles,
     filters,
-    edits,
-    settingsPane,
     preferenceSync,
   });
   const sidebar = (

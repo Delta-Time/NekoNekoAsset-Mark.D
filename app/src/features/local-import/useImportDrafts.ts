@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import type { Props } from '../../Workflows';
 import { localImportText } from '../../local-import-i18n';
 import { absolutePath, emptyDraft, fileName } from './import-parts';
 import type { Draft, Source } from './import-parts';
@@ -9,8 +8,7 @@ import type { LocalImportProps } from './import-parts';
  * mode, with the draft of the selected source being edited. */
 export function useImportDrafts({ c }: { c: LocalImportProps }) {
   const L = (key: string) => localImportText(c.locale, key);
-  const seed = c.importSeed as Props['importSeed'] & { sources?: string[] };
-  // Legacy seed.files are display names, not permission to read filesystem paths.
+  const seed = c.importSeed;
   const [sources, setSources] = useState<Source[]>(() =>
     [...new Set(seed?.sources ?? [])]
       .filter(absolutePath)

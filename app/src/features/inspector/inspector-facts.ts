@@ -1,26 +1,6 @@
 import { type Product, isFileDownloaded, type Locale, type Account } from '../../model';
 import { wf } from '../../workflow-i18n';
 
-function isZip(file: { name: string; type: string }): boolean {
-  const extension = file.name
-    .trim()
-    .match(/\.([^./\\]+)$/)?.[1]
-    .toLowerCase();
-  return extension !== undefined
-    ? extension === 'zip'
-    : ['zip', 'application/zip'].includes(file.type.trim().toLowerCase());
-}
-/** Only checks retained original ZIP facts; extracted-file actions use native availability. */
-export function canOpenZip(file: Product['files'][number]): boolean {
-  return (
-    isZip(file) &&
-    isFileDownloaded(file) &&
-    file.originalAvailable === true &&
-    !!file.verifiedHash &&
-    !!file.rootId &&
-    !!file.relativePath
-  );
-}
 export function canOpenProductPage(
   product: Pick<Product, 'sourceUrl' | 'sourceUrlAvailable'>,
 ): boolean {

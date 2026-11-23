@@ -26,10 +26,7 @@ import { AI } from './features/workflows/AI';
 export type WorkflowAccount = Account;
 export type ImportSeed = {
   name?: string;
-  files?: string[];
   sources?: string[];
-  source?: string;
-  sourceKind?: 'local' | 'remote';
 };
 export type Props = {
   flow: string | null;
@@ -39,19 +36,11 @@ export type Props = {
   products: Product[];
   selected: string[];
   onClose: () => void;
-  onPatch?: (ids: string[], patch: Partial<Product>) => void;
   onNotice: (message: string) => void;
   onPolicyChange?: (all: boolean) => void;
-  onAdd?: (products: Product[]) => void;
   autoDownloadAll?: boolean;
-  onUserPatch?: (ids: string[], patch: Partial<Product>) => void;
-  persistSynthetic?: boolean;
-  onBatchUserPatch?: (changes: { id: string; patch: Partial<Product> }[]) => void;
-  sensitiveMode?: string;
   accounts?: WorkflowAccount[];
-  onAccountsChange?: (accounts: WorkflowAccount[]) => void;
   importSeed?: ImportSeed;
-  onNavigate?: (flow: string) => void;
   onNewAssets?: (ids: string[], category?: string, jobId?: string) => void;
   onLocaleChange?: (locale: Locale) => void;
   themeOptions?: ThemeOption[];
@@ -68,14 +57,6 @@ export type Props = {
   onNative?: NativeCall;
   onPreferences?: (patch: Preferences) => Promise<void>;
 };
-const aliases: Record<string, string> = {
-  downloads: 'download',
-  backup: 'storage',
-  devices: 'storage',
-  history: 'import',
-  updates: 'sync',
-  diagnostics: 'sync',
-};
 function Content(
   props: Props & {
     onImportDirtyChange?: (dirty: boolean) => void;
@@ -83,8 +64,7 @@ function Content(
   },
 ) {
   if (!props.flow) return null;
-  const raw = props.flow.split(':')[0];
-  const base = aliases[raw] ?? raw;
+  const base = props.flow.split(':')[0];
   const L = (key: string) => nativeWorkflowText(props.locale, key);
   const c = { ...props, L };
   const bodies: Record<string, ReactNode> = {
@@ -263,15 +243,8 @@ export default function Workflows(props: Props) {
       ?.focus();
     return () => previous?.focus();
   }, [flow]);
-  useEffect(() => {
-    if (flow && ['download', 'downloads'].includes(flow.split(':')[0])) {
-      onClose();
-      props.onNavigate?.('download');
-    }
-  }, [flow]);
-  if (!flow || ['download', 'downloads'].includes(flow.split(':')[0])) return null;
-  const raw = flow.split(':')[0];
-  const base = aliases[raw] ?? raw;
+  if (!flow) return null;
+  const base = flow.split(':')[0];
   const L = (key: string) => nativeWorkflowText(locale, key);
   return (
     <div

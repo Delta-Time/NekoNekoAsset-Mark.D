@@ -36,7 +36,7 @@ function AvatarCheckbox({
     />
   );
 }
-export interface AvatarManagerProps {
+interface AvatarManagerProps {
   options: AvatarOption[];
   enabled: (id: string) => boolean;
   mixed?: (id: string) => boolean;

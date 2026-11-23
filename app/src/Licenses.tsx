@@ -46,7 +46,7 @@ export function licenseSummary(locale: Locale, cells: LicenseCells) {
     .map((letter) => `${L('cell' + letter)} ${L(cells[letter])}`)
     .join(', ');
 }
-export function licenseError(locale: Locale, code: string) {
+function licenseError(locale: Locale, code: string) {
   return licenseText(locale, code) ?? nativeErrorText(locale, code) ?? t(locale, 'operationFailed');
 }
 
@@ -111,7 +111,7 @@ function useDialog(box: RefObject<HTMLDivElement | null>, onEscape: () => void) 
 const portal = (node: ReactNode) =>
   createPortal(node, document.querySelector('.app') ?? document.body);
 
-export function LicenseTable({
+function LicenseTable({
   locale,
   cells,
   disabled,

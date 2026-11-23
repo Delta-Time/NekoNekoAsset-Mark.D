@@ -17,7 +17,7 @@ export async function signIn(c: Ctx, name?: string, store = 'BOOTH') {
   const result = await native(c, 'booth', 'account_add', { name: label, store });
   await native(c, 'booth', 'account_login', { accountId: result.accountId });
 }
-export function AccountName({
+function AccountName({
   account,
   c,
   task,

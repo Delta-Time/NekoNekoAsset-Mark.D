@@ -30,7 +30,7 @@ import type { Locale } from './model';
 // A few components read a whole table with `table()`: aiPersonality, aiPresetTitle,
 // aiPresetDescription, editDialog, fileAction, spending and theme.
 
-export type MessageKey = keyof typeof en;
+type MessageKey = keyof typeof en;
 
 /** The keys of one table without its prefix, e.g. TableKey<'support'>. */
 export type TableKey<Table extends string, Key = MessageKey> = Key extends `${Table}.${infer Rest}`

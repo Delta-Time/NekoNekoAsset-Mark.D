@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import './toggle.css';
-export interface ToggleProps {
+interface ToggleProps {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;

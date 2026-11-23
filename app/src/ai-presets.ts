@@ -1,7 +1,7 @@
 import { table } from './messages';
 import type { Locale } from './model';
 
-export type BuiltinAiPresetId =
+type BuiltinAiPresetId =
   | 'chat'
   | 'similar'
   | 'outfit'
@@ -9,7 +9,7 @@ export type BuiltinAiPresetId =
   | 'purchase'
   | 'group'
   | 'style';
-export interface BuiltinAiPreset {
+interface BuiltinAiPreset {
   id: BuiltinAiPresetId;
   title: string;
   description: string;

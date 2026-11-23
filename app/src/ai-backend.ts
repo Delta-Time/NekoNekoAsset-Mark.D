@@ -1,6 +1,5 @@
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { invokeAction } from './backend';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type {
   AiJobRequest,
   AiJobResponses,
@@ -15,27 +14,20 @@ import type {
   AiSuggestionResponses,
 } from './bindings';
 export type {
-  AiChatDetail,
   AiChatSummary,
-  AiConnectionResult,
   AiCustomPreset,
-  AiDraftTest,
   AiEntry,
   AiEntryList,
   AiImage,
   AiKeyStatus,
-  AiMode,
-  AiPresetDraft,
   AiProviderPreset,
   AiScopes,
   AiStoredTurn,
-  AiSuggestionInput,
   AiSuggestionResponse,
-  AiWorkspace,
 } from './bindings';
 
 /** A provider entry being tested or saved. */
-export type AiDraft = Omit<Extract<AiRequest, { action: 'test_draft' }>, 'action'>;
+type AiDraft = Omit<Extract<AiRequest, { action: 'test_draft' }>, 'action'>;
 async function invokeAi<A extends AiRequest['action']>(
   request: Extract<AiRequest, { action: A }>,
 ): Promise<AiResponses[A]> {
@@ -44,9 +36,6 @@ async function invokeAi<A extends AiRequest['action']>(
 }
 export function getAiKeyStatus() {
   return invokeAi({ action: 'key_status' });
-}
-export function testAiConnection() {
-  return invokeAi({ action: 'test_connection' });
 }
 export function getAiProviders() {
   return invokeAi({ action: 'providers' });
@@ -136,9 +125,6 @@ export async function saveAiPreset(preset: AiPresetDraft) {
   const result = await invokeAiSuggestion({ action: 'save_preset', preset });
   return result.preset;
 }
-export function deleteAiPreset(presetId: string) {
-  return invokeAiSuggestion({ action: 'delete_preset', presetId });
-}
 export async function importAiPreset(json: string) {
   const result = await invokeAiSuggestion({ action: 'import_preset', json });
   return result.preset;
@@ -149,12 +135,4 @@ export function exportAiPreset(presetId: string) {
 export async function readAiDroppedImages(paths: string[]) {
   const result = await invokeAiSuggestion({ action: 'read_images', paths });
   return result.images;
-}
-export async function subscribeAiImageDrop(
-  callback: (paths: string[]) => void,
-): Promise<() => void> {
-  if (!isTauri()) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    if (event.payload.type === 'drop') callback(event.payload.paths);
-  });
 }

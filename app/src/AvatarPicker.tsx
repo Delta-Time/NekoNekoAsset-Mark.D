@@ -7,7 +7,7 @@ import { shellText } from './shell-i18n';
 import AvatarManager from './AvatarManager';
 
 type AvatarProduct = Pick<Product, 'ownedAvatars' | 'ownedAvatarEvidence'>;
-export interface ProductAvatarOption extends AvatarOption {
+interface ProductAvatarOption extends AvatarOption {
   legacyValue?: string;
 }
 function persistedAvatarValue(option: ProductAvatarOption): string {

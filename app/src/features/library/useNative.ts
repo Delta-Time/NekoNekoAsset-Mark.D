@@ -327,8 +327,7 @@ export function useNative({
         setLibraryOpening(true);
         return result;
       }
-      if (service === 'booth' && !action.startsWith('fetch_') && !action.startsWith('diagnose_'))
-        await refreshState();
+      if (service === 'booth' && !action.startsWith('fetch_')) await refreshState();
       return result;
     } catch (error) {
       notify(q(errorCode(error)));

@@ -1,6 +1,5 @@
 import type { Ref } from 'react';
 type ArtProps = {
-  kind?: number;
   title?: string;
   small?: boolean;
   sensitive?: boolean;

@@ -19,7 +19,7 @@ import './ActivityHistory.css';
 import { contentLang } from './content-lang';
 import { licenseText } from './license-i18n';
 
-export interface ActivityHistoryProps {
+interface ActivityHistoryProps {
   locale: Locale;
   jobs: Job[];
   accounts: Account[];

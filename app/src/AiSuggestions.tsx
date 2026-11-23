@@ -18,7 +18,7 @@ import ChatOptions from './features/ai/ChatOptions';
 import ChatMessages from './features/ai/ChatMessages';
 import ChatComposer from './features/ai/ChatComposer';
 
-export interface AiSuggestionsProps {
+interface AiSuggestionsProps {
   locale: Locale;
   active?: boolean;
   frozen?: boolean;

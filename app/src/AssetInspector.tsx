@@ -8,7 +8,7 @@ import { useInspectorFacts } from './features/inspector/useInspectorFacts';
 import InspectorDetails from './features/inspector/InspectorDetails';
 import InspectorFiles from './features/inspector/InspectorFiles';
 
-export interface AssetInspectorProps {
+interface AssetInspectorProps {
   product: Product;
   categoryLabel?: string;
   locale: Locale;

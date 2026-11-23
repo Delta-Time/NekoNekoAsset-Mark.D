@@ -286,7 +286,7 @@ export function getEffectiveTags(product: Product): string[] {
       (!offered.has(normalizeSearch(tag)) || owned.has(normalizeSearch(tag))),
   );
 }
-export interface FileSummary {
+interface FileSummary {
   downloaded: number;
   total: number;
   status: string;

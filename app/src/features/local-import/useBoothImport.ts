@@ -5,7 +5,7 @@ import { needsStoreSignIn } from '../workflows/jobs';
 
 /** The BOOTH item ID of a listing link: booth.pm/items/<id>, with or without a language, or a
  * shop's own <shop>.booth.pm/items/<id>. */
-export function boothItemId(text: string): string | null {
+function boothItemId(text: string): string | null {
   let url: URL;
   try {
     url = new URL(text.trim());

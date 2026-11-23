@@ -1,7 +1,6 @@
 import { message } from './messages';
 import type { Locale } from './model';
 import { uxText } from './ux-i18n';
-export type { Locale } from './model';
 
 export const locales: Locale[] = ['en', 'ja', 'ko', 'zh-Hans', 'zh-Hant'];
 export const localeNames: Record<Locale, string> = {

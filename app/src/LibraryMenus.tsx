@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { SlidersHorizontal } from 'lucide-react';
 
-export interface ContextAction {
+interface ContextAction {
   id: string;
   label: string;
   icon?: ReactNode;
@@ -151,7 +151,7 @@ export function ResponsiveLibraryToolbar({
     return () => document.removeEventListener('pointerdown', close);
   }, []);
   return (
-    <div className="toolbar library-toolbar" ref={root} data-collapsed={collapsed}>
+    <div className="toolbar library-toolbar" ref={root}>
       <div
         className="toolbar-account"
         ref={account}

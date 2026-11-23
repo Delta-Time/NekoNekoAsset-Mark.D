@@ -37,7 +37,7 @@ const shops = [
   '窓辺の研究室',
   'Folded Field',
 ];
-export const syntheticAvatars = [
+const syntheticAvatars = [
   '紙羽 / Kamihane',
   'こいし / Koishi Study',
   'ルーム / Loom',

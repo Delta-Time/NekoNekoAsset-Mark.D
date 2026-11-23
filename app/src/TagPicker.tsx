@@ -4,7 +4,7 @@ import { normalizeSearch, getAvatarAliases } from './model';
 import { editorText } from './editor-i18n';
 import './editor-styles.css';
 
-export interface TagPickerProps {
+interface TagPickerProps {
   locale: Locale;
   value: string[];
   suggestions: string[];

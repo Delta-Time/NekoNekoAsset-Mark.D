@@ -31,7 +31,6 @@ import type {
   Zoomed,
 } from './bindings';
 export type {
-  AppRelease,
   AvatarDelta,
   AvatarOption,
   AvatarSetting,
@@ -40,16 +39,13 @@ export type {
   Job,
   LibraryCredential,
   LibraryStatus,
-  NativeChange,
   Preferences,
   ProductMetadata,
   Root,
-  SourceProgress,
   TagOption,
   UnityDetails,
   UnityEditor,
   UnityLeaf,
-  UnityReceipt,
   UpdateCheck,
   UpdateProgress,
 } from './bindings';
@@ -72,7 +68,7 @@ type Responses = {
   licenses: LicensesResponses;
 };
 export type Action<S extends Service> = Requests[S]['action'];
-export type ActionArgs<S extends Service, A extends string> = Omit<
+type ActionArgs<S extends Service, A extends string> = Omit<
   Extract<Requests[S], { action: A }>,
   'action'
 >;
@@ -99,7 +95,7 @@ export type LooseNativeCall = (
   action: string,
   args?: Record<string, unknown>,
 ) => Promise<any>;
-export function importOnlyUnityJob(job: Job): Job {
+function importOnlyUnityJob(job: Job): Job {
   if (job.type !== 'unity:import') return job;
   const projected = { ...job };
   Reflect.deleteProperty(projected, 'compileErrorCount');
@@ -191,7 +187,7 @@ export const emptyState: NativeState = {
   conflicts: [],
 };
 /** What a file dialog picked, with the first path as `path`. */
-export interface DialogResult {
+interface DialogResult {
   path: string;
   paths?: string[];
 }

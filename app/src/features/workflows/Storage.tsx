@@ -223,7 +223,7 @@ export function Storage(c: Ctx) {
     </Panel>
   );
 }
-export function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
+function StorageRecovery({ c, rootId }: { c: Ctx; rootId?: string }) {
   const task = useAction();
   const [cleanup, setCleanup] = useState(false);
   const { L } = c;

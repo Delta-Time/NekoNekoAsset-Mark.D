@@ -10,12 +10,10 @@ import type { Navigation } from '../shell/useNavigation';
 import type { Notices } from '../shell/useNotice';
 import type { LocalFiles } from '../local-files/useLocalFiles';
 import type { Filters } from '../filters/useFilters';
-import type { ProductEdits } from '../products/useProductEdits';
-import type { SettingsPane } from '../settings/useSettingsPane';
 import type { PreferenceSync } from '../preferences/usePreferenceSync';
 
 /** What the workflow dialogs and settings pages receive: library and setup state, the theme and
- * locale, accounts, and the callbacks that open the library, patch products and navigate. */
+ * locale, accounts, and the callbacks that open the library and navigate. */
 export function useWorkflowProps({
   uiPrefs,
   results,
@@ -27,8 +25,6 @@ export function useWorkflowProps({
   notices,
   localFiles,
   filters,
-  edits,
-  settingsPane,
   preferenceSync,
 }: {
   uiPrefs: UiPreferences;
@@ -41,8 +37,6 @@ export function useWorkflowProps({
   notices: Notices;
   localFiles: LocalFiles;
   filters: Filters;
-  edits: ProductEdits;
-  settingsPane: SettingsPane;
   preferenceSync: PreferenceSync;
 }) {
   const { locale, setLocale, theme, setTheme } = uiPrefs;
@@ -66,9 +60,7 @@ export function useWorkflowProps({
   const { unitySeed, setFlow, setView, flow, importSeed } = nav;
   const { notify } = notices;
   const { latestLocalImport } = localFiles;
-  const { clearFilters, updateQuery, query } = filters;
-  const { userPatch, batchPatch } = edits;
-  const { openSettings } = settingsPane;
+  const { clearFilters, updateQuery } = filters;
   const { onPreferences } = preferenceSync;
   return {
     locale,
@@ -117,15 +109,8 @@ export function useWorkflowProps({
       if (flow === 'setup') setSetupDone(true);
     },
     autoDownloadAll: autoAll,
-    onUserPatch: userPatch,
-    onBatchUserPatch: batchPatch,
-    sensitiveMode: query.sensitive,
     accounts,
     importSeed,
-    onNavigate: (route: string) => {
-      setFlow(null);
-      openSettings(route);
-    },
     nativeState,
     onNative,
     onPreferences,

@@ -7,20 +7,11 @@ import {
   getAiKeyStatus,
   startAi,
 } from '../../ai-backend';
+import { savedScopes } from '../ai/settings-parts';
 import { type Ctx, type ActionTask, Status, useAction, Panel, Row } from './parts';
 import { useState, useEffect } from 'react';
 
-export function aiScopes(value: unknown): AiScopes {
-  const saved = value && typeof value === 'object' ? (value as Partial<AiScopes>) : {};
-  return {
-    title: typeof saved.title === 'boolean' ? saved.title : true,
-    tags: typeof saved.tags === 'boolean' ? saved.tags : true,
-    description: typeof saved.description === 'boolean' ? saved.description : true,
-    files: typeof saved.files === 'boolean' ? saved.files : true,
-    images: saved.images === true,
-  };
-}
-export function AIScopes({
+function AIScopes({
   value,
   onChange,
   L,
@@ -49,7 +40,7 @@ export function AIScopes({
     </div>
   );
 }
-export function AIJob({
+function AIJob({
   c,
   jobId,
   task,
@@ -105,7 +96,7 @@ export function AIJob({
 export function AI(c: Ctx) {
   const { L } = c;
   const task = useAction();
-  const [scopes, setScopes] = useState(() => aiScopes(c.nativeState?.preferences.aiScopes));
+  const [scopes, setScopes] = useState(() => savedScopes(c.nativeState?.preferences.aiScopes));
   const [jobId, setJobId] = useState('');
   const [settings, setSettings] = useState<AiKeyStatus | null>(null),
     [loadError, setLoadError] = useState('');

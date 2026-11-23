@@ -2,7 +2,7 @@ import { table } from './messages';
 import type { Locale } from './model';
 
 import type { AiPersonalityId, AiPersonalization } from './bindings';
-export type { AiPersonalityId, AiPersonalization } from './bindings';
+export type { AiPersonalization } from './bindings';
 
 export const DEFAULT_AI_PERSONALIZATION: AiPersonalization = {
   avatarDataUrl: null,
