@@ -621,8 +621,11 @@ async fn verified_downloads_real_extraction_certification_and_reopen_preserve_re
         retained["sizeBytes"].as_u64().unwrap(),
     )
     .unwrap();
-    let fixture_path = f.path.clone();
-    drop(f);
+    let Fixture {
+        service,
+        path: fixture_path,
+    } = f;
+    drop(service);
 
     let catalogue = Catalogue::open(&fixture_path.join("data")).unwrap();
     assert_eq!(

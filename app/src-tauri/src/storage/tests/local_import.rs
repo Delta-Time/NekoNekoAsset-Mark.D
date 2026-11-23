@@ -1285,7 +1285,7 @@ fn local_import_rejects_empty_batch_loose_overlap_and_library_ancestor_without_p
     assert!(f
         .service
         .prepare_local_import(
-            &json!({"draftId":uuid::Uuid::new_v4().to_string(),"sources":[f.path]})
+            &json!({"draftId":uuid::Uuid::new_v4().to_string(),"sources":[f.path.as_path()]})
         )
         .unwrap_err()
         .to_string()

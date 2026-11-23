@@ -1172,10 +1172,12 @@ async fn receipt_page_pipeline_publishes_before_next_listing_and_merges_later_va
 }
 #[test]
 fn authored_complete_product_publishes_before_unrelated_drafts_and_public_details() {
-    let root = std::env::var("NNA_STORE_EVIDENCE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let path = root.join(format!("booth-early-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_dir::TestDir::new("booth-early");
+    // An evidence run keeps the catalogue; an ordinary run removes it.
+    let path = match std::env::var("NNA_STORE_EVIDENCE_DIR") {
+        Ok(root) => std::path::Path::new(&root).join(dir.file_name().unwrap()),
+        Err(_) => dir.to_path_buf(),
+    };
     let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
     let service = BoothService::new(catalogue.clone()).unwrap();
     let job = json!({"id":"authored-early-job","type":"boothSync","state":"running","progress":{}});
@@ -3668,7 +3670,7 @@ fn a_free_item_added_by_its_listing_takes_its_history_rows_record() {
 }
 #[test]
 fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {
-    let path = std::env::temp_dir().join(format!("booth-free-order-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_dir::TestDir::new("booth-free-order");
     let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
     let service = BoothService::new(catalogue.clone()).unwrap();
     let row = |id: &str| parser::Row {
@@ -3820,7 +3822,6 @@ fn undated_free_downloads_keep_the_order_of_the_pass_that_first_listed_them() {
         )
         .unwrap();
     assert_eq!(order("a:free:900001"), kept);
-    let _ = std::fs::remove_dir_all(path);
 }
 #[test]
 fn current_free_checkpoint_roundtrips_and_does_not_upgrade_missing_version() {

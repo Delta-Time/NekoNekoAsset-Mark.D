@@ -1,10 +1,10 @@
 use super::*;
-use crate::{booth::BoothService, catalogue::Catalogue, stores::StoreService};
+use crate::{booth::BoothService, catalogue::Catalogue, stores::StoreService, test_dir::TestDir};
 use std::sync::atomic::Ordering;
 
-fn fixture() -> (StorageService, PathBuf) {
-    let directory =
-        std::env::temp_dir().join(format!("nna-unity-snapshot-synthetic-{}", Uuid::new_v4()));
+/// Bind the folder first so it is removed after the service closes.
+fn fixture() -> (TestDir, StorageService, PathBuf) {
+    let directory = TestDir::new("unity-snapshot-synthetic");
     let catalogue = Catalogue::open(&directory.join("data")).unwrap();
     let booth = Arc::new(BoothService::new(catalogue.clone()).unwrap());
     let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
@@ -20,7 +20,7 @@ fn fixture() -> (StorageService, PathBuf) {
         )
         .unwrap();
     service.catalogue.put("product", "local:synthetic", json!({"id":"local:synthetic","provider":"local","custom":true,"title":"Authored Bridge fixture","localManifest":{"complete":true,"fileIds":["package","archive"],"directories":[]}})).unwrap();
-    (service, root)
+    (directory, service, root)
 }
 
 fn seed_file(service: &StorageService, root: &Path, id: &str, name: &str, bytes: &[u8]) -> Value {
@@ -48,7 +48,7 @@ fn seed_file(service: &StorageService, root: &Path, id: &str, name: &str, bytes:
 
 #[tokio::test]
 async fn unity_snapshot_binds_original_and_inventory_member_and_releases_gate() {
-    let (service, root) = fixture();
+    let (_dir, service, root) = fixture();
     let original = seed_file(
         &service,
         &root,
@@ -207,7 +207,7 @@ async fn unity_snapshot_binds_original_and_inventory_member_and_releases_gate() 
 
 #[tokio::test]
 async fn unity_inventory_offers_a_file_saved_under_its_windows_name() {
-    let (service, root) = fixture();
+    let (_dir, service, root) = fixture();
     seed_file(
         &service,
         &root,
@@ -229,7 +229,7 @@ async fn unity_inventory_offers_a_file_saved_under_its_windows_name() {
 
 #[tokio::test]
 async fn unity_inventory_offers_store_files_kept_outside_the_current_list() {
-    let (service, root) = fixture();
+    let (_dir, service, root) = fixture();
     let c = &service.catalogue;
     c.put(
         "product",
@@ -285,7 +285,7 @@ async fn unity_inventory_offers_store_files_kept_outside_the_current_list() {
 
 #[tokio::test]
 async fn unity_snapshot_rejects_stale_corrupt_collision_and_cancel_preserving_sources() {
-    let (service, root) = fixture();
+    let (_dir, service, root) = fixture();
     let mut original = seed_file(
         &service,
         &root,
@@ -434,7 +434,7 @@ fn unity_snapshot_collision_detects_file_parent_even_with_intervening_name() {
 #[cfg(unix)]
 #[tokio::test]
 async fn unity_snapshot_never_reads_linked_managed_leaf() {
-    let (service, root) = fixture();
+    let (_dir, service, root) = fixture();
     let original = seed_file(
         &service,
         &root,

@@ -152,10 +152,12 @@ fn account_display_name_validation_is_bounded() {
 }
 #[test]
 fn account_rename_preserves_native_identity_and_entitlements_across_restart() {
-    let root = std::env::var("NNA_STORE_EVIDENCE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let path = root.join(format!("rename-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_dir::TestDir::new("rename");
+    // An evidence run keeps the catalogue; an ordinary run removes it.
+    let path = match std::env::var("NNA_STORE_EVIDENCE_DIR") {
+        Ok(root) => std::path::Path::new(&root).join(dir.file_name().unwrap()),
+        Err(_) => dir.to_path_buf(),
+    };
     let catalogue = Catalogue::open(&path).unwrap();
     let service = StoreService::new(
         catalogue.clone(),

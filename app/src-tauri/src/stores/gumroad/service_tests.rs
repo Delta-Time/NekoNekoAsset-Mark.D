@@ -291,8 +291,7 @@ async fn concurrent_grants_share_one_public_observation_including_failure() {
 }
 #[test]
 fn skipping_unbound_option_quote_preserves_files_paid_evidence_and_source_fields() {
-    let path =
-        std::env::temp_dir().join(format!("nna-gumroad-option-skip-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_dir::TestDir::new("gumroad-option-skip");
     let catalogue = Catalogue::open(&path).unwrap();
     let account = "authored-account";
     let product = "gumroad:authored-product";
@@ -367,8 +366,7 @@ fn skipping_unbound_option_quote_preserves_files_paid_evidence_and_source_fields
 
 #[test]
 fn public_body_enriches_owned_option_without_promoting_listing_price_or_unknown_body() {
-    let path =
-        std::env::temp_dir().join(format!("nna-gumroad-public-body-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_dir::TestDir::new("gumroad-public-body");
     let catalogue = Catalogue::open(&path).unwrap();
     let account = "authored-account";
     let product = "gumroad:authored-product";

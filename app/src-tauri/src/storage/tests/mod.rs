@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_dir::TestDir;
 
 mod downloads;
 mod extraction;
@@ -6,14 +7,14 @@ mod library;
 mod local_import;
 
 struct Fixture {
-    path: PathBuf,
     service: StorageService,
+    // Last, so the service closes SQLite before the folder is removed.
+    path: TestDir,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("nna-storage-synthetic-{}", uuid::Uuid::new_v4()));
+        let path = TestDir::new("storage-synthetic");
         let catalogue = Catalogue::open(&path.join("data")).unwrap();
         let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
         let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
@@ -196,11 +197,6 @@ impl Fixture {
             .unwrap()
             .is_none());
         (artifact, destination)
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) { /* Open SQLite handles are dropped after this method on Windows. Fixtures are isolated temp files. */
     }
 }
 

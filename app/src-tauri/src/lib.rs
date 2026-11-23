@@ -19,6 +19,8 @@ mod stores;
 mod support;
 mod support_trace;
 mod taxonomy;
+#[cfg(test)]
+mod test_dir;
 mod unity;
 mod updates;
 mod verification;
