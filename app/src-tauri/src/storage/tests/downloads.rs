@@ -1413,3 +1413,22 @@ fn a_file_flagged_again_after_its_download_verified_it_is_still_asked_for() {
         .unwrap();
     assert_eq!(fingerprint(&settled), fingerprint(&listed));
 }
+
+#[test]
+fn a_download_left_with_nothing_says_why() {
+    let file = json!({"id":"test-file-0"});
+    let first = json!({"id":"job","type":"download"});
+    let updated = json!({"id":"job","type":"download","storeUpdated":true});
+    assert!(ensure_files(&first, &[file]).is_ok());
+    // A list not known yet can still be completed by a sync.
+    assert_eq!(
+        ensure_files(&first, &[]).unwrap_err().to_string(),
+        "manifest_incomplete"
+    );
+    // Only a refusal asks for the store's update; if the updated list leaves nothing, the
+    // store no longer offers any of the files, listed or withdrawn.
+    assert_eq!(
+        ensure_files(&updated, &[]).unwrap_err().to_string(),
+        "store_file_unavailable"
+    );
+}

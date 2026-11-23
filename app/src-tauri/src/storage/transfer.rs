@@ -503,7 +503,7 @@ impl StorageService {
         let files = self.job_files(job, files)?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
         let attempted_files = files.clone();
-        ensure!(!files.is_empty(), "manifest_incomplete");
+        ensure_files(job, &files)?;
         // Queued before its files were all Ready; an interrupted extraction still runs.
         if job["automatic"] == true && self.all_at_revision(&files, &["ready"])? {
             job["fileIds"] = json!(files.iter().map(|f| f["id"].clone()).collect::<Vec<_>>());
@@ -613,6 +613,18 @@ impl StorageService {
             app, job, &job_id, &root, &root_path, &files, &all_files, cancel, &mut error,
         )
         .await?;
+        // An archive kept beside its Ready extraction goes only once every transfer of the
+        // job has settled: a sibling that reused those bytes is recorded by then, and the
+        // removal keeps a path any record still needs.
+        for file in files.iter().filter(|file| {
+            verified.contains(file["id"].as_str().unwrap_or(""))
+                && !(file["provider"] == "jinxxy" && !file["sourceRelativePath"].is_null())
+        }) {
+            if let Some(artifact) = self.catalogue.get("artifact", &artifact_id(file))? {
+                self.remove_kept_original(&root, &root_path, &artifact)
+                    .await;
+            }
+        }
         if let Some(error) = error {
             return Err(error);
         }
@@ -868,7 +880,6 @@ impl StorageService {
                         recovered["status"] = json!("downloaded");
                         self.catalogue.put("artifact", &existing_id, recovered)?;
                     }
-                    self.remove_kept_original(root, &root_path, artifact).await;
                     return Ok(());
                 }
             }
@@ -1402,10 +1413,6 @@ impl StorageService {
         updates.push(("artifact".into(), final_id, artifact.clone()));
         self.commit_download_records(updates, source_expected)?;
         self.delete_pending_download_record(io::required_string(file, "id")?)?;
-        // Bytes whose extraction stands already go, as extracting them would remove them.
-        if source_tree.is_none() {
-            self.remove_kept_original(root, root_path, &artifact).await;
-        }
         self.changed(app, Some(job_id));
         if let Some(error) = sibling_error {
             return Err(error);

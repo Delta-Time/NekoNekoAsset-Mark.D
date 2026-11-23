@@ -188,6 +188,18 @@ fn selected_download_files(files: Vec<Value>, selected: &Value) -> Result<Vec<Va
     ensure!(files.len() == 1, "file_missing");
     Ok(files)
 }
+/// A download with nothing to fetch: after the store's update, which only a refusal asks for,
+/// because the store no longer offers any of its files; otherwise because the list is not
+/// known yet.
+fn ensure_files(job: &Value, files: &[Value]) -> Result<()> {
+    if !files.is_empty() {
+        return Ok(());
+    }
+    if job["storeUpdated"] == true {
+        bail!("store_file_unavailable");
+    }
+    bail!("manifest_incomplete")
+}
 #[cfg(test)]
 fn native_seven_zip_test_tool() -> PathBuf {
     let path = std::env::var_os("NNA_7ZIP")
