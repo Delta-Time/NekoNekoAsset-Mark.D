@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod targeted_receipt_tests;
 
-mod acquisition_diagnostics;
 mod checkpoints;
 mod free_history;
 mod free_import;
@@ -12,11 +11,6 @@ use super::{
     field, free_item, http,
     incremental::{Baseline, Tracker, UpdatedRead, UpdatedTracker},
     metadata, now, parser, safety, BoothService,
-};
-pub(super) use acquisition_diagnostics::FreeItemDiagnostic;
-use acquisition_diagnostics::{
-    select_acquisition_diagnostic_detail, select_free_item_diagnostic_route,
-    select_targeted_receipt_proof, DiagnosticReservation,
 };
 use anyhow::{bail, ensure, Result};
 use checkpoints::{
@@ -451,188 +445,6 @@ struct PassClose {
 }
 
 impl BoothService {
-    pub(super) async fn diagnose_product_line_fields(
-        &self,
-        app: &AppHandle,
-        account: &str,
-        receipt_id: &str,
-    ) -> Result<parser::ProductLineFieldDiagnostics> {
-        if !safety::numeric(receipt_id) {
-            bail!("INVALID_DIAGNOSTIC_ARGUMENTS");
-        }
-        let _reservation = DiagnosticReservation::acquire(&self.inner.running, account)?;
-        let (body, saved) = self.targeted_receipt_page(app, account, receipt_id).await?;
-        let witnessed = saved.is_some();
-        let proof = match saved {
-            Some(rows) => rows,
-            None => parser::parse(&body, "purchase", &format!("/orders/{receipt_id}"))?.rows,
-        };
-        parser::diagnose_product_line_fields(&body, &proof, receipt_id, witnessed)
-    }
-    async fn targeted_receipt_page(
-        &self,
-        app: &AppHandle,
-        account: &str,
-        receipt_id: &str,
-    ) -> Result<(String, Option<Vec<parser::Row>>)> {
-        if !safety::numeric(receipt_id) {
-            bail!("INVALID_DIAGNOSTIC_ARGUMENTS");
-        }
-        // An explicitly requested, unsaved receipt is still fetchable. Existing
-        // checkpoints, when present, must validate in full before the GET.
-        let saved = match self
-            .inner
-            .catalogue
-            .get("checkpoint", &format!("booth:{account}:purchase"))?
-        {
-            Some(_) => {
-                let (checkpoint, journals) = self.acquisition_diagnostic_journals(account)?;
-                select_targeted_receipt_proof(&checkpoint, &journals, account, receipt_id)?
-            }
-            None => None,
-        };
-        let route = format!("/orders/{receipt_id}");
-        let client = self.client(app, account, false).await?;
-        let (status, body) = self
-            .inner
-            .http
-            .get(&client, safety::route(&route, "purchase")?)
-            .await?;
-        if !status.is_success() {
-            bail!("SOURCE_HTTP_FAILED");
-        }
-        Ok((body, saved))
-    }
-    pub(super) async fn diagnose_receipt_template(
-        &self,
-        app: &AppHandle,
-        account: &str,
-    ) -> Result<parser::ReceiptTemplateDiagnostics> {
-        let _reservation = DiagnosticReservation::acquire(&self.inner.running, account)?;
-        let (body, proof, receipt_id) = self.acquisition_diagnostic_page(app, account).await?;
-        parser::diagnose_receipt_template(&body, &proof, &receipt_id)
-    }
-    pub(super) async fn diagnose_receipt_notice_envelope(
-        &self,
-        app: &AppHandle,
-        account: &str,
-    ) -> Result<parser::ReceiptNoticeDiagnostics> {
-        let _reservation = DiagnosticReservation::acquire(&self.inner.running, account)?;
-        let (body, proof, receipt_id) = self.acquisition_diagnostic_page(app, account).await?;
-        parser::diagnose_receipt_notice_envelope(&body, &proof, &receipt_id)
-    }
-    pub(super) async fn diagnose_receipt_contact_envelope(
-        &self,
-        app: &AppHandle,
-        account: &str,
-    ) -> Result<parser::ReceiptContactDiagnostics> {
-        let _reservation = DiagnosticReservation::acquire(&self.inner.running, account)?;
-        let (body, proof, receipt_id) = self.acquisition_diagnostic_page(app, account).await?;
-        parser::diagnose_receipt_contact_envelope(&body, &proof, &receipt_id)
-    }
-    fn acquisition_diagnostic_journals(&self, account: &str) -> Result<(Checkpoint, Vec<Value>)> {
-        let checkpoint: Checkpoint = serde_json::from_value(
-            self.inner
-                .catalogue
-                .get("checkpoint", &format!("booth:{account}:purchase"))?
-                .ok_or_else(|| anyhow::anyhow!("DIAGNOSTIC_ENTRY_NOT_FOUND"))?,
-        )
-        .map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-        let mut journals = Vec::new();
-        for id in &checkpoint.journal_ids {
-            journals.push(
-                self.inner
-                    .catalogue
-                    .get("checkpoint", id)?
-                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
-            );
-        }
-        Ok((checkpoint, journals))
-    }
-    async fn acquisition_diagnostic_page(
-        &self,
-        app: &AppHandle,
-        account: &str,
-    ) -> Result<(String, Vec<parser::Row>, String)> {
-        let (checkpoint, journals) = self.acquisition_diagnostic_journals(account)?;
-        let (route, proof) = select_acquisition_diagnostic_detail(&checkpoint, &journals, account)?;
-        let client = self.client(app, account, false).await?;
-        let (status, body) = self
-            .inner
-            .http
-            .get(&client, safety::route(&route, "purchase")?)
-            .await?;
-        if !status.is_success() {
-            bail!("SOURCE_HTTP_FAILED");
-        }
-        let receipt_id = safety::route(&route, "purchase")?
-            .path()
-            .strip_prefix("/orders/")
-            .filter(|id| safety::numeric(id))
-            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
-            .to_owned();
-        Ok((body, proof, receipt_id))
-    }
-    pub(super) async fn diagnose_free_item_entry(
-        &self,
-        app: &AppHandle,
-        account: &str,
-        issue: FreeItemDiagnostic,
-    ) -> Result<free_item::EntryDiagnostics> {
-        let (id, body) = self.free_item_diagnostic_page(app, account, issue).await?;
-        free_item::diagnose_entry(&body, &id)
-    }
-    pub(super) async fn diagnose_free_item_identity(
-        &self,
-        app: &AppHandle,
-        account: &str,
-    ) -> Result<free_item::IdentityDiagnostics> {
-        let (id, body) = self
-            .free_item_diagnostic_page(app, account, FreeItemDiagnostic::Identity)
-            .await?;
-        free_item::diagnose_identity(&body, &id)
-    }
-    async fn free_item_diagnostic_page(
-        &self,
-        app: &AppHandle,
-        account: &str,
-        issue: FreeItemDiagnostic,
-    ) -> Result<(String, String)> {
-        let _reservation = DiagnosticReservation::acquire(&self.inner.running, account)?;
-        let key = format!("booth:{account}:free");
-        let value = self
-            .inner
-            .catalogue
-            .get("checkpoint", &key)?
-            .ok_or_else(|| anyhow::anyhow!("DIAGNOSTIC_ENTRY_NOT_FOUND"))?;
-        let checkpoint: Checkpoint =
-            serde_json::from_value(value).map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-        let mut journals = vec![];
-        for id in &checkpoint.journal_ids {
-            journals.push(
-                self.inner
-                    .catalogue
-                    .get("checkpoint", id)?
-                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
-            );
-        }
-        let route = select_free_item_diagnostic_route(&checkpoint, &journals, account, issue)?;
-        let id =
-            safety::free_item_id(&route).ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-        let client = self.client(app, account, false).await?;
-        let (status, body) = self
-            .inner
-            .http
-            .get(
-                &client,
-                url::Url::parse(&route).map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
-            )
-            .await?;
-        if !status.is_success() {
-            bail!("SOURCE_HTTP_FAILED");
-        }
-        Ok((id.to_owned(), body))
-    }
     pub(super) async fn sync_job(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
         let args = job["args"].clone();
         let account = field(&args, "accountId")?;
@@ -4300,7 +4112,12 @@ fn patched_product_fields(
 }
 #[cfg(test)]
 fn saved_product_line_binding(saved: &[parser::Row], fresh: &parser::Row) -> bool {
-    let Some(keys) = parser::diagnostic_digital_file_keys(fresh) else {
+    let keys = |row: &parser::Row| {
+        row.manifest_complete
+            .then(|| parser::product_field_file_keys(row))
+            .flatten()
+    };
+    let Some(fresh_keys) = keys(fresh) else {
         return false;
     };
     let bound: Vec<_> = saved
@@ -4310,7 +4127,7 @@ fn saved_product_line_binding(saved: &[parser::Row], fresh: &parser::Row) -> boo
     bound.len() == 1
         && bound[0].product_id == fresh.product_id
         && bound[0].order_id == fresh.order_id
-        && parser::diagnostic_digital_file_keys(bound[0]).as_ref() == Some(&keys)
+        && keys(bound[0]).as_ref() == Some(&fresh_keys)
 }
 fn source_coverage_record(
     selected: Option<&BTreeSet<String>>,

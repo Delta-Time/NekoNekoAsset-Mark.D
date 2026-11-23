@@ -122,37 +122,6 @@ fn public_item_url_normalization_preserves_shop_host_and_explicit_locale() {
     );
 }
 #[test]
-fn observed_product_identity_accepts_exact_first_party_canonical_paths() {
-    assert_eq!(
-        observed_product_url("https://booth.pm/items/900001").as_deref(),
-        Some("https://booth.pm/ja/items/900001")
-    );
-    for locale in ["ja", "en"] {
-        let url = format!("https://booth.pm/{locale}/items/900001");
-        assert_eq!(observed_product_url(&url).as_deref(), Some(url.as_str()));
-    }
-    for url in [
-        "https://synthetic.booth.pm/items/900001",
-        "https://synthetic.booth.pm/ja/items/900001",
-        "https://www.booth.pm/items/900001",
-        "http://booth.pm/items/900001",
-        "https://user@booth.pm/items/900001",
-        "https://booth.pm:443/items/900001",
-        "https://booth.pm/items/900001/",
-        "https://booth.pm/items/900001?token=private",
-        "https://booth.pm/items/900001#private",
-        "https://booth.pm/ja/items/900001?language=en",
-        "https://booth.pm/ignored/../items/900001",
-        "https://booth.pm/items/%39%30%30%30%30%31",
-        "https://booth.pm\\items\\900001",
-        "https://booth.pm.evil.test/items/900001",
-        "https://booth.pm/items/not-numeric",
-        "https://booth.pm/unknown/items/900001",
-    ] {
-        assert!(observed_product_url(url).is_none());
-    }
-}
-#[test]
 fn network_boundaries() {
     for value in [
         "http://booth.pm/downloadables/1",

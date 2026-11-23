@@ -2,7 +2,7 @@
 import type { JsonValue } from './serde_json/JsonValue';
 
 /**
- * Settles one exchange conflict: a retained `opId`, or an explicit `value`.
+ * Settles one conflict: a retained `opId`, or an explicit `value`.
  */
 export type ConflictChoice = {
   kind?: string;

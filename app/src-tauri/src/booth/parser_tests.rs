@@ -48,6 +48,9 @@ fn authored_notice(body: &str) -> String {
 fn authored_contact(body: &str) -> String {
     format!("<div class='sheet'><div><p>お支払いが完了しました</p><a href='/conversations/authored_token?opaque=PRIVATE_QUERY'>ショップに連絡する</a><div>{body}</div></div></div>")
 }
+fn product_line_proof(html: &str, rows: &[Row], receipt_id: &str) -> Result<ProductLineProof> {
+    product_line_proof_document(&Html::parse_document(html), rows, receipt_id)
+}
 fn assert_bound_product_price(page: &Page, amount: u64) {
     assert_eq!(
         page.rows
@@ -216,10 +219,9 @@ async fn receipt_trace_counts_only_current_parser_calls_without_source_values() 
     assert!(crate::support_trace::snapshot().is_none());
 }
 #[test]
-fn contact_diagnostic_has_fixed_eight_counts_and_closed_context_gates() {
+fn unclosed_contact_envelopes_keep_the_bound_price() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let footer = authored_contact("PRIVATE_CUSTOMER");
     let mut cases = vec![
         (
@@ -294,107 +296,17 @@ fn contact_diagnostic_has_fixed_eight_counts_and_closed_context_gates() {
         ]
         .map(|candidate| (candidate, "rivalPresenceRejected")),
     );
-    let keys = [
-        "version",
-        "contactActionMatches",
-        "closedContacts",
-        "structuralGuardRejected",
-        "rivalPresenceRejected",
-        "envelopeStructureRejected",
-        "instructionRejected",
-        "opaqueBodyStructureRejected",
-    ];
     for (footer, expected) in cases {
-        let page = html.replace("</main>", &format!("{footer}</main>"));
-        let value = serde_json::to_value(
-            diagnose_receipt_contact_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 8);
-        assert!(object.keys().all(|key| keys.contains(&key.as_str())));
-        assert!(object.values().all(serde_json::Value::is_u64));
-        assert_eq!(value["version"], 1);
-        assert_eq!(value["contactActionMatches"], 1);
-        assert_eq!(value[expected], 1, "{expected}");
-        assert_eq!(
-            keys[2..]
-                .iter()
-                .map(|key| value[*key].as_u64().unwrap())
-                .sum::<u64>(),
-            1
-        );
-        for private in [
-            "PRIVATE",
-            "SECRET",
-            "900001",
-            "700001",
-            "910001",
-            "conversations",
-            "ショップ",
-            "https://",
-            "span",
-            "class",
-            "2026/",
-        ] {
-            assert!(!value.to_string().contains(private));
-        }
         if expected != "closedContacts" {
+            let page = html.replace("</main>", &format!("{footer}</main>"));
             assert_bound_product_price(&parse(&page, "purchase", "/orders/910001").unwrap(), 100);
         }
     }
-    for unknown in [
-        footer.replace("ショップに連絡する", "PRIVATE_OTHER_ACTION"),
-        footer.replace(
-            "/conversations/authored_token?opaque=PRIVATE_QUERY",
-            "/unknown/PRIVATE_PATH",
-        ),
-        footer.replace(
-            "/conversations/authored_token?opaque=PRIVATE_QUERY",
-            "https://PRIVATE.invalid/conversations/SECRET_TOKEN",
-        ),
-    ] {
-        let page = html.replace("</main>", &format!("{unknown}</main>"));
-        let value = serde_json::to_value(
-            diagnose_receipt_contact_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(value["contactActionMatches"], 0);
-    }
-    assert_eq!(
-        diagnose_receipt_contact_envelope("<input type='password'>", &saved, "910001")
-            .err()
-            .unwrap()
-            .to_string(),
-        "AUTH_REQUIRED"
-    );
-    assert_eq!(
-        diagnose_receipt_contact_envelope("<div id='challenge-form'></div>", &saved, "910001")
-            .err()
-            .unwrap()
-            .to_string(),
-        "AUTH_CHALLENGE"
-    );
-    assert_eq!(
-        diagnose_receipt_contact_envelope(&html, &saved, "910002")
-            .err()
-            .unwrap()
-            .to_string(),
-        "DIGITAL_PROOF_UNPROVEN"
-    );
-    assert_eq!(
-        diagnose_receipt_contact_envelope(&format!("<main>{footer}</main>"), &saved, "910001")
-            .err()
-            .unwrap()
-            .to_string(),
-        "DIGITAL_PROOF_UNPROVEN"
-    );
 }
 #[test]
-fn contact_customer_text_values_never_change_counts_dates_or_proven_amounts() {
+fn contact_customer_text_values_never_change_dates_or_proven_amounts() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let bodies = [
         "PRIVATE_CUSTOMER".to_owned(),
         "PRIVATE".repeat(200),
@@ -407,11 +319,6 @@ fn contact_customer_text_values_never_change_counts_dates_or_proven_amounts() {
     for body in bodies {
         let footer = authored_contact(&body);
         let page = html.replace("</main>", &format!("{footer}</main>"));
-        let contact = serde_json::to_value(
-            diagnose_receipt_contact_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(contact["closedContacts"], 1);
         let parsed = parse(&page, "purchase", "/orders/910001").unwrap();
         let row = parsed
             .rows
@@ -420,7 +327,7 @@ fn contact_customer_text_values_never_change_counts_dates_or_proven_amounts() {
             .unwrap();
         assert_eq!(row.product_line_total_jpy, Some(100));
         assert_eq!(row.acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
-        outcomes.push((contact, row.source_record_id.clone()));
+        outcomes.push(row.source_record_id.clone());
     }
     assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
 }
@@ -441,10 +348,10 @@ fn known_contact_opaque_body_is_excluded_before_metadata_links_files_and_legacy_
         ] {
             let fragment = Html::parse_fragment(&format!("<section data-test='wrapper'>{candidate}</section>"));
             let card = fragment.select(&sel(".sheet")).next().unwrap();
-            let prefix = known_contact_prefix(card).unwrap();
+            let body = known_contact_prefix(card).unwrap();
             let wrapper = fragment.select(&sel("[data-test='wrapper']")).next().unwrap();
-            assert!(!rebound_digital_sheet(card, &saved));
-            for node in [card, wrapper, prefix.body] {
+            assert!(!rebound_product_fields(card, &saved));
+            for node in [card, wrapper, body] {
                 assert!(!template_summary_candidate(node));
                 let observation = receipt_summary_observation(node, "910001");
                 assert_eq!(observation.number_labels, 0);
@@ -467,17 +374,15 @@ fn known_contact_opaque_body_is_excluded_before_metadata_links_files_and_legacy_
             let no_summary = parse(&format!("<main>{candidate}{item}</main>"), "purchase", "/orders/910001").unwrap();
             assert!(no_summary.rows.iter().all(|row| row.acquired_date_text.is_none()));
             assert_bound_product_price(&no_summary, 100);
-            assert_eq!(diagnose_receipt_contact_envelope(&format!("<main>{candidate}</main>"), &saved, "910001").err().unwrap().to_string(), "DIGITAL_PROOF_UNPROVEN");
         }
     let body_link_only = "<div class='sheet'><div class='text-14'><p>お支払いが完了しました</p><a href='/conversations/PRIVATE_TOKEN'>ショップに連絡する</a><div>PRIVATE_BODY</div></div></div>";
     let fragment = Html::parse_fragment(body_link_only);
     assert!(known_contact_prefix(fragment.select(&sel(".sheet")).next().unwrap()).is_none());
 }
 #[test]
-fn known_notice_diagnostic_reports_only_fixed_first_failure_card_counts() {
+fn unclosed_notice_envelopes_keep_the_bound_price() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let rows = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let header = "<div class='text-16 font-bold'>発送通知コメント</div>";
     let body = "<div class='text-14'><p>PRIVATE_NOTICE_BODY 777777</p></div>";
     let notice = authored_notice("<p>PRIVATE_NOTICE_BODY 777777</p>");
@@ -535,71 +440,12 @@ fn known_notice_diagnostic_reports_only_fixed_first_failure_card_counts() {
                 "siblingStructureRejected",
             ),
         ];
-    let keys = [
-        "version",
-        "noticeHeaderMatches",
-        "closedNotices",
-        "structuralGuardRejected",
-        "rivalPresenceRejected",
-        "outerWrappingRejected",
-        "siblingStructureRejected",
-        "headerPlacementRejected",
-        "bodyRoleRejected",
-        "bodyTypeRejected",
-        "bodyDepthRejected",
-    ];
     for (notice, expected) in cases {
-        let page = html.replace("</main>", &format!("{notice}</main>"));
-        let value =
-            serde_json::to_value(diagnose_receipt_notice_envelope(&page, &rows, "910001").unwrap())
-                .unwrap();
-        let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 11);
-        assert!(object.keys().all(|key| keys.contains(&key.as_str())));
-        assert!(object.values().all(serde_json::Value::is_u64));
-        assert_eq!(value["version"], 1);
-        assert_eq!(value["noticeHeaderMatches"], 1);
-        assert_eq!(value[expected], 1, "{expected}");
-        assert_eq!(
-            keys[2..]
-                .iter()
-                .map(|key| value[*key].as_u64().unwrap())
-                .sum::<u64>(),
-            1
-        );
-        for private in [
-            "PRIVATE", "777777", "900001", "900003", "700001", "910001", "発送", "https://",
-            "class", "span", "2026/",
-        ] {
-            assert!(!value.to_string().contains(private));
-        }
         if expected != "closedNotices" {
+            let page = html.replace("</main>", &format!("{notice}</main>"));
             assert_bound_product_price(&parse(&page, "purchase", "/orders/910001").unwrap(), 100);
         }
     }
-    let unknown = html.replace("</main>", "<div class='sheet'><div class='text-16 font-bold'>PRIVATE_UNKNOWN_HEADER</div><p>PRIVATE</p></div></main>");
-    let unknown =
-        serde_json::to_value(diagnose_receipt_notice_envelope(&unknown, &rows, "910001").unwrap())
-            .unwrap();
-    assert_eq!(unknown["noticeHeaderMatches"], 0);
-    assert_eq!(
-        unknown
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter(|(key, _)| *key != "version")
-            .map(|(_, value)| value.as_u64().unwrap())
-            .sum::<u64>(),
-        0
-    );
-    assert!(diagnose_receipt_notice_envelope(&html, &rows, "910002").is_err());
-    assert_eq!(
-        diagnose_receipt_notice_envelope("<input type='password'>", &rows, "910001")
-            .err()
-            .unwrap()
-            .to_string(),
-        "AUTH_REQUIRED"
-    );
 }
 #[test]
 fn unsupported_and_sibling_duplicate_notice_headers_omit_financial_date_nomination() {
@@ -655,7 +501,6 @@ fn unsupported_and_sibling_duplicate_notice_headers_omit_financial_date_nominati
 fn notice_semantic_heading_and_known_p_body_preserve_proven_facts() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let mut snapshots = Vec::new();
     let body = "<div>PRIVATE ¥ 777777</div><div class='text-16 font-bold'>発送通知コメント</div><p>PRIVATE</p>";
     for notice in [
@@ -674,10 +519,7 @@ fn notice_semantic_heading_and_known_p_body_preserve_proven_facts() {
             let product = parsed.rows.iter().find(|row| row.product_id.as_deref() == Some("900001")).unwrap();
             assert_eq!(product.product_line_total_jpy, Some(100));
             assert_eq!(product.acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
-            let counts = serde_json::to_value(diagnose_receipt_notice_envelope(&page, &saved, "910001").unwrap()).unwrap();
-            assert_eq!(counts["noticeHeaderMatches"], 1);
-            assert_eq!(counts["closedNotices"], 1);
-            snapshots.push((counts, product.source_record_id.clone(),
+            snapshots.push((product.source_record_id.clone(),
                 product.acquired_date_text.clone(), product.product_line_total_jpy));
         }
     assert!(snapshots.iter().all(|snapshot| snapshot == &snapshots[0]));
@@ -686,7 +528,6 @@ fn notice_semantic_heading_and_known_p_body_preserve_proven_facts() {
 fn notice_prefix_never_retries_unknown_or_text_bearing_body_wrappers() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let header = "<b>発送通知コメント</b>";
     let pair = format!("{header}<div>PRIVATE</div>");
     let mut cases: Vec<_> = [
@@ -709,12 +550,6 @@ fn notice_prefix_never_retries_unknown_or_text_bearing_body_wrappers() {
         let fragment = Html::parse_fragment(&notice);
         assert!(known_notice_prefix(fragment.select(&sel(".sheet")).next().unwrap()).is_none());
         let page = html.replace("</main>", &format!("{notice}</main>"));
-        let counts = serde_json::to_value(
-            diagnose_receipt_notice_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(counts["noticeHeaderMatches"], 0);
-        assert_eq!(counts["closedNotices"], 0);
         assert_bound_product_price(&parse(&page, "purchase", "/orders/910001").unwrap(), 100);
     }
 }
@@ -722,9 +557,7 @@ fn notice_prefix_never_retries_unknown_or_text_bearing_body_wrappers() {
 fn opaque_styled_notice_body_never_supplies_a_header_or_changes_proven_facts() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     let mut positive = Vec::new();
-    let mut body_only = Vec::new();
     for literal in ["PRIVATE_OPAQUE_STYLED_BODY", "発送通知コメント"] {
         let body = format!(
             "<div class='text-16 font-bold'>{literal}</div><p>PRIVATE_BODY_TEXT ¥ 777777</p>"
@@ -742,40 +575,18 @@ fn opaque_styled_notice_body_never_supplies_a_header_or_changes_proven_facts() {
             product.acquired_date_text.as_deref(),
             Some("2026/10/10 09:30")
         );
-        let notice_counts = serde_json::to_value(
-            diagnose_receipt_notice_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(notice_counts["noticeHeaderMatches"], 1);
-        assert_eq!(notice_counts["closedNotices"], 1);
-        positive.push((notice_counts, product.source_record_id.clone()));
+        positive.push(product.source_record_id.clone());
         let body_first = format!("<div class='sheet'><div class='text-14'>{body}</div></div>");
         let fragment = Html::parse_fragment(&body_first);
         let card = fragment.select(&sel(".sheet")).next().unwrap();
         assert!(known_notice_header(card).is_none());
         let page = html.replace("</main>", &format!("{body_first}</main>"));
-        let counts = serde_json::to_value(
-            diagnose_receipt_notice_envelope(&page, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(counts["noticeHeaderMatches"], 0);
-        assert_eq!(counts["closedNotices"], 0);
         assert_bound_product_price(&parse(&page, "purchase", "/orders/910001").unwrap(), 100);
         let body_before_header = format!("<div class='sheet'><div><div class='text-14'>{body}</div><div class='text-16 font-bold'>発送通知コメント</div></div></div>");
         let fragment = Html::parse_fragment(&body_before_header);
         assert!(known_notice_header(fragment.select(&sel(".sheet")).next().unwrap()).is_none());
-        let swapped = html.replace("</main>", &format!("{body_before_header}</main>"));
-        assert_eq!(
-            serde_json::to_value(
-                diagnose_receipt_notice_envelope(&swapped, &saved, "910001").unwrap()
-            )
-            .unwrap(),
-            counts
-        );
-        body_only.push(counts);
     }
     assert_eq!(positive[0], positive[1]);
-    assert_eq!(body_only[0], body_only[1]);
 }
 #[test]
 fn independent_product_fields_ignore_unrelated_ui_and_infer_only_known_digital_quantity() {
@@ -797,13 +608,9 @@ fn independent_product_fields_ignore_unrelated_ui_and_infer_only_known_digital_q
         assert_eq!(proof.charges[0].amount, amount);
         assert_eq!(proof.diagnostics.explicit_quantity_items, explicit_count);
         assert_eq!(proof.diagnostics.omitted_quantity_items, omitted_count);
-        let counts = serde_json::to_value(
-            diagnose_product_line_fields(&html, &page.rows, "910001", true).unwrap(),
-        )
-        .unwrap();
+        let counts = serde_json::to_value(&proof.diagnostics).unwrap();
         let keys = [
             "version",
-            "savedReceiptWitness",
             "digitalBoundItems",
             "uniqueMetadataItems",
             "unitPriceItems",
@@ -825,7 +632,6 @@ fn independent_product_fields_ignore_unrelated_ui_and_infer_only_known_digital_q
             .keys()
             .all(|key| keys.contains(&key.as_str())));
         assert_eq!(counts["version"], 1);
-        assert_eq!(counts["savedReceiptWitness"], true);
         assert_eq!(counts["digitalBoundItems"], 1);
         assert_eq!(counts["uniqueMetadataItems"], 1);
         assert_eq!(counts["unitPriceItems"], 1);
@@ -841,13 +647,11 @@ fn independent_product_fields_ignore_unrelated_ui_and_infer_only_known_digital_q
         ] {
             assert_eq!(counts[key], 0, "{key}");
         }
-        assert!(counts.as_object().unwrap().iter().all(|(key, value)| {
-            if key == "savedReceiptWitness" {
-                value.is_boolean()
-            } else {
-                value.is_u64()
-            }
-        }));
+        assert!(counts
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|value| value.is_u64()));
         for private in [
             "PRIVATE", "999999", "900001", "700001", "910001", "https://", "Authored",
         ] {
@@ -859,7 +663,9 @@ fn independent_product_fields_ignore_unrelated_ui_and_infer_only_known_digital_q
         );
         assert_eq!(
             serde_json::to_value(
-                diagnose_product_line_fields(&changed, &page.rows, "910001", true).unwrap()
+                &product_line_proof(&changed, &page.rows, "910001")
+                    .unwrap()
+                    .diagnostics
             )
             .unwrap(),
             counts
@@ -1198,7 +1004,6 @@ fn needed_financial_fields_survive_missing_title_with_exact_digital_binding() {
         assert!(row.name.is_none());
         assert_eq!(row.error_code.as_deref(), Some("PRODUCT_TITLE_UNRESOLVED"));
         assert!(!row.manifest_complete);
-        assert!(diagnostic_digital_file_keys(row).is_none());
         assert!(product_field_file_keys(row).is_some());
         assert_eq!(row.acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
         assert_eq!(row.product_line_total_jpy, Some(amount));
@@ -1242,7 +1047,6 @@ fn needed_fields_survive_missing_filename_and_unrelated_receipt_regions() {
     assert_eq!(row.acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
     assert!(!row.manifest_complete);
     assert!(product_field_file_keys(row).is_some());
-    assert!(diagnostic_digital_file_keys(row).is_none());
     let broken = html.replace("</main>", "<div class='sheet'><a data-test='downloadable' href='https://evil.test/downloadables/700003'>Download</a></div></main>");
     let broken_page = parse(&broken, "purchase", "/orders/910001").unwrap();
     assert!(broken_page.unresolved > 0);
@@ -1362,7 +1166,6 @@ fn old_row_json_defaults_paid_proof_to_none_and_omits_the_new_key() {
 fn receipt_notice_body_cannot_supply_price_or_acquisition_date() {
     let item = charge_item("900001", "700001", "¥ 100", None, "0");
     let html = charge_receipt(&item, "¥ 100", "");
-    let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
     for body in [
         "PRIVATE_MESSAGE ¥ -100, quantity 2",
         "注文番号 910001 注文日時 1999/01/01 01:01 お支払金額 ¥ 777777",
@@ -1375,12 +1178,6 @@ fn receipt_notice_body_cannot_supply_price_or_acquisition_date() {
             parsed.rows[0].acquired_date_text.as_deref(),
             Some("2026/10/10 09:30")
         );
-        let diagnostic = serde_json::to_value(
-            diagnose_receipt_notice_envelope(&with_notice, &saved, "910001").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(diagnostic["closedNotices"], 1);
-        assert!(!diagnostic.to_string().contains("PRIVATE"));
         assert!(!serde_json::to_string(&parsed).unwrap().contains("PRIVATE"));
         let without_summary = format!("<main>{item}{notice}</main>");
         let undated = parse(&without_summary, "purchase", "/orders/910001").unwrap();
@@ -1791,115 +1588,6 @@ fn purchase_legacy_direct_date_retains_original_id_without_proving_acquisition()
     assert_eq!(invalid.rows[0].source_record_id, old_id);
     assert_eq!(invalid.rows[0].source_record_id, b.rows[0].source_record_id);
 }
-#[test]
-fn receipt_template_has_closed_shape_and_matches_summary_after_digital_card() {
-    let proof = parse(TEMPLATE_HTML, "purchase", "/orders/910001")
-        .unwrap()
-        .rows;
-    let value =
-        serde_json::to_value(diagnose_receipt_template(TEMPLATE_HTML, &proof, "910001").unwrap())
-            .unwrap();
-    let keys = [
-        "version",
-        "digitalProofBound",
-        "summaryCandidates",
-        "summaryOrderNumberTextNodes",
-        "summaryOrderedDateTextNodes",
-        "summaryRoleCandidates",
-        "summaryReceiptNumberMatches",
-        "summaryUniqueDatePairs",
-        "summarySlashDates",
-        "summaryIsoDates",
-        "summaryAmbiguousPairs",
-        "jpyParents",
-        "jpyParentDirectTextNodes",
-        "jpyParentMultiplicationTokens",
-        "jpyParentQuantityNodes",
-        "jpyParentCompactSyntaxRows",
-        "jpyParentSameProductLineRows",
-        "priceScopeBoostTextNodes",
-        "priceScopeExplicitPaidTextNodes",
-        "priceScopeSubtotalTextNodes",
-        "normalizedTitleLineWitnesses",
-    ];
-    let object = value.as_object().unwrap();
-    assert_eq!(object.len(), 21);
-    assert!(object.keys().all(|key| keys.contains(&key.as_str())));
-    assert_eq!(
-        object.values().filter(|value| value.is_boolean()).count(),
-        1
-    );
-    assert!(object
-        .values()
-        .all(|value| value.is_number() || value.is_boolean()));
-    assert_eq!(value["summaryReceiptNumberMatches"], 1);
-    assert_eq!(value["summaryUniqueDatePairs"], 1);
-    assert_eq!(value["summarySlashDates"], 1);
-    assert_eq!(value["jpyParentCompactSyntaxRows"], 1);
-    assert_eq!(value["jpyParentSameProductLineRows"], 1);
-    assert!(value["normalizedTitleLineWitnesses"].as_u64().unwrap() > 0);
-    assert_eq!(value["priceScopeBoostTextNodes"], 1);
-    for private in [
-        "PRIVATE", "900001", "910001", "700001", "800001", "2026/", "1,500", "https://", "Authored",
-    ] {
-        assert!(!value.to_string().contains(private));
-    }
-}
-#[test]
-fn receipt_template_checks_paired_id_before_date_and_rejects_extra_money_tokens() {
-    let proof = parse(TEMPLATE_HTML, "purchase", "/orders/910001")
-        .unwrap()
-        .rows;
-    let wrong = TEMPLATE_HTML
-        .replace("# 910001", "# 910002")
-        .replace("2026/10/10 09:30", "PRIVATE_DATE_VALUE");
-    let counts = diagnose_receipt_template(&wrong, &proof, "910001").unwrap();
-    assert_eq!(counts.summary_receipt_number_matches, 0);
-    assert_eq!(counts.summary_unique_date_pairs, 0);
-    assert_eq!(counts.summary_slash_dates, 0);
-    assert_eq!(counts.summary_ambiguous_pairs, 1);
-    let invalid = TEMPLATE_HTML.replace(" ｘ ", " PRIVATE_TOKEN ｘ ");
-    assert_eq!(
-        diagnose_receipt_template(&invalid, &proof, "910001")
-            .unwrap()
-            .jpy_parent_compact_syntax_rows,
-        0
-    );
-    let untrusted = TEMPLATE_HTML.replace(
-        "href='https://invented.booth.pm/'",
-        "href='https://untrusted.test/'",
-    );
-    assert_eq!(
-        diagnose_receipt_template(&untrusted, &proof, "910001")
-            .unwrap()
-            .jpy_parent_same_product_line_rows,
-        0
-    );
-    assert_eq!(
-        diagnose_receipt_template(&TEMPLATE_HTML.replace("700001", "700002"), &proof, "910001")
-            .err()
-            .unwrap()
-            .to_string(),
-        "DIGITAL_PROOF_UNPROVEN"
-    );
-    let product_summary = TEMPLATE_HTML.replace(
-        "<p><b>注文番号</b></p>",
-        "<p data-product-id='900002'><b>注文番号</b></p>",
-    );
-    assert_eq!(
-        diagnose_receipt_template(&product_summary, &proof, "910001")
-            .unwrap()
-            .summary_role_candidates,
-        0
-    );
-    let malformed = TEMPLATE_HTML.replace("# 910001", "prefix910001");
-    assert_eq!(
-        diagnose_receipt_template(&malformed, &proof, "910001")
-            .unwrap()
-            .summary_receipt_number_matches,
-        0
-    );
-}
 const HTML: &str = r#"<main><h1>Library</h1><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Invented avatar</a><div data-test='downloadable-list'><div><b data-test='filename'>source.psd</b><a data-test='downloadable' href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a><a href='https://booth.pm/downloadables/700001?variation_id=800001'>Again</a></div><div><b data-test='filename'>docs.zip</b><a href='https://booth.pm/downloadables/700002'>Download</a></div></div></article><nav class='pagination'><a aria-current='page' href='/library?page=1'>1</a></nav></main>"#;
 #[test]
 fn ordering_comes_only_from_what_the_library_page_states_about_its_query() {
@@ -2282,4 +1970,132 @@ fn exact_withheld_marker_keeps_unknown_id_but_not_unsupported_identity() {
         p.rows[0].error_code.as_deref(),
         Some("PRODUCT_ID_UNRESOLVED")
     );
+}
+const MANIFEST_HTML: &str = r#"<main><h1>Library</h1><article data-test='library-item'><a href='https://synthetic.booth.pm/items/900001'>PRIVATE_TITLE</a><div data-test='downloadable-list'><div><b data-test='filename'>PRIVATE_FILE.psd</b><a data-test='downloadable' href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a></div></div></article><nav class='pagination'><a aria-current='page' href='/library?page=1'>1</a></nav></main>"#;
+fn modern_structure() -> String {
+    MANIFEST_HTML.replace("data-test='downloadable-list'", "class='synthetic-file-container'").replace("<b data-test='filename'>PRIVATE_FILE.psd</b>", "<div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_FILE.psd</div></div>")
+}
+#[test]
+fn each_manifest_gate_leaves_a_library_row_incomplete() {
+    assert!(
+        parse(MANIFEST_HTML, "library", "/library?page=1")
+            .unwrap()
+            .rows[0]
+            .manifest_complete
+    );
+    for (html, gate) in [
+        (
+            MANIFEST_HTML.replace("data-test='downloadable-list'", ""),
+            "rowsMissingExplicitList",
+        ),
+        (
+            MANIFEST_HTML.replace("<b data-test='filename'>PRIVATE_FILE.psd</b>", ""),
+            "rowsMissingFilename",
+        ),
+        (
+            MANIFEST_HTML.replace(
+                "<a data-test='downloadable'",
+                "<i data-test='downloadable'></i><a data-test='downloadable'",
+            ),
+            "rowsInvalidControls",
+        ),
+        (
+            MANIFEST_HTML.replace(
+                "<article data-test='library-item'>",
+                "<article data-test='library-item'><i data-test='item-unavailable'></i>",
+            ),
+            "rowsUnavailable",
+        ),
+        (
+            MANIFEST_HTML.replace(
+                "https://synthetic.booth.pm/items/900001",
+                "/unknown-synthetic-route",
+            ),
+            "rowsWithError",
+        ),
+        (
+            MANIFEST_HTML.replace(
+                "https://booth.pm/downloadables/700001?variation_id=800001",
+                "/unknown-synthetic-download",
+            ),
+            "rowsWithoutFiles",
+        ),
+    ] {
+        let page = parse(&html, "library", "/library?page=1").unwrap();
+        assert!(!page.rows[0].manifest_complete, "{gate}");
+    }
+}
+#[test]
+fn modern_shelf_manifest_preserves_all_other_gates_and_rejects_partial_structures() {
+    let html = modern_structure();
+    let complete = |body: &str, source: &str, route: &str| {
+        parse(body, source, route).unwrap().rows[0].manifest_complete
+    };
+    assert!(complete(&html, "library", "/library?page=1"));
+    for (source, route) in [
+        ("gift", "/library/gifts?page=1"),
+        ("free", "/library/free_downloads?page=1"),
+    ] {
+        assert!(complete(
+            &html.replace("<h1>Library</h1>", "<h1>Gift Free downloads</h1>"),
+            source,
+            route
+        ));
+    }
+    // Purchase has not established this modern shelf witness.
+    assert!(!complete(
+        &html.replace("data-test='library-item'", "class='sheet'"),
+        "purchase",
+        "/orders/900009"
+    ));
+    let alternate=html.replace("</article>","<button data-test='other-downloads-button' aria-expanded='false' data-dropdown-items='PRIVATE_METHODS'>PRIVATE_METHOD</button></article>");
+    assert!(complete(&alternate, "library", "/library?page=1"));
+    let signed = html.replace(
+        "variation_id=800001",
+        "variation_id=800001&amp;signature=PRIVATE_TOKEN",
+    );
+    let page = parse(&signed, "library", "/library?page=1").unwrap();
+    assert!(page.rows[0].manifest_complete);
+    let duplicate_action = html.replace("</div></div></article>", "<a href='https://booth.pm/downloadables/700001?variation_id=800001'>PRIVATE_AGAIN</a></div></div></article>");
+    assert!(complete(&duplicate_action, "library", "/library?page=1"));
+    assert!(!page.rows[0].files[0].source_url.contains("PRIVATE_TOKEN"));
+    let multiple=html.replace("</div></div></article>","</div><div><div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_DOC.zip</div></div><a data-test='downloadable' href='https://booth.pm/downloadables/700002'>Download</a></div></div></article>");
+    let page = parse(&multiple, "library", "/library?page=1").unwrap();
+    assert_eq!(page.rows[0].files.len(), 2);
+    assert!(page.rows[0].manifest_complete);
+    let orphan = html.replace("</div></div></article>", "</div><div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_ORPHAN.zip</div></div></div></article>");
+    let conflicting = html.replace("</div></div></article>", "</div><div><div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_CONFLICT.zip</div></div><a data-test='downloadable' href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a></div></div></article>");
+    let nested_orphan=html.replace("<div class='synthetic-file-container'>","<div class='synthetic-file-container'><div class='synthetic-inner'>").replace("</div></div></article>","</div></div><div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_NESTED_ORPHAN.zip</div></div></div></article>");
+    let linked_outer_orphan = html.replace("<div class='synthetic-file-container'>", "<div class='synthetic-outer'><a href='https://synthetic.booth.pm/items/900001'>PRIVATE_SAME_PRODUCT</a><div class='synthetic-file-container'>").replace("</div></div></article>", "</div></div><div class='min-w-0 break-words whitespace-pre-line'><div class='text-14'>PRIVATE_OUTSIDE_ORPHAN.zip</div></div></div></article>");
+    let linked_page = parse(&linked_outer_orphan, "library", "/library?page=1").unwrap();
+    assert_eq!(linked_page.unresolved, 0);
+    assert!(linked_page.rows[0].error_code.is_none());
+    assert!(!linked_page.rows[0].manifest_complete);
+    for body in [&orphan, &conflicting, &nested_orphan] {
+        assert!(!complete(body, "library", "/library?page=1"));
+    }
+    let missing_list = MANIFEST_HTML.replace("data-test='downloadable-list'", "");
+    assert!(!complete(&missing_list, "library", "/library?page=1"));
+    for (body, reason) in [
+            (html.replace("</article>","<button data-test='show-more'>PRIVATE_MORE</button></article>"),"load more"),
+            (html.replace("</article>","<button aria-expanded='false'>PRIVATE_EXPAND</button></article>"),"collapsed control"),
+            (html.replace("</article>","<select name='variation_id'></select></article>"),"variant selector"),
+            (html.replace("</article>","<button data-dropdown-items='PRIVATE_UNKNOWN'></button></article>"),"unknown dropdown"),
+            (html.replace("<article data-test='library-item'>","<article data-test='library-item' data-file-count='2'>"),"advertised mismatch"),
+            (html.replace("<article data-test='library-item'>","<article data-test='library-item' data-file-count='PRIVATE_COUNT'>"),"advertised invalid"),
+            (html.replace("PRIVATE_FILE.psd</div>","PRIVATE_FILE.psd</div><div class='text-14'>PRIVATE_OTHER.zip</div>"),"ambiguous name"),
+            (html.replace("<div class='synthetic-file-container'>","").replace("</div></div></article>","</div></article>"),"broad card only"),
+            (html.replace("<div class='synthetic-file-container'>","<div class='synthetic-file-container'><a href='https://synthetic.booth.pm/items/900002'>PRIVATE_SECOND</a>"),"multiple products"),
+            (html.replace("<a data-test='downloadable'","<i data-test='downloadable'></i><a data-test='downloadable'"),"invalid resolver"),
+            (html.replace("variation_id=800001","variation_id=PRIVATE_INVALID"),"invalid variant"),
+            (html.replace("<article data-test='library-item'>","<article data-test='library-item'><i data-test='item-unavailable'></i>"),"unavailable"),
+        ] { assert!(!complete(&body,"library","/library?page=1"),"{reason}"); }
+    assert!(complete(
+        &html.replace(
+            "<article data-test='library-item'>",
+            "<article data-test='library-item' data-file-count='1'>"
+        ),
+        "library",
+        "/library?page=1"
+    ));
 }

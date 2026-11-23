@@ -598,17 +598,6 @@ fn numeric_identity_present(card: ElementRef<'_>) -> bool {
             .any(|a| e.value().attr(a).is_some_and(safety::numeric))
         })
 }
-pub fn parse(html: &str, source: &str, route: &str) -> Result<Page> {
-    parse_internal(html, source, route, None, None)
-}
-pub(super) fn diagnostic_digital_file_keys(
-    row: &Row,
-) -> Option<BTreeSet<(String, Option<String>)>> {
-    if !row.manifest_complete {
-        return None;
-    }
-    product_field_file_keys(row)
-}
 /// Digital controls bind financial fields independently of all-files readiness.
 /// Missing filenames remain an incomplete manifest, not an unknown purchase.
 pub(super) fn product_field_file_keys(row: &Row) -> Option<BTreeSet<(String, Option<String>)>> {
@@ -703,51 +692,6 @@ fn currency_jpy(value: &str) -> Option<f64> {
         .then(|| super::metadata::parse_jpy_price(&serde_json::json!(value)))
         .flatten()
 }
-fn compact_quantity(value: &str) -> Option<u64> {
-    let mut parts = value.split(['×', 'x']);
-    currency_jpy(parts.next()?.trim())?;
-    let quantity = parts.next()?.trim();
-    if parts.next().is_some()
-        || quantity.is_empty()
-        || !quantity.bytes().all(|c| c.is_ascii_digit())
-    {
-        return None;
-    }
-    quantity
-        .parse::<u64>()
-        .ok()
-        .filter(|quantity| *quantity > 0 && *quantity <= 9_007_199_254_740_991)
-}
-fn rebound_digital_sheet(card: ElementRef<'_>, proof_rows: &[Row]) -> bool {
-    if omitted_notice_scope(card) {
-        return false;
-    }
-    let ids: BTreeSet<_> = links(card).into_iter().filter_map(identity).collect();
-    let controls = downloads(card, true);
-    let raw = raw_download_controls(card, true);
-    if ids.len() != 1 || controls.is_empty() || raw != controls.len() {
-        return false;
-    }
-    let id = ids.first().unwrap();
-    let keys: BTreeSet<_> = controls
-        .into_iter()
-        .map(|(_, id, variant, _)| (id, variant))
-        .collect();
-    proof_rows.iter().any(|row| {
-        row.product_id.as_ref() == Some(id)
-            && diagnostic_digital_file_keys(row).as_ref() == Some(&keys)
-    }) && card
-        .select(&sel("[data-test='item-unavailable'],.item-unavailable"))
-        .next()
-        .is_none()
-        && !std::iter::once(card)
-            .chain(card.select(&sel("[data-product-id],[data-item-id]")))
-            .any(|node| {
-                ["data-product-id", "data-item-id"]
-                    .iter()
-                    .any(|key| node.value().attr(key).is_some_and(|value| value != id))
-            })
-}
 fn rebound_product_fields(card: ElementRef<'_>, proof_rows: &[Row]) -> bool {
     // A recognized message prefix excludes its opaque body from product
     // binding. This does not validate closure or gate unrelated receipt UI.
@@ -775,31 +719,6 @@ fn rebound_product_fields(card: ElementRef<'_>, proof_rows: &[Row]) -> bool {
                     .iter()
                     .any(|key| node.value().attr(key).is_some_and(|value| value != id))
             })
-}
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ReceiptTemplateDiagnostics {
-    version: usize,
-    digital_proof_bound: bool,
-    summary_candidates: usize,
-    summary_order_number_text_nodes: usize,
-    summary_ordered_date_text_nodes: usize,
-    summary_role_candidates: usize,
-    summary_receipt_number_matches: usize,
-    summary_unique_date_pairs: usize,
-    summary_slash_dates: usize,
-    summary_iso_dates: usize,
-    summary_ambiguous_pairs: usize,
-    jpy_parents: usize,
-    jpy_parent_direct_text_nodes: usize,
-    jpy_parent_multiplication_tokens: usize,
-    jpy_parent_quantity_nodes: usize,
-    jpy_parent_compact_syntax_rows: usize,
-    jpy_parent_same_product_line_rows: usize,
-    price_scope_boost_text_nodes: usize,
-    price_scope_explicit_paid_text_nodes: usize,
-    price_scope_subtotal_text_nodes: usize,
-    normalized_title_line_witnesses: usize,
 }
 fn template_literal(value: &str) -> &str {
     value.trim().trim_end_matches([':', '：']).trim()
@@ -1046,36 +965,6 @@ fn normalized_product_lines<'a>(
     }
     result
 }
-fn template_dom_pieces(parent: ElementRef<'_>) -> Option<Vec<String>> {
-    use unicode_normalization::UnicodeNormalization;
-    if !noninteractive(parent) || parent.descendants().count() > 128 {
-        return None;
-    }
-    let mut parts = Vec::new();
-    for node in parent.children() {
-        let value = if let Some(text) = node.value().as_text() {
-            if text.chars().count() > 64 {
-                return None;
-            }
-            text.trim().to_owned()
-        } else if let Some(element) = ElementRef::wrap(node) {
-            if !matches!(
-                element.value().name(),
-                "div" | "span" | "b" | "strong" | "small" | "p" | "td" | "label"
-            ) {
-                return None;
-            }
-            bounded_leaf_value(element)?
-        } else {
-            continue;
-        };
-        if value.is_empty() {
-            continue;
-        }
-        parts.push(value.nfkc().collect::<String>().trim().to_owned());
-    }
-    (parts.len() <= 3).then_some(parts)
-}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PaidLabel {
     Boost,
@@ -1140,7 +1029,6 @@ fn paid_dom_pieces(node: ElementRef<'_>) -> Option<Vec<String>> {
 #[serde(rename_all = "camelCase")]
 pub(super) struct ProductLineFieldDiagnostics {
     version: usize,
-    saved_receipt_witness: bool,
     digital_bound_items: usize,
     unique_metadata_items: usize,
     unit_price_items: usize,
@@ -1159,33 +1047,6 @@ pub(super) struct ProductLineFieldDiagnostics {
 struct ProductLineProof {
     diagnostics: ProductLineFieldDiagnostics,
     charges: Vec<ReceiptCharge>,
-}
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ReceiptNoticeDiagnostics {
-    version: usize,
-    notice_header_matches: usize,
-    closed_notices: usize,
-    structural_guard_rejected: usize,
-    rival_presence_rejected: usize,
-    outer_wrapping_rejected: usize,
-    sibling_structure_rejected: usize,
-    header_placement_rejected: usize,
-    body_role_rejected: usize,
-    body_type_rejected: usize,
-    body_depth_rejected: usize,
-}
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ReceiptContactDiagnostics {
-    version: usize,
-    contact_action_matches: usize,
-    closed_contacts: usize,
-    structural_guard_rejected: usize,
-    rival_presence_rejected: usize,
-    envelope_structure_rejected: usize,
-    instruction_rejected: usize,
-    opaque_body_structure_rejected: usize,
 }
 // This typed proof stays local; production rows receive only the exact bound amount.
 struct ReceiptCharge {
@@ -1211,11 +1072,6 @@ fn apply_product_line_charges(rows: &mut [Row], proof: ProductLineProof, receipt
         }
     }
 }
-struct ContactPrefix<'a> {
-    instruction: ElementRef<'a>,
-    action: ElementRef<'a>,
-    body: ElementRef<'a>,
-}
 fn strict_contact_route(action: ElementRef<'_>) -> bool {
     // Only the positively nominated outside action supplies a URL. Other
     // anchors are rejected by presence without ever reading their href.
@@ -1239,7 +1095,7 @@ fn strict_contact_route(action: ElementRef<'_>) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
-fn known_contact_prefix(card: ElementRef<'_>) -> Option<ContactPrefix<'_>> {
+fn known_contact_prefix(card: ElementRef<'_>) -> Option<ElementRef<'_>> {
     if !sel(".sheet").matches(&card) || card.select(&sel(".sheet")).next().is_some() {
         return None;
     }
@@ -1280,11 +1136,7 @@ fn known_contact_prefix(card: ElementRef<'_>) -> Option<ContactPrefix<'_>> {
             }
             // The first P and next known action establish the outside prefix;
             // the following body is retained only as a node boundary.
-            return Some(ContactPrefix {
-                instruction,
-                action,
-                body,
-            });
+            return Some(body);
         }
         if children.len() != 1 {
             return None;
@@ -1293,108 +1145,8 @@ fn known_contact_prefix(card: ElementRef<'_>) -> Option<ContactPrefix<'_>> {
     }
     None
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ContactEnvelopePhase {
-    StructuralGuard,
-    RivalPresence,
-    EnvelopeStructure,
-    Instruction,
-    OpaqueBodyStructure,
-    Closed,
-}
-fn shop_contact_envelope_phase(
-    card: ElementRef<'_>,
-    prefix: &ContactPrefix<'_>,
-) -> ContactEnvelopePhase {
-    if !sel(".sheet").matches(&card) || card.descendants().count() > 48 {
-        return ContactEnvelopePhase::StructuralGuard;
-    }
-    let rivals = sel("img,form,input,textarea,select,button,script,style,iframe,table,time,.particulars-heading,.icon-boost,pixiv-icon[name='24/XTwitter'],[onclick],[role='button'],[data-id],[data-item],[data-product],[data-product-id],[data-item-id],[data-test='item-name'],[data-test='item-thumbnail'],[data-test='item-unavailable'],[data-test='filename'],[data-test='downloadable'],[data-test='downloadable-list'],[data-test='paid-amount'],[data-test='quantity'],[data-test='ordered-at'],[data-test='acquired-at'],[data-test='downloaded-at'],.item-title,.item-name,.item-thumbnail,.item-unavailable,.l-library-item-thumbnail,.list.list--collapse,.legacy-list-item");
-    if card
-        .select(&sel("a,[href],[data-href]"))
-        .any(|node| node.id() != prefix.action.id())
-        || prefix.action.value().attr("data-href").is_some()
-        || rivals.matches(&card)
-        || card.select(&rivals).next().is_some()
-        || card.select(&sel(".sheet")).next().is_some()
-        || std::iter::once(card)
-            .chain(card.descendants().filter_map(ElementRef::wrap))
-            .any(|node| {
-                financial_attribute(node)
-                    || [
-                        "data-id",
-                        "data-item",
-                        "data-product",
-                        "data-product-id",
-                        "data-item-id",
-                    ]
-                    .iter()
-                    .any(|key| node.value().attr(key).is_some())
-                    || (node.id() != prefix.action.id()
-                        && ["href", "data-href"]
-                            .iter()
-                            .any(|key| node.value().attr(key).is_some()))
-            })
-    {
-        return ContactEnvelopePhase::RivalPresence;
-    }
-    let outer: Vec<_> = card.children().filter_map(ElementRef::wrap).collect();
-    if outer.len() != 1 || outer[0].value().name() != "div" {
-        return ContactEnvelopePhase::EnvelopeStructure;
-    }
-    let children: Vec<_> = outer[0].children().filter_map(ElementRef::wrap).collect();
-    if children.len() != 3
-        || children[0].id() != prefix.instruction.id()
-        || children[1].id() != prefix.action.id()
-        || children[2].id() != prefix.body.id()
-    {
-        return ContactEnvelopePhase::EnvelopeStructure;
-    }
-    if prefix.body.value().name() != "div" {
-        return ContactEnvelopePhase::OpaqueBodyStructure;
-    }
-    if !prefix.body.children().all(|node| {
-        matches!(
-            node.value(),
-            scraper::Node::Text(_) | scraper::Node::Comment(_)
-        )
-    }) {
-        return ContactEnvelopePhase::OpaqueBodyStructure;
-    }
-    if plain_leaf(prefix.instruction, 40).as_deref() != Some("お支払いが完了しました") {
-        return ContactEnvelopePhase::Instruction;
-    }
-    // The opaque body is positively bounded above. Only outside wrapper
-    // whitespace is checked; no body text value, length or trim is accessed.
-    if !card
-        .children()
-        .filter_map(|node| node.value().as_text())
-        .all(|raw| raw.trim().is_empty())
-        || !outer[0]
-            .children()
-            .filter_map(|node| node.value().as_text())
-            .all(|raw| raw.trim().is_empty())
-    {
-        return ContactEnvelopePhase::EnvelopeStructure;
-    }
-    ContactEnvelopePhase::Closed
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NoticeEnvelopePhase {
-    StructuralGuard,
-    RivalPresence,
-    OuterWrapping,
-    SiblingStructure,
-    HeaderPlacement,
-    BodyRole,
-    BodyType,
-    BodyDepth,
-    Closed,
-}
 struct NoticePrefix<'a> {
     header: ElementRef<'a>,
-    body: ElementRef<'a>,
-    parent: ElementRef<'a>,
 }
 fn bounded_notice_heading(node: ElementRef<'_>) -> bool {
     if node.descendants().count() > 32 {
@@ -1445,11 +1197,7 @@ fn known_notice_prefix(card: ElementRef<'_>) -> Option<NoticePrefix<'_>> {
             }
             let literal = header.text().collect::<String>();
             return (literal.chars().count() <= 40 && literal.trim() == "発送通知コメント")
-                .then_some(NoticePrefix {
-                    header,
-                    body,
-                    parent: node,
-                });
+                .then_some(NoticePrefix { header });
         }
         if children.len() != 1
             || node
@@ -1465,115 +1213,6 @@ fn known_notice_prefix(card: ElementRef<'_>) -> Option<NoticePrefix<'_>> {
 }
 fn known_notice_header(card: ElementRef<'_>) -> Option<ElementRef<'_>> {
     known_notice_prefix(card).map(|prefix| prefix.header)
-}
-fn provider_notice_envelope_phase(card: ElementRef<'_>) -> NoticeEnvelopePhase {
-    // Known fixed message heading plus authored DIV body or the original
-    // human-confirmed B/P shape. The message body is never read.
-    if !card.value().classes().any(|class| class == "sheet") || card.descendants().count() > 128 {
-        return NoticeEnvelopePhase::StructuralGuard;
-    }
-    let rivals = sel("a,[href],[data-href],button,input,textarea,select,form,script,style,iframe,table,img,time,.particulars-heading,.icon-boost,pixiv-icon[name='24/XTwitter'],[onclick],[role='button'],[data-id],[data-item],[data-product],[data-product-id],[data-item-id],[data-test='item-name'],[data-test='item-thumbnail'],[data-test='item-unavailable'],[data-test='filename'],[data-test='downloadable'],[data-test='downloadable-list'],.item-title,.item-name,.item-thumbnail,.item-unavailable,.l-library-item-thumbnail,.list.list--collapse,.legacy-list-item");
-    if rivals.matches(&card)
-        || card.select(&rivals).next().is_some()
-        || card.select(&sel(".sheet")).next().is_some()
-        || std::iter::once(card)
-            .chain(card.descendants().filter_map(ElementRef::wrap))
-            .any(|node| {
-                financial_attribute(node)
-                    || [
-                        "data-id",
-                        "data-item",
-                        "data-product",
-                        "data-product-id",
-                        "data-item-id",
-                    ]
-                    .iter()
-                    .any(|key| node.value().attr(key).is_some())
-            })
-    {
-        return NoticeEnvelopePhase::RivalPresence;
-    }
-    let Some(prefix) = known_notice_prefix(card) else {
-        return NoticeEnvelopePhase::HeaderPlacement;
-    };
-    let children: Vec<_> = prefix
-        .parent
-        .children()
-        .filter_map(ElementRef::wrap)
-        .collect();
-    if children.len() != 2 {
-        return NoticeEnvelopePhase::SiblingStructure;
-    }
-    if children[0].id() != prefix.header.id() {
-        return NoticeEnvelopePhase::HeaderPlacement;
-    }
-    if children[1].id() != prefix.body.id()
-        || !matches!(prefix.body.value().name(), "div" | "p")
-        || (prefix.body.value().name() == "p"
-            && prefix
-                .body
-                .descendants()
-                .filter_map(ElementRef::wrap)
-                .filter(|node| node.value().name() == "br")
-                .count()
-                != 3)
-    {
-        return NoticeEnvelopePhase::BodyRole;
-    }
-    let mut wrappers = Vec::new();
-    let mut wrapper = card;
-    while wrapper.id() != prefix.parent.id() {
-        wrappers.push(wrapper);
-        let children: Vec<_> = wrapper.children().filter_map(ElementRef::wrap).collect();
-        if children.len() != 1 || !matches!(children[0].value().name(), "div" | "span") {
-            return NoticeEnvelopePhase::OuterWrapping;
-        }
-        wrapper = children[0];
-    }
-    if !matches!(prefix.parent.value().name(), "div" | "span") {
-        return NoticeEnvelopePhase::OuterWrapping;
-    }
-    // Body node types and depth only: no text(), text-content checks,
-    // serialization, HTML, class names or values from the opaque body.
-    if !children[1]
-        .descendants()
-        .filter_map(ElementRef::wrap)
-        .all(|node| matches!(node.value().name(), "div" | "span" | "p" | "br"))
-    {
-        return NoticeEnvelopePhase::BodyType;
-    }
-    if !children[1]
-        .descendants()
-        .filter_map(ElementRef::wrap)
-        .all(|node| {
-            node.id() == children[1].id()
-                || node
-                    .ancestors()
-                    .take_while(|ancestor| ancestor.id() != children[1].id())
-                    .count()
-                    <= 6
-        })
-    {
-        return NoticeEnvelopePhase::BodyDepth;
-    }
-    // The body boundary is now positively identified. Whitespace checks are
-    // confined to its outside wrappers, never to body descendants.
-    if wrappers.iter().any(|wrapper| {
-        wrapper
-            .children()
-            .any(|node| matches!(node.value(), scraper::Node::Text(_)))
-    }) {
-        return NoticeEnvelopePhase::OuterWrapping;
-    }
-    if !prefix
-        .parent
-        .children()
-        .filter_map(|node| node.value().as_text())
-        .all(|raw| raw.trim().is_empty())
-    {
-        return NoticeEnvelopePhase::SiblingStructure;
-    }
-    NoticeEnvelopePhase::Closed
 }
 fn strict_whole_jpy(value: &str, currency_required: bool) -> Option<u64> {
     let amount = if currency_required {
@@ -1731,13 +1370,6 @@ fn receipt_item_metadata<'a>(card: ElementRef<'a>, row: &Row) -> Option<Vec<Elem
         }
     }
     (metadata.len() == 1).then(|| metadata.remove(0).1)
-}
-fn product_line_proof(html: &str, rows: &[Row], receipt_id: &str) -> Result<ProductLineProof> {
-    if !safety::numeric(receipt_id) {
-        bail!("CHECKPOINT_INVALID");
-    }
-    let doc = Html::parse_document(html);
-    product_line_proof_document(&doc, rows, receipt_id)
 }
 fn product_line_proof_document(
     doc: &Html,
@@ -1915,16 +1547,6 @@ fn product_line_proof_document(
     result.diagnostics.product_line_proof_items = result.charges.len();
     Ok(result)
 }
-pub(super) fn diagnose_product_line_fields(
-    html: &str,
-    rows: &[Row],
-    receipt_id: &str,
-    saved_receipt_witness: bool,
-) -> Result<ProductLineFieldDiagnostics> {
-    let mut proof = product_line_proof(html, rows, receipt_id)?;
-    proof.diagnostics.saved_receipt_witness = saved_receipt_witness;
-    Ok(proof.diagnostics)
-}
 fn covered_by(node: ElementRef<'_>, roles: &[ElementRef<'_>]) -> bool {
     roles.iter().any(|role| {
         role.id() == node.id() || role.descendants().any(|child| child.id() == node.id())
@@ -1989,350 +1611,8 @@ fn closed_title<'a>(title: ElementRef<'a>, row: &Row) -> bool {
             .chain(title.descendants().filter_map(ElementRef::wrap))
             .all(|node| !financial_attribute(node))
 }
-pub(super) fn diagnose_receipt_notice_envelope(
-    html: &str,
-    rows: &[Row],
-    receipt_id: &str,
-) -> Result<ReceiptNoticeDiagnostics> {
-    if !safety::numeric(receipt_id) {
-        bail!("CHECKPOINT_INVALID");
-    }
-    let doc = Html::parse_document(html);
-    if doc
-        .select(&sel(
-            "input[type='password'],form[action*='sign_in'],form[action*='login']",
-        ))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_REQUIRED");
-    }
-    if doc
-        .select(&sel("#challenge-form,.cf-challenge,iframe[src*='captcha']"))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_CHALLENGE");
-    }
-    let main = doc
-        .select(&sel("main,[role='main']"))
-        .next()
-        .unwrap_or_else(|| doc.root_element());
-    let cards: Vec<_> = main
-        .select(&sel(".sheet"))
-        .filter(|card| card.select(&sel(".sheet")).next().is_none())
-        .collect();
-    let matching: Vec<_> = rows
-        .iter()
-        .filter(|row| {
-            row.order_id.as_deref() == Some(receipt_id)
-                && diagnostic_digital_file_keys(row).is_some()
-        })
-        .cloned()
-        .collect();
-    if !cards
-        .iter()
-        .any(|card| rebound_digital_sheet(*card, &matching))
-    {
-        bail!("DIGITAL_PROOF_UNPROVEN");
-    }
-    let mut result = ReceiptNoticeDiagnostics {
-        version: 1,
-        ..Default::default()
-    };
-    for card in cards {
-        if known_notice_header(card).is_none() {
-            continue;
-        }
-        // Count nominated leaf cards; opaque body formatting cannot nominate.
-        result.notice_header_matches += 1;
-        match provider_notice_envelope_phase(card) {
-            NoticeEnvelopePhase::StructuralGuard => result.structural_guard_rejected += 1,
-            NoticeEnvelopePhase::RivalPresence => result.rival_presence_rejected += 1,
-            NoticeEnvelopePhase::OuterWrapping => result.outer_wrapping_rejected += 1,
-            NoticeEnvelopePhase::SiblingStructure => result.sibling_structure_rejected += 1,
-            NoticeEnvelopePhase::HeaderPlacement => result.header_placement_rejected += 1,
-            NoticeEnvelopePhase::BodyRole => result.body_role_rejected += 1,
-            NoticeEnvelopePhase::BodyType => result.body_type_rejected += 1,
-            NoticeEnvelopePhase::BodyDepth => result.body_depth_rejected += 1,
-            NoticeEnvelopePhase::Closed => result.closed_notices += 1,
-        }
-    }
-    Ok(result)
-}
-pub(super) fn diagnose_receipt_contact_envelope(
-    html: &str,
-    rows: &[Row],
-    receipt_id: &str,
-) -> Result<ReceiptContactDiagnostics> {
-    if !safety::numeric(receipt_id) {
-        bail!("CHECKPOINT_INVALID");
-    }
-    let doc = Html::parse_document(html);
-    if doc
-        .select(&sel(
-            "input[type='password'],form[action*='sign_in'],form[action*='login']",
-        ))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_REQUIRED");
-    }
-    if doc
-        .select(&sel("#challenge-form,.cf-challenge,iframe[src*='captcha']"))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_CHALLENGE");
-    }
-    let main = doc
-        .select(&sel("main,[role='main']"))
-        .next()
-        .unwrap_or_else(|| doc.root_element());
-    let cards: Vec<_> = main
-        .select(&sel(".sheet"))
-        .filter(|card| card.select(&sel(".sheet")).next().is_none())
-        .collect();
-    let matching: Vec<_> = rows
-        .iter()
-        .filter(|row| {
-            row.order_id.as_deref() == Some(receipt_id)
-                && diagnostic_digital_file_keys(row).is_some()
-        })
-        .cloned()
-        .collect();
-    // Excluded contact/notice regions cannot provide independent digital context.
-    if !cards
-        .iter()
-        .any(|card| rebound_digital_sheet(*card, &matching))
-    {
-        bail!("DIGITAL_PROOF_UNPROVEN");
-    }
-    let mut result = ReceiptContactDiagnostics {
-        version: 1,
-        ..Default::default()
-    };
-    for card in cards {
-        let Some(prefix) = known_contact_prefix(card) else {
-            continue;
-        };
-        result.contact_action_matches += 1;
-        match shop_contact_envelope_phase(card, &prefix) {
-            ContactEnvelopePhase::StructuralGuard => result.structural_guard_rejected += 1,
-            ContactEnvelopePhase::RivalPresence => result.rival_presence_rejected += 1,
-            ContactEnvelopePhase::EnvelopeStructure => result.envelope_structure_rejected += 1,
-            ContactEnvelopePhase::Instruction => result.instruction_rejected += 1,
-            ContactEnvelopePhase::OpaqueBodyStructure => result.opaque_body_structure_rejected += 1,
-            ContactEnvelopePhase::Closed => result.closed_contacts += 1,
-        }
-    }
-    Ok(result)
-}
-pub(super) fn diagnose_receipt_template(
-    html: &str,
-    proof_rows: &[Row],
-    receipt_id: &str,
-) -> Result<ReceiptTemplateDiagnostics> {
-    if !safety::numeric(receipt_id) {
-        bail!("CHECKPOINT_INVALID");
-    }
-    let doc = Html::parse_document(html);
-    if doc
-        .select(&sel(
-            "input[type='password'],form[action*='sign_in'],form[action*='login']",
-        ))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_REQUIRED");
-    }
-    if doc
-        .select(&sel("#challenge-form,.cf-challenge,iframe[src*='captcha']"))
-        .next()
-        .is_some()
-    {
-        bail!("AUTH_CHALLENGE");
-    }
-    let main = doc
-        .select(&sel("main,[role='main']"))
-        .next()
-        .unwrap_or_else(|| doc.root_element());
-    let cards: Vec<_> = main
-        .select(&sel(".sheet"))
-        .filter(|node| node.select(&sel(".sheet")).next().is_none())
-        .collect();
-    let digital: Vec<_> = cards
-        .iter()
-        .copied()
-        .filter(|card| rebound_digital_sheet(*card, proof_rows))
-        .collect();
-    if digital.is_empty() {
-        bail!("DIGITAL_PROOF_UNPROVEN");
-    }
-    let mut counts = ReceiptTemplateDiagnostics {
-        version: 1,
-        digital_proof_bound: true,
-        ..Default::default()
-    };
-    let summaries = receipt_summary_candidates(&cards, &digital);
-    let mut seen_parents = Vec::new();
-    let mut seen_lines = Vec::new();
-    let mut seen_price_scopes = Vec::new();
-    for card in digital {
-        for money in card.select(&sel("span,div,b,strong,small,p,td")) {
-            if !noninteractive(money)
-                || plain_leaf(money, 128)
-                    .as_deref()
-                    .and_then(currency_jpy)
-                    .is_none()
-            {
-                continue;
-            }
-            let Some(parent) = money.parent().and_then(ElementRef::wrap) else {
-                continue;
-            };
-            if parent.id() != card.id() && !card.descendants().any(|node| node.id() == parent.id())
-            {
-                continue;
-            }
-            if seen_parents.contains(&parent.id()) {
-                continue;
-            }
-            seen_parents.push(parent.id());
-            counts.jpy_parents += 1;
-            counts.jpy_parent_direct_text_nodes += parent
-                .children()
-                .filter_map(|node| node.value().as_text())
-                .filter(|text| !text.trim().is_empty() && text.chars().count() <= 64)
-                .count();
-            let pieces = template_dom_pieces(parent);
-            if let Some(parts) = &pieces {
-                for token in parts {
-                    let token = token.trim();
-                    let quantity = token
-                        .strip_prefix('×')
-                        .or_else(|| token.strip_prefix('x'))
-                        .unwrap_or(token)
-                        .trim();
-                    counts.jpy_parent_multiplication_tokens += usize::from(
-                        token == "×"
-                            || token == "x"
-                            || token.starts_with(['×', 'x'])
-                                && !quantity.is_empty()
-                                && quantity.bytes().all(|c| c.is_ascii_digit()),
-                    );
-                    counts.jpy_parent_quantity_nodes += usize::from(
-                        !quantity.is_empty()
-                            && quantity.bytes().all(|c| c.is_ascii_digit())
-                            && quantity
-                                .parse::<u64>()
-                                .is_ok_and(|number| number > 0 && number <= 9_007_199_254_740_991),
-                    );
-                }
-            }
-            let syntax = pieces
-                .as_ref()
-                .and_then(|pieces| compact_quantity(&pieces.join(" ")))
-                .is_some();
-            counts.jpy_parent_compact_syntax_rows += usize::from(syntax);
-            let lines = normalized_product_lines(parent, card, proof_rows);
-            counts.jpy_parent_same_product_line_rows += usize::from(syntax && !lines.is_empty());
-            for line in lines {
-                if !seen_lines.contains(&line.id()) {
-                    seen_lines.push(line.id());
-                    counts.normalized_title_line_witnesses += 1;
-                }
-            }
-            for scope in std::iter::once(parent)
-                .chain(parent.ancestors().filter_map(ElementRef::wrap))
-                .take(3)
-            {
-                if scope.id() != card.id()
-                    && !card.descendants().any(|node| node.id() == scope.id())
-                {
-                    break;
-                }
-                if !seen_price_scopes
-                    .iter()
-                    .any(|seen: &ElementRef<'_>| seen.id() == scope.id())
-                    && scope.descendants().count() <= 128
-                    && noninteractive(scope)
-                {
-                    seen_price_scopes.push(scope);
-                }
-                if scope.id() == card.id() {
-                    break;
-                }
-            }
-        }
-    }
-    // Count known money labels once, even where nested price scopes overlap.
-    let mut seen_label_text = Vec::new();
-    for scope in seen_price_scopes {
-        for node in scope.descendants() {
-            if seen_label_text.contains(&node.id()) {
-                continue;
-            }
-            let Some(raw) = node
-                .value()
-                .as_text()
-                .filter(|raw| raw.chars().count() <= 40)
-            else {
-                continue;
-            };
-            let Some(parent) = node.parent().and_then(ElementRef::wrap) else {
-                continue;
-            };
-            if !noninteractive(parent) {
-                continue;
-            }
-            seen_label_text.push(node.id());
-            match template_literal(raw) {
-                "BOOST" | "BOOST↑" | "BOOST金額" | "ブースト" => {
-                    counts.price_scope_boost_text_nodes += 1
-                }
-                "支払金額" | "支払額" | "Paid amount" => {
-                    counts.price_scope_explicit_paid_text_nodes += 1
-                }
-                "小計" | "Subtotal" => counts.price_scope_subtotal_text_nodes += 1,
-                _ => (),
-            }
-        }
-    }
-    let mut dates = BTreeSet::new();
-    for candidate in summaries {
-        counts.summary_candidates += 1;
-        let observation = receipt_summary_observation(candidate, receipt_id);
-        counts.summary_order_number_text_nodes += observation.number_labels;
-        counts.summary_ordered_date_text_nodes += observation.date_labels;
-        counts.summary_role_candidates += usize::from(observation.role);
-        counts.summary_receipt_number_matches += usize::from(observation.number_matches);
-        counts.summary_ambiguous_pairs += usize::from(observation.ambiguous);
-        counts.summary_unique_date_pairs += usize::from(observation.date.is_some());
-        counts.summary_slash_dates += usize::from(observation.slash);
-        counts.summary_iso_dates += usize::from(observation.iso);
-        if let Some(date) = observation.date {
-            dates.insert(date);
-        }
-    }
-    counts.summary_ambiguous_pairs += usize::from(dates.len() > 1);
-    Ok(counts)
-}
-pub(super) fn diagnose_manifests(
-    html: &str,
-    source: &str,
-    route: &str,
-) -> Result<super::diagnostics::ManifestDiagnostics> {
-    let mut counts = super::diagnostics::ManifestDiagnostics::default();
-    let page = parse_internal(html, source, route, Some(&mut counts), None)?;
-    counts.finish(&page);
-    Ok(counts)
-}
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub(super) struct FileStructureDiagnostics {
-    version: usize,
-    rows: usize,
     valid_controls: usize,
     modern_name_controls: usize,
     test_name_controls: usize,
@@ -2354,17 +1634,6 @@ pub(super) struct FileStructureDiagnostics {
     rows_advertised_count_matches: usize,
     rows_advertised_count_mismatch: usize,
     rows_advertised_count_invalid: usize,
-}
-pub(super) fn diagnose_file_structure(
-    html: &str,
-    source: &str,
-    route: &str,
-) -> Result<FileStructureDiagnostics> {
-    let mut counts = FileStructureDiagnostics::default();
-    let page = parse_internal(html, source, route, None, Some(&mut counts))?;
-    counts.version = 1;
-    counts.rows = page.rows.len();
-    Ok(counts)
 }
 impl FileStructureDiagnostics {
     fn modern_list_witness(card: ElementRef<'_>, files: &[File]) -> bool {
@@ -2585,13 +1854,7 @@ impl FileStructureDiagnostics {
         self.rows_advertised_count_invalid += usize::from(advertised.iter().any(Option::is_none));
     }
 }
-fn parse_internal(
-    html: &str,
-    source: &str,
-    route: &str,
-    mut diagnostic: Option<&mut super::diagnostics::ManifestDiagnostics>,
-    mut structure: Option<&mut FileStructureDiagnostics>,
-) -> Result<Page> {
+pub fn parse(html: &str, source: &str, route: &str) -> Result<Page> {
     let url = safety::route(route, source)?;
     let source = safety::source_name(source)?.to_owned();
     let path = safety::source_path(&source)?;
@@ -2637,8 +1900,6 @@ fn parse_internal(
             is_detail,
             &url,
             route,
-            &mut diagnostic,
-            &mut structure,
         );
     }
     read_pager(
@@ -2803,8 +2064,6 @@ fn read_card<'a>(
     is_detail: bool,
     url: &url::Url,
     route: &str,
-    diagnostic: &mut Option<&mut super::diagnostics::ManifestDiagnostics>,
-    structure: &mut Option<&mut FileStructureDiagnostics>,
 ) {
     let receipt = source == "purchase" && is_detail;
     let raw_controls = raw_download_controls(card, receipt);
@@ -2941,20 +2200,6 @@ fn read_card<'a>(
         {
             date = None;
         }
-    }
-    if let Some(counts) = diagnostic.as_deref_mut() {
-        counts.record(
-            explicit_list,
-            &f,
-            error_code.is_none(),
-            unavailable,
-            raw_controls,
-            downloads(card, receipt).len(),
-            manifest_complete,
-        );
-    }
-    if let Some(counts) = structure.as_deref_mut() {
-        counts.record(card, &f);
     }
     page.rows.push(Row {
         source_record_id,

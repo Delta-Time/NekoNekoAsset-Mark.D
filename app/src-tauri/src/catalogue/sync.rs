@@ -1,20 +1,13 @@
 //! Portable metadata CRDT. SQLite owns the durable document and projection transaction.
-//! The shared folder contains immutable Automerge changes, never a shared database.
 use anyhow::{bail, ensure, Context, Result};
 use automerge::{transaction::Transactable, ActorId, AutoCommit, Change, ReadDoc, ROOT};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
-    path::Path,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 const DELETED: &str = "@deleted";
 const MEMBER: &str = "@member:";
 const RECOVER: &str = "@recover"; // Projection hint only; never stored in Automerge.
-const MAX_CHANGE: u64 = 32 * 1024 * 1024;
 const KINDS: &[&str] = &[
     "product",
     "overlay",
@@ -622,23 +615,6 @@ pub fn remaining_conflicts(doc: &AutoCommit, previous: &[Value]) -> Result<Vec<V
     Ok(results)
 }
 
-/// Discover new disagreements only on changed registers while refreshing all
-/// previously known disagreements. Unchanged registers cannot gain a conflict.
-pub fn changed_conflicts(
-    doc: &AutoCommit,
-    previous: &[Value],
-    fields: &[(String, String, String)],
-) -> Result<Vec<Value>> {
-    let mut candidates = previous.to_vec();
-    candidates.extend(
-        fields
-            .iter()
-            .filter(|(_, _, field)| field != RECOVER)
-            .map(|(kind, id, field)| json!({"kind":kind,"id":id,"field":field})),
-    );
-    remaining_conflicts(doc, &candidates)
-}
-
 fn field_conflict(doc: &AutoCommit, field_key: &str) -> Result<Option<Value>> {
     let (kind, id, field) = parse_key(field_key)?;
     let values = register_values(doc, field_key)?;
@@ -1006,139 +982,6 @@ pub fn restore_snapshot(
     );
     *doc = candidate;
     Ok(())
-}
-
-fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn publish(folder: &Path, bytes: &[u8]) -> Result<bool> {
-    let target = folder.join(format!("{}.amchange", digest(bytes)));
-    if target.exists() {
-        ensure!(fs::read(&target)? == bytes, "sync_change_checksum_mismatch");
-        return Ok(false);
-    }
-    let temporary = folder.join(format!(".{}.partial", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<bool> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        // Identical writers may race. A final file is only ever a complete immutable
-        // checksum-addressed payload, so a POSIX replacement is identical content.
-        match fs::rename(&temporary, &target) {
-            Ok(()) => (),
-            Err(_) if target.exists() && fs::read(&target)? == bytes => {
-                fs::remove_file(&temporary)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        #[cfg(unix)]
-        fs::File::open(folder)?.sync_all()?;
-        Ok(true)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
-
-/// Imports into a candidate first. Caller commits returned document+projection in
-/// SQLite atomically. Exported changes are replay-safe after any SQLite rollback.
-#[cfg(test)]
-pub fn exchange(doc: &mut AutoCommit, folder: &Path) -> Result<Value> {
-    validate_doc(doc)?;
-    let mut result = exchange_validated(doc, folder)?;
-    result["conflicts"] = json!(conflicts(doc)?.len());
-    Ok(result)
-}
-
-/// The catalogue calls this with its already validated durable document. Every
-/// folder payload is still checksum checked; only previously validated content
-/// can skip operation decoding. Unknown history is validated before any apply.
-pub(super) fn exchange_validated(doc: &mut AutoCommit, folder: &Path) -> Result<Value> {
-    fs::create_dir_all(folder).context("sync_folder_unavailable")?;
-    let mut candidate = doc.clone();
-    let known_files: BTreeSet<String> = candidate
-        .get_changes(&[])
-        .iter()
-        .map(|change| format!("{}.amchange", digest(change.raw_bytes())))
-        .collect();
-    let mut incoming = Vec::new();
-    let mut ignored = 0;
-    for entry in fs::read_dir(folder)? {
-        let entry = entry?;
-        if entry.path().extension().and_then(|e| e.to_str()) != Some("amchange") {
-            ignored += 1;
-            continue;
-        }
-        let metadata = fs::symlink_metadata(entry.path())?;
-        ensure!(
-            metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.len() <= MAX_CHANGE,
-            "sync_change_file_invalid"
-        );
-        let bytes = fs::read(entry.path())?;
-        ensure!(
-            entry.file_name().to_string_lossy() == format!("{}.amchange", digest(&bytes)),
-            "sync_change_checksum_mismatch"
-        );
-        if known_files.contains(entry.file_name().to_string_lossy().as_ref()) {
-            continue;
-        }
-        let change =
-            Change::from_bytes(bytes).map_err(|_| anyhow::anyhow!("sync_change_invalid"))?;
-        validate_change(&change)?;
-        if candidate.get_change_by_hash(&change.hash()).is_none() {
-            incoming.push(change);
-        }
-    }
-    let mut selected = Vec::new();
-    let mut scheduled = BTreeSet::new();
-    // Keep unresolved changes durably in the folder and retry next exchange. Never
-    // rely on whether an Automerge save happens to include its dependency queue.
-    loop {
-        let mut remaining = Vec::new();
-        let before = selected.len();
-        for change in incoming {
-            if change
-                .deps()
-                .iter()
-                .all(|dep| scheduled.contains(dep) || candidate.get_change_by_hash(dep).is_some())
-            {
-                scheduled.insert(change.hash());
-                selected.push(change);
-            } else {
-                remaining.push(change);
-            }
-        }
-        incoming = remaining;
-        if incoming.is_empty() || before == selected.len() {
-            break;
-        }
-    }
-    let imported = selected.len();
-    if !selected.is_empty() {
-        candidate.apply_changes(selected)?;
-    }
-    let mut exported = 0;
-    for change in candidate.get_changes(&[]) {
-        ensure!(
-            change.raw_bytes().len() as u64 <= MAX_CHANGE,
-            "sync_change_too_large"
-        );
-        if publish(folder, change.raw_bytes())? {
-            exported += 1;
-        }
-    }
-    *doc = candidate;
-    Ok(
-        json!({"imported":imported,"exported":exported,"pendingDependencies":incoming.len(),"ignoredFiles":ignored}),
-    )
 }
 
 #[cfg(test)]

@@ -102,8 +102,7 @@ opening, so it needs no `VERSION` bump.
 ## Identity, names and tags
 
 - `dictionary() -> Value` exposes the current version, 32 public identities,
-  category keys, original style/use/rating vocabulary and the frozen evaluation.
-  `populationCoverage` remains null.
+  category keys and original style/use/rating vocabulary.
 - `normalize` and `aliases(&str) -> Vec<String>` provide deterministic
   NFKC/case/whitespace normalization and deduplicated index alternatives.
   Aliases are alternatives, not an AND query or filename-to-product lookup.

@@ -207,21 +207,6 @@ fn extracted_target_requires_completed_state_and_explicit_verification_rejects_b
         .service
         .verify_extracted_at(&artifact, &f.path.join("library"), &AtomicBool::new(false))
         .is_err());
-    // A failed explicit verification records the actionable fault before the
-    // cheap open action consults its durable completed-state claim.
-    let verification = f
-        .service
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(verification["missing"], 1);
-    assert!(f.service.resolve_open_target("open_file", &args).is_err());
-    assert!(
-        strings(&f.service.product_availability(&product).unwrap()["openableFileIds"]).is_empty()
-    );
 }
 
 #[test]
@@ -657,15 +642,6 @@ async fn verified_downloads_real_extraction_certification_and_reopen_preserve_re
     let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
     let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
     let reopened = StorageService::new(catalogue.clone(), stores).unwrap();
-    let verified = reopened
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(verified["verified"], 3);
-    assert_eq!(verified["missing"], 0);
     let durable = catalogue
         .command("product_details", json!({"id":"42"}))
         .unwrap();
@@ -887,29 +863,6 @@ fn archive_deletion_crash_reconciles_only_with_verified_extracted_inventory() {
         false
     );
     assert!(path.exists());
-}
-
-#[test]
-fn cancelled_verification_never_marks_completed_artifacts_missing() {
-    let f = Fixture::new();
-    f.seed(1, true);
-    let a = f.artifact(0);
-    assert!(f
-        .service
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(true)
-        )
-        .is_err());
-    assert_eq!(
-        f.service
-            .catalogue
-            .get("artifact", a["id"].as_str().unwrap())
-            .unwrap()
-            .unwrap(),
-        a
-    );
 }
 
 #[test]

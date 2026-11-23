@@ -3,11 +3,8 @@ import type { AccountAdd } from './AccountAdd';
 import type { AccountRef } from './AccountRef';
 import type { AccountRemove } from './AccountRemove';
 import type { AccountRename } from './AccountRename';
-import type { DiagnosticAccount } from './DiagnosticAccount';
-import type { DiagnosticSource } from './DiagnosticSource';
 import type { ImportFree } from './ImportFree';
 import type { ProductLink } from './ProductLink';
-import type { ReceiptDiagnostic } from './ReceiptDiagnostic';
 import type { SyncJob } from './SyncJob';
 import type { SyncRequest } from './SyncRequest';
 import type { UpdateProducts } from './UpdateProducts';
@@ -20,7 +17,6 @@ import type { UpdateProducts } from './UpdateProducts';
 export type StoreRequest =
   | ({ action: 'account_add' } & AccountAdd)
   | ({ action: 'account_login' } & AccountRef)
-  | ({ action: 'login' } & AccountRef)
   | ({ action: 'account_logout' } & AccountRef)
   | ({ action: 'account_rename' } & AccountRename)
   | ({ action: 'account_remove' } & AccountRemove)
@@ -29,15 +25,4 @@ export type StoreRequest =
   | ({ action: 'retry_sync' } & SyncJob)
   | ({ action: 'update_products' } & UpdateProducts)
   | ({ action: 'import_free' } & ImportFree)
-  | ({ action: 'fetch_product_metadata' } & ProductLink)
-  | ({ action: 'diagnose_ordering' } & DiagnosticSource)
-  | ({ action: 'diagnose_manifests' } & DiagnosticSource)
-  | ({ action: 'diagnose_file_structure' } & DiagnosticSource)
-  | ({ action: 'diagnose_free_item_entry' } & DiagnosticAccount)
-  | ({ action: 'diagnose_free_item_role' } & DiagnosticAccount)
-  | ({ action: 'diagnose_free_item_controls' } & DiagnosticAccount)
-  | ({ action: 'diagnose_free_item_identity' } & DiagnosticAccount)
-  | ({ action: 'diagnose_receipt_template' } & DiagnosticAccount)
-  | ({ action: 'diagnose_receipt_notice_envelope' } & DiagnosticAccount)
-  | ({ action: 'diagnose_receipt_contact_envelope' } & DiagnosticAccount)
-  | ({ action: 'diagnose_product_line_fields' } & ReceiptDiagnostic);
+  | ({ action: 'fetch_product_metadata' } & ProductLink);

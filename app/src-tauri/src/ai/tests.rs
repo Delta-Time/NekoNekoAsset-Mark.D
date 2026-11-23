@@ -280,7 +280,7 @@ async fn synthetic_organization_pipeline_diagnostic() -> Result<()> {
 
 #[test]
 fn typed_requests_and_status_exclude_secret_and_scope_inputs() {
-    for action in ["key_status", "test_connection", "providers", "list_entries"] {
+    for action in ["key_status", "providers", "list_entries"] {
         assert!(serde_json::from_value::<AiRequest>(json!({"action":action})).is_ok());
         assert!(serde_json::from_value::<AiRequest>(
             json!({"action":action,"key":"synthetic-key"})
@@ -291,7 +291,7 @@ fn typed_requests_and_status_exclude_secret_and_scope_inputs() {
     for value in [
         json!({"action":"set_key","key":"synthetic-key"}),
         json!({"action":"configure","provider":"openai","endpoint":"https://example.invalid","model":"synthetic"}),
-        json!({"action":"test_connection","productIds":["private-product"]}),
+        json!({"action":"key_status","productIds":["private-product"]}),
         json!({"action":"test_entry","entryId":"synthetic","key":"synthetic-key"}),
     ] {
         assert!(serde_json::from_value::<AiRequest>(value).is_err());

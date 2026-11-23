@@ -10,7 +10,6 @@ import type { AiProviders } from './AiProviders';
  */
 export type AiResponses = {
   key_status: AiKeyStatus;
-  test_connection: AiConnectionResult;
   providers: AiProviders;
   list_entries: AiEntryList;
   test_draft: AiDraftTest;

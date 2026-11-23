@@ -844,8 +844,8 @@ fn local_import_real_7zip_preserves_managed_zip_nested_archive_and_unitypackage(
     );
     assert!(!extracted.join("衣装/nested").exists());
 
-    // Explicit verification finds a missing member; Retry must publish a new
-    // complete tree without replacing the damaged tree or either archive copy.
+    // A missing member marks the file missing; Retry must publish a new complete
+    // tree without replacing the damaged tree or either archive copy.
     std::fs::remove_file(extracted.join("衣装/model.unitypackage")).unwrap();
     std::fs::write(
         extracted.join("user-retained.txt"),
@@ -853,17 +853,14 @@ fn local_import_real_7zip_preserves_managed_zip_nested_archive_and_unitypackage(
     )
     .unwrap();
     f.service.put_job(&mut job, "completed", None).unwrap();
+    let mut missing = artifact.clone();
+    missing["previousStatus"] = missing["status"].clone();
+    missing["status"] = json!("missing");
+    missing["errorCode"] = json!("file_integrity_failed");
     f.service
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(false),
-        )
+        .catalogue
+        .put("artifact", artifact["id"].as_str().unwrap(), missing)
         .unwrap();
-    assert_eq!(
-        f.service.catalogue.list("artifact").unwrap()[0]["status"],
-        "missing"
-    );
     let product = job["productIds"][0].as_str().unwrap().to_owned();
     let job_id = job["id"].as_str().unwrap().to_owned();
     assert_eq!(

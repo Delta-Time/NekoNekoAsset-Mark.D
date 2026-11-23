@@ -2230,5 +2230,4 @@ fn independently_nominated_baseline_remains_bounded() {
         .count();
     assert_eq!(rows.len(), 10);
     assert_eq!(matched, 8);
-    assert!(dictionary()["coverage"]["populationCoverage"].is_null());
 }

@@ -34,8 +34,6 @@ pub enum AiRequest {
     #[serde(deserialize_with = "empty_request")]
     KeyStatus,
     #[serde(deserialize_with = "empty_request")]
-    TestConnection,
-    #[serde(deserialize_with = "empty_request")]
     Providers,
     #[serde(deserialize_with = "empty_request")]
     ListEntries,
@@ -198,7 +196,6 @@ pub struct AiMessage {
 #[ts(export)]
 struct AiResponses {
     key_status: AiKeyStatus,
-    test_connection: AiConnectionResult,
     providers: AiProviders,
     list_entries: AiEntryList,
     test_draft: AiDraftTest,
@@ -332,15 +329,6 @@ impl AiService {
                     let key = self.config_key(&config).await?;
                     (config, key)
                 };
-                test_config(&config, key).await?;
-                Ok(AiResponse::Connection(AiConnectionResult {
-                    ok: true,
-                    provider: config.provider,
-                    model: config.model,
-                }))
-            }
-            AiRequest::TestConnection => {
-                let (config, key) = self.request_snapshot(None).await?;
                 test_config(&config, key).await?;
                 Ok(AiResponse::Connection(AiConnectionResult {
                     ok: true,

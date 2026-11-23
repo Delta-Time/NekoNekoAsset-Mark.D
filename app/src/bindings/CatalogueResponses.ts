@@ -5,7 +5,6 @@ import type { AvatarOptions } from './AvatarOptions';
 import type { Bootstrap } from './Bootstrap';
 import type { CollectionChange } from './CollectionChange';
 import type { Collections } from './Collections';
-import type { Conflict } from './Conflict';
 import type { CustomCategories } from './CustomCategories';
 import type { EditResult } from './EditResult';
 import type { PreferencesSaved } from './PreferencesSaved';
@@ -35,6 +34,5 @@ export type CatalogueResponses = {
   overlay: EditResult;
   undo: EditResult;
   custom_category: CustomCategories;
-  conflicts: Array<Conflict>;
   preferences: PreferencesSaved;
 };

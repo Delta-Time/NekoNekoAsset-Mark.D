@@ -533,14 +533,7 @@ async fn catalogue_action(
     }
     let catalogue = services.catalogue.clone();
     let invalidates = !request.reads_only();
-    let _work = if matches!(request, Request::RestoreManifest(_)) {
-        Some(
-            services
-                .catalogue
-                .begin_restore_work()
-                .map_err(UiError::from_error)?,
-        )
-    } else if invalidates {
+    let _work = if invalidates {
         Some(
             services
                 .catalogue
@@ -559,7 +552,7 @@ async fn catalogue_action(
         Value::Null
     };
     let patched = |key: &str| patch.as_ref().and_then(|patch| patch.get(key));
-    let mut reevaluate_automatic = patched("autoDownloadAll")
+    let reevaluate_automatic = patched("autoDownloadAll")
         .and_then(Value::as_bool)
         .is_some_and(|next| {
             next != previous_preferences["autoDownloadAll"]
@@ -575,7 +568,6 @@ async fn catalogue_action(
         Request::Preferences { .. } if !avatar_settings_changed => "state",
         _ => "catalogue",
     };
-    let is_exchange = matches!(request, Request::Exchange { .. });
     let account_view = matches!(request, Request::Bootstrap { .. } | Request::State);
     if let Request::Query(query) = &mut request {
         // The license database answers which products a license filter keeps.
@@ -628,7 +620,6 @@ async fn catalogue_action(
             .map_err(UiError::from_error)?;
         services.ai_suggestions.cancel_all().await;
     }
-    reevaluate_automatic |= is_exchange && result["read"]["imported"].as_u64().unwrap_or(0) > 0;
     if invalidates {
         changed(&app, mutation_scope);
     }
@@ -712,7 +703,6 @@ fn unconfigured_bootstrap(locale: String) -> Result<Value, UiError> {
         saved_searches: vec![],
         custom_categories: vec![],
         tag_options: json!([]),
-        avatars: None,
         avatar_options: vec![],
         owned_base_options: vec![],
     };
@@ -739,7 +729,6 @@ async fn booth_action(
             request,
             Request::AccountAdd(_)
                 | Request::AccountLogin(_)
-                | Request::Login(_)
                 | Request::AccountRename(_)
                 | Request::AccountRemove(_)
                 | Request::AccountLogout(_)
@@ -765,10 +754,7 @@ async fn booth_action(
                 });
             }
         }
-        if matches!(
-            request,
-            Request::AccountLogin(_) | Request::Login(_) | Request::RetrySync(_)
-        ) {
+        if matches!(request, Request::AccountLogin(_) | Request::RetrySync(_)) {
             let account_id = if matches!(request, Request::RetrySync(_)) {
                 setup
                     .catalogue
@@ -801,19 +787,7 @@ async fn booth_action(
         return Ok(result);
     }
     let services = services.services()?;
-    let quiet = matches!(
-        request,
-        Request::FetchProductMetadata(_)
-            | Request::DiagnoseOrdering(_)
-            | Request::DiagnoseManifests(_)
-            | Request::DiagnoseFileStructure(_)
-            | Request::DiagnoseFreeItemEntry(_)
-            | Request::DiagnoseFreeItemIdentity(_)
-            | Request::DiagnoseReceiptTemplate(_)
-            | Request::DiagnoseReceiptNoticeEnvelope(_)
-            | Request::DiagnoseReceiptContactEnvelope(_)
-            | Request::DiagnoseProductLineFields(_)
-    );
+    let quiet = matches!(request, Request::FetchProductMetadata(_));
     let job_change = matches!(
         request,
         Request::Sync(_)
@@ -954,7 +928,6 @@ async fn storage_action(
             | Request::EnqueueFile(_)
             | Request::CancelJob(_)
             | Request::RetryJob(_)
-            | Request::RetryFile(_)
     );
     let root_change = matches!(request, Request::ConfigureRoot(_) | Request::RemapRoot(_));
     let result = services

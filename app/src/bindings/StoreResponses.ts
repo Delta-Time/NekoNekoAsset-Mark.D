@@ -5,16 +5,13 @@ import type { ProductMetadata } from './ProductMetadata';
 import type { StoreAccount } from './StoreAccount';
 import type { StoreJob } from './StoreJob';
 import type { StoreJobs } from './StoreJobs';
-import type { JsonValue } from './serde_json/JsonValue';
 
 /**
- * The answer to each store action, for the typed store calls in the UI. Diagnostics
- * answer structure-only reports.
+ * The answer to each store action, for the typed store calls in the UI.
  */
 export type StoreResponses = {
   account_add: StoreAccount;
   account_login: StoreJob;
-  login: StoreJob;
   account_logout: StoreAccount;
   account_rename: AccountRenamed;
   account_remove: AccountRemoved;
@@ -24,15 +21,4 @@ export type StoreResponses = {
   update_products: StoreJobs;
   import_free: StoreJob;
   fetch_product_metadata: ProductMetadata;
-  diagnose_ordering: JsonValue;
-  diagnose_manifests: JsonValue;
-  diagnose_file_structure: JsonValue;
-  diagnose_free_item_entry: JsonValue;
-  diagnose_free_item_role: JsonValue;
-  diagnose_free_item_controls: JsonValue;
-  diagnose_free_item_identity: JsonValue;
-  diagnose_receipt_template: JsonValue;
-  diagnose_receipt_notice_envelope: JsonValue;
-  diagnose_receipt_contact_envelope: JsonValue;
-  diagnose_product_line_fields: JsonValue;
 };

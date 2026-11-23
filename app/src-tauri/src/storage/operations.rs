@@ -496,107 +496,11 @@ impl StorageService {
                 self.catalogue.put_many(recovered)?;
                 Ok(root)
             }
-            "verify_root" => self.verify_root(args, cancel),
             "restore_backup" => self.restore(args, cancel, None),
             _ => bail!("unsupported_storage_action"),
         }
     }
 
-    /// Verifies each file on a root, marking missing files, or marks the root offline.
-    fn verify_root(&self, args: &Value, cancel: &AtomicBool) -> Result<Value> {
-        let mut root = self.root(args["rootId"].as_str())?;
-        let id = io::required_string(&root, "id")?.to_owned();
-        let path = match self.root_path(&root) {
-            Ok(path) => path,
-            Err(_) => {
-                root["status"] = json!("offline");
-                self.catalogue.put("root", &id, root)?;
-                return Ok(json!({"status":"offline"}));
-            }
-        };
-        let mut verified = 0;
-        let mut missing = 0;
-        for mut artifact in self
-            .catalogue
-            .list("artifact")?
-            .into_iter()
-            .filter(|a| a["rootId"] == id)
-        {
-            io::check_cancel(cancel)?;
-            if restored_artifact_state(&artifact).is_some() {
-                match self.verify_restored_artifact_at(&artifact, &path, cancel) {
-                    Ok(original_available) => {
-                        recover_artifact_state(&mut artifact, original_available);
-                        self.catalogue.put(
-                            "artifact",
-                            io::required_string(&artifact, "id")?,
-                            artifact.clone(),
-                        )?;
-                        verified += 1;
-                    }
-                    Err(error) => {
-                        io::check_cancel(cancel)?;
-                        if !path.is_dir() {
-                            root["status"] = json!("offline");
-                            self.catalogue.put("root", &id, root)?;
-                            return Ok(json!({"status":"offline"}));
-                        }
-                        if io::stable_error(&error) == "permission_denied" {
-                            return Err(error);
-                        }
-                        // Metadata-only claims are still unknown when bytes
-                        // are absent/different; no completed local fact existed.
-                        missing += 1;
-                    }
-                }
-                continue;
-            }
-            if !matches!(
-                artifact["status"].as_str(),
-                Some("ready" | "downloaded" | "extractionFailed" | "missing")
-            ) {
-                continue;
-            }
-            match self.verify_artifact_at(&artifact, &path, cancel) {
-                Ok(()) => {
-                    verified += 1;
-                    if artifact["status"] == "missing" {
-                        artifact["status"] = artifact["previousStatus"].clone();
-                    }
-                }
-                Err(e) => {
-                    io::check_cancel(cancel)?;
-                    if !path.is_dir() {
-                        root["status"] = json!("offline");
-                        self.catalogue.put("root", &id, root)?;
-                        return Ok(json!({"status":"offline"}));
-                    }
-                    if io::stable_error(&e) == "permission_denied" {
-                        return Err(e);
-                    }
-                    missing += 1;
-                    if artifact["status"] != "missing" {
-                        artifact["previousStatus"] = artifact["status"].clone();
-                        // Newly missing is a new failure, whatever was cleared before.
-                        artifact
-                            .as_object_mut()
-                            .unwrap()
-                            .remove("attentionDismissed");
-                    }
-                    artifact["status"] = json!("missing");
-                    artifact["errorCode"] = json!("file_integrity_failed");
-                }
-            }
-            self.catalogue.put(
-                "artifact",
-                io::required_string(&artifact, "id")?,
-                artifact.clone(),
-            )?;
-        }
-        root["status"] = json!("online");
-        self.catalogue.put("root", &id, root)?;
-        Ok(json!({"status":"online","verified":verified,"missing":missing}))
-    }
     fn verify_artifact_at(&self, a: &Value, root: &Path, cancel: &AtomicBool) -> Result<()> {
         if a["originalAvailable"] == true {
             io::check_cancel(cancel)?;
@@ -817,7 +721,7 @@ impl StorageService {
         self.available_file_target(&artifact, &root)
     }
     /// Opening is a path/existence check of a durably completed artifact.
-    /// Full content verification belongs to verify_root, migration and restore.
+    /// Full content verification belongs to migration and restore.
     fn available_file_target(&self, artifact: &Value, root: &Path) -> Result<PathBuf> {
         ensure!(
             matches!(

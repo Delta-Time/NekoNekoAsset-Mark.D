@@ -27,12 +27,10 @@ export type StorageResponses = {
   cancel_downloads: DownloadsCancelled;
   delete_downloads: DeletedFiles;
   retry_job: Retried;
-  retry_file: DownloadJobs;
   configure_root: Root;
   remap_root: OperationJob;
   migrate_root: Moved;
   cleanup_old_root: OperationJob;
-  verify_root: OperationJob;
   export_backup: OperationJob;
   restore_backup: OperationJob;
   export_zip: OperationJob;

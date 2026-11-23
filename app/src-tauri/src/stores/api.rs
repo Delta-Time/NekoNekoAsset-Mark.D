@@ -15,8 +15,6 @@ pub enum StoreRequest {
     AccountAdd(AccountAdd),
     /// Opens the store's sign-in window for the account.
     AccountLogin(AccountRef),
-    /// An older name of `account_login`.
-    Login(AccountRef),
     /// Signs the account out and keeps what it synchronized.
     AccountLogout(AccountRef),
     AccountRename(AccountRename),
@@ -30,17 +28,6 @@ pub enum StoreRequest {
     ImportFree(ImportFree),
     /// Reads a public product page for a local product's metadata.
     FetchProductMetadata(ProductLink),
-    DiagnoseOrdering(DiagnosticSource),
-    DiagnoseManifests(DiagnosticSource),
-    DiagnoseFileStructure(DiagnosticSource),
-    DiagnoseFreeItemEntry(DiagnosticAccount),
-    DiagnoseFreeItemRole(DiagnosticAccount),
-    DiagnoseFreeItemControls(DiagnosticAccount),
-    DiagnoseFreeItemIdentity(DiagnosticAccount),
-    DiagnoseReceiptTemplate(DiagnosticAccount),
-    DiagnoseReceiptNoticeEnvelope(DiagnosticAccount),
-    DiagnoseReceiptContactEnvelope(DiagnosticAccount),
-    DiagnoseProductLineFields(ReceiptDiagnostic),
 }
 
 #[derive(Serialize, Deserialize, TS)]
@@ -163,39 +150,6 @@ pub struct ProductLink {
     pub rest: Map<String, Value>,
 }
 
-/// A structure-only diagnostic of one account's `source` listing.
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticSource {
-    pub account_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "\"library\" | \"purchase\" | \"gift\" | \"free\"")]
-    pub source: Option<String>,
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub rest: Map<String, Value>,
-}
-
-/// A structure-only diagnostic, which accepts no field but the account.
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticAccount {
-    pub account_id: String,
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub rest: Map<String, Value>,
-}
-
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ReceiptDiagnostic {
-    pub account_id: String,
-    pub receipt_id: String,
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub rest: Map<String, Value>,
-}
-
 /// The account an action added or signed out.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -267,15 +221,13 @@ pub struct ListingPrice {
     pub price_source_currency: Option<Option<String>>,
 }
 
-/// The answer to each store action, for the typed store calls in the UI. Diagnostics
-/// answer structure-only reports.
+/// The answer to each store action, for the typed store calls in the UI.
 #[cfg(test)]
 #[derive(Serialize, TS)]
 #[ts(export)]
 struct StoreResponses {
     account_add: StoreAccount,
     account_login: StoreJob,
-    login: StoreJob,
     account_logout: StoreAccount,
     account_rename: AccountRenamed,
     account_remove: crate::catalogue::api::AccountRemoved,
@@ -285,17 +237,6 @@ struct StoreResponses {
     update_products: StoreJobs,
     import_free: StoreJob,
     fetch_product_metadata: ProductMetadata,
-    diagnose_ordering: Value,
-    diagnose_manifests: Value,
-    diagnose_file_structure: Value,
-    diagnose_free_item_entry: Value,
-    diagnose_free_item_role: Value,
-    diagnose_free_item_controls: Value,
-    diagnose_free_item_identity: Value,
-    diagnose_receipt_template: Value,
-    diagnose_receipt_notice_envelope: Value,
-    diagnose_receipt_contact_envelope: Value,
-    diagnose_product_line_fields: Value,
 }
 
 impl StoreRequest {
@@ -326,7 +267,7 @@ impl StoreRequest {
     /// The account a sign-in names.
     pub fn login_account(&self) -> Option<&str> {
         match self {
-            Self::AccountLogin(account) | Self::Login(account) => Some(&account.account_id),
+            Self::AccountLogin(account) => Some(&account.account_id),
             _ => None,
         }
     }

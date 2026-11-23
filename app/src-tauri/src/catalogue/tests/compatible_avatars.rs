@@ -223,11 +223,9 @@ fn dynamic_base_tags_reconcile_creation_category_removal_collision_and_manual_pr
 }
 
 #[test]
-fn dynamic_alias_preferences_restart_restore_exchange_and_account_scopes_stay_consistent() {
+fn dynamic_alias_preferences_restart_restore_and_account_scopes_stay_consistent() {
     let a = Fixture::new();
-    let b = Fixture::new();
     let restored = Fixture::new();
-    let folder = Fixture::new();
     let ca = a.open();
     ca.put("product", "a-tagged", json!({"id":"a-tagged","title":"Synthetic hair","sourceCategory":{"name":"Hair"},"sourceTags":["Humanalias"]})).unwrap();
     ca.put(
@@ -274,26 +272,14 @@ fn dynamic_alias_preferences_restart_restore_exchange_and_account_scopes_stay_co
         );
     }
     // A source-backed English name works without relying on device-local prefs,
-    // so portable restore and peer exchange must independently derive it.
+    // so portable restore must independently derive it.
     ca.put("product", "a-tagged", json!({"id":"a-tagged","title":"Synthetic hair","sourceCategory":{"name":"Hair"},"sourceTags":["Synthneko"]})).unwrap();
     let cr = restored.open();
     cr.restore_manifest(ca.manifest().unwrap()).unwrap();
     assert_eq!(dynamic_tag_ids(&cr, "a-tagged").len(), 1);
-    let cb = b.open();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(dynamic_tag_ids(&cb, "a-tagged").len(), 1);
     drop(ca);
     let ca = a.open();
     assert_eq!(dynamic_tag_ids(&ca, "a-tagged").len(), 1);
-    ca.command(
-        "overlay",
-        json!({"ids":["z-base"],"patch":{"category":"Tool"}}),
-    )
-    .unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert!(dynamic_tag_ids(&cb, "a-tagged").is_empty());
 }
 
 #[test]

@@ -508,7 +508,7 @@ impl GumroadService {
     pub async fn command(&self, app: &AppHandle, action: &str, args: Value) -> Result<Value> {
         let _work = self.inner.catalogue.begin_catalogue_work()?;
         match action {
-            "login" | "account_login" => {
+            "account_login" => {
                 let account = field(&args, "accountId")?;
                 self.account(account)?;
                 let active = self.inner.catalogue.list("job")?.into_iter().find(|job| {

@@ -71,7 +71,7 @@ They derive `ts_rs::TS`, and `pnpm --dir app bindings` writes their TypeScript t
   `query.rs` filters, searches and sorts, `terms_only.rs` tells a free download that
   holds only a listing's terms of use, `acquisition.rs` owns acquisition-date
   order, `avatars.rs` the compatible-avatar options, `spending.rs` the per-currency
-  totals, `sync.rs` and `worker.rs` the Automerge folder exchange between devices,
+  totals, `sync.rs` and `worker.rs` the Automerge history that backups carry,
   `portable.rs` backup and restore. `api/` declares the requests, answers and record
   views.
 - `booth/` reads BOOTH. `mod.rs` holds `BoothService` and the download ticket,
@@ -231,7 +231,7 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 
 ## Cross-cutting concerns
 
-- **Jobs and concurrency.** Store, download, import, AI, Unity and exchange work
+- **Jobs and concurrency.** Store, download, import, AI and Unity work
   hold a `catalogue::CatalogueWorkPermit` while queued or running; a restore takes
   the exclusive one. Different stores sync at the same time, while accounts of one
   store queue. Database locks are never held across network waits or long file

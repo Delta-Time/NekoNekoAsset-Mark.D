@@ -207,13 +207,6 @@ fn provider_prices_preserve_currency_identity_scope_and_portable_facts() {
         .unwrap();
     assert!(empty_scope["paidPrice"].is_null());
     assert_eq!(empty_scope["priceCurrency"], "USD");
-    let csv = c.command("export_csv", json!({})).unwrap();
-    assert!(text(&csv, "text")
-        .lines()
-        .next()
-        .unwrap()
-        .ends_with("tags,priceCurrency,paidPrice,paidCurrency"));
-    assert!(text(&csv, "text").contains("\"USD\",\"10.25\",\"USD\""));
     let manifest = c.manifest().unwrap();
     assert_eq!(manifest["records"]["account"][0]["provider"], "gumroad");
     assert_eq!(manifest["records"]["account"][0]["status"], "disconnected");

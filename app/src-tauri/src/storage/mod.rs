@@ -965,7 +965,6 @@ impl StorageService {
                 "remap_root"
                     | "migrate_root"
                     | "cleanup_old_root"
-                    | "verify_root"
                     | "export_backup"
                     | "restore_backup"
                     | "export_zip"
@@ -993,7 +992,7 @@ impl StorageService {
             }
             "cancel_downloads" => self.cancel_downloads(&args).await,
             "delete_downloads" => self.delete_downloads(&args).await,
-            "retry_job" | "retry_file" => {
+            "retry_job" => {
                 let mut retry = args.clone();
                 if let Some(id) = args["jobId"].as_str() {
                     let job = self
@@ -1022,10 +1021,8 @@ impl StorageService {
                 self.enqueue(&retry).await
             }
             "configure_root" => self.configure_root(&args).await,
-            "remap_root" | "migrate_root" | "cleanup_old_root" | "verify_root"
-            | "export_backup" | "restore_backup" | "export_zip" => {
-                self.launch_operation(app, action, args).await
-            }
+            "remap_root" | "migrate_root" | "cleanup_old_root" | "export_backup"
+            | "restore_backup" | "export_zip" => self.launch_operation(app, action, args).await,
             "product_availability" => {
                 let service = self.clone();
                 tokio::task::spawn_blocking(move || service.product_availability(&args)).await?

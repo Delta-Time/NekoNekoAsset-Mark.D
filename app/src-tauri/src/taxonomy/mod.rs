@@ -2288,9 +2288,7 @@ pub fn tag_suggestions(text: &str, rejected: &[String]) -> Vec<Value> {
 pub fn dictionary() -> Value {
     json!({"version":VERSION, "categories":CATEGORY_KEYS,
         "avatars":avatars().iter().map(|avatar| avatar.value.clone()).collect::<Vec<_>>(),
-        "tags":TAGS.iter().map(|tag| json!({"id":tag.id,"label":tag.label,"kind":tag.kind,"aliases":tag.aliases,"provenance":{"kind":"originalVocabulary","version":VERSION}})).collect::<Vec<_>>(),
-        "coverage":{"populationCoverage":null,"targetPopulationCoverage":0.8,"status":"finitePublicBaselineOnly",
-            "evaluation":include_str!("evaluation.json").parse::<Value>().expect("bundled evaluation must be valid JSON")}})
+        "tags":TAGS.iter().map(|tag| json!({"id":tag.id,"label":tag.label,"kind":tag.kind,"aliases":tag.aliases,"provenance":{"kind":"originalVocabulary","version":VERSION}})).collect::<Vec<_>>()})
 }
 
 #[cfg(test)]

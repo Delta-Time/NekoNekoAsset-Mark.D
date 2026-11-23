@@ -103,7 +103,6 @@ fn store_requests_give_back_the_arguments_they_were_sent() {
         ("account_add", json!({"name":"Authored","store":"Gumroad"})),
         ("account_add", json!({"label":"Authored older field"})),
         ("account_login", json!({"accountId":"a"})),
-        ("login", json!({"accountId":"a"})),
         ("account_logout", json!({"accountId":"a"})),
         ("account_rename", json!({"accountId":"a","name":"Renamed"})),
         (
@@ -123,15 +122,6 @@ fn store_requests_give_back_the_arguments_they_were_sent() {
         (
             "fetch_product_metadata",
             json!({"url":"https://booth.pm/ja/items/1"}),
-        ),
-        (
-            "diagnose_ordering",
-            json!({"accountId":"a","source":"gift"}),
-        ),
-        ("diagnose_receipt_template", json!({"accountId":"a"})),
-        (
-            "diagnose_product_line_fields",
-            json!({"accountId":"a","receiptId":"1"}),
         ),
     ] {
         assert_eq!(

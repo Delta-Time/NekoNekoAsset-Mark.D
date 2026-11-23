@@ -15,7 +15,6 @@ export type AiSuggestionRequest =
   | { action: 'delete_chat'; chatId: string }
   | { action: 'save_personalization'; personalization: AiPersonalization }
   | { action: 'save_preset'; preset: AiPresetDraft }
-  | { action: 'delete_preset'; presetId: string }
   | { action: 'import_preset'; json: string }
   | { action: 'export_preset'; presetId: string }
   | { action: 'read_images'; paths: Array<string> }

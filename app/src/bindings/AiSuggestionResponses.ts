@@ -22,7 +22,6 @@ export type AiSuggestionResponses = {
   delete_chat: AiDeleted;
   save_personalization: AiPersonalizationSaved;
   save_preset: AiPresetSaved;
-  delete_preset: AiDeleted;
   import_preset: AiPresetSaved;
   export_preset: AiPresetExport;
   read_images: AiImages;

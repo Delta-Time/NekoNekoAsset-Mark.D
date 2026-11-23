@@ -1,4 +1,4 @@
-//! Schema checks, the sync journal and history, restart, backup, restore and device exchange.
+//! Schema checks, the sync journal and history, restart, backup and restore.
 use super::*;
 
 #[test]
@@ -169,9 +169,7 @@ fn sqlite_commands_and_bootstrap_do_not_load_sync_history() {
     assert!(c
         .command("bootstrap", json!({"includeProducts":false}))
         .is_ok());
-    assert!(c
-        .command("conflicts", json!({}))
-        .unwrap()
+    assert!(c.command("state", json!({})).unwrap()["conflicts"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -317,55 +315,11 @@ fn long_history_is_compacted_once_without_changing_the_document() {
 }
 
 #[test]
-fn remote_merge_drains_concurrent_local_intent_before_projecting() {
-    let folder = Fixture::new();
-    let fa = Fixture::new();
-    let fb = Fixture::new();
-    let a = fa.open();
-    let b = fb.open();
-    product(&a, "1");
-    a.command("overlay", json!({"ids":["1"],"patch":{"note":"base"}}))
-        .unwrap();
-    a.command("exchange", json!({"folder":folder.0})).unwrap();
-    b.command("exchange", json!({"folder":folder.0})).unwrap();
-    b.command("overlay", json!({"ids":["1"],"patch":{"note":"remote"}}))
-        .unwrap();
-    b.command("exchange", json!({"folder":folder.0})).unwrap();
-    let path = folder.0.clone();
-    a.on_sync_worker(move |catalogue| {
-        catalogue.exchange_with_hook(&path, |local| {
-            local.command(
-                "overlay",
-                json!({"ids":["1"],"patch":{"note":"concurrent local","title":"Local title"}}),
-            )?;
-            Ok(())
-        })
-    })
-    .unwrap();
-    assert_eq!(
-        a.get("overlay", "1").unwrap().unwrap()["title"],
-        "Local title"
-    );
-    let conflicts = a.command("conflicts", json!({})).unwrap();
-    let note = conflicts
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|conflict| conflict["id"] == "1" && conflict["field"] == "note")
-        .unwrap();
-    let alternatives = note.to_string();
-    assert!(alternatives.contains("concurrent local") && alternatives.contains("remote"));
-}
-
-#[test]
-fn current_booth_url_restore_and_peer_exchange_preserve_observations() {
+fn current_booth_url_restore_preserves_observations() {
     let a = Fixture::new();
-    let b = Fixture::new();
     let restored = Fixture::new();
-    let folder = Fixture::new();
     let ca = a.open();
-    let cb = b.open();
-    let source = seed_current_product_url(&ca, "900002");
+    seed_current_product_url(&ca, "900002");
     let acquisition = json!({"id":"synthetic-acquisition","productId":"900002","accountId":"synthetic","sourceRecordId":"stable-row"});
     ca.put("acquisition", "synthetic-acquisition", acquisition.clone())
         .unwrap();
@@ -378,33 +332,8 @@ fn current_booth_url_restore_and_peer_exchange_preserve_observations() {
     );
     assert_eq!(
         cr.get("acquisition", "synthetic-acquisition").unwrap(),
-        Some(acquisition.clone())
-    );
-
-    // Current-format restore and exchange preserve the exact source observation.
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(
-        cb.get("product", "900002").unwrap().unwrap()["sourceUrl"],
-        "https://booth.pm/ja/items/900002"
-    );
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(
-        ca.get("product", "900002").unwrap(),
-        cb.get("product", "900002").unwrap()
-    );
-    let mut expected = source;
-    expected["sourceUrl"] = json!("https://booth.pm/ja/items/900002");
-    assert_eq!(ca.get("product", "900002").unwrap(), Some(expected));
-    assert_eq!(
-        cb.get("acquisition", "synthetic-acquisition").unwrap(),
         Some(acquisition)
     );
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    let revision = cb.revision().unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(cb.revision().unwrap(), revision);
 }
 
 #[test]
@@ -546,59 +475,12 @@ fn restore_rejects_before_replacement_and_preserves_semantics() {
 }
 
 #[test]
-fn real_two_device_exchange_restart_conflicts() {
+fn restore_then_mutation_restart_does_not_resurrect() {
     let a = Fixture::new();
     let b = Fixture::new();
-    let exchange = Fixture::new();
-    let ca = a.open();
-    let cb = b.open();
-    product(&ca, "1");
-    ca.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    cb.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    ca.command(
-        "overlay",
-        json!({"ids":["1"],"patch":{"note":"from A","title":"A title"}}),
-    )
-    .unwrap();
-    cb.command(
-        "overlay",
-        json!({"ids":["1"],"patch":{"note":"from B","sensitive":true}}),
-    )
-    .unwrap();
-    ca.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    cb.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    ca.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    assert_eq!(projection(&ca, "1"), projection(&cb, "1"));
-    assert_eq!(projection(&ca, "1")["title"], "A title");
-    assert_eq!(projection(&ca, "1")["sensitive"], true);
-    let conflicts = ca.command("conflicts", json!({})).unwrap();
-    assert!(conflicts
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c["field"] == "note"));
-    drop(ca);
-    let ca = a.open();
-    assert_eq!(ca.command("conflicts", json!({})).unwrap(), conflicts);
-    ca.command("exchange", json!({"folder":exchange.0}))
-        .unwrap();
-    assert_eq!(projection(&ca, "1"), projection(&cb, "1"));
-}
-
-#[test]
-fn restore_then_mutation_restart_exchange_does_not_resurrect() {
-    let a = Fixture::new();
-    let b = Fixture::new();
-    let folder = Fixture::new();
     let ca = a.open();
     let cb = b.open();
     product(&ca, "old");
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
     product(&cb, "new");
     let manifest = cb.manifest().unwrap();
     ca.restore_manifest(manifest).unwrap();
@@ -609,7 +491,6 @@ fn restore_then_mutation_restart_exchange_does_not_resurrect() {
     .unwrap();
     drop(ca);
     let ca = a.open();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
     assert!(ca.get("product", "old").unwrap().is_none());
     assert_eq!(projection(&ca, "new")["note"], "after restore");
     drop(ca);
@@ -618,127 +499,16 @@ fn restore_then_mutation_restart_exchange_does_not_resurrect() {
 }
 
 #[test]
-fn backup_restore_keeps_concurrent_human_alternative() {
-    let a = Fixture::new();
-    let b = Fixture::new();
-    let d = Fixture::new();
-    let folder = Fixture::new();
-    let ca = a.open();
-    let cb = b.open();
-    product(&ca, "1");
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    ca.command("overlay", json!({"ids":["1"],"patch":{"note":"Human A"}}))
-        .unwrap();
-    cb.command("overlay", json!({"ids":["1"],"patch":{"note":"Human B"}}))
-        .unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    let old = ca.command("conflicts", json!({})).unwrap();
-    assert!(old.as_array().unwrap().iter().any(|v| v["field"] == "note"));
-    let saved = ca.manifest().unwrap();
-    let restored = d.open();
-    restored.restore_manifest(saved).unwrap();
-    let conflicts = restored.command("conflicts", json!({})).unwrap();
-    let notes = conflicts
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["field"] == "note")
-        .unwrap();
-    let values = notes["values"].as_array().unwrap();
-    assert!(values.iter().any(|v| v["value"]["value"] == "Human A"));
-    assert!(values.iter().any(|v| v["value"]["value"] == "Human B"));
-    let alt = values
-        .iter()
-        .find(|v| v["value"]["value"] == "Human B")
-        .unwrap();
-    restored
-        .command(
-            "resolve_conflict",
-            json!({"kind":"overlay","id":"1","field":"note","opId":alt["opId"]}),
-        )
-        .unwrap();
-    assert_eq!(projection(&restored, "1")["note"], "Human B");
-}
-
-#[test]
-fn no_op_exchange_does_not_invalidate_and_lite_keeps_summary() {
+fn lite_query_keeps_the_summary_status() {
     let f = Fixture::new();
-    let folder = Fixture::new();
     let c = f.open();
     product(&c, "1");
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    let revision = c.revision().unwrap();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(c.revision().unwrap(), revision);
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(c.revision().unwrap(), revision);
     let lite = c.command("query", json!({"includeFiles":false})).unwrap();
     assert_eq!(lite["products"][0]["filesLoaded"], false);
     assert_eq!(
         lite["products"][0]["status"],
         c.command("product_details", json!({"id":"1"})).unwrap()["status"]
     );
-}
-
-#[test]
-fn undo_refuses_a_concurrent_alternative_even_when_its_value_wins() {
-    let a = Fixture::new();
-    let b = Fixture::new();
-    let folder = Fixture::new();
-    let ca = a.open();
-    let cb = b.open();
-    product(&ca, "1");
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    let ta = ca
-        .command("overlay", json!({"ids":["1"],"patch":{"note":"A"}}))
-        .unwrap();
-    let tb = cb
-        .command("overlay", json!({"ids":["1"],"patch":{"note":"B"}}))
-        .unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    cb.command("exchange", json!({"folder":folder.0})).unwrap();
-    ca.command("exchange", json!({"folder":folder.0})).unwrap();
-    let winner = projection(&ca, "1")["note"].clone();
-    let result = if winner == "A" {
-        ca.command("undo", json!({"token":ta["token"]}))
-    } else {
-        cb.command("undo", json!({"token":tb["token"]}))
-    }
-    .unwrap();
-    assert_eq!(result["changed"], 0);
-    assert_eq!(result["conflicts"], json!(["1"]));
-    assert_eq!(projection(&ca, "1")["note"], winner);
-    assert_eq!(projection(&cb, "1")["note"], winner);
-}
-
-#[test]
-fn cached_exchange_still_rejects_corruption_of_known_history() {
-    let f = Fixture::new();
-    let folder = Fixture::new();
-    let c = f.open();
-    product(&c, "1");
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    let change = std::fs::read_dir(&folder.0)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|x| x == "amchange"))
-        .unwrap();
-    let original = std::fs::read(&change).unwrap();
-    let mut corrupt = original.clone();
-    corrupt.push(0);
-    std::fs::write(&change, corrupt).unwrap();
-    let error = c
-        .command("exchange", json!({"folder":folder.0}))
-        .unwrap_err();
-    assert!(error.to_string().contains("checksum"));
-    std::fs::write(&change, original).unwrap();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    assert_eq!(projection(&c, "1")["title"], "Synthetic ＡＢＣ 髪型");
 }
 
 #[test]
@@ -964,7 +734,7 @@ fn concurrent_cold_preparation_loads_once_without_blocking_reads() {
 }
 
 #[test]
-fn cold_restart_small_write_persists_only_new_delta_and_reaches_peer() {
+fn cold_restart_small_write_persists_only_new_delta() {
     let f = Fixture::new();
     let c = f.open();
     c.put_many(
@@ -1049,23 +819,6 @@ fn cold_restart_small_write_persists_only_new_delta_and_reaches_peer() {
             .filter(|(kind, _, _)| kind == "product")
             .count(),
         32
-    );
-    let folder = Fixture::new();
-    let peer_fixture = Fixture::new();
-    let peer = peer_fixture.open();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    peer.command("exchange", json!({"folder":folder.0}))
-        .unwrap();
-    assert_eq!(
-        sync::entities(peer.document_cache.lock().unwrap().as_ref().unwrap()).unwrap(),
-        expected
-    );
-    drop(peer);
-    let peer = peer_fixture.open();
-    peer.ensure_document().unwrap();
-    assert_eq!(
-        sync::entities(peer.document_cache.lock().unwrap().as_ref().unwrap()).unwrap(),
-        expected
     );
 }
 

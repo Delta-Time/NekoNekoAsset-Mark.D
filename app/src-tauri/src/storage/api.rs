@@ -23,7 +23,6 @@ pub enum StorageRequest {
     CancelDownloads(OptionalProductIds),
     DeleteDownloads(DownloadRemoval),
     RetryJob(Retry),
-    RetryFile(Retry),
     /// Sets the library folder.
     ConfigureRoot(FolderPath),
     /// Points a root at the folder its files moved to.
@@ -31,7 +30,6 @@ pub enum StorageRequest {
     /// Moves the library to `path`.
     MigrateRoot(RootMove),
     CleanupOldRoot(RootRef),
-    VerifyRoot(RootRef),
     ExportBackup(FolderPath),
     RestoreBackup(FolderPath),
     /// Packs the files of `productIds` into a ZIP at `path`.
@@ -428,12 +426,10 @@ struct StorageResponses {
     cancel_downloads: DownloadsCancelled,
     delete_downloads: DeletedFiles,
     retry_job: Retried,
-    retry_file: DownloadJobs,
     configure_root: crate::catalogue::api::Root,
     remap_root: OperationJob,
     migrate_root: Moved,
     cleanup_old_root: OperationJob,
-    verify_root: OperationJob,
     export_backup: OperationJob,
     restore_backup: OperationJob,
     export_zip: OperationJob,

@@ -1,7 +1,7 @@
 # Catalogue implementation notes
 
 The catalogue owns local SQLite entities/projections, indexed search, overlays,
-collections, spending and Automerge exchange. [ARCHITECTURE.md](../../../../ARCHITECTURE.md)
+collections, spending and Automerge history. [ARCHITECTURE.md](../../../../ARCHITECTURE.md)
 has the overall map. The requests, answers and record views the App reads are Rust
 types in `api/`, generated into `app/src/bindings` by `pnpm --dir app bindings`;
 test builds check the records written through `set_raw` against their views.
@@ -42,27 +42,23 @@ currently attached file to be usable at its current revision, independent of sou
 partial downloads alone are not
 Attention. Original archive availability is independent of Ready.
 
-## Exchange and restore
+## History and restore
 
 Foreground edits atomically commit entities/projections plus durable `sync_outbox`
 intents. One worker materializes ordered Automerge changes. It loads history only
 when an intent is queued, and a load of more than 256 deltas rewrites the same
-document as one checksummed checkpoint. Exchange, conflicts,
-manifests and restore flush it first. Immutable checksum-named folder files are
-published after complete writes; missing dependencies/partial files remain
-retriable. Decode/serialization runs outside brief database locks and prepared
-documents install only against matching generations. Concurrent writes merge
-before commit. Same-field alternatives, tombstones and causal history survive
-restart, repeated exchange and explicit conflict resolution.
+document as one checksummed checkpoint. Conflict resolution, manifests and restore
+flush it first. Decode/serialization runs outside brief database locks and prepared
+documents install only against matching generations. Same-field alternatives,
+tombstones and causal history survive restart and explicit conflict resolution.
 
-Credentials, device paths/preferences, jobs and artifacts do not enter CRDT
-exchange. Version-1 portable manifests retain validated metadata/media and a
+Credentials, device paths/preferences, jobs and artifacts do not enter the CRDT
+history. Version-1 portable manifests retain validated metadata/media and a
 complete checksummed Automerge snapshot with conflict alternatives; absolute root
-mappings and authentication are excluded. CSV is supplementary and escapes
-formula-leading cells. Restore validates everything first, creates a recovery
-copy and atomically replaces records/projections/history. Ordinary metadata
-restore marks artifacts unknown; only storage's independently verified payload
-restore installs mappings and verified artifacts.
+mappings and authentication are excluded. Restore validates everything first,
+creates a recovery copy and atomically replaces records/projections/history.
+Storage's independently verified payload restore installs mappings and verified
+artifacts.
 
 ## Verification and provenance
 

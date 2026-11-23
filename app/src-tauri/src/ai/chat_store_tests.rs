@@ -113,7 +113,6 @@ fn presets_exchange_only_prompt_fields_and_have_new_identity() {
     assert!(store
         .import_preset(&raw.replace("\"title\":", "\"apiKey\":\"secret\",\"title\":"))
         .is_err());
-    store.delete_preset(id).unwrap();
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -172,7 +171,6 @@ fn prompt_snapshot_and_explicit_title_survive_preset_changes() {
             system_prompt: "Changed prompt".into(),
         })
         .unwrap();
-    store.delete_preset(preset_id).unwrap();
     assert_eq!(store.chat_preset(id).unwrap().1, "Original prompt");
     let request = uuid::Uuid::new_v4().to_string();
     store

@@ -37,8 +37,6 @@ pub enum CatalogueRequest {
     AvatarOptions,
     AccountCounts,
     Collections,
-    Conflicts,
-    Manifest,
     /// Removes finished jobs from Activity.
     ClearActivity,
     /// The support report of one job.
@@ -64,8 +62,6 @@ pub enum CatalogueRequest {
     },
     Collection(MembershipRequest),
     SaveSearch(MembershipRequest),
-    /// The same as `save_search`.
-    SavedSearch(MembershipRequest),
     CustomCategory(CustomCategoryRequest),
     /// Changes the listed preferences; the rest keep their values.
     Preferences {
@@ -73,12 +69,6 @@ pub enum CatalogueRequest {
         patch: Map<String, Value>,
     },
     ResolveConflict(ConflictChoice),
-    /// Exchanges catalogue changes with a shared folder.
-    Exchange {
-        folder: String,
-    },
-    ExportCsv(CsvExport),
-    RestoreManifest(ManifestRestore),
 }
 
 impl CatalogueRequest {
@@ -98,11 +88,8 @@ impl CatalogueRequest {
                 | Self::AvatarOptions
                 | Self::JobDiagnostics { .. }
                 | Self::Query(_)
-                | Self::Conflicts
                 | Self::ProductDetails { .. }
                 | Self::AccountCounts
-                | Self::Manifest
-                | Self::ExportCsv(_)
                 | Self::Collections
                 | Self::State
                 | Self::SpendingSummary(_)
@@ -342,7 +329,7 @@ pub struct CustomCategoryRequest {
     pub name: Option<String>,
 }
 
-/// Settles one exchange conflict: a retained `opId`, or an explicit `value`.
+/// Settles one conflict: a retained `opId`, or an explicit `value`.
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, optional_fields)]
@@ -354,35 +341,6 @@ pub struct ConflictChoice {
     #[serde(default, deserialize_with = "crate::ipc::present")]
     #[ts(optional)]
     pub value: Option<Value>,
-}
-
-#[derive(Deserialize, TS)]
-#[ts(export, optional_fields)]
-pub struct CsvExport {
-    /// Only these products; every product when absent.
-    #[serde(default, deserialize_with = "crate::ipc::nullable")]
-    #[ts(optional, type = "Array<string>")]
-    pub ids: Option<Option<Vec<String>>>,
-    /// Writes the file here instead of returning its text.
-    pub path: Option<String>,
-}
-
-/// A backup manifest, either under `manifest` or as the request itself.
-#[derive(Deserialize, TS)]
-#[ts(export)]
-pub struct ManifestRestore {
-    #[serde(default)]
-    #[ts(optional)]
-    pub manifest: Option<Value>,
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub fields: Map<String, Value>,
-}
-
-impl ManifestRestore {
-    pub(super) fn into_manifest(self) -> Value {
-        self.manifest.unwrap_or(Value::Object(self.fields))
-    }
 }
 
 /// One page of the library list.
@@ -468,10 +426,6 @@ pub struct Bootstrap {
     pub custom_categories: Vec<Value>,
     #[ts(as = "Vec<TagOption>")]
     pub tag_options: Value,
-    /// The avatar vocabulary; the UI reads the options instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(skip)]
-    pub avatars: Option<Value>,
     #[ts(as = "Vec<AvatarOption>")]
     pub avatar_options: Vec<Value>,
     /// Bases this library owns, offered first in avatar pickers.
@@ -607,6 +561,5 @@ struct Responses {
     overlay: EditResult,
     undo: EditResult,
     custom_category: CustomCategories,
-    conflicts: Vec<Conflict>,
     preferences: preferences::PreferencesSaved,
 }

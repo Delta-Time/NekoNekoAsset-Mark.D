@@ -2,7 +2,7 @@ use super::*;
 // Independently authored structural fixture, no provider page or script copied.
 const HTML: &str = r#"<html><head><link rel='canonical' href='https://booth.pm/ja/items/900001'><meta property='og:url' content='https://booth.pm/ja/items/900001'></head><body><div id='items' class='market' data-product-id='900001'><ul id='variations'><li class='variation-item'><div class='cart-button-wrap'><a title='authored.zip' href='https://booth.pm/downloadables/700001?variation_id=800001'><span class='cmd-label'>無料ダウンロード</span></a><div class='text-14 text-text-default font-normal text-left mb-8'>authored.zip</div></div></li><li class='variation-item'><form><button class='add-cart' data-product-id='900001'>Authored donation</button></form></li></ul></div></body></html>"#;
 #[test]
-fn entry_diagnostics_count_bound_roles_and_static_markers_without_certifying_unavailability() {
+fn bound_roles_and_static_markers_never_certify_unavailability() {
     let gift = "<li class='variation-item'><form><button class='add-gift' data-product-id='900001' disabled>PRIVATE_ROLE_SENTINEL</button></form></li>";
     let unknown = "<li class='variation-item'><form><button class='authored-unknown' aria-disabled='true'>PRIVATE_ROLE_SENTINEL</button></form><span class='item-unavailable'>PRIVATE_ROLE_SENTINEL</span></li>";
     let html = HTML.replace("</ul>", &format!("{gift}{unknown}</ul>"));
@@ -13,31 +13,6 @@ fn entry_diagnostics_count_bound_roles_and_static_markers_without_certifying_una
     );
     assert!(!evidence.manifest_complete);
     assert!(!evidence.unavailable);
-    let value = serde_json::to_value(diagnose_entry(&html, "900001").unwrap()).unwrap();
-    assert_eq!(value["variationRows"], 4);
-    assert_eq!(value["recognizedNonFreeRows"], 2);
-    assert_eq!(value["unrecognizedRoleRows"], 1);
-    assert_eq!(value["staticDisabledRows"], 2);
-    assert_eq!(value["unavailableMarkerRows"], 1);
-    assert_eq!(value["rawControls"], 1);
-    assert_eq!(value["validControls"], 1);
-    assert_eq!(value["currentParserComplete"], false);
-    assert!(value
-        .as_object()
-        .unwrap()
-        .values()
-        .all(|v| v.is_number() || v.is_boolean()));
-    let encoded = value.to_string();
-    for private in [
-        "PRIVATE_ROLE_SENTINEL",
-        "900001",
-        "900002",
-        "700001",
-        "800001",
-        "https://",
-    ] {
-        assert!(!encoded.contains(private));
-    }
 
     let start = HTML.find("<li class='variation-item'>").unwrap();
     let end = start + HTML[start..].find("</li>").unwrap() + "</li>".len();
@@ -49,42 +24,7 @@ fn entry_diagnostics_count_bound_roles_and_static_markers_without_certifying_una
     );
     assert!(!evidence.manifest_complete);
     assert!(!evidence.unavailable);
-    let counts = serde_json::to_value(diagnose_entry(&paid_only, "900001").unwrap()).unwrap();
-    assert_eq!(counts["variationRows"], 1);
-    assert_eq!(counts["recognizedNonFreeRows"], 1);
-    assert_eq!(counts["unrecognizedRoleRows"], 0);
-    assert_eq!(counts["rawControls"], 0);
-    assert_eq!(counts["staticDisabledRows"], 0);
-    assert_eq!(counts["unavailableMarkerRows"], 0);
-    assert_eq!(counts["currentParserComplete"], false);
 
-    let paid = paid_only.replace(
-            "<form><button",
-            "<div class='variation-price'>¥ 1,200</div><form><input name='cart_item[variation_id]' value='800003'><button",
-        );
-    let counts = serde_json::to_value(diagnose_entry(&paid, "900001").unwrap()).unwrap();
-    assert_eq!(counts["positivePriceRows"], 1);
-    assert_eq!(counts["boundPaidVariationRows"], 1);
-    for amount in ["¥ 0", "¥ 1,200–2,000", "$ 1,200", "1200", "¥ 12,00"] {
-        let invalid = paid.replace("¥ 1,200", amount);
-        let counts = serde_json::to_value(diagnose_entry(&invalid, "900001").unwrap()).unwrap();
-        assert_eq!(counts["positivePriceRows"], 0, "{amount}");
-        assert_eq!(counts["boundPaidVariationRows"], 0, "{amount}");
-    }
-    for input in [
-            "",
-            "<input name='cart_item[variation_id]' value='not-numeric'>",
-            "<input name='cart_item[variation_id]' value='800003'><input name='cart_item[variation_id]' value='800004'>",
-        ] {
-            let invalid = paid.replace(
-                "<input name='cart_item[variation_id]' value='800003'>",
-                input,
-            );
-            let counts =
-                serde_json::to_value(diagnose_entry(&invalid, "900001").unwrap()).unwrap();
-            assert_eq!(counts["positivePriceRows"], 1);
-            assert_eq!(counts["boundPaidVariationRows"], 0);
-        }
     let closed_rows = "<li class='variation-item'><div class='variation-price'>¥ 500</div><button class='add-cart disabled' type='button'>PRIVATE_ROLE_SENTINEL</button></li><li class='variation-item'><div class='variation-price'>¥ 700</div><div class='restock-request-links'><a class='js-add-restock-request'>PRIVATE_ROLE_SENTINEL</a><a class='js-remove-restock-request'>PRIVATE_ROLE_SENTINEL</a></div></li>";
     let closed = HTML.replace("</ul>", &format!("{closed_rows}</ul>"));
     let evidence = parse(&closed, "900001").unwrap();
@@ -92,15 +32,6 @@ fn entry_diagnostics_count_bound_roles_and_static_markers_without_certifying_una
     assert!(evidence.manifest_complete);
     assert_eq!(evidence.files.len(), 1);
     assert!(!evidence.unavailable);
-    let counts = serde_json::to_value(diagnose_entry(&closed, "900001").unwrap()).unwrap();
-    assert_eq!(counts["positivePriceRows"], 2);
-    assert_eq!(counts["boundPaidVariationRows"], 0);
-    assert_eq!(counts["disabledCartRows"], 1);
-    assert_eq!(counts["restockNoticeRows"], 1);
-    assert_eq!(counts["staticDisabledRows"], 0);
-    assert_eq!(counts["recognizedNonFreeRows"], 3);
-    assert_eq!(counts["unrecognizedRoleRows"], 0);
-    assert!(!counts.to_string().contains("PRIVATE_ROLE_SENTINEL"));
     // BOOTH's other languages write the same closed rows' prices in JPY.
     let elsewhere = closed
         .replace("¥ 500", "500 JPY")
@@ -114,123 +45,31 @@ fn entry_diagnostics_count_bound_roles_and_static_markers_without_certifying_una
     );
 }
 #[test]
-fn identity_diagnostics_have_a_closed_shape_even_without_matching_root() {
-    let html = HTML
-        .replace("authored.zip", "PRIVATE_SOURCE_SENTINEL.zip")
-        .replace("data-product-id='900001'", "data-product-id='900002'");
-    let value = serde_json::to_value(diagnose_identity(&html, "900001").unwrap()).unwrap();
-    let keys = [
-        "version",
-        "canonicalCount",
-        "ogCount",
-        "rootCount",
-        "listCount",
-        "listsWithinMatchingRoot",
-        "rootIdMatch",
-        "canonicalExact",
-        "ogExact",
-        "canonicalOldBareSameId",
-        "ogOldBareSameId",
-        "canonicalLocaleJaSameId",
-        "ogLocaleJaSameId",
-        "canonicalLocaleEnSameId",
-        "ogLocaleEnSameId",
-        "canonicalShopHostSameId",
-        "ogShopHostSameId",
-        "canonicalOtherShape",
-        "ogOtherShape",
-    ];
-    let object = value.as_object().unwrap();
-    assert_eq!(object.len(), keys.len());
-    assert!(object.keys().all(|key| keys.contains(&key.as_str())));
-    assert!(object.values().all(|v| v.is_number() || v.is_boolean()));
-    let encoded = value.to_string();
-    for private in [
-        "PRIVATE_SOURCE_SENTINEL",
-        "900001",
-        "900002",
-        "700001",
-        "800001",
-        "https://",
-    ] {
-        assert!(!encoded.contains(private));
-    }
-    assert_eq!(value["rootIdMatch"], false);
-    assert_eq!(value["listsWithinMatchingRoot"], 0);
-    assert_eq!(value["listCount"], 1);
-    assert_eq!(value["canonicalExact"], true);
-}
-#[test]
-fn identity_url_shapes_are_diagnosed_and_production_accepts_any_same_item_url() {
+fn production_accepts_any_same_item_url() {
     let original = "https://booth.pm/ja/items/900001";
     // Production needs this item's ID on an HTTPS BOOTH page, not one URL spelling.
-    for (url, shape, same_item) in [
-        (original, "LocaleJaSameId", true),
-        ("https://booth.pm/items/900001", "OldBareSameId", true),
-        ("https://booth.pm/en/items/900001", "LocaleEnSameId", true),
-        (
-            "https://synthetic-shop.booth.pm/items/900001",
-            "ShopHostSameId",
-            true,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/ja/items/900001",
-            "ShopHostSameId",
-            true,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/en/items/900001",
-            "ShopHostSameId",
-            true,
-        ),
-        ("https://booth.pm/ja/items/900002", "OtherShape", false),
-        ("https://www.booth.pm/items/900001", "OtherShape", true),
-        (
-            "https://accounts.booth.pm/items/900001",
-            "OtherShape",
-            false,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/items/900001?x=1",
-            "OtherShape",
-            true,
-        ),
-        (
-            "https://synthetic-shop.booth.pm:443/items/900001",
-            "OtherShape",
-            true,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/ja/../items/900001",
-            "OtherShape",
-            true,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/items/900001/",
-            "OtherShape",
-            false,
-        ),
-        (
-            "https://synthetic-shop.booth.pm/items/900002",
-            "OtherShape",
-            false,
-        ),
+    for (url, same_item) in [
+        (original, true),
+        ("https://booth.pm/items/900001", true),
+        ("https://booth.pm/en/items/900001", true),
+        ("https://synthetic-shop.booth.pm/items/900001", true),
+        ("https://synthetic-shop.booth.pm/ja/items/900001", true),
+        ("https://synthetic-shop.booth.pm/en/items/900001", true),
+        ("https://booth.pm/ja/items/900002", false),
+        ("https://www.booth.pm/items/900001", true),
+        ("https://accounts.booth.pm/items/900001", false),
+        ("https://synthetic-shop.booth.pm/items/900001?x=1", true),
+        ("https://synthetic-shop.booth.pm:443/items/900001", true),
+        ("https://synthetic-shop.booth.pm/ja/../items/900001", true),
+        ("https://synthetic-shop.booth.pm/items/900001/", false),
+        ("https://synthetic-shop.booth.pm/items/900002", false),
         (
             "https://synthetic-shop.booth.pm.evil.test/items/900001",
-            "OtherShape",
             false,
         ),
-        (
-            "http://synthetic-shop.booth.pm/items/900001",
-            "OtherShape",
-            false,
-        ),
+        ("http://synthetic-shop.booth.pm/items/900001", false),
     ] {
         let html = HTML.replace(original, url);
-        let value = serde_json::to_value(diagnose_identity(&html, "900001").unwrap()).unwrap();
-        assert_eq!(value[format!("canonical{shape}")], true, "{url}");
-        assert_eq!(value[format!("og{shape}")], true, "{url}");
-        assert_eq!(value["canonicalExact"], url == original);
         let evidence = parse(&html, "900001").unwrap();
         assert_eq!(evidence.manifest_complete, same_item, "{url}");
         if !same_item {
@@ -240,95 +79,9 @@ fn identity_url_shapes_are_diagnosed_and_production_accepts_any_same_item_url() 
             );
         }
     }
-    let duplicate = HTML.replace(
-        "</head>",
-        "<link rel='canonical' href='https://booth.pm/ja/items/900001'></head>",
-    );
-    let value = serde_json::to_value(diagnose_identity(&duplicate, "900001").unwrap()).unwrap();
-    assert_eq!(value["canonicalCount"], 2);
-    assert_eq!(value["canonicalExact"], false);
-    let absent = HTML.replace("<ul id='variations'>", "<ul id='other'>");
-    assert_eq!(diagnose_identity(&absent, "900001").unwrap().list_count, 0);
-    for (markup, error) in [
-        ("<input type='password'>", "AUTH_REQUIRED"),
-        ("<div id='challenge-form'></div>", "AUTH_CHALLENGE"),
-    ] {
-        assert_eq!(
-            diagnose_identity(markup, "900001")
-                .err()
-                .unwrap()
-                .to_string(),
-            error
-        );
-    }
 }
 #[test]
-fn entry_diagnostics_are_closed_counts_and_never_serialize_source_values() {
-    let html = HTML.replace("authored.zip", "PRIVATE_SOURCE_SENTINEL.zip");
-    let value = serde_json::to_value(diagnose_entry(&html, "900001").unwrap()).unwrap();
-    let keys = [
-        "version",
-        "identityBound",
-        "entryStillUnproven",
-        "currentParserComplete",
-        "variationRows",
-        "recognizedNonFreeRows",
-        "unrecognizedRoleRows",
-        "staticDisabledRows",
-        "unavailableMarkerRows",
-        "positivePriceRows",
-        "boundPaidVariationRows",
-        "disabledCartRows",
-        "restockNoticeRows",
-        "rawControls",
-        "validControls",
-        "freeControls",
-        "controlsMissingCartWrap",
-        "wrapsWithMultipleValidControls",
-        "wrapsWithoutFilename",
-        "wrapsWithMultipleFilenames",
-        "titleAgreements",
-        "innerSingleControlSingleFilenameScopesWithin4Ancestors",
-        "innerSingleControlSingleFilenameScopesWithin8Ancestors",
-        "distinctMatchedFilenameNodes",
-        "orphanControls",
-        "orphanNames",
-        "knownAlternateMethods",
-        "unknownDropdowns",
-        "expansionHints",
-    ];
-    let object = value.as_object().unwrap();
-    assert_eq!(object.len(), keys.len());
-    assert!(object.keys().all(|key| keys.contains(&key.as_str())));
-    assert!(object.values().all(|v| v.is_number() || v.is_boolean()));
-    let encoded = value.to_string();
-    for private in [
-        "PRIVATE_SOURCE_SENTINEL",
-        "900001",
-        "700001",
-        "800001",
-        "https://",
-    ] {
-        assert!(!encoded.contains(private));
-    }
-    assert_eq!(value["rawControls"], 1);
-    assert_eq!(value["titleAgreements"], 1);
-    assert_eq!(value["currentParserComplete"], true);
-    assert_eq!(
-        value["innerSingleControlSingleFilenameScopesWithin4Ancestors"],
-        0
-    );
-    assert_eq!(
-        value["innerSingleControlSingleFilenameScopesWithin8Ancestors"],
-        0
-    );
-    assert_eq!(
-        diagnose_entry(&html, "900002").err().unwrap().to_string(),
-        "FREE_ITEM_IDENTITY_UNPROVEN"
-    );
-}
-#[test]
-fn entry_diagnostic_keeps_inner_scope_counts_for_proven_shared_manifest() {
+fn proven_shared_manifest_with_nested_entries_is_complete() {
     let original = HTML
         .split_once("<li class='variation-item'>")
         .unwrap()
@@ -349,22 +102,6 @@ fn entry_diagnostic_keeps_inner_scope_counts_for_proven_shared_manifest() {
         format!("<div class='cart-button-wrap'><div>{first}</div><div>{second}</div></div>");
     let html = HTML.replacen(original, &multi, 1);
     assert!(parse(&html, "900001").unwrap().manifest_complete);
-    let value = serde_json::to_value(diagnose_entry(&html, "900001").unwrap()).unwrap();
-    assert_eq!(value["entryStillUnproven"], false);
-    assert_eq!(value["currentParserComplete"], true);
-    assert_eq!(value["wrapsWithMultipleValidControls"], 1);
-    assert_eq!(value["wrapsWithMultipleFilenames"], 1);
-    assert_eq!(value["titleAgreements"], 2);
-    assert_eq!(
-        value["innerSingleControlSingleFilenameScopesWithin4Ancestors"],
-        2
-    );
-    assert_eq!(
-        value["innerSingleControlSingleFilenameScopesWithin8Ancestors"],
-        2
-    );
-    assert_eq!(value["distinctMatchedFilenameNodes"], 2);
-    assert_eq!(value["orphanNames"], 0);
 }
 fn shared_wrap_html() -> String {
     shared_wrap_html_with_files(4)
@@ -822,9 +559,6 @@ fn alternative_methods_are_bound_to_the_same_observed_file() {
     let method = r#"<div class='js-download-free-button' data-test='other-downloads-button' data-dropdown-items='[{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/700001/deeplink?client=booth-library-manager&variation_id=800001"}]'></div>"#;
     let html = HTML.replace("authored.zip</div>", &format!("authored.zip</div>{method}"));
     assert!(parse(&html, "900001").unwrap().manifest_complete);
-    let counts = serde_json::to_value(diagnose_entry(&html, "900001").unwrap()).unwrap();
-    assert_eq!(counts["knownAlternateMethods"], 1);
-    assert_eq!(counts["unknownDropdowns"], 0);
     assert!(
         !parse(
             &html.replace("700001/deeplink", "700002/deeplink"),
@@ -864,10 +598,6 @@ fn vroid_methods_type_only_their_own_file() {
         assert!(evidence.manifest_complete && evidence.error_code.is_none());
         assert_eq!(evidence.files.len(), 1);
         assert_eq!(evidence.files[0].name.as_deref(), Some(name));
-        let counts =
-            serde_json::to_value(diagnose_entry(&with(name, kind), "900001").unwrap()).unwrap();
-        assert_eq!(counts["knownAlternateMethods"], 1);
-        assert_eq!(counts["unknownDropdowns"], 0);
     }
     for (name, kind) in [
         ("authored.vroidcustomitem", "zip"),

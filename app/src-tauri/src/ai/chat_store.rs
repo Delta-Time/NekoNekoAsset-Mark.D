@@ -640,16 +640,6 @@ impl ChatStore {
             preset: preset.into(),
         })
     }
-    pub fn delete_preset(&self, id: &str) -> Result<Deleted> {
-        valid_id(id)?;
-        let conn = self.lock()?;
-        // Conversations retain their original prompt snapshot after preset removal.
-        ensure!(
-            conn.execute("DELETE FROM presets WHERE id=?1", [id])? == 1,
-            "ai_preset_missing"
-        );
-        Ok(Deleted { deleted: true })
-    }
     pub fn export_preset(&self, id: &str) -> Result<PresetExport> {
         valid_id(id)?;
         let conn = self.lock()?;

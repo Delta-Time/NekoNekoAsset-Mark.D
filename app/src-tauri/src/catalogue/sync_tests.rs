@@ -95,75 +95,12 @@ fn overlay_source_urls_roundtrip_and_unsafe_historical_values_are_rejected() -> 
     Ok(())
 }
 
-struct Scratch(std::path::PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/catalogue-synthetic")
-            .join(format!("nna-sync-synthetic-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&p).unwrap();
-        Self(p)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 fn entity(doc: &AutoCommit, kind: &str, id: &str) -> Option<Value> {
     entities(doc)
         .unwrap()
         .into_iter()
         .find(|(k, i, _)| k == kind && i == id)
         .map(|(_, _, v)| v)
-}
-
-#[test]
-fn two_devices_offline_fields_conflicts_restart_and_resolution() -> Result<()> {
-    let folder = Scratch::new();
-    let mut a = new_doc("synthetic-device-a")?;
-    let baseline =
-        json!({"id":"p1","name":"Original","notes":"Initial","rejectedTags":["rejected"]});
-    write_entity(&mut a, "overlay", "p1", None, Some(&baseline))?;
-    exchange(&mut a, &folder.0)?;
-    let mut b = new_doc("synthetic-device-b")?;
-    exchange(&mut b, &folder.0)?;
-    let av = json!({"id":"p1","name":"A name","notes":"A note","rejectedTags":["rejected"]});
-    let bv =
-        json!({"id":"p1","name":"B name","notes":"Initial","rejectedTags":["rejected","another"]});
-    write_entity(&mut a, "overlay", "p1", Some(&baseline), Some(&av))?;
-    write_entity(&mut b, "overlay", "p1", Some(&baseline), Some(&bv))?;
-    a = load_doc(&a.save(), "synthetic-device-a")?;
-    b = load_doc(&b.save(), "synthetic-device-b")?;
-    exchange(&mut a, &folder.0)?;
-    exchange(&mut b, &folder.0)?;
-    exchange(&mut a, &folder.0)?;
-    assert_eq!(entities(&a)?, entities(&b)?);
-    let merged = entity(&a, "overlay", "p1").unwrap();
-    assert_eq!(merged["notes"], "A note");
-    assert_eq!(merged["rejectedTags"], bv["rejectedTags"]);
-    let conflicts = conflicts(&a)?;
-    assert_eq!(conflicts.len(), 1);
-    assert_eq!(conflicts[0]["field"], "name");
-    let op = conflicts[0]["values"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["value"]["value"] == "A name")
-        .unwrap()["opId"]
-        .clone();
-    resolve(
-        &mut a,
-        &choice(json!({"kind":"overlay","id":"p1","field":"name","opId":op})),
-    )?;
-    exchange(&mut a, &folder.0)?;
-    exchange(&mut b, &folder.0)?;
-    assert_eq!(entity(&b, "overlay", "p1").unwrap()["name"], "A name");
-    assert!(super::conflicts(&b)?.is_empty());
-    let repeat = exchange(&mut b, &folder.0)?;
-    assert_eq!(repeat["imported"], 0);
-    assert_eq!(repeat["exported"], 0);
-    Ok(())
 }
 
 #[test]
@@ -215,36 +152,8 @@ fn collections_independent_additions_and_delete_vs_edit_survive_restart() -> Res
 }
 
 #[test]
-fn out_of_order_partial_checksum_and_private_history() -> Result<()> {
-    let folder = Scratch::new();
-    let mut a = new_doc("a")?;
-    let first = json!({"id":"p","name":"First"});
-    write_entity(&mut a, "product", "p", None, Some(&first))?;
-    a.commit();
-    write_entity(
-        &mut a,
-        "product",
-        "p",
-        Some(&first),
-        Some(&json!({"id":"p","name":"Second"})),
-    )?;
-    a.commit();
-    let changes = a.get_changes(&[]);
-    publish(&folder.0, changes[1].raw_bytes())?;
-    fs::write(folder.0.join("interrupted.partial"), b"unfinished")?;
+fn private_fields_and_history_are_rejected() -> Result<()> {
     let mut b = new_doc("b")?;
-    assert_eq!(exchange(&mut b, &folder.0)?["pendingDependencies"], 1);
-    b = load_doc(&b.save(), "b")?;
-    publish(&folder.0, changes[0].raw_bytes())?;
-    exchange(&mut b, &folder.0)?;
-    assert_eq!(entity(&b, "product", "p").unwrap()["name"], "Second");
-    let before = b.save();
-    fs::write(
-        folder.0.join(format!("{}.amchange", "0".repeat(64))),
-        b"bad",
-    )?;
-    assert!(exchange(&mut b, &folder.0).is_err());
-    assert_eq!(b.save(), before);
     assert!(write_entity(
         &mut b,
         "account",

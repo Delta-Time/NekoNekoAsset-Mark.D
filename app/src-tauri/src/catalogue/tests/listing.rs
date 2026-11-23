@@ -605,76 +605,6 @@ fn release_scale_10000_products_300000_files() {
     let (copy_us, decode_us) = prepared.unwrap();
     cold_samples.sort();
     println!("cold_cache_prepare_ms={cold_ms} cold_copy_and_lock_wait_us={copy_us} cold_decode_outside_lock_us={decode_us} cold_query_samples={} cold_query_p95_us={} cold_query_max_us={}",cold_samples.len(),cold_samples[((cold_samples.len()*95).div_ceil(100)).saturating_sub(1)],cold_samples.last().unwrap());
-    let folder = std::mem::ManuallyDrop::new(Fixture::new());
-    println!(
-        "synthetic_exchange_fixture={}",
-        folder.0.file_name().unwrap().to_string_lossy()
-    );
-    let begin = Instant::now();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    println!("initial_exchange_ms={}", begin.elapsed().as_millis());
-    let begin = Instant::now();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    println!("exchange_warmup_ms={}", begin.elapsed().as_millis());
-    let revision = c.revision().unwrap();
-    let begin = Instant::now();
-    c.command("exchange", json!({"folder":folder.0})).unwrap();
-    println!("unchanged_exchange_ms={}", begin.elapsed().as_millis());
-    assert_eq!(c.revision().unwrap(), revision);
-    let other = std::mem::ManuallyDrop::new(Fixture::new());
-    println!(
-        "synthetic_peer_fixture={}",
-        other.0.file_name().unwrap().to_string_lossy()
-    );
-    let peer = other.open();
-    let begin = Instant::now();
-    peer.command("exchange", json!({"folder":folder.0}))
-        .unwrap();
-    println!("fresh_peer_import_ms={}", begin.elapsed().as_millis());
-    let remote_note = format!("Synthetic remote edit {}", Uuid::new_v4());
-    peer.command(
-        "overlay",
-        json!({"ids":["900000001"],"patch":{"note":remote_note}}),
-    )
-    .unwrap();
-    peer.command("exchange", json!({"folder":folder.0}))
-        .unwrap();
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reader = c.clone();
-    let reader_barrier = barrier.clone();
-    let reader_complete = complete.clone();
-    let concurrent = std::thread::spawn(move || {
-        let mut samples = vec![];
-        reader_barrier.wait();
-        while !reader_complete.load(std::sync::atomic::Ordering::Relaxed) || samples.len() < 15 {
-            let started = Instant::now();
-            let value = reader
-                .command(
-                    "query",
-                    json!({"search":"髪","includeFiles":false,"limit":100}),
-                )
-                .unwrap();
-            let _bytes = serde_json::to_vec(&value).unwrap();
-            samples.push(started.elapsed().as_micros());
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        samples
-    });
-    barrier.wait();
-    let begin = Instant::now();
-    let exchanged = c.command("exchange", json!({"folder":folder.0}));
-    let exchange_ms = begin.elapsed().as_millis();
-    complete.store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut samples = concurrent.join().unwrap();
-    exchanged.unwrap();
-    samples.sort();
-    println!("one_remote_overlay_exchange_ms={} contention_query_samples={} contention_query_p95_us={} contention_query_max_us={}",exchange_ms,samples.len(),samples[((samples.len()*95).div_ceil(100)).saturating_sub(1)],samples.last().unwrap());
-    assert_eq!(
-        c.command("product_details", json!({"id":"900000001"}))
-            .unwrap()["note"],
-        remote_note
-    );
     drop(c);
     let begin = Instant::now();
     let reopened = f.open();
@@ -684,15 +614,6 @@ fn release_scale_10000_products_300000_files() {
         .command("bootstrap", json!({"includeProducts":false}))
         .unwrap();
     println!("restart_lean_bootstrap_ms={}", begin.elapsed().as_millis());
-    assert_eq!(
-        reopened
-            .command(
-                "query",
-                json!({"search":"remote edit","includeFiles":false})
-            )
-            .unwrap()["matchedIds"],
-        json!(["900000001"])
-    );
     println!("target_query_p95_under_200ms={}", p95 <= 200_000);
 }
 

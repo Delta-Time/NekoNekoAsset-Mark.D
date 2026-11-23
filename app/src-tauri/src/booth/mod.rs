@@ -1,7 +1,6 @@
 mod auth;
 mod batch;
 pub(crate) use batch::RecordBatch;
-mod diagnostics;
 mod fetch;
 mod free_item;
 mod http;
@@ -172,46 +171,6 @@ fn field<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
         .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_{key}"))
 }
-fn diagnostic_source(args: &Value) -> Result<&'static str> {
-    match args.get("source") {
-        None => Ok("library"),
-        Some(value) => match value.as_str() {
-            Some("library") => Ok("library"),
-            Some("purchase") => Ok("purchase"),
-            Some("gift") => Ok("gift"),
-            Some("free") => Ok("free"),
-            _ => bail!("INVALID_SOURCE"),
-        },
-    }
-}
-fn entry_diagnostic_account(args: &Value) -> Result<&str> {
-    if !args
-        .as_object()
-        .is_some_and(|o| o.len() == 1 && o.contains_key("accountId"))
-    {
-        bail!("INVALID_DIAGNOSTIC_ARGUMENTS");
-    }
-    args["accountId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("INVALID_DIAGNOSTIC_ARGUMENTS"))
-}
-fn product_line_diagnostic_args(args: &Value) -> Result<(&str, &str)> {
-    if !args.as_object().is_some_and(|object| {
-        object.len() == 2 && object.contains_key("accountId") && object.contains_key("receiptId")
-    }) {
-        bail!("INVALID_DIAGNOSTIC_ARGUMENTS");
-    }
-    let account = args["accountId"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("INVALID_DIAGNOSTIC_ARGUMENTS"))?;
-    let receipt = args["receiptId"]
-        .as_str()
-        .filter(|value| safety::numeric(value))
-        .ok_or_else(|| anyhow::anyhow!("INVALID_DIAGNOSTIC_ARGUMENTS"))?;
-    Ok((account, receipt))
-}
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -234,7 +193,7 @@ where
         }
     }
 }
-/// One job per account at a time; a store-wide job (diagnostics, legacy updates) runs alone.
+/// One job per account at a time; a store-wide job (a legacy update) runs alone.
 fn blocked(running: &BTreeSet<String>, key: &str) -> bool {
     running.contains(key)
         || running.contains("booth-global")
@@ -414,7 +373,6 @@ impl BoothService {
         let _work = if matches!(
             action,
             "account_add"
-                | "login"
                 | "account_login"
                 | "account_logout"
                 | "account_remove"
@@ -429,104 +387,6 @@ impl BoothService {
             None
         };
         match action {
-            "diagnose_product_line_fields" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                let (account, receipt) = product_line_diagnostic_args(&args)?;
-                serde_json::to_value(
-                    self.diagnose_product_line_fields(app, account, receipt)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_receipt_contact_envelope" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                serde_json::to_value(
-                    self.diagnose_receipt_contact_envelope(app, entry_diagnostic_account(&args)?)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_receipt_notice_envelope" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                serde_json::to_value(
-                    self.diagnose_receipt_notice_envelope(app, entry_diagnostic_account(&args)?)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_receipt_template" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                serde_json::to_value(
-                    self.diagnose_receipt_template(app, entry_diagnostic_account(&args)?)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_free_item_identity" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                serde_json::to_value(
-                    self.diagnose_free_item_identity(app, entry_diagnostic_account(&args)?)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_free_item_entry"
-            | "diagnose_free_item_role"
-            | "diagnose_free_item_controls" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                let issue = match action {
-                    "diagnose_free_item_role" => sync::FreeItemDiagnostic::Role,
-                    "diagnose_free_item_controls" => sync::FreeItemDiagnostic::Controls,
-                    _ => sync::FreeItemDiagnostic::Entry,
-                };
-                serde_json::to_value(
-                    self.diagnose_free_item_entry(app, entry_diagnostic_account(&args)?, issue)
-                        .await?,
-                )
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
-            "diagnose_ordering" | "diagnose_manifests" | "diagnose_file_structure" => {
-                if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
-                    bail!("DIAGNOSTICS_UNAVAILABLE");
-                }
-                let account = field(&args, "accountId")?;
-                let source = if action == "diagnose_ordering" {
-                    "library"
-                } else {
-                    diagnostic_source(&args)?
-                };
-                let route = format!("{}?page=1", safety::source_path(source)?);
-                let client = self.client(app, account, false).await?;
-                let (status, body) = self
-                    .inner
-                    .http
-                    .get(&client, safety::route(&route, source)?)
-                    .await?;
-                if !status.is_success() {
-                    bail!("SOURCE_HTTP_FAILED");
-                }
-                // The transient body and native session never cross the command boundary.
-                if action == "diagnose_file_structure" {
-                    serde_json::to_value(parser::diagnose_file_structure(&body, source, &route)?)
-                } else if action == "diagnose_manifests" {
-                    serde_json::to_value(parser::diagnose_manifests(&body, source, &route)?)
-                } else {
-                    serde_json::to_value(diagnostics::inspect(&body))
-                }
-                .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
-            }
             "account_add" => {
                 if args
                     .get("store")
@@ -546,7 +406,7 @@ impl BoothService {
                 self.changed(app, None);
                 crate::stores::api::answer(crate::stores::api::StoreAccount { account_id: id })
             }
-            "login" | "account_login" => {
+            "account_login" => {
                 let account = field(&args, "accountId")?.to_owned();
                 self.known_account(&account)?;
                 auth::window(app, &self.inner.catalogue.device_dir(), &account, true).await?;

@@ -5,7 +5,6 @@
  */
 export type AiRequest =
   | { action: 'key_status' }
-  | { action: 'test_connection' }
   | { action: 'providers' }
   | { action: 'list_entries' }
   | { action: 'test_draft'; provider: string; endpoint: string; model: string; key: string }

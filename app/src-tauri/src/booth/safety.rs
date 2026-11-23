@@ -106,18 +106,6 @@ pub fn public_url(value: &str, kind: &str) -> Option<String> {
     url.set_fragment(None);
     Some(url.to_string())
 }
-/// Normalize only observed first-party canonical identity for the live item parser.
-pub(super) fn observed_product_url(value: &str) -> Option<String> {
-    let path = value.strip_prefix("https://booth.pm")?;
-    let pieces: Vec<_> = path.split('/').collect();
-    match pieces.as_slice() {
-        ["", "items", id] if numeric(id) => Some(format!("https://booth.pm/ja/items/{id}")),
-        ["", locale, "items", id] if matches!(*locale, "ja" | "en") && numeric(id) => {
-            Some(value.to_owned())
-        }
-        _ => None,
-    }
-}
 pub(super) fn free_item_id(route: &str) -> Option<&str> {
     route
         .strip_prefix("https://booth.pm/ja/items/")

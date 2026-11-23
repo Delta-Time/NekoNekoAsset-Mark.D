@@ -119,10 +119,6 @@ pub enum AiSuggestionRequest {
     SavePreset {
         preset: CustomPreset,
     },
-    DeletePreset {
-        #[serde(rename = "presetId")]
-        preset_id: String,
-    },
     ImportPreset {
         json: String,
     },
@@ -225,7 +221,6 @@ struct AiSuggestionResponses {
     delete_chat: chat_store::Deleted,
     save_personalization: chat_store::PersonalizationSaved,
     save_preset: chat_store::PresetSaved,
-    delete_preset: chat_store::Deleted,
     import_preset: chat_store::PresetSaved,
     export_preset: chat_store::PresetExport,
     read_images: Images,
@@ -348,9 +343,6 @@ impl AiSuggestions {
                 answer(self.chats.save_personalization(personalization)?)
             }
             AiSuggestionRequest::SavePreset { preset } => answer(self.chats.save_preset(preset)?),
-            AiSuggestionRequest::DeletePreset { preset_id } => {
-                answer(self.chats.delete_preset(&preset_id)?)
-            }
             AiSuggestionRequest::ImportPreset { json } => answer(self.chats.import_preset(&json)?),
             AiSuggestionRequest::ExportPreset { preset_id } => {
                 answer(self.chats.export_preset(&preset_id)?)

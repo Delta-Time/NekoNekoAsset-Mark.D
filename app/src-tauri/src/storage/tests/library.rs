@@ -17,48 +17,6 @@ fn preferences_and_revision_identity_are_deterministic() {
 }
 
 #[test]
-fn offline_root_preserves_artifact_fact_and_missing_file_is_attention() {
-    let f = Fixture::new();
-    f.seed(1, true);
-    let artifact = f.artifact(0);
-    std::fs::rename(f.path.join("library"), f.path.join("offline-library")).unwrap();
-    let result = f
-        .service
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(result["status"], "offline");
-    assert_eq!(
-        f.service
-            .catalogue
-            .get("artifact", artifact["id"].as_str().unwrap())
-            .unwrap()
-            .unwrap()["status"],
-        "ready"
-    );
-    std::fs::rename(f.path.join("offline-library"), f.path.join("library")).unwrap();
-    std::fs::remove_file(
-        f.path
-            .join("library/assets")
-            .join(io::readable_component("Synthetic clothing", "42"))
-            .join("fixture-0/fixture-0.unitypackage"),
-    )
-    .unwrap();
-    let result = f
-        .service
-        .disk_operation(
-            "verify_root",
-            &json!({"rootId":"test-root"}),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(result["missing"], 1);
-}
-
-#[test]
 fn migration_copy_verify_switch_retains_original_until_explicit_cleanup() {
     let f = Fixture::new();
     f.seed(1, true);
@@ -227,19 +185,94 @@ fn kept_file_whose_extraction_failed_still_exports_its_original() {
 }
 
 #[test]
-fn metadata_restore_originals_recover_only_after_verified_remap_or_root_check() {
+fn metadata_restore_originals_recover_only_after_verified_remap() {
     let source = Fixture::new();
     source.seed(1, true);
     let original = source.artifact(0);
     let manifest = source.service.catalogue.manifest().unwrap();
-    for action in ["remap_root", "verify_root"] {
+    let restored = Fixture::new();
+    restored
+        .service
+        .catalogue
+        .restore_manifest(manifest.clone())
+        .unwrap();
+    let id = original["id"].as_str().unwrap();
+    let unknown = restored
+        .service
+        .catalogue
+        .get("artifact", id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unknown["status"], "unknown");
+    assert_eq!(unknown["restoreStatus"], "ready");
+    assert_eq!(unknown["originalAvailable"], false);
+    let old_root = restored.service.root(Some("test-root")).unwrap();
+    let destination = restored.path.join("mapped-library");
+    let target = destination.join(original["relativePath"].as_str().unwrap());
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    // Same size, different bytes: path and size alone cannot restore Ready.
+    std::fs::write(&target, b"synthetic unity package bytez").unwrap();
+    let args = json!({"rootId":"test-root","path":destination});
+    assert!(restored
+        .service
+        .disk_operation("remap_root", &args, &AtomicBool::new(false))
+        .is_err());
+    assert_eq!(
+        restored.service.root(Some("test-root")).unwrap()["path"],
+        old_root["path"]
+    );
+    assert_eq!(
+        restored
+            .service
+            .catalogue
+            .get("artifact", id)
+            .unwrap()
+            .unwrap(),
+        unknown
+    );
+    assert!(restored
+        .service
+        .resolve_open_target("open_file", &json!({"fileId":"test-file-0"}))
+        .is_err());
+    std::fs::write(&target, b"synthetic unity package bytes").unwrap();
+    restored
+        .service
+        .disk_operation("remap_root", &args, &AtomicBool::new(false))
+        .unwrap();
+    let recovered = restored
+        .service
+        .catalogue
+        .get("artifact", id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered["status"], "ready");
+    assert_eq!(recovered["originalAvailable"], true);
+    assert!(recovered.get("restoreStatus").is_none());
+    assert_eq!(
+        restored
+            .service
+            .resolve_open_target("open_file", &json!({"fileId":"test-file-0"}))
+            .unwrap()
+            .canonicalize()
+            .unwrap(),
+        target.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn metadata_restore_extracted_state_requires_verified_members_and_truthful_original_availability() {
+    for retained in [false, true] {
+        let source = Fixture::new();
+        source.seed(1, true);
+        let (artifact, original, source_tree) = source.extracted_archive(0, retained);
+        let manifest = source.service.catalogue.manifest().unwrap();
         let restored = Fixture::new();
         restored
             .service
             .catalogue
-            .restore_manifest(manifest.clone())
+            .restore_manifest(manifest)
             .unwrap();
-        let id = original["id"].as_str().unwrap();
+        let id = artifact["id"].as_str().unwrap();
         let unknown = restored
             .service
             .catalogue
@@ -250,28 +283,28 @@ fn metadata_restore_originals_recover_only_after_verified_remap_or_root_check() 
         assert_eq!(unknown["restoreStatus"], "ready");
         assert_eq!(unknown["originalAvailable"], false);
         let old_root = restored.service.root(Some("test-root")).unwrap();
-        let destination = restored.path.join(if action == "remap_root" {
-            "mapped-library"
-        } else {
-            "library"
-        });
-        let target = destination.join(original["relativePath"].as_str().unwrap());
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        // Same size, different bytes: path and size alone cannot restore Ready.
-        std::fs::write(&target, b"synthetic unity package bytez").unwrap();
-        let args = json!({"rootId":"test-root","path":destination});
-        let invalid = restored
-            .service
-            .disk_operation(action, &args, &AtomicBool::new(false));
-        if action == "remap_root" {
-            assert!(invalid.is_err());
-            assert_eq!(
-                restored.service.root(Some("test-root")).unwrap()["path"],
-                old_root["path"]
-            );
-        } else {
-            assert_eq!(invalid.unwrap()["verified"], 0);
+        let destination = restored.path.join("mapped-library");
+        let tree = destination.join(artifact["extractedPath"].as_str().unwrap());
+        std::fs::create_dir_all(tree.join("empty")).unwrap();
+        let member = tree.join("model.fbx");
+        let correct = std::fs::read(source_tree.join("model.fbx")).unwrap();
+        let mut damaged = correct.clone();
+        damaged[0] ^= 1;
+        std::fs::write(&member, &damaged).unwrap();
+        let restored_original = destination.join(artifact["relativePath"].as_str().unwrap());
+        if retained {
+            std::fs::create_dir_all(restored_original.parent().unwrap()).unwrap();
+            std::fs::copy(&original, &restored_original).unwrap();
         }
+        let args = json!({"rootId":"test-root","path":destination});
+        assert!(restored
+            .service
+            .disk_operation("remap_root", &args, &AtomicBool::new(false))
+            .is_err());
+        assert_eq!(
+            restored.service.root(Some("test-root")).unwrap()["path"],
+            old_root["path"]
+        );
         assert_eq!(
             restored
                 .service
@@ -285,14 +318,12 @@ fn metadata_restore_originals_recover_only_after_verified_remap_or_root_check() 
             .service
             .resolve_open_target("open_file", &json!({"fileId":"test-file-0"}))
             .is_err());
-        std::fs::write(&target, b"synthetic unity package bytes").unwrap();
-        let result = restored
+        assert_eq!(std::fs::read(&member).unwrap(), damaged);
+        std::fs::write(&member, &correct).unwrap();
+        restored
             .service
-            .disk_operation(action, &args, &AtomicBool::new(false))
+            .disk_operation("remap_root", &args, &AtomicBool::new(false))
             .unwrap();
-        if action == "verify_root" {
-            assert_eq!(result["verified"], 1);
-        }
         let recovered = restored
             .service
             .catalogue
@@ -300,8 +331,21 @@ fn metadata_restore_originals_recover_only_after_verified_remap_or_root_check() 
             .unwrap()
             .unwrap();
         assert_eq!(recovered["status"], "ready");
-        assert_eq!(recovered["originalAvailable"], true);
+        assert_eq!(recovered["originalAvailable"], retained);
         assert!(recovered.get("restoreStatus").is_none());
+        assert_eq!(recovered["relativePath"], artifact["relativePath"]);
+        assert_eq!(recovered["extractedPath"], artifact["extractedPath"]);
+        assert_eq!(
+            recovered["extractedInventory"],
+            artifact["extractedInventory"]
+        );
+        assert_eq!(restored_original.exists(), retained);
+        if retained {
+            assert_eq!(
+                std::fs::read(&restored_original).unwrap(),
+                std::fs::read(&original).unwrap()
+            );
+        }
         assert_eq!(
             restored
                 .service
@@ -309,122 +353,8 @@ fn metadata_restore_originals_recover_only_after_verified_remap_or_root_check() 
                 .unwrap()
                 .canonicalize()
                 .unwrap(),
-            target.canonicalize().unwrap()
+            tree.canonicalize().unwrap()
         );
-    }
-}
-
-#[test]
-fn metadata_restore_extracted_state_requires_verified_members_and_truthful_original_availability() {
-    for action in ["remap_root", "verify_root"] {
-        for retained in [false, true] {
-            let source = Fixture::new();
-            source.seed(1, true);
-            let (artifact, original, source_tree) = source.extracted_archive(0, retained);
-            let manifest = source.service.catalogue.manifest().unwrap();
-            let restored = Fixture::new();
-            restored
-                .service
-                .catalogue
-                .restore_manifest(manifest)
-                .unwrap();
-            let id = artifact["id"].as_str().unwrap();
-            let unknown = restored
-                .service
-                .catalogue
-                .get("artifact", id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(unknown["status"], "unknown");
-            assert_eq!(unknown["restoreStatus"], "ready");
-            assert_eq!(unknown["originalAvailable"], false);
-            let old_root = restored.service.root(Some("test-root")).unwrap();
-            let destination = restored.path.join(if action == "remap_root" {
-                "mapped-library"
-            } else {
-                "library"
-            });
-            let tree = destination.join(artifact["extractedPath"].as_str().unwrap());
-            std::fs::create_dir_all(tree.join("empty")).unwrap();
-            let member = tree.join("model.fbx");
-            let correct = std::fs::read(source_tree.join("model.fbx")).unwrap();
-            let mut damaged = correct.clone();
-            damaged[0] ^= 1;
-            std::fs::write(&member, &damaged).unwrap();
-            let restored_original = destination.join(artifact["relativePath"].as_str().unwrap());
-            if retained {
-                std::fs::create_dir_all(restored_original.parent().unwrap()).unwrap();
-                std::fs::copy(&original, &restored_original).unwrap();
-            }
-            let args = json!({"rootId":"test-root","path":destination});
-            let failed = restored
-                .service
-                .disk_operation(action, &args, &AtomicBool::new(false));
-            if action == "remap_root" {
-                assert!(failed.is_err());
-                assert_eq!(
-                    restored.service.root(Some("test-root")).unwrap()["path"],
-                    old_root["path"]
-                );
-            } else {
-                let failed = failed.unwrap();
-                assert_eq!(failed["verified"], 0);
-                assert_eq!(failed["missing"], 1);
-            }
-            assert_eq!(
-                restored
-                    .service
-                    .catalogue
-                    .get("artifact", id)
-                    .unwrap()
-                    .unwrap(),
-                unknown
-            );
-            assert!(restored
-                .service
-                .resolve_open_target("open_file", &json!({"fileId":"test-file-0"}))
-                .is_err());
-            assert_eq!(std::fs::read(&member).unwrap(), damaged);
-            std::fs::write(&member, &correct).unwrap();
-            let verified = restored
-                .service
-                .disk_operation(action, &args, &AtomicBool::new(false))
-                .unwrap();
-            if action == "verify_root" {
-                assert_eq!(verified["verified"], 1);
-            }
-            let recovered = restored
-                .service
-                .catalogue
-                .get("artifact", id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(recovered["status"], "ready");
-            assert_eq!(recovered["originalAvailable"], retained);
-            assert!(recovered.get("restoreStatus").is_none());
-            assert_eq!(recovered["relativePath"], artifact["relativePath"]);
-            assert_eq!(recovered["extractedPath"], artifact["extractedPath"]);
-            assert_eq!(
-                recovered["extractedInventory"],
-                artifact["extractedInventory"]
-            );
-            assert_eq!(restored_original.exists(), retained);
-            if retained {
-                assert_eq!(
-                    std::fs::read(&restored_original).unwrap(),
-                    std::fs::read(&original).unwrap()
-                );
-            }
-            assert_eq!(
-                restored
-                    .service
-                    .resolve_open_target("open_file", &json!({"fileId":"test-file-0"}))
-                    .unwrap()
-                    .canonicalize()
-                    .unwrap(),
-                tree.canonicalize().unwrap()
-            );
-        }
     }
 }
 

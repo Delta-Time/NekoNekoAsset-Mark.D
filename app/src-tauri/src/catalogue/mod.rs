@@ -798,7 +798,6 @@ pub struct Catalogue {
     pending_move: Arc<Mutex<Option<(Arc<crate::library_lock::LibraryLock>, CatalogueWorkPermit)>>>,
     document_cache: Arc<Mutex<Option<automerge::AutoCommit>>>,
     document_preparation: Arc<Mutex<()>>,
-    exchange_cache: Arc<Mutex<Option<(PathBuf, u64, Vec<String>)>>>,
     list_snapshot: Arc<Mutex<query::ListSnapshot>>,
     worker: Arc<worker::Worker>,
     is_sync_worker: bool,
@@ -1173,7 +1172,6 @@ impl Catalogue {
             pending_move: Arc::new(Mutex::new(None)),
             document_cache: Arc::new(Mutex::new(None)),
             document_preparation: Arc::new(Mutex::new(())),
-            exchange_cache: Arc::new(Mutex::new(None)),
             list_snapshot: Arc::new(Mutex::new(query::ListSnapshot::default())),
             worker: Arc::new(worker::Worker::default()),
             is_sync_worker: false,
@@ -2469,6 +2467,8 @@ impl Catalogue {
         manifest["syncSnapshot"] = json!({"version":1,"encoding":"hex","sha256":format!("{:x}",Sha256::digest(&bytes)),"data":hex::encode(bytes)});
         Ok(manifest)
     }
+    /// Restores metadata only; tests use it to copy one catalogue into another.
+    #[cfg(test)]
     pub fn restore_manifest(&self, manifest: Value) -> Result<()> {
         self.on_sync_worker(move |catalogue| portable::restore(catalogue, manifest, None, None))
     }
@@ -2599,18 +2599,9 @@ impl Catalogue {
             }
             Request::Undo { token } => self.undo(&token),
             Request::Collection(request) => self.manage("collection", request),
-            Request::SaveSearch(request) | Request::SavedSearch(request) => {
-                self.manage("saved_search", request)
-            }
+            Request::SaveSearch(request) => self.manage("saved_search", request),
             Request::CustomCategory(request) => self.custom_category(request),
             Request::Preferences { patch } => self.preferences(Value::Object(patch)),
-            Request::Conflicts => {
-                let conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!(self.current_conflicts(&conn)?))
-            }
             Request::ResolveConflict(choice) => self.on_sync_worker(move |catalogue| {
                 catalogue.mutate_sync(|tx, doc, projections| {
                     let heads = doc.get_heads();
@@ -2619,13 +2610,6 @@ impl Catalogue {
                     Ok(json!({"ok":true}))
                 })
             }),
-            Request::Exchange { folder } => self.exchange(Path::new(&folder)),
-            Request::ExportCsv(request) => portable::csv(self, request),
-            Request::Manifest => self.manifest(),
-            Request::RestoreManifest(request) => {
-                self.restore_manifest(request.into_manifest())?;
-                Ok(json!({"ok":true}))
-            }
         }?;
         self.resolve_previews(&mut result)?;
         Ok(result)
@@ -2699,7 +2683,6 @@ impl Catalogue {
             saved_searches: rows(&tx, "saved_search")?,
             custom_categories: rows(&tx, "custom_category")?,
             tag_options: dictionary["tags"].clone(),
-            avatars: Some(dictionary),
             avatar_options,
             owned_base_options: owned,
         };
@@ -3203,142 +3186,5 @@ impl Catalogue {
             projections.refresh(tx, &id)?;
         }
         Ok(())
-    }
-    fn exchange(&self, folder: &Path) -> Result<Value> {
-        let folder = folder.to_path_buf();
-        self.on_sync_worker(move |catalogue| catalogue.exchange_on_worker(&folder))
-    }
-    fn exchange_on_worker(&self, folder: &Path) -> Result<Value> {
-        self.exchange_with_hook(folder, |_| Ok(()))
-    }
-    fn exchange_with_hook(
-        &self,
-        folder: &Path,
-        after_transfer: impl FnOnce(&Self) -> Result<()>,
-    ) -> Result<Value> {
-        self.flush_sync_outbox()?;
-        ensure!(folder.is_absolute(), "catalogue.absolute_folder_required");
-        let fingerprint = Self::folder_fingerprint(folder)?;
-        let generation = {
-            let conn = self
-                .inner
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-            conn.query_row(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='sync_revision'",
-                [],
-                |r| r.get::<_, u64>(0),
-            )
-            .optional()?
-            .unwrap_or(0)
-        };
-        {
-            let cache = self
-                .exchange_cache
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-            if cache.as_ref().is_some_and(|(path, rev, files)| {
-                path == folder && *rev == generation && *files == fingerprint
-            }) {
-                return Ok(json!({"ok":true,"unchanged":true}));
-            }
-        }
-        // Snapshot the already validated history. Folder IO, incoming operation
-        // validation, batch application and conflict discovery happen unlocked.
-        let (mut outgoing, snapshot_generation, previous_conflicts) = {
-            let (conn, cache) = self.lock_document()?;
-            let previous = conn
-                .query_row(
-                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key='sync_revision'",
-                    [],
-                    |r| r.get::<_, u64>(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            let conflicts: Option<String> = conn
-                .query_row(
-                    "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let conflicts: Vec<Value> = conflicts
-                .map(|v| serde_json::from_str(&v))
-                .transpose()?
-                .unwrap_or_default();
-            (cache.as_ref().unwrap().clone(), previous, conflicts)
-        };
-        let snapshot_heads = outgoing.get_heads();
-        let transfer = sync::exchange_validated(&mut outgoing, folder)?;
-        let fields = sync::changed_fields(&mut outgoing, &snapshot_heads)?;
-        let conflicts = sync::changed_conflicts(&outgoing, &previous_conflicts, &fields)?;
-        let remote_changed = snapshot_heads != outgoing.get_heads();
-        after_transfer(self)?;
-        self.mutate_sync(|tx, doc, projections| {
-            let heads = doc.get_heads();
-            if heads == snapshot_heads {
-                if remote_changed {
-                    *doc = outgoing;
-                    Self::project_fields(tx, doc, projections, fields)?;
-                    Self::save_conflicts(tx, &conflicts)?;
-                }
-            } else {
-                // Concurrent local writes remain authoritative inputs to merge.
-                doc.merge(&mut outgoing)?;
-                if heads != doc.get_heads() {
-                    let fields = sync::changed_fields(doc, &heads)?;
-                    let previous: Option<String> = tx
-                        .query_row(
-                            "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                            [],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    let previous: Vec<Value> = previous
-                        .map(|v| serde_json::from_str(&v))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let conflicts = sync::changed_conflicts(doc, &previous, &fields)?;
-                    Self::project_fields(tx, doc, projections, fields)?;
-                    Self::save_conflicts(tx, &conflicts)?;
-                }
-            }
-            Ok(())
-        })?;
-        // A concurrent local edit was not exported; retaining the captured
-        // generation forces the next poll to publish it rather than skip it.
-        let exported_generation = snapshot_generation + u64::from(remote_changed);
-        let after = Self::folder_fingerprint(folder)?;
-        if fingerprint == after {
-            *self
-                .exchange_cache
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))? =
-                Some((folder.to_path_buf(), exported_generation, after));
-        }
-        Ok(
-            json!({"ok":true,"read":{"imported":transfer["imported"],"pendingDependencies":transfer["pendingDependencies"],"ignoredFiles":transfer["ignoredFiles"]},"write":{"exported":transfer["exported"],"pendingDependencies":transfer["pendingDependencies"]}}),
-        )
-    }
-    fn folder_fingerprint(folder: &Path) -> Result<Vec<String>> {
-        if !folder.exists() {
-            return Ok(vec![]);
-        }
-        let mut result = vec![];
-        for entry in std::fs::read_dir(folder)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|s| s.to_str()) != Some("amchange") {
-                continue;
-            }
-            let meta = entry.metadata()?;
-            result.push(format!(
-                "{}:{}:{:?}",
-                entry.file_name().to_string_lossy(),
-                meta.len(),
-                meta.modified()?
-            ));
-        }
-        result.sort();
-        Ok(result)
     }
 }

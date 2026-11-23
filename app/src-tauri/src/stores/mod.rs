@@ -631,7 +631,7 @@ impl StoreService {
             StoreProvider::Gumroad => self.gumroad.command(app, action, args).await,
             StoreProvider::Jinxxy => self.jinxxy.command(app, action, args).await,
         };
-        if result.is_err() && matches!(action, "account_login" | "login") {
+        if result.is_err() && action == "account_login" {
             if let Some(id) = account_id {
                 if self.catalogue.discard_unverified_account(&id)? {
                     let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
