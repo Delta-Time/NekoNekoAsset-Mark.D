@@ -122,6 +122,19 @@ export function fileCountLabel(
   if (!count) return '—';
   return `${ratio ? product.downloaded + '/' : ''}${count}+`;
 }
+/** Bytes in 1024-based units, with one decimal from KB up, such as `1.0 GB`. */
+export function byteLabel(locale: Locale, bytes: number): string {
+  const unit = [4, 3, 2, 1].find((power) => bytes >= 1024 ** power) ?? 0,
+    digits = unit ? 1 : 0;
+  return (
+    new Intl.NumberFormat(locale, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(bytes / 1024 ** unit) +
+    ' ' +
+    ['B', 'KB', 'MB', 'GB', 'TB'][unit]
+  );
+}
 export function isFileDownloaded(file: AssetFile): boolean {
   return ['ready', 'downloaded', 'extracting', 'extractionFailed'].includes(file.status);
 }

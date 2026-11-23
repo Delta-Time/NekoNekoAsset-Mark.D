@@ -10,7 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Locale, Product } from '../../model';
-import { fileCountLabel, isFileDownloaded, isProductDownloaded } from '../../model';
+import { byteLabel, fileCountLabel, isFileDownloaded, isProductDownloaded } from '../../model';
 import { table } from '../../messages';
 import { hasLocalCopy, provenanceLines } from './inspector-facts';
 import type { InspectorPanes } from './useInspectorPanes';
@@ -195,7 +195,7 @@ export default function InspectorFiles({
               )}
               <small>
                 {[
-                  file.size,
+                  typeof file.sizeBytes === 'number' && byteLabel(locale, file.sizeBytes),
                   L(file.status),
                   file.kept && L(file.userAdded ? 'fileAddedByYou' : 'fileRemovedFromStore'),
                 ]

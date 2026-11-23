@@ -13,6 +13,7 @@ import {
 import { useState, useRef, useEffect } from 'react';
 import { isActive, unfinishedLocalImport } from './jobs';
 import { invokeAction } from '../../backend';
+import { byteLabel } from '../../model';
 import { RefreshCw } from 'lucide-react';
 import RestoreConfirmation from '../../RestoreConfirmation';
 import ResetApp from '../../ResetApp';
@@ -51,21 +52,7 @@ export function Storage(c: Ctx) {
   const bytes = (value?: number) => {
     if (usage?.rootId !== current?.id) return <RefreshCw size={13} className="sync-spinning" />;
     if (value === undefined) return '—';
-    const unit =
-      value >= 1024 ** 4
-        ? 4
-        : value >= 1024 ** 3
-          ? 3
-          : value >= 1024 ** 2
-            ? 2
-            : value >= 1024
-              ? 1
-              : 0;
-    return (
-      new Intl.NumberFormat(c.locale, { maximumFractionDigits: 1 }).format(value / 1024 ** unit) +
-      ' ' +
-      ['B', 'KB', 'MB', 'GB', 'TB'][unit]
-    );
+    return byteLabel(c.locale, value);
   };
   const [moving, setMoving] = useState(false);
   const location = (action: 'choose' | 'move' | 'remap') =>

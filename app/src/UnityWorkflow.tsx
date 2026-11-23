@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Download } from 'lucide-react';
-import type { Locale, Product } from './model';
+import { byteLabel, type Locale, type Product } from './model';
 import {
   checkUpdates,
   openExternal,
@@ -173,14 +173,6 @@ export default function UnityWorkflow({
       setSending(false);
     }
   }
-  const bytes = (size: number) => {
-    const unit = size >= 1024 ** 3 ? 3 : size >= 1024 ** 2 ? 2 : size >= 1024 ? 1 : 0;
-    return (
-      new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(size / 1024 ** unit) +
-      ' ' +
-      ['B', 'KB', 'MB', 'GB'][unit]
-    );
-  };
   const fileList = (kind: UnityLeaf['kind']) => {
     const columns = groups
         .map((group) => ({ ...group, files: group.files.filter((file) => file.kind === kind) }))
@@ -257,7 +249,7 @@ export default function UnityWorkflow({
                         </small>
                       )}
                     </span>
-                    <small className="unity-file-size">{bytes(file.bytes)}</small>
+                    <small className="unity-file-size">{byteLabel(locale, file.bytes)}</small>
                   </label>
                 ))}
               </section>
