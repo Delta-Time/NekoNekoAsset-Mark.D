@@ -208,19 +208,22 @@ pub(super) fn source_incomplete_product_count(
         .count() as u64
 }
 
+/// The catalogue ID of a file one account was offered.
+pub(super) fn file_record_id(account: &str, file: &parser::File) -> String {
+    format!(
+        "{account}:{}:{}",
+        file.id,
+        file.variant_id.as_deref().unwrap_or("")
+    )
+}
+
 pub(super) fn observed_file_ids<'a>(
     account: &str,
     rows: impl IntoIterator<Item = &'a parser::Row>,
 ) -> BTreeSet<String> {
     rows.into_iter()
         .flat_map(|row| &row.files)
-        .map(|file| {
-            format!(
-                "{account}:{}:{}",
-                file.id,
-                file.variant_id.as_deref().unwrap_or("")
-            )
-        })
+        .map(|file| file_record_id(account, file))
         .collect()
 }
 

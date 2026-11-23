@@ -24,11 +24,12 @@ fn hidden_set(unavailable: bool, terms_only: bool) -> usize {
     usize::from(unavailable) | usize::from(terms_only) << 1
 }
 
-/// A store product whose store lists no file for it and that has no bytes on
-/// disk cannot be downloaded. Derived from stored rows, so none is rewritten.
+/// A store product that has no bytes on disk and whose store lists no file for it, or only
+/// files whose free offer ended, cannot be downloaded. Derived from stored rows, so none is
+/// rewritten.
 macro_rules! unavailable_sql {
     () => {
-        "(COALESCE(json_extract(p.summary,'$.provider'),'') IN('booth','gumroad','jinxxy') AND COALESCE(json_extract(p.summary,'$.total'),1)=0 AND NOT EXISTS(SELECT 1 FROM entities x WHERE x.kind='artifact' AND x.product_id=p.id AND (json_extract(x.body,'$.originalAvailable')=1 OR json_extract(x.body,'$.extractedPath') IS NOT NULL)))"
+        "(COALESCE(json_extract(p.summary,'$.provider'),'') IN('booth','gumroad','jinxxy') AND NOT EXISTS(SELECT 1 FROM entities x WHERE x.kind='artifact' AND x.product_id=p.id AND (json_extract(x.body,'$.originalAvailable')=1 OR json_extract(x.body,'$.extractedPath') IS NOT NULL)) AND COALESCE(json_extract(p.summary,'$.endedFiles'),0)=COALESCE(json_extract(p.summary,'$.total'),1))"
     };
 }
 /// How acquisition row `a` was obtained. An account that received the product as a gift

@@ -47,6 +47,10 @@ pub struct Product {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub kept_files: Option<usize>,
+    /// Listed files whose free offer had ended when a download asked for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ended_files: Option<usize>,
     pub files: Vec<AssetFile>,
     /// False on summaries, whose `files` is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]

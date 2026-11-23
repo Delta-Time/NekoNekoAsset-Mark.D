@@ -62,6 +62,10 @@ export type Product = {
    * Files outside the store's current list that are still kept.
    */
   keptFiles?: number;
+  /**
+   * Listed files whose free offer had ended when a download asked for them.
+   */
+  endedFiles?: number;
   files: Array<AssetFile>;
   /**
    * False on summaries, whose `files` is empty.

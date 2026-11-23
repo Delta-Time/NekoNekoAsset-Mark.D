@@ -379,6 +379,25 @@ fn a_file_whose_free_offer_ended_keeps_its_mark_through_clear_and_reopen() {
     let revisions = reopened.change_domains().unwrap();
     drop(reopened);
     assert_eq!(fixture.open().change_domains().unwrap(), revisions);
+    {
+        // A stored projection that shows the ended file as a failure.
+        let c = fixture.open();
+        let conn = c.inner.lock().unwrap();
+        conn.execute(
+            "UPDATE products SET body=json_set(body,'$.files[0].status','failed',             '$.files[0].errorCode','free_offer_unavailable') WHERE id='p'",
+            [],
+        )
+        .unwrap();
+    }
+    let reopened = fixture.open();
+    let file = projection(&reopened, "p")["files"][0].clone();
+    assert_eq!(
+        (&file["id"], &file["offerEnded"], &file["status"]),
+        (&json!("ended"), &json!(true), &json!("notDownloaded"))
+    );
+    let revisions = reopened.change_domains().unwrap();
+    drop(reopened);
+    assert_eq!(fixture.open().change_domains().unwrap(), revisions);
 }
 
 #[test]

@@ -1004,6 +1004,7 @@ impl StorageService {
                 }
                 artifact["status"] = json!("notDownloaded");
                 artifact["errorCode"] = json!(io::stable_error(&error));
+                artifact["updatedAt"] = json!(now());
                 self.catalogue.put("artifact", &id, artifact)?;
                 Err(error)
             }
@@ -1013,6 +1014,7 @@ impl StorageService {
                 if pending["originalAvailable"] != true {
                     pending["status"] = json!("notDownloaded");
                     pending["errorCode"] = json!(io::stable_error(error));
+                    pending["updatedAt"] = json!(now());
                     self.catalogue.put("artifact", &id, pending)?;
                 }
             }

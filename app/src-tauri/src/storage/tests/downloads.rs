@@ -958,6 +958,69 @@ async fn automatic_jobs_exclude_explicitly_disconnected_account_files() {
 }
 
 #[tokio::test]
+async fn a_free_offer_open_again_lists_its_asset_and_downloads_with_others() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let c = &f.service.catalogue;
+    c.put(
+        "product",
+        "42",
+        json!({"id":"42","title":"Synthetic clothing","category":"Clothes","store":"BOOTH"}),
+    )
+    .unwrap();
+    let mark = |file: &str, code: &str| {
+        let id = format!("pending-{}", io::key(file));
+        c.put("artifact",&id,json!({"id":id,"productId":"42","fileId":file,"revision":null,"status":"notDownloaded","errorCode":code,"originalAvailable":false,"updatedAt":"2026-01-02T00:00:00Z"})).unwrap();
+        id
+    };
+    let ended = mark("test-file-0", "free_offer_unavailable");
+    let refused = mark("test-file-1", "store_file_unavailable");
+    // The list Hide unavailable assets leaves.
+    let listed = || {
+        c.command(
+            "query",
+            json!({"sort":"title","hideUnavailable":true,"includeFiles":false,"presentation":"list"}),
+        )
+        .unwrap()["matchedIds"]
+            == json!(["42"])
+    };
+    assert!(!listed());
+    let reopen = |read_at: &str| {
+        let files = ["test-file-0", "test-file-1", "unknown"].map(str::to_owned);
+        reopen_free_offers(c, files, read_at).unwrap()
+    };
+    // A page read before the download found the offer closed says nothing about it now.
+    assert!(reopen("2026-01-01T00:00:00Z").is_empty());
+    assert!(!listed());
+    assert_eq!(
+        reopen("2026-01-03T00:00:00+00:00"),
+        BTreeSet::from(["42".to_owned()])
+    );
+    assert!(c.get("artifact", &ended).unwrap().is_none());
+    assert!(listed());
+    assert_eq!(
+        c.get("artifact", &refused).unwrap().unwrap()["errorCode"],
+        "store_file_unavailable"
+    );
+    c.put(
+        "product",
+        "43",
+        json!({"id":"43","title":"Other synthetic product"}),
+    )
+    .unwrap();
+    let queued = f
+        .service
+        .enqueue(&json!({"productIds":["42","43"]}))
+        .await
+        .unwrap();
+    let job = c
+        .get("job", queued["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(job["fileIds"], json!(["test-file-0"]));
+}
+
+#[tokio::test]
 async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_for_alone() {
     let f = Fixture::new();
     f.seed(2, true);

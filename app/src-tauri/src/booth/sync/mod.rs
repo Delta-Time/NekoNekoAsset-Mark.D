@@ -19,11 +19,11 @@ use checkpoints::{
 };
 use free_history::{
     augment_free_row, eligible_free_rows, free_history_positions, remember_free_history,
-    saved_free_history, settled_free_absence, stage_free_orders,
+    reopen_free_offers, saved_free_history, settled_free_absence, stage_free_orders,
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use publication::{
-    additive_version, observed_file_ids, observed_grant_rows, product_draft_scope,
+    additive_version, file_record_id, observed_file_ids, observed_grant_rows, product_draft_scope,
     product_publication_done, publication_entries, publication_entry_has_complete_grant,
     publication_entry_published, publication_manifest, publication_membership_proven,
     publication_products, publication_progress, published_product_count, ready_product_entries,
@@ -936,6 +936,7 @@ impl BoothService {
             return Ok(None);
         }
         let mut checkpoint = Checkpoint::fresh(account, "free", "selected")?;
+        let read_at = now();
         // Item pages are public, so the history's first page is what tells a lapsed session:
         // the job stops there and asks for sign-in, as a sync would.
         let head = format!("{}?page=1", safety::source_path("free")?);
@@ -959,6 +960,10 @@ impl BoothService {
             }) else {
                 return Ok(None);
             };
+            source_changed(
+                app,
+                reopen_free_offers(&self.inner.catalogue, account, evidence, &read_at),
+            );
             for mut row in history {
                 augment_free_row(&mut row, evidence);
                 row_routes.insert(row.source_record_id.clone(), route.clone());
@@ -1374,6 +1379,15 @@ impl BoothService {
                 publications,
             )
             .await?;
+        // This pass read its item pages after it started, however long it was interrupted.
+        let read_at = checkpoint.read_from();
+        let reopened: BTreeSet<_> = free_evidence
+            .values()
+            .flat_map(|evidence| {
+                reopen_free_offers(&self.inner.catalogue, account, evidence, &read_at)
+            })
+            .collect();
+        source_changed(app, reopened);
         let (all_rows, refreshed_products, retained_observations) = merge_pass_rows(
             &checkpoint,
             baseline,
@@ -3834,11 +3848,7 @@ impl BoothService {
         let entitlement_id = format!("{account}:{source}:{product_id}");
         let mut file_ids = vec![];
         for f in &row.files {
-            let file_id = format!(
-                "{account}:{}:{}",
-                f.id,
-                f.variant_id.as_deref().unwrap_or("")
-            );
+            let file_id = file_record_id(account, f);
             file_ids.push(file_id.clone());
             let existing = batch.get("remote_file", &file_id)?;
             let observation = observation_job

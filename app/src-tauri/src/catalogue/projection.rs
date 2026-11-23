@@ -315,7 +315,8 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
 }
 /// Store products whose projection predates what a failed download shows: a file the
 /// store refused as no longer offered is still an ordinary row, a file whose free offer
-/// ended has no mark, or a file without bytes does not show how its last attempt failed.
+/// ended has no mark, shows as failed or is not counted, or a file without bytes does not
+/// show how its last attempt failed.
 pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT a.product_id FROM entities a
@@ -326,8 +327,11 @@ pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
            AND COALESCE(json_extract(f.value,'$.kept'),0)=0
            AND (json_extract(a.body,'$.errorCode')='store_file_unavailable'
              OR (json_extract(a.body,'$.errorCode')='free_offer_unavailable'
-               AND json_extract(f.value,'$.offerEnded') IS NULL)
+               AND (json_extract(f.value,'$.offerEnded') IS NULL
+                 OR json_extract(f.value,'$.status')='failed'
+                 OR json_extract(p.summary,'$.endedFiles') IS NULL))
              OR (a.id GLOB 'pending-*'
+               AND json_extract(a.body,'$.errorCode')<>'free_offer_unavailable'
                AND json_extract(a.body,'$.status') NOT IN
                  ('ready','queued','downloading','extracting','processing','cancelled')
                AND json_extract(f.value,'$.status')<>'failed'
@@ -392,9 +396,14 @@ fn offer_ended(artifact: &Value) -> bool {
 }
 /// The record a file's last download attempt left, when that attempt failed. Closing the
 /// App interrupts an attempt without fault: its download job resumes at the next start.
+/// An ended free offer is no fault either: nothing can be retried, and the row says the
+/// offer ended.
 fn failed_attempt(artifact: &Value) -> bool {
     text(artifact, "id").starts_with("pending-")
-        && text(artifact, "errorCode") != "interrupted"
+        && !matches!(
+            text(artifact, "errorCode"),
+            "interrupted" | "free_offer_unavailable"
+        )
         && artifact_failed(artifact)
 }
 /// What a failed last attempt adds to its file's row, until a new attempt replaces that
@@ -581,9 +590,19 @@ fn update_status(product: &mut Value, jobs: &[Value]) {
     // Downloaded describes the files currently attached to this product. Store
     // discovery may still be running; a later observed file makes it Partial.
     let fully_downloaded = !files.is_empty() && downloaded == files.len();
+    // The list reads summaries, so a free offer ending or opening again reaches it here.
+    let ended = files
+        .iter()
+        .filter(|file| file["offerEnded"] == true)
+        .count();
     product["status"] = json!(status);
     product["downloaded"] = json!(downloaded);
     product["fullyDownloaded"] = json!(fully_downloaded);
+    if ended > 0 {
+        product["endedFiles"] = json!(ended);
+    } else if let Some(product) = product.as_object_mut() {
+        product.remove("endedFiles");
+    }
 }
 
 /// Local state never changes taxonomy, filename search or compatibility evidence.
@@ -1721,6 +1740,7 @@ pub(super) fn summary(product: &Value) -> Value {
         "manifestComplete",
         "knownFileCount",
         "keptFiles",
+        "endedFiles",
         "fullyDownloaded",
         "previewUrl",
         "sourcePreviewUrl",

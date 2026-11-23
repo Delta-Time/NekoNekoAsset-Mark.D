@@ -172,6 +172,41 @@ fn skipped_failures(alone: bool) -> &'static [&'static str] {
         &["store_file_unavailable", "free_offer_unavailable"]
     }
 }
+/// Files a free item page read at `read_at` offers again: the record a closed offer left on
+/// each one's last download before then goes, so its row shows it as offered and Download
+/// takes it. A failed automatic download stays failed, as any does until the user retries.
+/// A record goes only while unchanged, so a download that started since keeps its own.
+/// Returns the products whose files changed.
+pub(crate) fn reopen_free_offers(
+    catalogue: &Catalogue,
+    file_ids: impl IntoIterator<Item = String>,
+    read_at: &str,
+) -> Result<BTreeSet<String>> {
+    let time = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok();
+    let read_at = time(read_at);
+    let mut products = BTreeSet::new();
+    for file_id in file_ids {
+        let id = format!("pending-{}", io::key(&file_id));
+        let Some(record) = catalogue.get("artifact", &id)? else {
+            continue;
+        };
+        // Records from before failures carried their time are older than any read.
+        let ended_before = match record["updatedAt"].as_str().map(time) {
+            Some(ended) => ended.zip(read_at).is_some_and(|(ended, read)| ended < read),
+            None => true,
+        };
+        if record["errorCode"] == "free_offer_unavailable"
+            && ended_before
+            && catalogue.write_many_if_unchanged(
+                vec![("artifact".into(), id.clone(), None)],
+                vec![("artifact".into(), id, Some(record.clone()))],
+            )?
+        {
+            products.extend(record["productId"].as_str().map(str::to_owned));
+        }
+    }
+    Ok(products)
+}
 fn selected_download_files(files: Vec<Value>, selected: &Value) -> Result<Vec<Value>> {
     if selected.is_null() {
         return Ok(files);

@@ -214,6 +214,14 @@ pub(super) fn stage_free_orders(
     Ok(products)
 }
 
+/// The item page lists every file it offers for free now.
+pub(super) fn offers_free_files(evidence: &free_item::Evidence) -> bool {
+    evidence.manifest_complete
+        && !evidence.unavailable
+        && evidence.error_code.is_none()
+        && !evidence.files.is_empty()
+}
+
 pub(super) fn augment_free_row(row: &mut parser::Row, evidence: &free_item::Evidence) {
     if row.product_id.as_deref() == Some(evidence.product_id.as_str()) {
         row.manifest_complete = false;
@@ -221,14 +229,34 @@ pub(super) fn augment_free_row(row: &mut parser::Row, evidence: &free_item::Evid
     if row.product_id.as_deref() == Some(evidence.product_id.as_str())
         && !row.unavailable
         && row.error_code.is_none()
-        && evidence.manifest_complete
-        && !evidence.unavailable
-        && evidence.error_code.is_none()
-        && !evidence.files.is_empty()
+        && offers_free_files(evidence)
     {
         row.files = evidence.files.clone();
         row.manifest_complete = true;
     }
+}
+
+/// A free offer that had closed when a download asked for its files is open again on the
+/// item page read at `read_at`: those files show as offered again. Returns the products
+/// that changed. Best effort: a file stays marked until a later read if this fails.
+pub(super) fn reopen_free_offers(
+    catalogue: &crate::catalogue::Catalogue,
+    account: &str,
+    evidence: &free_item::Evidence,
+    read_at: &str,
+) -> BTreeSet<String> {
+    if !offers_free_files(evidence) {
+        return BTreeSet::new();
+    }
+    crate::storage::reopen_free_offers(
+        catalogue,
+        evidence
+            .files
+            .iter()
+            .map(|file| file_record_id(account, file)),
+        read_at,
+    )
+    .unwrap_or_default()
 }
 
 pub(super) fn settled_free_absence(

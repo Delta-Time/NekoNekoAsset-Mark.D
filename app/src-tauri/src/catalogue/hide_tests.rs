@@ -439,6 +439,59 @@ fn unavailable_store_products_follow_the_list_preference_and_keep_their_records(
 }
 
 #[test]
+fn a_store_product_whose_free_offers_all_ended_is_unavailable_and_needs_no_attention() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put(
+        "account",
+        "account",
+        json!({"id":"account","provider":"booth"}),
+    )
+    .unwrap();
+    for id in ["f-ended", "g-mixed", "h-ended-kept"] {
+        product(&c, id, "booth");
+    }
+    let mut records = vec![];
+    for (product, files) in [
+        ("f-ended", &["f-1"][..]),
+        ("g-mixed", &["g-1", "g-2"]),
+        ("h-ended-kept", &["h-1"]),
+    ] {
+        for id in files {
+            records.push(("remote_file".into(), (*id).to_owned(), json!({"id":id,"productId":product,"accountId":"account","name":format!("{id}.zip"),"revision":"r1"})));
+        }
+        records.push(("entitlement".into(), product.to_owned(), json!({"id":product,"productId":product,"accountId":"account","fileIds":files,"manifestComplete":true})));
+    }
+    // The record a download leaves when the item page says the free offer ended.
+    for (product, file) in [
+        ("f-ended", "f-1"),
+        ("g-mixed", "g-1"),
+        ("h-ended-kept", "h-1"),
+    ] {
+        records.push(("artifact".into(), format!("pending-{file}"), json!({"id":format!("pending-{file}"),"productId":product,"fileId":file,"revision":null,"status":"notDownloaded","errorCode":"free_offer_unavailable","originalAvailable":false})));
+    }
+    // Bytes an earlier download left on disk keep a product available.
+    records.push(("artifact".into(), "h-old".into(), json!({"id":"h-old","productId":"h-ended-kept","fileId":"h-old-file","revision":"r0","status":"ready","originalAvailable":true,"relativePath":"assets/h/old.zip"})));
+    c.put_many(records).unwrap();
+    let details = c
+        .command("product_details", json!({"id":"f-ended"}))
+        .unwrap();
+    assert_eq!(details["status"], "notDownloaded");
+    assert_eq!(details["files"][0]["offerEnded"], true);
+    assert_eq!(details["files"][0]["status"], "notDownloaded");
+    let query = |hide: bool| {
+        c.command(
+            "query",
+            json!({"sort":"title","hideUnavailable":hide,"includeFiles":false,"presentation":"list"}),
+        )
+        .unwrap()["matchedIds"]
+            .clone()
+    };
+    assert_eq!(query(false), json!(["f-ended", "g-mixed", "h-ended-kept"]));
+    assert_eq!(query(true), json!(["g-mixed", "h-ended-kept"]));
+}
+
+#[test]
 fn free_downloads_of_only_a_listings_terms_follow_their_preference() {
     let fixture = Fixture::new();
     let c = fixture.open();
