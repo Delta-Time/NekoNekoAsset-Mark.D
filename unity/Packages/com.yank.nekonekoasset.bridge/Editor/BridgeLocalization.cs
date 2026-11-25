@@ -103,7 +103,7 @@ namespace NekoNekoAsset.Bridge
             ["blocked"] = new[] { "Blocked", "インポート不可", "가져올 수 없음", "无法导入", "無法匯入" },
             ["blockedCount"] = new[] { "{0} Blocked", "インポート不可 {0}件", "가져올 수 없음 {0}", "{0} 无法导入", "{0} 無法匯入" },
             ["updateCount"] = new[] { "{0} Update", "更新 {0}件", "업데이트 {0}", "{0} 更新", "{0} 更新" },
-            ["guidConflictCount"] = new[] { "{0} GUID conflict", "GUID競合 {0}件", "GUID 충돌 {0}", "{0} GUID 冲突", "{0} GUID 衝突" },
+            ["guidConflictCount"] = new[] { "{0} GUID conflict", "GUID の競合 {0} 件", "GUID 충돌 {0}", "{0} GUID 冲突", "{0} GUID 衝突" },
             ["pathTakenCount"] = new[] { "{0} Path taken", "パス競合 {0}件", "경로 사용 중 {0}", "{0} 路径已占用", "{0} 路徑已占用" },
             ["identicalCount"] = new[] { "{0} Identical", "同一ファイル {0} 件", "동일 {0}", "{0} 相同", "{0} 相同" },
             ["selectedCount"] = new[] { "{0} / {1} selected", "{0} / {1} 件を選択済み", "{0} / {1} 선택", "已选 {0} / {1}", "已選 {0} / {1}" },
