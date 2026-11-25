@@ -248,6 +248,25 @@ fn retain_source_tree_copy_between(
     publish_source_tree_part(root, relative, &part, hash, size, cancel)
 }
 
+/// One file's download: its job, its catalogue records and where its bytes go.
+struct DownloadTarget<'a> {
+    app: &'a tauri::AppHandle,
+    job_id: &'a str,
+    root: &'a Value,
+    file: &'a Value,
+    cancel: &'a Arc<AtomicBool>,
+    selected: bool,
+    id: &'a str,
+    product: &'a str,
+    name: &'a str,
+    product_directory: &'a str,
+    source_tree: &'a Option<String>,
+    relative: &'a String,
+    root_path: &'a PathBuf,
+    part: &'a PathBuf,
+    destination: &'a PathBuf,
+}
+
 impl StorageService {
     pub(super) fn commit_download_records(
         &self,
@@ -484,7 +503,14 @@ impl StorageService {
         let files = self.job_files(job, files)?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
         let attempted_files = files.clone();
-        ensure!(!files.is_empty(), "manifest_incomplete");
+        ensure_files(job, &files)?;
+        // Queued before its files were all Ready; an interrupted extraction still runs.
+        if job["automatic"] == true && self.all_at_revision(&files, &["ready"])? {
+            job["fileIds"] = json!(files.iter().map(|f| f["id"].clone()).collect::<Vec<_>>());
+            job["manifestFingerprint"] = json!(fingerprint(&files));
+            job["progress"] = json!(100.0);
+            return Ok(());
+        }
         validate_source_tree_paths(&files)?;
         job["fileIds"] = json!(files.iter().map(|f| f["id"].clone()).collect::<Vec<_>>());
         self.catalogue
@@ -555,13 +581,19 @@ impl StorageService {
         io::check_cancel(cancel)?;
         // A failed sibling never discards completed bytes. Extract only after all volumes have arrived.
         let mut error = None;
+        let mut verified = HashSet::new();
         job["failures"] = json!({});
         for (file, result) in results {
-            if let Err(failure) = result {
-                let id = file["id"].as_str().unwrap_or("");
-                job["failures"][id] = json!({"fileId":id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
-                if error.is_none() {
-                    error = Some(failure);
+            let id = file["id"].as_str().unwrap_or("");
+            match result {
+                Ok(()) => {
+                    verified.insert(id.to_owned());
+                }
+                Err(failure) => {
+                    job["failures"][id] = json!({"fileId":id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
+                    if error.is_none() {
+                        error = Some(failure);
+                    }
                 }
             }
         }
@@ -572,8 +604,48 @@ impl StorageService {
         let (all_files, _) = self.remote_files(&product)?;
         let files = self.job_files(job, all_files.clone())?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
-        let mut processed = Vec::new();
-        for before in &attempted_files {
+        let processed = self.settled_files(&attempted_files, &files, &verified)?;
+        job["manifestFingerprint"] = json!(fingerprint(&processed));
+        if processed.len() != files.len() && error.is_none() {
+            error = Some(anyhow::anyhow!("manifest_changed"));
+        }
+        self.extract_downloaded_files(
+            app, job, &job_id, &root, &root_path, &files, &all_files, cancel, &mut error,
+        )
+        .await?;
+        // An archive kept beside its Ready extraction goes only once every transfer of the
+        // job has settled: a sibling that reused those bytes is recorded by then, and the
+        // removal keeps a path any record still needs.
+        for file in files.iter().filter(|file| {
+            verified.contains(file["id"].as_str().unwrap_or(""))
+                && !(file["provider"] == "jinxxy" && !file["sourceRelativePath"].is_null())
+        }) {
+            if let Some(artifact) = self.catalogue.get("artifact", &artifact_id(file))? {
+                self.remove_kept_original(&root, &root_path, &artifact)
+                    .await;
+            }
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
+        // Completion describes the known selected work, not source coverage.
+        // Catalogue keeps a partial product partial until every required file is Ready.
+        job["progress"] = json!(100.0);
+        Ok(())
+    }
+
+    /// The list a download settled: each file it attempted, as its current record when an
+    /// artifact holds that revision's bytes, else as attempted. A store read since the job
+    /// verified a file asks for that again, which the job did not do, so the settled record
+    /// stays the verified one and automatic downloads still ask for the new request.
+    pub(super) fn settled_files(
+        &self,
+        attempted: &[Value],
+        files: &[Value],
+        verified: &HashSet<String>,
+    ) -> Result<Vec<Value>> {
+        let mut settled = Vec::new();
+        for before in attempted {
             let current = files.iter().find(|f| f["id"] == before["id"]);
             let bound = if let Some(current) = current {
                 self.catalogue
@@ -587,23 +659,39 @@ impl StorageService {
             } else {
                 false
             };
-            processed.push(if bound {
-                current.unwrap().clone()
+            settled.push(if bound {
+                let mut current = current.unwrap().clone();
+                if verified.contains(current["id"].as_str().unwrap_or("")) {
+                    current["requiresContentVerification"] = json!(false);
+                }
+                current
             } else {
                 before.clone()
             });
         }
-        job["manifestFingerprint"] = json!(fingerprint(&processed));
-        if processed.len() != files.len() && error.is_none() {
-            error = Some(anyhow::anyhow!("manifest_changed"));
-        }
+        Ok(settled)
+    }
+
+    /// Makes each downloaded file Ready, extracting archives and recording failures on the job.
+    async fn extract_downloaded_files(
+        &self,
+        app: &tauri::AppHandle,
+        job: &mut Value,
+        job_id: &str,
+        root: &Value,
+        root_path: &Path,
+        files: &[Value],
+        all_files: &[Value],
+        cancel: &Arc<AtomicBool>,
+        error: &mut Option<anyhow::Error>,
+    ) -> Result<()> {
         let seven_zip = self.seven_zip(app)?;
-        for file in &files {
+        for file in files {
             io::check_cancel(cancel)?;
             let id = artifact_id(file);
             let Some(mut artifact) = self.catalogue.get("artifact", &id)? else {
                 if error.is_none() {
-                    error = Some(anyhow::anyhow!("manifest_changed"));
+                    *error = Some(anyhow::anyhow!("manifest_changed"));
                 }
                 continue;
             };
@@ -614,18 +702,18 @@ impl StorageService {
                 let repair = async {
                     let directory = io::required_string(&artifact, "productDirectory")?.to_owned();
                     ensure!(
-                        source_tree_relative(file, &job_id, &directory)?.as_deref()
+                        source_tree_relative(file, job_id, &directory)?.as_deref()
                             == artifact["relativePath"].as_str(),
                         "source_tree_incomplete"
                     );
                     ensure!(
                         artifact["originalAvailable"] == true
-                            && self.artifact_verified(&artifact, &root_path).await?,
+                            && self.artifact_verified(&artifact, root_path).await?,
                         "source_tree_incomplete"
                     );
                     let (mut updates, mut expected) = self
                         .prepare_selected_source_siblings(
-                            &root, &root_path, file, &all_files, &job_id, &directory, cancel,
+                            root, root_path, file, all_files, job_id, &directory, cancel,
                         )
                         .await?;
                     expected.push((
@@ -648,7 +736,7 @@ impl StorageService {
                         let file_id = file["id"].as_str().unwrap_or("");
                         job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&failure)});
                         if error.is_none() {
-                            error = Some(failure);
+                            *error = Some(failure);
                         }
                         continue;
                     }
@@ -660,30 +748,24 @@ impl StorageService {
             ) {
                 continue;
             }
-            let path = io::safe_join(&root_path, io::required_string(&artifact, "relativePath")?)?;
+            let path = io::safe_join(root_path, io::required_string(&artifact, "relativePath")?)?;
             if !archive::is_supported_archive(&path) {
                 artifact["status"] = json!("ready");
                 self.catalogue.put("artifact", &id, artifact)?;
                 continue;
             }
             let result = self
-                .extract_for_download(&seven_zip, &root, &mut artifact, &all_files, cancel)
+                .extract_for_download(&seven_zip, root, &mut artifact, all_files, cancel)
                 .await;
             if let Err(e) = result {
                 let file_id = file["id"].as_str().unwrap_or("");
                 job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&e)});
                 if error.is_none() {
-                    error = Some(e)
+                    *error = Some(e)
                 }
             }
-            self.changed(app, Some(&job_id));
+            self.changed(app, Some(job_id));
         }
-        if let Some(error) = error {
-            return Err(error);
-        }
-        // Completion describes the known selected work, not source coverage.
-        // Catalogue keeps a partial product partial until every required file is Ready.
-        job["progress"] = json!(100.0);
         Ok(())
     }
     async fn file_progress(
@@ -825,31 +907,7 @@ impl StorageService {
             &product_source["sourceCategory"],
             &strings(&product_source["sourceTags"]),
         );
-        let initial = prior
-            .as_ref()
-            .and_then(|a| a["initialCategory"].as_str())
-            .unwrap_or_else(|| inference["category"].as_str().unwrap_or("NonVRChat"));
-        let category = if [
-            "Base",
-            "Clothes",
-            "Hair",
-            "Accessory",
-            "Texture",
-            "Texture-Material",
-            "Motion",
-            "Tool",
-            "Shader",
-            "Gimmick",
-            "World",
-            "Udon",
-            "NonVRChat",
-        ]
-        .contains(&initial)
-        {
-            initial
-        } else {
-            "NonVRChat"
-        };
+        let category = Self::storage_category(&prior, &inference);
         let product_directory = self.managed_product_directory(product)?;
         let source_tree = source_tree_relative(file, job_id, &product_directory)?;
         let relative = if let Some(path) = &source_tree {
@@ -881,64 +939,22 @@ impl StorageService {
                 && artifact["rootId"] == root["id"]
                 && self.artifact_verified(&artifact, &root_path).await?
             {
-                let mut recovered = artifact.clone();
-                let mut updates = Vec::new();
-                let mut recovered_changed = false;
-                if source_tree.is_some() && artifact["originalAvailable"] == true {
-                    let old_relative = io::required_string(&artifact, "relativePath")?.to_owned();
-                    let copy_root = root_path.clone();
-                    let copy_relative = relative.clone();
-                    let old = old_relative.clone();
-                    let hash = io::required_string(&artifact, "hash")?.to_owned();
-                    let size = artifact["sizeBytes"]
-                        .as_u64()
-                        .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?;
-                    let copy_cancel = cancel.clone();
-                    tokio::task::spawn_blocking(move || {
-                        retain_source_tree_copy(
-                            &copy_root,
-                            &old,
-                            &copy_relative,
-                            &hash,
-                            size,
-                            &copy_cancel,
-                        )
-                    })
-                    .await??;
-                    if old_relative != relative {
-                        let mut historical = artifact;
-                        let historical_id = format!("historical-{}", uuid::Uuid::new_v4());
-                        historical["id"] = json!(historical_id);
-                        historical["sourceRevision"] = historical["revision"].clone();
-                        historical["revision"] = json!(historical_id);
-                        updates.push(("artifact".into(), historical_id, historical));
-                        recovered["relativePath"] = json!(relative);
-                        recovered["productDirectory"] = json!(product_directory);
-                        recovered["updatedAt"] = json!(now());
-                        recovered_changed = true;
-                    }
-                }
-                if recovered["status"] == "extracting" {
-                    recovered["status"] = json!("downloaded");
-                    recovered_changed = true;
-                }
-                if recovered_changed {
-                    updates.push(("artifact".into(), existing_id, recovered));
-                    self.catalogue.put_many(updates)?;
-                    self.changed(app, Some(job_id));
-                }
-                return Ok(());
+                return self
+                    .reuse_source_tree_artifact(
+                        app,
+                        job_id,
+                        artifact,
+                        existing_id,
+                        root_path,
+                        relative,
+                        product_directory,
+                        source_tree,
+                        cancel,
+                    )
+                    .await;
             }
         }
-        if let Some(mut retained) = self.catalogue.get("artifact", &id)? {
-            if retained["originalAvailable"] == true {
-                let historical = format!("historical-{}", uuid::Uuid::new_v4());
-                retained["id"] = json!(historical);
-                retained["sourceRevision"] = retained["revision"].clone();
-                retained["revision"] = json!(historical);
-                self.catalogue.put("artifact", &historical, retained)?;
-            }
-        }
+        self.retire_pending_record(&id)?;
         let destination = io::safe_join(&root_path, &relative)?;
         let part = io::safe_join(&root_path, &format!(".nna-partials/{}.part", id))?;
         std::fs::create_dir_all(part.parent().unwrap())?;
@@ -955,255 +971,31 @@ impl StorageService {
             .await;
         let outcome = match result {
             Ok((hash, size, revision, basis, observed)) => {
-                async {
-                    if cancel.load(Ordering::Acquire) {
-                        let _ = std::fs::remove_file(&part);
-                        artifact["status"] = json!("notDownloaded");
-                        artifact["errorCode"] = json!("cancelled");
-                        self.catalogue.put("artifact", &id, artifact)?;
-                        bail!("cancelled")
-                    }
-                    let current = self
-                        .catalogue
-                        .get("remote_file", io::required_string(file, "id")?)?
-                        .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
-                    ensure!(same_remote_identity(&current, &observed), "source_changed");
-                    ensure!(
-                        current["revision"] == observed["revision"]
-                            && !(current["requiresContentVerification"] == true
-                                && observed["requiresContentVerification"] != true),
-                        "source_changed"
-                    );
-                    let observed_current = current.clone();
-                    let current = bind_downloaded_file(current, revision, basis, size);
-                    let final_id = artifact_id(&current);
-                    let mut source_expected = vec![(
-                        "remote_file".into(),
-                        io::required_string(file, "id")?.to_owned(),
-                        Some(observed_current),
-                    )];
-                    if source_tree.is_some() {
-                        let mut expected = source_expected.clone();
-                        expected.extend([
-                            (
-                                "root".into(),
-                                io::required_string(root, "id")?.to_owned(),
-                                Some(root.clone()),
-                            ),
-                            (
-                                "product".into(),
-                                product.to_owned(),
-                                self.catalogue.get("product", product)?,
-                            ),
-                        ]);
-                        for entitlement in self.catalogue.related("entitlement", product)? {
-                            expected.push((
-                                "entitlement".into(),
-                                io::required_string(&entitlement, "id")?.to_owned(),
-                                Some(entitlement),
-                            ));
-                        }
-                        let (files, complete) = self.remote_files(product)?;
-                        let prior = self
-                            .verified_single_source_content(
-                                root,
-                                &root_path,
-                                &current,
-                                if selected {
-                                    std::slice::from_ref(&current)
-                                } else {
-                                    &files
-                                },
-                                complete || selected,
-                                &hash,
-                                size,
-                            )
-                            .await?;
-                        if cancel.load(Ordering::Acquire) {
-                            let _ = std::fs::remove_file(&part);
-                            artifact["status"] = json!("notDownloaded");
-                            artifact["errorCode"] = json!("cancelled");
-                            self.catalogue.put("artifact", &id, artifact)?;
-                            bail!("cancelled")
-                        }
-                        if let Some(prior) = prior {
-                            // The actual GET has established equal content. One leaf has
-                            // no sibling layout to rebuild; retain its durable Ready path.
-                            expected.push((
-                                "artifact".into(),
-                                final_id.clone(),
-                                Some(prior.clone()),
-                            ));
-                            self.commit_download_records(
-                                vec![
-                                    (
-                                        "remote_file".into(),
-                                        io::required_string(&current, "id")?.to_owned(),
-                                        current,
-                                    ),
-                                    ("artifact".into(), final_id, prior),
-                                ],
-                                expected,
-                            )?;
-                            std::fs::remove_file(&part)?;
-                            self.delete_pending_download_record(io::required_string(file, "id")?)?;
-                            self.changed(app, Some(job_id));
-                            return Ok(());
-                        }
-                        source_expected = expected;
-                    }
-                    // A source tree always publishes bytes at the declared relative path.
-                    // BOOTH and Gumroad retain verified-content sharing within the product.
-                    let mut duplicate = None;
-                    for existing in if source_tree.is_some() {
-                        Vec::new()
-                    } else {
-                        self.catalogue.related("artifact", product)?
-                    } {
-                        if existing["hash"] == hash
-                            && existing["sizeBytes"] == size
-                            && existing["rootId"] == root["id"]
-                            && existing["originalAvailable"] == true
-                            && existing["relativePath"]
-                                .as_str()
-                                .and_then(|p| Path::new(p).file_name())
-                                .is_some_and(|n| n == std::ffi::OsStr::new(name))
-                        {
-                            let p = io::safe_join(
-                                &root_path,
-                                io::required_string(&existing, "relativePath")?,
-                            )?;
-                            let p2 = p.clone();
-                            let h = hash.clone();
-                            if tokio::task::spawn_blocking(move || io::verify(&p2, &h, size))
-                                .await?
-                                .is_ok()
-                            {
-                                duplicate = Some(existing["relativePath"].clone());
-                                break;
-                            }
-                        }
-                    }
-                    if source_tree.is_some() {
-                        let copy_root = root_path.clone();
-                        let copy_relative = relative.clone();
-                        let copy_part = part.clone();
-                        let copy_hash = hash.clone();
-                        let copy_cancel = cancel.clone();
-                        tokio::task::spawn_blocking(move || {
-                            publish_source_tree_part(
-                                &copy_root,
-                                &copy_relative,
-                                &copy_part,
-                                &copy_hash,
-                                size,
-                                &copy_cancel,
-                            )
-                        })
-                        .await??;
-                    } else if let Some(relative) = duplicate {
-                        artifact["relativePath"] = relative;
-                        let part = part.clone();
-                        tokio::task::spawn_blocking(move || {
-                            io::retry_busy(|| std::fs::remove_file(&part))
-                        })
-                        .await??;
-                    } else {
-                        std::fs::create_dir_all(destination.parent().unwrap())?;
-                        let (part, destination) = (part.clone(), destination.clone());
-                        tokio::task::spawn_blocking(move || {
-                            io::retry_busy(|| std::fs::rename(&part, &destination))
-                        })
-                        .await??;
-                    }
-                    artifact["hash"] = json!(hash);
-                    artifact["sizeBytes"] = json!(size);
-                    artifact["status"] = json!("downloaded");
-                    artifact["originalAvailable"] = json!(true);
-                    self.catalogue.put("artifact", &id, artifact.clone())?;
-                    let mut sibling_updates = Vec::new();
-                    let mut sibling_error = None;
-                    if source_tree.is_some() && selected {
-                        let (files, _) = self.remote_files(product)?;
-                        match self
-                            .prepare_selected_source_siblings(
-                                root,
-                                &root_path,
-                                &current,
-                                &files,
-                                job_id,
-                                &product_directory,
-                                cancel,
-                            )
-                            .await
-                        {
-                            Ok((updates, expected)) => {
-                                sibling_updates = updates;
-                                source_expected.extend(expected);
-                            }
-                            Err(error) => {
-                                io::check_cancel(cancel)?;
-                                sibling_error = Some(error);
-                            }
-                        }
-                    }
-                    artifact["id"] = json!(final_id);
-                    artifact["revision"] = current["revision"].clone();
-                    artifact["hash"] = json!(hash);
-                    artifact["sizeBytes"] = json!(size);
-                    artifact["status"] = json!("downloaded");
-                    artifact["originalAvailable"] = json!(true);
-                    artifact["updatedAt"] = json!(now());
-                    let mut updates = sibling_updates;
-                    let prior = self.catalogue.get("artifact", &final_id)?;
-                    source_expected.push(("artifact".into(), final_id.clone(), prior.clone()));
-                    if let Some(mut prior) = prior {
-                        if sibling_error.is_none()
-                            && prior["status"] == "ready"
-                            && prior["hash"] == hash
-                            && prior["sizeBytes"] == size
-                            && self.artifact_verified(&prior, &root_path).await?
-                        {
-                            artifact["status"] = json!("ready");
-                            if let Some(path) = prior.get("extractedPath") {
-                                artifact["extractedPath"] = path.clone();
-                                artifact["extractedInventory"] =
-                                    prior["extractedInventory"].clone();
-                            }
-                            if source_tree.is_some()
-                                && prior["relativePath"] != artifact["relativePath"]
-                            {
-                                let historical = format!("historical-{}", uuid::Uuid::new_v4());
-                                prior["id"] = json!(historical);
-                                prior["sourceRevision"] = prior["revision"].clone();
-                                prior["revision"] = json!(historical);
-                                updates.push(("artifact".into(), historical, prior));
-                            }
-                        } else {
-                            let historical = format!("historical-{}", uuid::Uuid::new_v4());
-                            prior["id"] = json!(historical);
-                            prior["sourceRevision"] = prior["revision"].clone();
-                            prior["revision"] = json!(historical);
-                            updates.push(("artifact".into(), historical, prior));
-                        }
-                    }
-                    updates.push((
-                        "remote_file".into(),
-                        io::required_string(&current, "id")?.to_owned(),
-                        current,
-                    ));
-                    if sibling_error.is_some() {
-                        artifact["errorCode"] = json!("source_tree_incomplete");
-                    }
-                    updates.push(("artifact".into(), final_id, artifact));
-                    self.commit_download_records(updates, source_expected)?;
-                    self.delete_pending_download_record(io::required_string(file, "id")?)?;
-                    self.changed(app, Some(job_id));
-                    if let Some(error) = sibling_error {
-                        return Err(error);
-                    }
-                    Ok(())
-                }
+                self.finish_download(
+                    DownloadTarget {
+                        app,
+                        job_id,
+                        root,
+                        file,
+                        cancel,
+                        selected,
+                        id: &id,
+                        product,
+                        name,
+                        product_directory: &product_directory,
+                        source_tree: &source_tree,
+                        relative: &relative,
+                        root_path: &root_path,
+                        part: &part,
+                        destination: &destination,
+                    },
+                    artifact,
+                    hash,
+                    size,
+                    revision,
+                    basis,
+                    observed,
+                )
                 .await
             }
             Err(error) => {
@@ -1212,6 +1004,7 @@ impl StorageService {
                 }
                 artifact["status"] = json!("notDownloaded");
                 artifact["errorCode"] = json!(io::stable_error(&error));
+                artifact["updatedAt"] = json!(now());
                 self.catalogue.put("artifact", &id, artifact)?;
                 Err(error)
             }
@@ -1221,11 +1014,412 @@ impl StorageService {
                 if pending["originalAvailable"] != true {
                     pending["status"] = json!("notDownloaded");
                     pending["errorCode"] = json!(io::stable_error(error));
+                    pending["updatedAt"] = json!(now());
                     self.catalogue.put("artifact", &id, pending)?;
                 }
             }
         }
         outcome
+    }
+
+    /// The category a new file is filed under: the product's frozen or inferred one, if known.
+    fn storage_category<'a>(prior: &'a Option<Value>, inference: &'a Value) -> &'a str {
+        let initial = prior
+            .as_ref()
+            .and_then(|a| a["initialCategory"].as_str())
+            .unwrap_or_else(|| inference["category"].as_str().unwrap_or("NonVRChat"));
+        if [
+            "Base",
+            "Clothes",
+            "Hair",
+            "Accessory",
+            "Texture",
+            "Texture-Material",
+            "Motion",
+            "Tool",
+            "Shader",
+            "Gimmick",
+            "World",
+            "Udon",
+            "NonVRChat",
+        ]
+        .contains(&initial)
+        {
+            initial
+        } else {
+            "NonVRChat"
+        }
+    }
+
+    /// Keeps a verified source-tree artifact, copying it to the declared path when that moved.
+    async fn reuse_source_tree_artifact(
+        &self,
+        app: &tauri::AppHandle,
+        job_id: &str,
+        artifact: Value,
+        existing_id: String,
+        root_path: PathBuf,
+        relative: String,
+        product_directory: String,
+        source_tree: Option<String>,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<()> {
+        let mut recovered = artifact.clone();
+        let mut updates = Vec::new();
+        let mut recovered_changed = false;
+        if source_tree.is_some() && artifact["originalAvailable"] == true {
+            let old_relative = io::required_string(&artifact, "relativePath")?.to_owned();
+            let copy_root = root_path.clone();
+            let copy_relative = relative.clone();
+            let old = old_relative.clone();
+            let hash = io::required_string(&artifact, "hash")?.to_owned();
+            let size = artifact["sizeBytes"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?;
+            let copy_cancel = cancel.clone();
+            tokio::task::spawn_blocking(move || {
+                retain_source_tree_copy(&copy_root, &old, &copy_relative, &hash, size, &copy_cancel)
+            })
+            .await??;
+            if old_relative != relative {
+                let mut historical = artifact;
+                let historical_id = format!("historical-{}", uuid::Uuid::new_v4());
+                historical["id"] = json!(historical_id);
+                historical["sourceRevision"] = historical["revision"].clone();
+                historical["revision"] = json!(historical_id);
+                updates.push(("artifact".into(), historical_id, historical));
+                recovered["relativePath"] = json!(relative);
+                recovered["productDirectory"] = json!(product_directory);
+                recovered["updatedAt"] = json!(now());
+                recovered_changed = true;
+            }
+        }
+        if recovered["status"] == "extracting" {
+            recovered["status"] = json!("downloaded");
+            recovered_changed = true;
+        }
+        if recovered_changed {
+            updates.push(("artifact".into(), existing_id, recovered));
+            self.catalogue.put_many(updates)?;
+            self.changed(app, Some(job_id));
+        }
+        Ok(())
+    }
+
+    /// A pending record that still holds an available original becomes a historical record.
+    fn retire_pending_record(&self, id: &str) -> Result<()> {
+        if let Some(mut retained) = self.catalogue.get("artifact", id)? {
+            if retained["originalAvailable"] == true {
+                let historical = format!("historical-{}", uuid::Uuid::new_v4());
+                retained["id"] = json!(historical);
+                retained["sourceRevision"] = retained["revision"].clone();
+                retained["revision"] = json!(historical);
+                self.catalogue.put("artifact", &historical, retained)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Binds the arrived bytes to the current record; unchanged source-tree content stays Ready.
+    async fn finish_download(
+        &self,
+        target: DownloadTarget<'_>,
+        mut artifact: Value,
+        hash: String,
+        size: u64,
+        revision: String,
+        basis: String,
+        observed: Value,
+    ) -> Result<()> {
+        let DownloadTarget {
+            app,
+            job_id,
+            root,
+            file,
+            cancel,
+            selected,
+            id,
+            product,
+            source_tree,
+            root_path,
+            part,
+            ..
+        } = target;
+        if cancel.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(part);
+            artifact["status"] = json!("notDownloaded");
+            artifact["errorCode"] = json!("cancelled");
+            self.catalogue.put("artifact", id, artifact)?;
+            bail!("cancelled")
+        }
+        let current = self
+            .catalogue
+            .get("remote_file", io::required_string(file, "id")?)?
+            .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
+        ensure!(same_remote_identity(&current, &observed), "source_changed");
+        ensure!(
+            current["revision"] == observed["revision"]
+                && !(current["requiresContentVerification"] == true
+                    && observed["requiresContentVerification"] != true),
+            "source_changed"
+        );
+        let observed_current = current.clone();
+        let current = bind_downloaded_file(current, revision, basis, size);
+        let final_id = artifact_id(&current);
+        let mut source_expected = vec![(
+            "remote_file".into(),
+            io::required_string(file, "id")?.to_owned(),
+            Some(observed_current),
+        )];
+        if source_tree.is_some() {
+            let mut expected = source_expected.clone();
+            expected.extend([
+                (
+                    "root".into(),
+                    io::required_string(root, "id")?.to_owned(),
+                    Some(root.clone()),
+                ),
+                (
+                    "product".into(),
+                    product.to_owned(),
+                    self.catalogue.get("product", product)?,
+                ),
+            ]);
+            for entitlement in self.catalogue.related("entitlement", product)? {
+                expected.push((
+                    "entitlement".into(),
+                    io::required_string(&entitlement, "id")?.to_owned(),
+                    Some(entitlement),
+                ));
+            }
+            let (files, complete) = self.remote_files(product)?;
+            let prior = self
+                .verified_single_source_content(
+                    root,
+                    root_path,
+                    &current,
+                    if selected {
+                        std::slice::from_ref(&current)
+                    } else {
+                        &files
+                    },
+                    complete || selected,
+                    &hash,
+                    size,
+                )
+                .await?;
+            if cancel.load(Ordering::Acquire) {
+                let _ = std::fs::remove_file(part);
+                artifact["status"] = json!("notDownloaded");
+                artifact["errorCode"] = json!("cancelled");
+                self.catalogue.put("artifact", id, artifact)?;
+                bail!("cancelled")
+            }
+            if let Some(prior) = prior {
+                // The actual GET has established equal content. One leaf has
+                // no sibling layout to rebuild; retain its durable Ready path.
+                expected.push(("artifact".into(), final_id.clone(), Some(prior.clone())));
+                self.commit_download_records(
+                    vec![
+                        (
+                            "remote_file".into(),
+                            io::required_string(&current, "id")?.to_owned(),
+                            current,
+                        ),
+                        ("artifact".into(), final_id, prior),
+                    ],
+                    expected,
+                )?;
+                std::fs::remove_file(part)?;
+                self.delete_pending_download_record(io::required_string(file, "id")?)?;
+                self.changed(app, Some(job_id));
+                return Ok(());
+            }
+            source_expected = expected;
+        }
+        self.publish_download(
+            target,
+            artifact,
+            hash,
+            size,
+            current,
+            final_id,
+            source_expected,
+        )
+        .await
+    }
+
+    /// Moves the bytes into place, or onto an identical copy, and commits the file's records.
+    async fn publish_download(
+        &self,
+        target: DownloadTarget<'_>,
+        mut artifact: Value,
+        hash: String,
+        size: u64,
+        current: Value,
+        final_id: String,
+        mut source_expected: Vec<(String, String, Option<Value>)>,
+    ) -> Result<()> {
+        let DownloadTarget {
+            app,
+            job_id,
+            root,
+            file,
+            cancel,
+            selected,
+            id,
+            product,
+            name,
+            product_directory,
+            source_tree,
+            relative,
+            root_path,
+            part,
+            destination,
+        } = target;
+        // A source tree always publishes bytes at the declared relative path.
+        // BOOTH and Gumroad retain verified-content sharing within the product.
+        let mut duplicate = None;
+        for existing in if source_tree.is_some() {
+            Vec::new()
+        } else {
+            self.catalogue.related("artifact", product)?
+        } {
+            if existing["hash"] == hash
+                && existing["sizeBytes"] == size
+                && existing["rootId"] == root["id"]
+                && existing["originalAvailable"] == true
+                && existing["relativePath"]
+                    .as_str()
+                    .and_then(|p| Path::new(p).file_name())
+                    .is_some_and(|n| n == std::ffi::OsStr::new(name))
+            {
+                let p = io::safe_join(root_path, io::required_string(&existing, "relativePath")?)?;
+                let p2 = p.clone();
+                let h = hash.clone();
+                if tokio::task::spawn_blocking(move || io::verify(&p2, &h, size))
+                    .await?
+                    .is_ok()
+                {
+                    duplicate = Some(existing["relativePath"].clone());
+                    break;
+                }
+            }
+        }
+        if source_tree.is_some() {
+            let copy_root = root_path.clone();
+            let copy_relative = relative.clone();
+            let copy_part = part.clone();
+            let copy_hash = hash.clone();
+            let copy_cancel = cancel.clone();
+            tokio::task::spawn_blocking(move || {
+                publish_source_tree_part(
+                    &copy_root,
+                    &copy_relative,
+                    &copy_part,
+                    &copy_hash,
+                    size,
+                    &copy_cancel,
+                )
+            })
+            .await??;
+        } else if let Some(relative) = duplicate {
+            artifact["relativePath"] = relative;
+            let part = part.clone();
+            tokio::task::spawn_blocking(move || io::retry_busy(|| std::fs::remove_file(&part)))
+                .await??;
+        } else {
+            std::fs::create_dir_all(destination.parent().unwrap())?;
+            let (part, destination) = (part.clone(), destination.clone());
+            tokio::task::spawn_blocking(move || {
+                io::retry_busy(|| std::fs::rename(&part, &destination))
+            })
+            .await??;
+        }
+        artifact["hash"] = json!(hash);
+        artifact["sizeBytes"] = json!(size);
+        artifact["status"] = json!("downloaded");
+        artifact["originalAvailable"] = json!(true);
+        self.catalogue.put("artifact", id, artifact.clone())?;
+        let mut sibling_updates = Vec::new();
+        let mut sibling_error = None;
+        if source_tree.is_some() && selected {
+            let (files, _) = self.remote_files(product)?;
+            match self
+                .prepare_selected_source_siblings(
+                    root,
+                    root_path,
+                    &current,
+                    &files,
+                    job_id,
+                    product_directory,
+                    cancel,
+                )
+                .await
+            {
+                Ok((updates, expected)) => {
+                    sibling_updates = updates;
+                    source_expected.extend(expected);
+                }
+                Err(error) => {
+                    io::check_cancel(cancel)?;
+                    sibling_error = Some(error);
+                }
+            }
+        }
+        artifact["id"] = json!(final_id);
+        artifact["revision"] = current["revision"].clone();
+        artifact["hash"] = json!(hash);
+        artifact["sizeBytes"] = json!(size);
+        artifact["status"] = json!("downloaded");
+        artifact["originalAvailable"] = json!(true);
+        artifact["updatedAt"] = json!(now());
+        let mut updates = sibling_updates;
+        let prior = self.catalogue.get("artifact", &final_id)?;
+        source_expected.push(("artifact".into(), final_id.clone(), prior.clone()));
+        if let Some(mut prior) = prior {
+            if sibling_error.is_none()
+                && prior["status"] == "ready"
+                && prior["hash"] == hash
+                && prior["sizeBytes"] == size
+                && self.artifact_verified(&prior, root_path).await?
+            {
+                artifact["status"] = json!("ready");
+                if let Some(path) = prior.get("extractedPath") {
+                    artifact["extractedPath"] = path.clone();
+                    artifact["extractedInventory"] = prior["extractedInventory"].clone();
+                }
+                if source_tree.is_some() && prior["relativePath"] != artifact["relativePath"] {
+                    let historical = format!("historical-{}", uuid::Uuid::new_v4());
+                    prior["id"] = json!(historical);
+                    prior["sourceRevision"] = prior["revision"].clone();
+                    prior["revision"] = json!(historical);
+                    updates.push(("artifact".into(), historical, prior));
+                }
+            } else {
+                let historical = format!("historical-{}", uuid::Uuid::new_v4());
+                prior["id"] = json!(historical);
+                prior["sourceRevision"] = prior["revision"].clone();
+                prior["revision"] = json!(historical);
+                updates.push(("artifact".into(), historical, prior));
+            }
+        }
+        updates.push((
+            "remote_file".into(),
+            io::required_string(&current, "id")?.to_owned(),
+            current,
+        ));
+        if sibling_error.is_some() {
+            artifact["errorCode"] = json!("source_tree_incomplete");
+        }
+        updates.push(("artifact".into(), final_id, artifact.clone()));
+        self.commit_download_records(updates, source_expected)?;
+        self.delete_pending_download_record(io::required_string(file, "id")?)?;
+        self.changed(app, Some(job_id));
+        if let Some(error) = sibling_error {
+            return Err(error);
+        }
+        Ok(())
     }
     async fn stream_download(
         &self,
@@ -1362,104 +1556,143 @@ impl StorageService {
             } else {
                 "file_integrity_failed"
             };
-            archive::validate_no_links(part)?;
-            tokio::fs::create_dir_all(
-                part.parent()
-                    .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?,
-            )
-            .await?;
-            archive::validate_no_links(part)?;
-            let mut output = tokio::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(part)
-                .await?;
-            let mut hasher = Sha256::new();
-            let mut size = 0u64;
-            let mut chunks = response.bytes_stream();
-            let mut last_progress = std::time::Instant::now();
-            let mut next_space_check = 0u64;
-            let mut rate = self.preferences()?["downloadRateBytesPerSecond"]
-                .as_u64()
-                .unwrap_or(0);
-            let slots = download_count(&self.preferences()?["downloadConcurrency"]) as f64;
-            let result = async {
-                while let Some(chunk) = io::cancellable(
+            if let Some(download) = self
+                .write_response(
+                    app,
+                    job_id,
+                    file,
+                    part,
+                    root,
                     cancel,
-                    tokio::time::timeout(Duration::from_secs(60), chunks.next()),
+                    response,
+                    current,
+                    response_revision,
+                    expected,
+                    size_error,
+                    attempt,
+                    &mut last,
                 )
                 .await?
-                .map_err(|_| anyhow::anyhow!("network_timeout"))?
-                {
-                    io::check_cancel(cancel)?;
-                    let bytes = chunk.map_err(|_| anyhow::anyhow!("network_failed"))?;
-                    if size >= next_space_check {
-                        io::space(root, 8 * 1024 * 1024)?;
-                        next_space_check = size.saturating_add(8 * 1024 * 1024);
-                    }
-                    output.write_all(&bytes).await?;
-                    hasher.update(&bytes);
-                    size += bytes.len() as u64;
-                    if let Some(expected) = expected {
-                        ensure!(size <= expected, "{size_error}");
-                    }
-                    if last_progress.elapsed() >= Duration::from_millis(750) {
-                        self.file_progress(
-                            app,
-                            job_id,
-                            io::required_string(file, "id")?,
-                            expected
-                                .filter(|n| *n > 0)
-                                .map(|n| size as f64 / n as f64)
-                                .unwrap_or(0.0),
-                        )
-                        .await?;
-                        rate = self.preferences()?["downloadRateBytesPerSecond"]
-                            .as_u64()
-                            .unwrap_or(0);
-                        last_progress = std::time::Instant::now();
-                    }
-                    if rate > 0 {
-                        io::delay(
-                            cancel,
-                            Duration::from_secs_f64(bytes.len() as f64 * slots / rate as f64),
-                        )
-                        .await?;
-                    }
-                }
-                if let Some(expected) = expected {
-                    ensure!(size == expected, "{size_error}");
-                }
-                output.flush().await?;
-                output.sync_all().await?;
-                Ok::<(), anyhow::Error>(())
-            }
-            .await;
-            drop(output);
-            match result {
-                Ok(()) => {
-                    let hash = hex::encode(hasher.finalize());
-                    let (revision, basis) =
-                        bind_revision(file, &current, response_revision, &hash)?;
-                    return Ok((hash, size, revision, basis, current));
-                }
-                Err(e) => {
-                    let code = io::stable_error(&e);
-                    if matches!(
-                        code,
-                        "cancelled" | "low_space" | "permission_denied" | "store_access_denied"
-                    ) {
-                        return Err(e);
-                    }
-                    last = e;
-                }
-            }
-            if attempt + 1 < DOWNLOAD_ATTEMPTS {
-                io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
+            {
+                return Ok(download);
             }
         }
         Err(last)
+    }
+
+    /// Writes one response into the partial file; a failure worth retrying is kept in `last`.
+    async fn write_response(
+        &self,
+        app: &tauri::AppHandle,
+        job_id: &str,
+        file: &Value,
+        part: &Path,
+        root: &Path,
+        cancel: &AtomicBool,
+        response: reqwest::Response,
+        current: Value,
+        response_revision: Option<String>,
+        expected: Option<u64>,
+        size_error: &str,
+        attempt: u32,
+        last: &mut anyhow::Error,
+    ) -> Result<Option<(String, u64, String, String, Value)>> {
+        archive::validate_no_links(part)?;
+        tokio::fs::create_dir_all(
+            part.parent()
+                .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?,
+        )
+        .await?;
+        archive::validate_no_links(part)?;
+        let mut output = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(part)
+            .await?;
+        let mut hasher = Sha256::new();
+        let mut size = 0u64;
+        let mut chunks = response.bytes_stream();
+        let mut last_progress = std::time::Instant::now();
+        let mut next_space_check = 0u64;
+        let mut rate = self.preferences()?["downloadRateBytesPerSecond"]
+            .as_u64()
+            .unwrap_or(0);
+        let slots = download_count(&self.preferences()?["downloadConcurrency"]) as f64;
+        let result = async {
+            while let Some(chunk) = io::cancellable(
+                cancel,
+                tokio::time::timeout(Duration::from_secs(60), chunks.next()),
+            )
+            .await?
+            .map_err(|_| anyhow::anyhow!("network_timeout"))?
+            {
+                io::check_cancel(cancel)?;
+                let bytes = chunk.map_err(|_| anyhow::anyhow!("network_failed"))?;
+                if size >= next_space_check {
+                    io::space(root, 8 * 1024 * 1024)?;
+                    next_space_check = size.saturating_add(8 * 1024 * 1024);
+                }
+                output.write_all(&bytes).await?;
+                hasher.update(&bytes);
+                size += bytes.len() as u64;
+                if let Some(expected) = expected {
+                    ensure!(size <= expected, "{size_error}");
+                }
+                if last_progress.elapsed() >= Duration::from_millis(750) {
+                    self.file_progress(
+                        app,
+                        job_id,
+                        io::required_string(file, "id")?,
+                        expected
+                            .filter(|n| *n > 0)
+                            .map(|n| size as f64 / n as f64)
+                            .unwrap_or(0.0),
+                    )
+                    .await?;
+                    rate = self.preferences()?["downloadRateBytesPerSecond"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    last_progress = std::time::Instant::now();
+                }
+                if rate > 0 {
+                    io::delay(
+                        cancel,
+                        Duration::from_secs_f64(bytes.len() as f64 * slots / rate as f64),
+                    )
+                    .await?;
+                }
+            }
+            if let Some(expected) = expected {
+                ensure!(size == expected, "{size_error}");
+            }
+            output.flush().await?;
+            output.sync_all().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        drop(output);
+        match result {
+            Ok(()) => {
+                let hash = hex::encode(hasher.finalize());
+                let (revision, basis) = bind_revision(file, &current, response_revision, &hash)?;
+                return Ok(Some((hash, size, revision, basis, current)));
+            }
+            Err(e) => {
+                let code = io::stable_error(&e);
+                if matches!(
+                    code,
+                    "cancelled" | "low_space" | "permission_denied" | "store_access_denied"
+                ) {
+                    return Err(e);
+                }
+                *last = e;
+            }
+        }
+        if attempt + 1 < DOWNLOAD_ATTEMPTS {
+            io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
+        }
+        Ok(None)
     }
     pub(super) async fn extract_for_download(
         &self,
@@ -1473,7 +1706,10 @@ impl StorageService {
             .extract_one(seven_zip, root, artifact, files, cancel)
             .await;
         if let Err(error) = &result {
-            artifact.as_object_mut().unwrap().remove("attentionDismissed");
+            artifact
+                .as_object_mut()
+                .unwrap()
+                .remove("attentionDismissed");
             artifact["status"] = json!("extractionFailed");
             artifact["errorCode"] = json!(io::stable_error(error));
             self.catalogue.put(
@@ -1609,22 +1845,49 @@ impl StorageService {
             }
         }
         self.catalogue.put_many(group_updates)?;
-        // Every group member is durably ready before any source volume deletion.
-        let group_records = self
-            .catalogue
-            .related("artifact", io::required_string(artifact, "productId")?)?;
-        for source in extracted.source_paths {
+        let product = io::required_string(artifact, "productId")?.to_owned();
+        for record in self
+            .remove_extracted_originals(
+                root,
+                &root_path,
+                &product,
+                &product_directory,
+                extracted.source_paths,
+            )
+            .await?
+        {
+            if record["id"] == id.as_str() {
+                *artifact = record;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the archives an extraction made usable, returning the records it changed.
+    /// A path goes only once every record naming it is Ready and its bytes still match;
+    /// a failed delete leaves usable extracted state and the original available.
+    pub(super) async fn remove_extracted_originals(
+        &self,
+        root: &Value,
+        root_path: &Path,
+        product: &str,
+        product_directory: &str,
+        sources: Vec<PathBuf>,
+    ) -> Result<Vec<Value>> {
+        let group_records = self.catalogue.related("artifact", product)?;
+        let mut changed = Vec::new();
+        for source in sources {
             let records: Vec<_> = group_records
                 .iter()
-                .cloned()
-                .filter(|a| {
+                .filter(|&a| {
                     a["rootId"] == root["id"]
                         && a["relativePath"]
                             .as_str()
-                            .and_then(|r| io::safe_join(&root_path, r).ok())
+                            .and_then(|r| io::safe_join(root_path, r).ok())
                             .as_ref()
                             == Some(&source)
                 })
+                .cloned()
                 .collect();
             if records.is_empty() || records.iter().any(|a| a["status"] != "ready") {
                 continue;
@@ -1646,12 +1909,11 @@ impl StorageService {
                 })
                 .collect();
             self.catalogue.put_many(pending)?;
-            // Deletion failure leaves usable extracted state and the original available.
             let removed = std::fs::remove_file(&source).is_ok();
             if removed {
                 io::remove_empty_parents(
                     source.parent().unwrap(),
-                    &io::safe_join(&root_path, &product_directory)?,
+                    &io::safe_join(root_path, product_directory)?,
                 );
             }
             let mut updates = Vec::new();
@@ -1662,744 +1924,49 @@ impl StorageService {
                     .unwrap()
                     .remove("originalDeletionPending");
                 let peer_id = io::required_string(&record, "id")?.to_owned();
-                updates.push(("artifact".into(), peer_id.clone(), record.clone()));
-                if peer_id == id {
-                    *artifact = record;
-                }
+                updates.push(("artifact".into(), peer_id, record.clone()));
+                changed.push(record);
             }
             self.catalogue.put_many(updates)?;
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    /// An archive still beside its Ready extraction, as a download that reused that
+    /// extraction kept it, goes the way extraction removes one. Failing leaves it.
+    pub(super) async fn remove_kept_original(
+        &self,
+        root: &Value,
+        root_path: &Path,
+        artifact: &Value,
+    ) {
+        if artifact["status"] != "ready"
+            || !artifact["extractedPath"].is_string()
+            || artifact["originalAvailable"] != true
+        {
+            return;
+        }
+        let (Some(product), Some(relative)) = (
+            artifact["productId"].as_str(),
+            artifact["relativePath"].as_str(),
+        ) else {
+            return;
+        };
+        let Some(directory) = artifact["productDirectory"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| self.managed_product_directory(product).ok())
+        else {
+            return;
+        };
+        if let Ok(source) = io::safe_join(root_path, relative) {
+            let _ = self
+                .remove_extracted_originals(root, root_path, product, &directory, vec![source])
+                .await;
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn selected_source_sibling_reuses_actual_extraction_after_archive_original_deletion() {
-        use std::io::Write;
-        let root = std::env::temp_dir().join(format!(
-            "nna-extracted-source-sibling-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        {
-            let catalogue = Catalogue::open(&root.join("data")).unwrap();
-            let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
-            let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
-            let service = StorageService::new(catalogue.clone(), stores).unwrap();
-            let mapped_root = json!({"id":"authored-root","path":root,"status":"online"});
-            catalogue
-                .put("root", "authored-root", mapped_root.clone())
-                .unwrap();
-            catalogue.put("product", "jinxxy:authored", json!({"id":"jinxxy:authored","title":"Authored files","provider":"jinxxy","sourceCategory":{"name":"Tool"}})).unwrap();
-            let archive = json!({"id":"authored-archive","provider":"jinxxy","productId":"jinxxy:authored","accountId":"authored-account","inventoryId":"authored-inventory","name":"Textures.zip","sourceRelativePath":"Textures.zip","revision":"source:r1"});
-            let mut leaf = archive.clone();
-            leaf["id"] = json!("authored-leaf");
-            leaf["name"] = json!("Model.fbx");
-            leaf["sourceRelativePath"] = json!("Model.fbx");
-            let files = [archive.clone(), leaf.clone()];
-            for file in &files {
-                catalogue
-                    .put("remote_file", file["id"].as_str().unwrap(), file.clone())
-                    .unwrap();
-            }
-            let directory = "assets/Authored--stable";
-            let original_relative = source_tree_relative(&archive, "download:first", directory)
-                .unwrap()
-                .unwrap();
-            let original = io::safe_join(&root, &original_relative).unwrap();
-            std::fs::create_dir_all(original.parent().unwrap()).unwrap();
-            let mut zip = zip::ZipWriter::new(std::fs::File::create(&original).unwrap());
-            zip.start_file(
-                "textures/authored.txt",
-                zip::write::SimpleFileOptions::default(),
-            )
-            .unwrap();
-            zip.write_all(b"authored texture payload").unwrap();
-            zip.finish().unwrap();
-            let (hash, size) = io::hash_file(&original).unwrap();
-            let mut artifact = json!({"id":artifact_id(&archive),"fileId":archive["id"],"productId":archive["productId"],"rootId":"authored-root","relativePath":original_relative,"productDirectory":directory,"revision":archive["revision"],"hash":hash,"sizeBytes":size,"status":"downloaded","originalAvailable":true});
-            catalogue
-                .put(
-                    "artifact",
-                    artifact["id"].as_str().unwrap(),
-                    artifact.clone(),
-                )
-                .unwrap();
-            let cancel = Arc::new(AtomicBool::new(false));
-            let tool =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
-            service
-                .extract_one(&tool, &mapped_root, &mut artifact, &files, &cancel)
-                .await
-                .unwrap();
-            assert!(!original.exists());
-            assert_eq!(artifact["originalAvailable"], false);
-            let stable_extraction = artifact["extractedPath"].clone();
-            let stable_inventory = artifact["extractedInventory"].clone();
-            let (updates, expected) = service
-                .prepare_selected_source_siblings(
-                    &mapped_root,
-                    &root,
-                    &leaf,
-                    &files,
-                    "download:second",
-                    directory,
-                    &cancel,
-                )
-                .await
-                .unwrap();
-            assert!(updates.is_empty());
-            assert_eq!(expected.len(), 2);
-            assert_eq!(
-                catalogue
-                    .get("artifact", &artifact_id(&archive))
-                    .unwrap()
-                    .unwrap()["extractedPath"],
-                stable_extraction
-            );
-            assert_eq!(artifact["extractedInventory"], stable_inventory);
-            let relative = source_tree_relative(&leaf, "download:second", directory)
-                .unwrap()
-                .unwrap();
-            let path = io::safe_join(&root, &relative).unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, b"authored model payload").unwrap();
-            let (hash, size) = io::hash_file(&path).unwrap();
-            catalogue.put("artifact", &artifact_id(&leaf), json!({"id":artifact_id(&leaf),"fileId":leaf["id"],"productId":leaf["productId"],"rootId":"authored-root","relativePath":relative,"productDirectory":directory,"revision":leaf["revision"],"hash":hash,"sizeBytes":size,"status":"ready","originalAvailable":true})).unwrap();
-            assert!(service
-                .verified_source_manifest(&mapped_root, &root, &files, true, &cancel)
-                .await
-                .unwrap());
-            assert!(!original.exists());
-            let entry = artifact["extractedInventory"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|entry| entry["isDirectory"] != true)
-                .unwrap();
-            let extracted = io::safe_join(&root, stable_extraction.as_str().unwrap()).unwrap();
-            std::fs::write(
-                io::safe_join(&extracted, entry["relativePath"].as_str().unwrap()).unwrap(),
-                b"changed authored bytes",
-            )
-            .unwrap();
-            assert_eq!(
-                service
-                    .prepare_selected_source_siblings(
-                        &mapped_root,
-                        &root,
-                        &leaf,
-                        &files,
-                        "download:third",
-                        directory,
-                        &cancel,
-                    )
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "source_tree_incomplete"
-            );
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn only_transient_resolution_errors_retry_and_actionable_failures_remain_terminal() {
-        for code in [
-            "NETWORK_UNAVAILABLE",
-            "network_failed",
-            "network_timeout",
-            "DOWNLOAD_RESOLVER_FAILED",
-            "SIGNED_LINK_EXPIRED",
-        ] {
-            assert!(
-                retryable_download_resolution(&anyhow::anyhow!(code)),
-                "{code}"
-            );
-        }
-        for code in [
-            "AUTH_REQUIRED",
-            "RATE_LIMITED",
-            "PERMISSION_DENIED",
-            "FILE_UNAVAILABLE",
-            "SOURCE_CHANGED",
-            "UNSAFE_DOWNLOAD_URL",
-            "cancelled",
-            "low_space",
-            "invalid_resolver",
-        ] {
-            assert!(
-                !retryable_download_resolution(&anyhow::anyhow!(code)),
-                "{code}"
-            );
-        }
-    }
-
-    #[test]
-    fn download_retry_after_respects_dates_and_never_shortens_long_server_deferrals() {
-        let now = chrono::DateTime::parse_from_rfc2822("Mon, 12 Oct 2026 01:00:00 GMT")
-            .unwrap()
-            .timestamp();
-        assert_eq!(
-            download_retry_delay(Some("120"), 0, now),
-            Some(Duration::from_secs(120))
-        );
-        assert_eq!(download_retry_delay(Some("121"), 0, now), None);
-        assert_eq!(
-            download_retry_delay(Some("0"), 0, now),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(
-            download_retry_delay(None, 2, now),
-            Some(Duration::from_secs(4))
-        );
-        assert_eq!(
-            download_retry_delay(Some("Mon, 12 Oct 2026 01:00:10 GMT"), 0, now),
-            Some(Duration::from_secs(10))
-        );
-        assert_eq!(
-            download_retry_delay(Some("Mon, 12 Oct 2026 01:03:00 GMT"), 0, now),
-            None
-        );
-    }
-
-    #[test]
-    fn source_tree_publication_reuses_staged_bytes_and_preserves_existing_targets() {
-        let root = std::env::temp_dir().join(format!(
-            "nna-source-publication-synthetic-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(root.join(".nna-partials")).unwrap();
-        let part = root.join(".nna-partials/file.part");
-        let relative = "source/file.bin";
-        let target = root.join(relative);
-        let bytes = b"synthetic source bytes";
-        std::fs::write(&part, bytes).unwrap();
-        let (hash, size) = io::hash_file(&part).unwrap();
-        let cancel = AtomicBool::new(false);
-        #[cfg(windows)]
-        let mut original = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&part)
-            .unwrap();
-        publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).unwrap();
-        assert!(!part.exists());
-        assert_eq!(std::fs::read(&target).unwrap(), bytes);
-        #[cfg(windows)]
-        {
-            use std::io::Write;
-            // The open staged handle still addresses the final file, proving
-            // publication moved the file object instead of copying its bytes.
-            original.set_len(0).unwrap();
-            assert_eq!(std::fs::metadata(&target).unwrap().len(), 0);
-            original.write_all(bytes).unwrap();
-            original.sync_all().unwrap();
-            drop(original);
-        }
-        // A matching retry removes only its own partial and keeps the target.
-        std::fs::write(&part, bytes).unwrap();
-        publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).unwrap();
-        assert!(!part.exists());
-        assert_eq!(std::fs::read(&target).unwrap(), bytes);
-
-        std::fs::write(&part, bytes).unwrap();
-        std::fs::write(&target, b"preserve existing target").unwrap();
-        assert!(publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"preserve existing target");
-        assert_eq!(std::fs::read(&part).unwrap(), bytes);
-
-        cancel.store(true, Ordering::Release);
-        assert!(
-            publish_source_tree_part(&root, "cancelled/file.bin", &part, &hash, size, &cancel)
-                .is_err()
-        );
-        assert!(!root.join("cancelled").exists());
-        assert_eq!(std::fs::read(&part).unwrap(), bytes);
-        std::fs::remove_file(&part).unwrap();
-        std::fs::remove_file(&target).unwrap();
-        std::fs::remove_dir(root.join(".nna-partials")).unwrap();
-        std::fs::remove_dir(root.join("source")).unwrap();
-        std::fs::remove_dir(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn source_file_tree_preserves_sibling_paths_verified_reuse_and_prior_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "nna-source-tree-synthetic-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(root.join("old-flat")).unwrap();
-        let model = json!({"id":"model","provider":"jinxxy","productId":"jinxxy:synthetic","accountId":"synthetic-account","inventoryId":"synthetic-inventory","name":"model.fbx","sourceRelativePath":"folder/model.fbx","revision":"source:r1"});
-        let mut material = model.clone();
-        material["id"] = json!("material");
-        material["name"] = json!("material.mat");
-        material["sourceRelativePath"] = json!("folder/materials/material.mat");
-        let mut other = material.clone();
-        other["id"] = json!("other-material");
-        other["sourceRelativePath"] = json!("alternate/material.mat");
-        validate_source_tree_paths(&[model.clone(), material.clone(), other.clone()]).unwrap();
-        let model_relative = source_tree_relative(&model, "download:one", "Tool")
-            .unwrap()
-            .unwrap();
-        let material_relative = source_tree_relative(&material, "download:one", "Tool")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            source_tree_relative(&model, "download:one", "Tool")
-                .unwrap()
-                .unwrap(),
-            model_relative
-        );
-        std::fs::write(
-            root.join("old-flat/model.fbx"),
-            b"references materials/material.mat",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("old-flat/material.mat"),
-            b"synthetic material bytes",
-        )
-        .unwrap();
-        let (model_hash, model_size) = io::hash_file(&root.join("old-flat/model.fbx")).unwrap();
-        let (material_hash, material_size) =
-            io::hash_file(&root.join("old-flat/material.mat")).unwrap();
-        let cancel = AtomicBool::new(false);
-        retain_source_tree_copy(
-            &root,
-            "old-flat/model.fbx",
-            &model_relative,
-            &model_hash,
-            model_size,
-            &cancel,
-        )
-        .unwrap();
-        retain_source_tree_copy(
-            &root,
-            "old-flat/material.mat",
-            &material_relative,
-            &material_hash,
-            material_size,
-            &cancel,
-        )
-        .unwrap();
-        let model_path = io::safe_join(&root, &model_relative).unwrap();
-        let material_path = model_path.parent().unwrap().join("materials/material.mat");
-        assert_eq!(
-            material_path,
-            io::safe_join(&root, &material_relative).unwrap()
-        );
-        io::verify(&material_path, &material_hash, material_size).unwrap();
-        {
-            let catalogue = Catalogue::open(&root.join("data")).unwrap();
-            let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
-            let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
-            let service = StorageService::new(catalogue.clone(), stores).unwrap();
-            let mapped_root = json!({"id":"synthetic-root","path":root,"status":"online"});
-            catalogue
-                .put("root", "synthetic-root", mapped_root.clone())
-                .unwrap();
-            let model_artifact = json!({"id":artifact_id(&model),"fileId":model["id"],"productId":model["productId"],"rootId":"synthetic-root","relativePath":model_relative,"revision":model["revision"],"hash":model_hash,"sizeBytes":model_size,"status":"ready","originalAvailable":true});
-            let material_artifact = json!({"id":artifact_id(&material),"fileId":material["id"],"productId":material["productId"],"rootId":"synthetic-root","relativePath":material_relative,"revision":material["revision"],"hash":material_hash,"sizeBytes":material_size,"status":"ready","originalAvailable":true});
-            for artifact in [&model_artifact, &material_artifact] {
-                catalogue
-                    .put(
-                        "artifact",
-                        artifact["id"].as_str().unwrap(),
-                        artifact.clone(),
-                    )
-                    .unwrap();
-            }
-            let files = [model.clone(), material.clone()];
-            let before = catalogue.list("artifact").unwrap();
-            let mut selected_files = files.to_vec();
-            selected_files.push(other.clone()); // Unselected, undownloaded leaves stay partial.
-            let (prepared, expected) = service
-                .prepare_selected_source_siblings(
-                    &mapped_root,
-                    &root,
-                    &model,
-                    &selected_files,
-                    "download:selected",
-                    "assets/Synthetic--stable",
-                    &Arc::new(AtomicBool::new(false)),
-                )
-                .await
-                .unwrap();
-            assert_eq!(prepared.len(), 2); // One retained historical + one current copied sibling.
-            assert_eq!(expected.len(), 2);
-            let copied = prepared
-                .iter()
-                .find(|(_, id, _)| id == &artifact_id(&material))
-                .unwrap();
-            let copied_path =
-                io::safe_join(&root, copied.2["relativePath"].as_str().unwrap()).unwrap();
-            io::verify(&copied_path, &material_hash, material_size).unwrap();
-            assert_eq!(catalogue.list("artifact").unwrap(), before);
-            io::verify(
-                &io::safe_join(&root, &material_relative).unwrap(),
-                &material_hash,
-                material_size,
-            )
-            .unwrap();
-            let mut unavailable = material_artifact.clone();
-            unavailable["originalAvailable"] = json!(false);
-            catalogue
-                .put("artifact", &artifact_id(&material), unavailable)
-                .unwrap();
-            assert_eq!(
-                service
-                    .prepare_selected_source_siblings(
-                        &mapped_root,
-                        &root,
-                        &model,
-                        &selected_files,
-                        "download:selected-missing",
-                        "assets/Synthetic--stable",
-                        &Arc::new(AtomicBool::new(false)),
-                    )
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "source_tree_incomplete"
-            );
-            catalogue
-                .put(
-                    "artifact",
-                    &artifact_id(&material),
-                    material_artifact.clone(),
-                )
-                .unwrap();
-            // Repeated selected updates keep the same verified tree and artifact records.
-            for _ in 0..2 {
-                assert!(service
-                    .verified_source_manifest(&mapped_root, &root, &files, true, &cancel)
-                    .await
-                    .unwrap());
-            }
-            assert_eq!(catalogue.list("artifact").unwrap(), before);
-            // A source without an updated timestamp still performs GET; only
-            // its actual equal hash/size may retain this single-leaf Ready path.
-            let mut unverified = model.clone();
-            unverified["requiresContentVerification"] = json!(true);
-            assert_eq!(
-                service
-                    .verified_single_source_content(
-                        &mapped_root,
-                        &root,
-                        &model,
-                        &[unverified.clone()],
-                        true,
-                        &model_hash,
-                        model_size
-                    )
-                    .await
-                    .unwrap(),
-                Some(model_artifact.clone())
-            );
-            assert!(service
-                .verified_single_source_content(
-                    &mapped_root,
-                    &root,
-                    &model,
-                    &[unverified.clone()],
-                    true,
-                    "different-actual-hash",
-                    model_size
-                )
-                .await
-                .unwrap()
-                .is_none());
-            assert!(service
-                .verified_single_source_content(
-                    &mapped_root,
-                    &root,
-                    &model,
-                    &[unverified.clone()],
-                    true,
-                    &model_hash,
-                    model_size + 1
-                )
-                .await
-                .unwrap()
-                .is_none());
-            let mut moved = model.clone();
-            moved["sourceRelativePath"] = json!("moved/model.fbx");
-            assert!(service
-                .verified_single_source_content(
-                    &mapped_root,
-                    &root,
-                    &moved,
-                    &[moved.clone()],
-                    true,
-                    &model_hash,
-                    model_size
-                )
-                .await
-                .unwrap()
-                .is_none());
-            assert!(service
-                .verified_single_source_content(
-                    &mapped_root,
-                    &root,
-                    &model,
-                    &[unverified, material.clone()],
-                    true,
-                    &model_hash,
-                    model_size
-                )
-                .await
-                .unwrap()
-                .is_none());
-            assert_eq!(catalogue.list("artifact").unwrap(), before);
-            assert!(!io::safe_join(
-                &root,
-                &source_tree_relative(&model, "download:two", "Tool")
-                    .unwrap()
-                    .unwrap()
-            )
-            .unwrap()
-            .exists());
-            let mut changed = model.clone();
-            changed["revision"] = json!("source:r2");
-            assert!(!service
-                .verified_source_manifest(
-                    &mapped_root,
-                    &root,
-                    &[changed, material.clone()],
-                    true,
-                    &cancel
-                )
-                .await
-                .unwrap());
-            assert!(!service
-                .verified_source_manifest(
-                    &mapped_root,
-                    &root,
-                    &[model.clone(), material.clone(), other.clone()],
-                    true,
-                    &cancel
-                )
-                .await
-                .unwrap());
-            // An interrupted mixed layout must still rebuild one coherent sibling tree.
-            let mixed_relative = source_tree_relative(&material, "download:interrupted", "Tool")
-                .unwrap()
-                .unwrap();
-            retain_source_tree_copy(
-                &root,
-                &material_relative,
-                &mixed_relative,
-                &material_hash,
-                material_size,
-                &cancel,
-            )
-            .unwrap();
-            let mut mixed_artifact = material_artifact.clone();
-            mixed_artifact["relativePath"] = json!(mixed_relative);
-            catalogue
-                .put("artifact", &artifact_id(&material), mixed_artifact)
-                .unwrap();
-            assert!(!service
-                .verified_source_manifest(&mapped_root, &root, &files, true, &cancel)
-                .await
-                .unwrap());
-            catalogue
-                .put("artifact", &artifact_id(&material), material_artifact)
-                .unwrap();
-            std::fs::remove_file(&model_path).unwrap();
-            assert!(service
-                .verified_single_source_content(
-                    &mapped_root,
-                    &root,
-                    &model,
-                    &[model.clone()],
-                    true,
-                    &model_hash,
-                    model_size
-                )
-                .await
-                .unwrap()
-                .is_none());
-            assert!(!service
-                .verified_source_manifest(&mapped_root, &root, &files, true, &cancel)
-                .await
-                .unwrap());
-            retain_source_tree_copy(
-                &root,
-                "old-flat/model.fbx",
-                &model_relative,
-                &model_hash,
-                model_size,
-                &cancel,
-            )
-            .unwrap();
-            assert!(service
-                .verified_source_manifest(&mapped_root, &root, &files, true, &cancel)
-                .await
-                .unwrap());
-            assert_eq!(catalogue.list("artifact").unwrap(), before);
-        }
-        // Same-job retry reuses complete bytes, while a new job retains a separate tree.
-        retain_source_tree_copy(
-            &root,
-            "old-flat/model.fbx",
-            &model_relative,
-            &model_hash,
-            model_size,
-            &cancel,
-        )
-        .unwrap();
-        let next_relative = source_tree_relative(&model, "download:two", "Tool")
-            .unwrap()
-            .unwrap();
-        assert_ne!(next_relative, model_relative);
-        retain_source_tree_copy(
-            &root,
-            &model_relative,
-            &next_relative,
-            &model_hash,
-            model_size,
-            &cancel,
-        )
-        .unwrap();
-        io::verify(&root.join("old-flat/model.fbx"), &model_hash, model_size).unwrap();
-        io::verify(&model_path, &model_hash, model_size).unwrap();
-        // A changed destination is preserved rather than replaced by matching old bytes.
-        std::fs::write(&material_path, b"retained damaged destination").unwrap();
-        assert!(retain_source_tree_copy(
-            &root,
-            "old-flat/material.mat",
-            &material_relative,
-            &material_hash,
-            material_size,
-            &cancel
-        )
-        .is_err());
-        assert_eq!(
-            std::fs::read(&material_path).unwrap(),
-            b"retained damaged destination"
-        );
-        io::verify(
-            &root.join("old-flat/material.mat"),
-            &material_hash,
-            material_size,
-        )
-        .unwrap();
-        let mut unsafe_file = model.clone();
-        unsafe_file["sourceRelativePath"] = json!("../model.fbx");
-        assert!(validate_source_tree_paths(&[unsafe_file]).is_err());
-        let mut collision = model.clone();
-        collision["id"] = json!("another");
-        collision["sourceRelativePath"] = json!("Folder/model.fbx");
-        assert!(validate_source_tree_paths(&[model.clone(), collision]).is_err());
-        let mut moved = model.clone();
-        moved["sourceRelativePath"] = json!("other/model.fbx");
-        assert!(!same_remote_identity(&model, &moved));
-        let mut booth = model;
-        booth["provider"] = json!("booth");
-        assert!(source_tree_relative(&booth, "download:one", "Tool")
-            .unwrap()
-            .is_none());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn source_tree_maps_names_windows_cannot_store_and_still_refuses_traversal() {
-        let file = json!({"id":"synthetic","provider":"jinxxy","productId":"jinxxy:synthetic","accountId":"synthetic-account","inventoryId":"synthetic-inventory","name":"Read me?.txt","sourceRelativePath":"Docs <v2>/Read me?.txt","revision":"source:r1"});
-        let relative = source_tree_relative(&file, "download:one", "Tool")
-            .unwrap()
-            .unwrap();
-        assert!(
-            relative.ends_with("/Docs ＜v2＞/Read me？.txt"),
-            "{relative}"
-        );
-        archive::validate_relative_path(&relative).unwrap();
-        // Re-downloads land at the same path, and the job no longer fails on the name.
-        assert_eq!(
-            source_tree_relative(&file, "download:one", "Tool")
-                .unwrap()
-                .unwrap(),
-            relative
-        );
-        validate_source_tree_paths(std::slice::from_ref(&file)).unwrap();
-        for unsafe_path in ["../Read me?.txt", "Docs//Read me?.txt", "./Read me?.txt"] {
-            let mut unsafe_file = file.clone();
-            unsafe_file["sourceRelativePath"] = json!(unsafe_path);
-            assert!(
-                source_tree_relative(&unsafe_file, "download:one", "Tool").is_err(),
-                "{unsafe_path}"
-            );
-        }
-    }
-
-    #[test]
-    fn verified_provider_file_length_cannot_be_overridden_by_response_body_length() {
-        use crate::stores::StoreProvider;
-        for provider in [StoreProvider::Gumroad, StoreProvider::Jinxxy] {
-            let error = expected_download_size(provider, Some(12), Some(42), None).unwrap_err();
-            assert_eq!(io::stable_error(&error), "file_integrity_failed");
-            assert_eq!(
-                expected_download_size(provider, Some(0), Some(0), Some(42)).unwrap(),
-                Some(0)
-            );
-            assert_eq!(
-                expected_download_size(provider, None, Some(42), Some(12)).unwrap(),
-                Some(42)
-            );
-            assert_eq!(
-                expected_download_size(provider, Some(42), None, None).unwrap(),
-                Some(42)
-            );
-        }
-        assert_eq!(
-            expected_download_size(StoreProvider::Booth, Some(12), Some(42), None).unwrap(),
-            Some(12)
-        );
-        assert_eq!(
-            expected_download_size(StoreProvider::Booth, None, Some(42), Some(12)).unwrap(),
-            Some(42)
-        );
-        assert_eq!(
-            expected_download_size(StoreProvider::Booth, None, None, Some(12)).unwrap(),
-            None
-        );
-    }
-    #[test]
-    fn final_revision_uses_positive_source_or_actual_verified_content() {
-        let unknown = json!({"revision":"unknown"});
-        assert_eq!(
-            bind_revision(&unknown, &unknown, None, "abcd").unwrap(),
-            ("sha256:abcd".into(), "contentHash".into())
-        );
-        assert_eq!(
-            bind_revision(&unknown, &unknown, Some("etag:actual".into()), "abcd")
-                .unwrap()
-                .0,
-            "etag:actual"
-        );
-        let source = json!({"revision":"source:v1","revisionBasis":"source"});
-        assert_eq!(
-            bind_revision(&source, &source, Some("etag:actual".into()), "abcd")
-                .unwrap()
-                .0,
-            "source:v1"
-        );
-    }
-    #[test]
-    fn source_hash_mismatch_fails_but_historical_hash_does_not_override_new_content() {
-        let expected = json!({"revision":"sha256:expected","revisionBasis":"source"});
-        assert!(bind_revision(&expected, &expected, None, "different").is_err());
-        let historical = json!({"revision":"sha256:old","revisionBasis":"source","requiresContentVerification":true});
-        assert_eq!(
-            bind_revision(&historical, &historical, None, "new")
-                .unwrap()
-                .0,
-            "sha256:new"
-        );
-    }
-}
+#[path = "transfer_tests.rs"]
+mod tests;

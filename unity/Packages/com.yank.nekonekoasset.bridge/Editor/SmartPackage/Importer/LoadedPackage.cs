@@ -12,6 +12,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		public int LoadGeneration;
 		public long FileLength;
 		public long FileLastWriteUtcTicks;
+		// Owned staging that holds every member, written while the package was read.
+		public string PayloadDirectory;
 		public bool IsLooseFiles;
 		public string LooseDestination = "Assets";
 		public List<UnityPackageEntry> Entries = new List<UnityPackageEntry>();
@@ -31,6 +33,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		public int PathConflictCount;
 		public int UpdateCount;
 		public int DuplicateCount;
+		public int BlockedCount;
 		public int SelectedCount;
 		public int TallyVersion = -1;
 
@@ -40,7 +43,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		public int LeafCount;
 
 		public static LoadedPackage LoadPackage(string filePath, long dropOrder, string expectedArchiveHash = null,
-			System.Action<long> progress = null, System.Func<bool> cancelled = null)
+			System.Action<long> progress = null, System.Func<bool> cancelled = null, string payloadDirectory = null)
 		{
 			var info = new System.IO.FileInfo(filePath);
 			var package = new LoadedPackage
@@ -50,7 +53,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 				DropOrder = dropOrder,
 				FileLength = info.Length,
 				FileLastWriteUtcTicks = info.LastWriteTimeUtc.Ticks,
-				Entries = UnityPackageReader.ReadMetadata(info.FullName, expectedArchiveHash, progress, cancelled)
+				Entries = UnityPackageReader.ReadMetadata(info.FullName, expectedArchiveHash, progress, cancelled, payloadDirectory),
+				PayloadDirectory = payloadDirectory
 			};
 			info.Refresh();
 			if (info.Length != package.FileLength || info.LastWriteTimeUtc.Ticks != package.FileLastWriteUtcTicks)

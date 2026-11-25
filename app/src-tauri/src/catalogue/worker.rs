@@ -132,7 +132,11 @@ impl Catalogue {
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-        Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sync_outbox)", [], |row| row.get(0))?)
+        Ok(
+            conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sync_outbox)", [], |row| {
+                row.get(0)
+            })?,
+        )
     }
 
     /// Replay immutable before/after intent in order, outside the SQLite mutex.
@@ -193,12 +197,6 @@ impl Catalogue {
             if !bytes.is_empty() {
                 Self::persist_delta(&tx, &bytes)?;
                 tx.execute("INSERT INTO meta(key,value) VALUES('sync_revision',1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1", [])?;
-            }
-            let conflicts = self.current_conflicts(&tx)?;
-            let remaining = sync::remaining_conflicts(&doc, &conflicts)?;
-            if remaining != conflicts {
-                Self::save_conflicts(&tx, &remaining)?;
-                Self::bump_revision(&tx)?;
             }
             tx.execute(
                 "DELETE FROM sync_outbox WHERE seq<=?1",

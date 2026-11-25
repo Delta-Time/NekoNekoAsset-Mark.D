@@ -14,6 +14,7 @@ use std::{
 pub fn hash_file(path: &Path) -> Result<(String, u64)> {
     hash_file_inner(path, None)
 }
+
 fn hash_file_inner(path: &Path, cancel: Option<&AtomicBool>) -> Result<(String, u64)> {
     ensure_regular(path)?;
     let mut input = File::open(path)?;
@@ -253,9 +254,11 @@ pub fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
 pub fn verify(path: &Path, hash: &str, size: u64) -> Result<()> {
     verify_inner(path, hash, size, None)
 }
+
 pub(super) fn verify_cancel(path: &Path, hash: &str, size: u64, cancel: &AtomicBool) -> Result<()> {
     verify_inner(path, hash, size, Some(cancel))
 }
+
 fn verify_inner(path: &Path, hash: &str, size: u64, cancel: Option<&AtomicBool>) -> Result<()> {
     let actual = hash_file_inner(path, cancel)?;
     ensure!(
@@ -353,71 +356,17 @@ pub fn absolute_dir(path: &Path, create: bool) -> Result<PathBuf> {
     fs::remove_file(probe)?;
     Ok(path)
 }
+/// The stable code of an error, which jobs record and the UI translates. A store's error
+/// carries the class it was given where it left the store (`stores::DownloadError`); storage's
+/// own errors are code constants, matched whole; anything else is read by its io error kind.
 pub fn stable_error(err: &anyhow::Error) -> &'static str {
-    let message = err.to_string().to_ascii_lowercase();
-    match message.as_str() {
-        "account_identity_mismatch" | "store_identity_changed" => return "auth_required",
-        // The store no longer offers this file to the account; an update
-        // replaces the saved list. Local bytes stay `file_missing`, and other
-        // FILE_UNAVAILABLE callers outside downloads keep their own mapping.
-        "file_unavailable" => return "store_file_unavailable",
-        // A free offer that ended stays listed, so an update cannot help.
-        "free_offer_unavailable" => return "free_offer_unavailable",
-        // The store answering no; a disk refusing a write is an io error below.
-        "permission_denied" => return "store_access_denied",
-        "source_tree_incomplete" => return "source_tree_incomplete",
-        "network_unavailable" => return "network_failed",
-        "download_failed" => return "download_http_failed",
-        _ => {}
-    }
-    if message.contains("auth") || message.contains("account_unavailable") {
-        return "auth_required";
-    }
-    if message.contains("archive_link_forbidden") || message.contains("storage_link_forbidden") {
-        return "archive_unsafe_link";
-    }
-    for code in [
-        "cancelled",
-        "root_offline",
-        "low_space",
-        "auth_required",
-        "permission_denied",
-        "storage_source_locked",
-        "link_expired",
-        "rate_limited",
-        "network_failed",
-        "network_timeout",
-        "source_changed",
-        "download_size_mismatch",
-        "download_resolver_failed",
-        "download_http_failed",
-        "manifest_changed",
-        "manifest_incomplete",
-        "file_missing",
-        "file_integrity_failed",
-        "archive_password_required",
-        "archive_missing_volume",
-        "archive_corrupt",
-        "archive_listing_invalid",
-        "archive_inventory_mismatch",
-        "archive_unsafe_path",
-        "archive_unsafe_link",
-        "archive_path_collision",
-        "archive_tool_unavailable",
-        "revision_unknown",
-        "unsupported_backup_version",
-        "backup_payload_missing",
-        "destination_not_empty",
-        "destination_not_fresh",
-        "local_delete_unsafe_path",
-        "local_delete_shared_path",
-        "local_delete_cleanup_failed",
-        "local_delete_rollback_failed",
-        "local_delete_retry_required",
-    ] {
-        if message.contains(code) {
-            return code;
+    if let Some(store) = err.downcast_ref::<crate::stores::StoreError>() {
+        if store.class != crate::stores::DownloadError::Failed {
+            return store.class.code();
         }
+    }
+    if let Some(code) = raised_code(&err.to_string()) {
+        return code;
     }
     if let Some(e) = err.downcast_ref::<std::io::Error>() {
         // Another program or a scanner still held the file after the retries.
@@ -438,6 +387,66 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
         }
     }
     "storage_failed"
+}
+
+/// The codes storage records as they were raised.
+const CODES: [&str; 38] = [
+    "cancelled",
+    "root_offline",
+    "low_space",
+    "auth_required",
+    "permission_denied",
+    "storage_source_locked",
+    "link_expired",
+    "rate_limited",
+    "network_failed",
+    "network_timeout",
+    "source_changed",
+    "source_tree_incomplete",
+    "download_size_mismatch",
+    "download_resolver_failed",
+    "download_http_failed",
+    "manifest_changed",
+    "manifest_incomplete",
+    "file_missing",
+    "file_integrity_failed",
+    "archive_password_required",
+    "archive_missing_volume",
+    "archive_corrupt",
+    "archive_listing_invalid",
+    "archive_inventory_mismatch",
+    "archive_unsafe_path",
+    "archive_unsafe_link",
+    "archive_path_collision",
+    "archive_tool_unavailable",
+    "revision_unknown",
+    "unsupported_backup_version",
+    "backup_payload_missing",
+    "destination_not_empty",
+    "destination_not_fresh",
+    "local_delete_unsafe_path",
+    "local_delete_shared_path",
+    "local_delete_cleanup_failed",
+    "local_delete_rollback_failed",
+    "local_delete_retry_required",
+];
+
+/// A code storage raised, matched whole: one of `CODES`, or another name storage raises for
+/// one of them.
+fn raised_code(raised: &str) -> Option<&'static str> {
+    Some(match raised {
+        "archive_link_forbidden" | "storage_link_forbidden" => "archive_unsafe_link",
+        "download_failed" => "download_http_failed",
+        "storage.backup_payload_missing" => "backup_payload_missing",
+        "storage.cancelled" => "cancelled",
+        "storage.destination_not_fresh" => "destination_not_fresh",
+        "storage.file_missing" => "file_missing",
+        "storage.low_space" | "storage_low_space" => "low_space",
+        "storage.source_changed" | "storage_source_changed" | "local_source_changed" => {
+            "source_changed"
+        }
+        _ => return CODES.into_iter().find(|code| *code == raised),
+    })
 }
 pub fn open_path(path: &Path) -> Result<()> {
     ensure!(path.is_absolute(), "root_not_absolute");
@@ -547,164 +556,13 @@ fn windows_shell_path(path: &str) -> Result<String> {
     }
     Ok(path.to_owned())
 }
-
-#[cfg(test)]
-mod launch_path_tests {
-    use super::*;
-    #[cfg(windows)]
-    #[test]
-    fn a_move_waits_out_a_brief_exclusive_handle_but_not_a_missing_file() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let root = std::env::temp_dir().join(format!("nna-busy-move-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&root).unwrap();
-        let (part, published) = (root.join("authored.part"), root.join("authored.zip"));
-        fs::write(&part, b"authored payload").unwrap();
-        // As an antivirus scan does: an open handle that shares neither writes nor deletes.
-        let scan = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(&part)
-            .unwrap();
-        assert_eq!(
-            fs::rename(&part, &published).unwrap_err().raw_os_error(),
-            Some(32)
-        );
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            drop(scan);
-        });
-        retry_busy(|| fs::rename(&part, &published)).unwrap();
-        release.join().unwrap();
-        assert_eq!(fs::read(&published).unwrap(), b"authored payload");
-        let started = std::time::Instant::now();
-        assert!(retry_busy(|| fs::rename(root.join("missing.part"), &published)).is_err());
-        assert!(started.elapsed() < std::time::Duration::from_millis(50));
-        fs::remove_dir_all(&root).unwrap();
-    }
-    #[test]
-    fn completed_file_does_not_remove_a_waiting_transfers_shared_parent() {
-        let root =
-            std::env::temp_dir().join(format!("nna-partial-parent-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&root).unwrap();
-        let parent = root.join(".nna-partials");
-        fs::create_dir(&parent).unwrap();
-        {
-            let _job = EmptyDirectoryGuard(parent.clone());
-            let first = parent.join("first.part");
-            let second = parent.join("second.part");
-            let pending = PartialGuard::new(second.clone());
-            fs::write(&first, b"completed authored bytes").unwrap();
-            drop(PartialGuard::new(first.clone()));
-            assert!(!first.exists());
-            assert!(parent.is_dir());
-            fs::write(&second, b"later authored bytes").unwrap();
-            drop(pending);
-            assert!(!second.exists());
-            assert!(!parent.exists());
-        }
-        assert!(!parent.exists());
-        fs::remove_dir(root).unwrap();
-    }
-
-    #[test]
-    fn provider_identity_and_missing_file_errors_preserve_existing_action_codes() {
-        for (error, expected) in [
-            ("ACCOUNT_IDENTITY_MISMATCH", "auth_required"),
-            ("STORE_IDENTITY_CHANGED", "auth_required"),
-            ("FILE_UNAVAILABLE", "store_file_unavailable"),
-            ("file_missing", "file_missing"),
-            ("SIGNED_LINK_EXPIRED", "link_expired"),
-            ("PERMISSION_DENIED", "store_access_denied"),
-            ("FREE_OFFER_UNAVAILABLE", "free_offer_unavailable"),
-            ("archive_corrupt", "archive_corrupt"),
-            ("archive_listing_invalid", "archive_listing_invalid"),
-            ("archive_inventory_mismatch", "archive_inventory_mismatch"),
-            ("storage.destination_not_fresh", "destination_not_fresh"),
-            ("NETWORK_UNAVAILABLE", "network_failed"),
-            ("network_failed", "network_failed"),
-            ("network_timeout", "network_timeout"),
-            ("RATE_LIMITED", "rate_limited"),
-            ("SOURCE_CHANGED", "source_changed"),
-            ("download_size_mismatch", "download_size_mismatch"),
-            ("DOWNLOAD_RESOLVER_FAILED", "download_resolver_failed"),
-            ("DOWNLOAD_HTTP_FAILED", "download_http_failed"),
-            ("download_failed", "download_http_failed"),
-            ("manifest_changed", "manifest_changed"),
-        ] {
-            assert_eq!(stable_error(&anyhow::anyhow!(error)), expected);
-        }
-        assert_eq!(
-            stable_error(&anyhow::anyhow!("UNRECOGNIZED_PROVIDER_FAILURE")),
-            "storage_failed"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn locked_files_and_vanished_library_drives_keep_their_own_codes() {
-        let os = |code| stable_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(code)));
-        assert_eq!((os(32), os(33)), ("file_in_use", "file_in_use"));
-        for code in [21, 53, 59, 64, 67, 1231] {
-            assert_eq!(os(code), "root_offline", "{code}");
-        }
-        assert_eq!((os(5), os(112)), ("permission_denied", "low_space"));
-    }
-
-    #[test]
-    fn windows_shell_paths_normalize_only_supported_verbatim_prefixes() {
-        assert_eq!(
-            windows_shell_path(r"\\?\E:\Synthetic Library\衣装").unwrap(),
-            r"E:\Synthetic Library\衣装"
-        );
-        assert_eq!(
-            windows_shell_path(r"\\?\UNC\synthetic-server\share\衣装").unwrap(),
-            r"\\synthetic-server\share\衣装"
-        );
-        assert_eq!(
-            windows_shell_path(r"E:\Synthetic Library").unwrap(),
-            r"E:\Synthetic Library"
-        );
-        assert_eq!(
-            windows_shell_path(r"\\synthetic-server\share\衣装").unwrap(),
-            r"\\synthetic-server\share\衣装"
-        );
-        assert!(windows_shell_path(r"\\?\GLOBALROOT\Device\HarddiskVolume1").is_err());
-        assert!(windows_shell_path(r"\\.\PhysicalDrive0").is_err());
-        assert!(windows_shell_path("E:\\Synthetic\0Ignored").is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn library_usage_sums_nested_files_without_following_junctions() {
-        use std::os::windows::process::CommandExt;
-        let root = std::env::temp_dir().join(format!("nna-usage-{}", uuid::Uuid::new_v4()));
-        let library = root.join("library");
-        fs::create_dir_all(library.join("assets/衣装/Textures")).unwrap();
-        fs::write(library.join("catalogue.sqlite3"), [0; 3]).unwrap();
-        fs::write(library.join("assets/衣装/Textures/body.png"), [0; 4096]).unwrap();
-        fs::write(root.join("outside.bin"), [0; 1000]).unwrap();
-        // A junction back to the parent would both escape the library and loop.
-        let link = library.join("assets").join("loop");
-        let output = std::process::Command::new("cmd")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(&link)
-            .arg(&root)
-            .creation_flags(0x08000000)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(tree_bytes(&library).unwrap(), 4099);
-        fs::remove_dir(link).unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-}
 pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
     match value[field].as_str() {
         Some(s) if !s.is_empty() => Ok(s),
         _ => bail!("invalid_arguments"),
     }
 }
+
+#[cfg(test)]
+#[path = "io_launch_path_tests.rs"]
+mod launch_path_tests;

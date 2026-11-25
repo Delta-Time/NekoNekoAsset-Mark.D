@@ -2,7 +2,7 @@
 //! filesystem discovery, source fetch, or asset-content upload occurs here.
 use super::{artifact_id, io, StorageService};
 use crate::{
-    ai_analysis::{normalize_input, public_product_url, AnalysisInput},
+    ai::analysis::{normalize_input, public_product_url, AnalysisInput},
     catalogue::opaque_ai_file_ref,
 };
 use anyhow::{anyhow, Result};

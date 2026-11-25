@@ -1,12 +1,11 @@
+// Functions outside tests stay under the line limit in clippy.toml; test scenarios may run long.
+#![cfg_attr(not(test), warn(clippy::too_many_lines))]
+
 mod ai;
-mod ai_analysis;
-mod ai_images;
-mod ai_jobs;
-mod ai_provider;
-mod ai_suggestions;
 mod app_reset;
 mod booth;
 mod catalogue;
+mod ipc;
 mod library_lock;
 mod licenses;
 mod native;
@@ -20,6 +19,8 @@ mod stores;
 mod support;
 mod support_trace;
 mod taxonomy;
+#[cfg(test)]
+mod test_dir;
 mod unity;
 mod updates;
 mod verification;
@@ -45,8 +46,8 @@ use tauri::{Emitter, Listener, Manager};
 struct Services {
     setup_only: bool,
     ai: Arc<ai::AiService>,
-    ai_jobs: Arc<ai_jobs::AiJobs>,
-    ai_suggestions: Arc<ai_suggestions::AiSuggestions>,
+    ai_jobs: Arc<ai::jobs::AiJobs>,
+    ai_suggestions: Arc<ai::suggestions::AiSuggestions>,
     catalogue: Catalogue,
     stores: Arc<StoreService>,
     storage: Arc<StorageService>,
@@ -69,7 +70,7 @@ impl Services {
             .get("preferences", "app")?
             .is_none_or(|preferences| preferences["setupComplete"] != true);
         let ai = Arc::new(ai::AiService::new(device_dir)?);
-        let ai_suggestions = Arc::new(ai_suggestions::AiSuggestions::new(
+        let ai_suggestions = Arc::new(ai::suggestions::AiSuggestions::new(
             catalogue.clone(),
             ai.clone(),
         )?);
@@ -86,7 +87,7 @@ impl Services {
             storage.clone(),
         )?);
         let previews = Arc::new(preview::PreviewCache::new(catalogue.data_dir())?);
-        let ai_jobs = Arc::new(ai_jobs::AiJobs::new(
+        let ai_jobs = Arc::new(ai::jobs::AiJobs::new(
             catalogue.clone(),
             ai.clone(),
             storage.clone(),
@@ -108,15 +109,34 @@ impl Services {
     }
 }
 
-#[derive(Clone, Serialize)]
+/// Whether a library is open, being set up, missing or blocked, for the shell to show.
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 struct LibraryStatus {
+    #[ts(type = "\"ready\" | \"setup\" | \"unconfigured\" | \"blocked\"")]
     state: String,
     path: Option<PathBuf>,
     default_path: Option<PathBuf>,
     error_code: Option<String>,
     locale: String,
-    missing_credentials: Vec<Value>,
+    /// Connected accounts this device has no sign-in for.
+    missing_credentials: Vec<LibraryCredential>,
+}
+
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
+struct LibraryCredential {
+    id: String,
+    name: Option<String>,
+    store: Option<String>,
+}
+
+/// Whether opening the library restarts the App into it.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct LibraryOpened {
+    restarting: bool,
 }
 
 struct LibraryHost {
@@ -361,7 +381,7 @@ fn trusted(
         })
 }
 fn changed(app: &tauri::AppHandle, scope: &str) {
-    let _ = app.emit("nna:changed", json!({"scope":scope}));
+    let _ = app.emit("nna:changed", crate::ipc::Change::scope(scope));
 }
 
 async fn sync_connected_accounts(
@@ -453,7 +473,7 @@ async fn ai_analysis_action(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     services: tauri::State<'_, LibraryHost>,
-    request: ai_jobs::AiJobRequest,
+    request: ai::jobs::AiJobRequest,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
@@ -468,7 +488,7 @@ async fn ai_analysis_action(
 async fn ai_suggestion_action(
     window: tauri::WebviewWindow,
     services: tauri::State<'_, LibraryHost>,
-    request: ai_suggestions::AiSuggestionRequest,
+    request: ai::suggestions::AiSuggestionRequest,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
@@ -487,81 +507,35 @@ async fn catalogue_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use catalogue::api::CatalogueRequest as Request;
     let _operation = trusted(&window)?;
+    let mut request = Request::parse(&action, args).map_err(UiError::from_error)?;
+    // A preference change, and whether it finishes setup.
+    let patch = match &request {
+        Request::Preferences { patch } => Some(patch.clone()),
+        _ => None,
+    };
+    let finishing = patch
+        .as_ref()
+        .is_some_and(|patch| patch.get("setupComplete") == Some(&Value::Bool(true)));
     if let Some(setup) = services.active_setup()? {
-        if services.opening.load(Ordering::Acquire) {
-            return Err(UiError {
-                code: "library_opening".into(),
-            });
-        }
-        if action == "preferences" && args["patch"]["setupComplete"] == true {
-            return finish_staged_setup(app, &services, setup, args).await;
-        }
-        if !matches!(action.as_str(), "bootstrap" | "state" | "preferences") {
-            return Err(UiError {
-                code: "library_not_open".into(),
-            });
-        }
-        let catalogue = setup.catalogue.clone();
-        let mutation = action == "preferences";
-        let _work = mutation
-            .then(|| setup.catalogue.begin_catalogue_work())
-            .transpose()
-            .map_err(UiError::from_error)?;
-        let mut result =
-            tauri::async_runtime::spawn_blocking(move || catalogue.command(&action, args))
-                .await
-                .map_err(|_| UiError {
-                    code: "worker_failed".into(),
-                })?
-                .map_err(UiError::from_error)?;
-        if let Some(accounts) = result["accounts"].as_array() {
-            result["accounts"] = json!(setup.stores.account_views(accounts.clone()));
-        }
-        if mutation {
-            changed(&app, "state");
-        }
-        return Ok(result);
+        return staged_setup_action(app, &services, setup, request, &patch, finishing).await;
     }
     let status = services.status_snapshot()?;
     if status.state == "unconfigured"
         && services.active_services()?.is_none()
-        && matches!(action.as_str(), "bootstrap" | "state")
+        && matches!(request, Request::Bootstrap { .. } | Request::State)
     {
-        let locale = status.locale;
-        return Ok(
-            json!({"version":1,"products":[],"accounts":[],"roots":[],"jobs":[],"preferences":{"locale":locale,"setupComplete":false,"autoDownloadAll":false},"collections":[],"savedSearches":[],"customCategories":[],"sourceCoverage":[],"conflicts":[],"avatarOptions":[],"ownedBaseOptions":[],"tagOptions":[],"total":0,"counts":{"all":0,"downloaded":0,"attention":0}}),
-        );
+        return unconfigured_bootstrap(status.locale);
     }
     let host = services;
     let services = host.services()?;
-    if services.setup_only && action == "preferences" && args["patch"]["setupComplete"] == true {
-        return finish_setup(app, &host, services, args).await;
+    if services.setup_only && finishing {
+        return finish_setup(app, &host, services, json!({"patch":patch})).await;
     }
     let catalogue = services.catalogue.clone();
-    let invalidates = !matches!(
-        action.as_str(),
-        "bootstrap"
-            | "avatar_options"
-            | "job_diagnostics"
-            | "query"
-            | "conflicts"
-            | "product_details"
-            | "account_counts"
-            | "manifest"
-            | "export_csv"
-            | "collections"
-            | "state"
-            | "spending_summary"
-    );
-    let _work = if action == "restore_manifest" {
-        Some(
-            services
-                .catalogue
-                .begin_restore_work()
-                .map_err(UiError::from_error)?,
-        )
-    } else if invalidates {
+    let invalidates = !request.reads_only();
+    let _work = if invalidates {
         Some(
             services
                 .catalogue
@@ -571,7 +545,7 @@ async fn catalogue_action(
     } else {
         None
     };
-    let previous_preferences = if action == "preferences" {
+    let previous_preferences = if patch.is_some() {
         catalogue
             .get("preferences", "app")
             .map_err(UiError::from_error)?
@@ -579,37 +553,35 @@ async fn catalogue_action(
     } else {
         Value::Null
     };
-    let mut reevaluate_automatic = action == "preferences"
-        && args["patch"]["autoDownloadAll"]
-            .as_bool()
-            .is_some_and(|next| {
-                next != previous_preferences["autoDownloadAll"]
-                    .as_bool()
-                    .unwrap_or(false)
-            });
-    let completes_setup = action == "preferences"
-        && args["patch"]["setupComplete"] == true
-        && previous_preferences["setupComplete"] != true;
-    let avatar_settings_changed = action == "preferences"
-        && args["patch"]
-            .get("avatarSettings")
-            .is_some_and(|next| *next != previous_preferences["avatarSettings"]);
-    let mutation_scope = match action.as_str() {
-        "collection" => "collections",
-        "clear_activity" => "catalogue",
-        "preferences" if !avatar_settings_changed => "state",
+    let patched = |key: &str| patch.as_ref().and_then(|patch| patch.get(key));
+    let reevaluate_automatic = patched("autoDownloadAll")
+        .and_then(Value::as_bool)
+        .is_some_and(|next| {
+            next != previous_preferences["autoDownloadAll"]
+                .as_bool()
+                .unwrap_or(false)
+        });
+    let completes_setup = finishing && previous_preferences["setupComplete"] != true;
+    let avatar_settings_changed = patched("avatarSettings")
+        .is_some_and(|next| *next != previous_preferences["avatarSettings"]);
+    let mutation_scope = match request {
+        Request::Collection(_) => "collections",
+        Request::ClearActivity => "catalogue",
+        Request::Preferences { .. } if !avatar_settings_changed => "state",
         _ => "catalogue",
     };
-    let is_exchange = action == "exchange";
-    let account_view = matches!(action.as_str(), "bootstrap" | "state");
-    let mut args = args;
-    if action == "query" {
+    let account_view = matches!(request, Request::Bootstrap { .. } | Request::State);
+    if let Request::Query(query) = &mut request {
         // The license database answers which products a license filter keeps.
-        if let Some(ids) = services.licenses.matching(&args["license"]).map_err(UiError::from_error)? {
-            args["licenseIds"] = json!(ids);
+        if let Some(ids) = services
+            .licenses
+            .matching(&json!(query.license))
+            .map_err(UiError::from_error)?
+        {
+            query.license_ids = Some(ids);
         }
     }
-    let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.command(&action, args))
+    let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.execute(request))
         .await
         .map_err(|_| UiError {
             code: "worker_failed".into(),
@@ -620,7 +592,10 @@ async fn catalogue_action(
             result["accounts"] = json!(services.stores.account_views(accounts.clone()));
         }
     }
-    if let Some(links) = result.as_object_mut().and_then(|result| result.remove("changedLinks")) {
+    if let Some(links) = result
+        .as_object_mut()
+        .and_then(|result| result.remove("changedLinks"))
+    {
         let links: Vec<String> = serde_json::from_value(links).unwrap_or_default();
         if !links.is_empty() {
             services.storage.read_changed_link_prices(&app, links);
@@ -647,7 +622,6 @@ async fn catalogue_action(
             .map_err(UiError::from_error)?;
         services.ai_suggestions.cancel_all().await;
     }
-    reevaluate_automatic |= is_exchange && result["read"]["imported"].as_u64().unwrap_or(0) > 0;
     if invalidates {
         changed(&app, mutation_scope);
     }
@@ -662,6 +636,79 @@ async fn catalogue_action(
     }
     Ok(result)
 }
+
+/// A catalogue request while setup is staged: only its reads and preferences answer.
+async fn staged_setup_action(
+    app: tauri::AppHandle,
+    services: &LibraryHost,
+    setup: SetupState,
+    request: catalogue::api::CatalogueRequest,
+    patch: &Option<serde_json::Map<String, Value>>,
+    finishing: bool,
+) -> Result<Value, UiError> {
+    use catalogue::api::CatalogueRequest as Request;
+    if services.opening.load(Ordering::Acquire) {
+        return Err(UiError {
+            code: "library_opening".into(),
+        });
+    }
+    if finishing {
+        return finish_staged_setup(app, services, setup, json!({"patch":patch})).await;
+    }
+    if !matches!(
+        request,
+        Request::Bootstrap { .. } | Request::State | Request::Preferences { .. }
+    ) {
+        return Err(UiError {
+            code: "library_not_open".into(),
+        });
+    }
+    let catalogue = setup.catalogue.clone();
+    let mutation = patch.is_some();
+    let _work = mutation
+        .then(|| setup.catalogue.begin_catalogue_work())
+        .transpose()
+        .map_err(UiError::from_error)?;
+    let mut result = tauri::async_runtime::spawn_blocking(move || catalogue.execute(request))
+        .await
+        .map_err(|_| UiError {
+            code: "worker_failed".into(),
+        })?
+        .map_err(UiError::from_error)?;
+    if let Some(accounts) = result["accounts"].as_array() {
+        result["accounts"] = json!(setup.stores.account_views(accounts.clone()));
+    }
+    if mutation {
+        changed(&app, "state");
+    }
+    Ok(result)
+}
+
+/// What the App shows before any library exists.
+fn unconfigured_bootstrap(locale: String) -> Result<Value, UiError> {
+    let empty = catalogue::api::Bootstrap {
+        version: 1,
+        total: 0,
+        counts: Default::default(),
+        products: vec![],
+        state: catalogue::api::StateSnapshot {
+            accounts: vec![],
+            roots: vec![],
+            jobs: vec![],
+            preferences: Some(
+                json!({"locale":locale,"setupComplete":false,"autoDownloadAll":false}),
+            ),
+            source_coverage: vec![],
+        },
+        collections: vec![],
+        saved_searches: vec![],
+        custom_categories: vec![],
+        tag_options: json!([]),
+        avatar_options: vec![],
+        owned_base_options: vec![],
+    };
+    serde_json::to_value(empty).map_err(|error| UiError::from_error(error.into()))
+}
 #[tauri::command]
 async fn booth_action(
     window: tauri::WebviewWindow,
@@ -670,7 +717,9 @@ async fn booth_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use stores::api::StoreRequest as Request;
     let _operation = trusted(&window)?;
+    let request = Request::parse(&action, args).map_err(UiError::from_error)?;
     if let Some(setup) = services.active_setup()? {
         if services.opening.load(Ordering::Acquire) {
             return Err(UiError {
@@ -678,24 +727,23 @@ async fn booth_action(
             });
         }
         if !matches!(
-            action.as_str(),
-            "account_add"
-                | "account_login"
-                | "login"
-                | "account_rename"
-                | "account_remove"
-                | "account_logout"
-                | "cancel_sync"
-                | "retry_sync"
+            request,
+            Request::AccountAdd(_)
+                | Request::AccountLogin(_)
+                | Request::AccountRename(_)
+                | Request::AccountRemove(_)
+                | Request::AccountLogout(_)
+                | Request::CancelSync(_)
+                | Request::RetrySync(_)
         ) {
             return Err(UiError {
                 code: "library_not_open".into(),
             });
         }
-        if matches!(action.as_str(), "cancel_sync" | "retry_sync") {
+        if matches!(request, Request::CancelSync(_) | Request::RetrySync(_)) {
             let job = setup
                 .catalogue
-                .get("job", args["jobId"].as_str().unwrap_or(""))
+                .get("job", request.job_id().unwrap_or(""))
                 .map_err(UiError::from_error)?;
             if !job.is_some_and(|job| {
                 job["type"]
@@ -707,14 +755,21 @@ async fn booth_action(
                 });
             }
         }
-        if matches!(action.as_str(), "account_login" | "login" | "retry_sync") {
-            let account_id = if action == "retry_sync" {
-                setup.catalogue.get("job", args["jobId"].as_str().unwrap_or(""))
+        if matches!(request, Request::AccountLogin(_) | Request::RetrySync(_)) {
+            let account_id = if matches!(request, Request::RetrySync(_)) {
+                setup
+                    .catalogue
+                    .get("job", request.job_id().unwrap_or(""))
                     .map_err(UiError::from_error)?
                     .and_then(|job| job["accountId"].as_str().map(str::to_owned))
-            } else { args["accountId"].as_str().map(str::to_owned) };
+            } else {
+                request.login_account().map(str::to_owned)
+            };
             if let Some(account_id) = account_id {
-                let provider = setup.stores.provider_for_account(&account_id).map_err(UiError::from_error)?;
+                let provider = setup
+                    .stores
+                    .provider_for_account(&account_id)
+                    .map_err(UiError::from_error)?;
                 if let Err(error) = setup.sessions.arm(provider, &account_id) {
                     // No native login/profile write has begun. Discard only the
                     // unused memory account; an existing unmarked profile stays.
@@ -726,56 +781,44 @@ async fn booth_action(
         }
         let result = setup
             .stores
-            .command(&app, &action, args)
+            .command(&app, &action, request.args())
             .await
             .map_err(UiError::from_error)?;
         changed(&app, "booth");
         return Ok(result);
     }
     let services = services.services()?;
+    let quiet = matches!(request, Request::FetchProductMetadata(_));
+    let job_change = matches!(
+        request,
+        Request::Sync(_)
+            | Request::CancelSync(_)
+            | Request::RetrySync(_)
+            | Request::UpdateProducts(_)
+    );
+    let account_change = matches!(
+        request,
+        Request::AccountAdd(_) | Request::AccountRemove(_) | Request::AccountLogout(_)
+    );
     let result = {
         // Keep new downloads out between the idle check and session clearing.
-        let _queue = if matches!(action.as_str(), "account_logout" | "account_remove") {
+        let _queue = if matches!(
+            request,
+            Request::AccountLogout(_) | Request::AccountRemove(_)
+        ) {
             Some(services.storage.pause_download_queue().await)
         } else {
             None
         };
         services
             .stores
-            .command(&app, &action, args)
+            .command(&app, &action, request.args())
             .await
             .map_err(UiError::from_error)?
     };
-    if !matches!(
-        action.as_str(),
-        "fetch_product_metadata"
-            | "diagnose_ordering"
-            | "diagnose_manifests"
-            | "diagnose_file_structure"
-            | "diagnose_free_item_entry"
-            | "diagnose_free_item_identity"
-            | "diagnose_receipt_template"
-            | "diagnose_receipt_notice_envelope"
-            | "diagnose_receipt_contact_envelope"
-            | "diagnose_product_line_fields"
-    ) {
-        changed(
-            &app,
-            if matches!(
-                action.as_str(),
-                "sync" | "cancel_sync" | "retry_sync" | "update_products"
-            ) {
-                "jobs"
-            } else {
-                "booth"
-            },
-        );
-        if !services.setup_only
-            && matches!(
-                action.as_str(),
-                "account_add" | "account_remove" | "account_logout"
-            )
-        {
+    if !quiet {
+        changed(&app, if job_change { "jobs" } else { "booth" });
+        if !services.setup_only && account_change {
             let storage = services.storage.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = storage.reevaluate_automatic().await;
@@ -792,12 +835,12 @@ async fn storage_action(
     action: String,
     args: Value,
 ) -> Result<Value, UiError> {
+    use storage::api::StorageRequest as Request;
     let _operation = trusted(&window)?;
+    let request = Request::parse(&action, args).map_err(UiError::from_error)?;
     let device_dir = services.device_dir.clone();
-    if action == "reset_app" {
-        let delete_library = args["deleteLibrary"].as_bool().ok_or_else(|| UiError {
-            code: "reset_invalid_request".into(),
-        })?;
+    if let Request::ResetApp(reset) = &request {
+        let delete_library = reset.delete_library;
         let active = services.services()?;
         if services.opening.swap(true, Ordering::AcqRel) {
             return Err(UiError {
@@ -825,11 +868,15 @@ async fn storage_action(
             return Err(UiError::from_error(error));
         }
         restart_for_library(app);
-        return Ok(json!({"restartRequired":true}));
+        return storage::api::answer(storage::api::RestartRequired {
+            restart_required: true,
+        })
+        .map_err(UiError::from_error);
     }
     let services = services.services()?;
-    if action == "migrate_root" && services.catalogue.library_root().is_some() {
+    if matches!(request, Request::MigrateRoot(_)) && services.catalogue.library_root().is_some() {
         let storage = services.storage.clone();
+        let args = request.args();
         let result = tauri::async_runtime::spawn_blocking(move || {
             storage.move_library(&args, &AtomicBool::new(false))
         })
@@ -868,31 +915,31 @@ async fn storage_action(
         restart_for_library(app);
         return Ok(result);
     }
+    let quiet = matches!(
+        request,
+        Request::ProductAvailability(_)
+            | Request::RootUsage(_)
+            | Request::OpenFile(_)
+            | Request::OpenProductFolder(_)
+            | Request::OpenRootFolder(_)
+    );
+    let job_change = matches!(
+        request,
+        Request::EnqueueProducts(_)
+            | Request::EnqueueFile(_)
+            | Request::CancelJob(_)
+            | Request::RetryJob(_)
+            | Request::DiscardImport(_)
+    );
+    let root_change = matches!(request, Request::ConfigureRoot(_) | Request::RemapRoot(_));
     let result = services
         .storage
-        .command(&app, &action, args)
+        .command(&app, &action, request.args())
         .await
         .map_err(UiError::from_error)?;
-    if !matches!(
-        action.as_str(),
-        "product_availability"
-            | "root_usage"
-            | "open_file"
-            | "open_product_folder"
-            | "open_root_folder"
-    ) {
-        changed(
-            &app,
-            if matches!(
-                action.as_str(),
-                "enqueue_products" | "enqueue_file" | "cancel_job" | "retry_job" | "retry_file"
-            ) {
-                "jobs"
-            } else {
-                "storage"
-            },
-        );
-        if matches!(action.as_str(), "configure_root" | "remap_root") {
+    if !quiet {
+        changed(&app, if job_change { "jobs" } else { "storage" });
+        if root_change {
             let storage = services.storage.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = storage.reevaluate_automatic().await;
@@ -910,10 +957,12 @@ async fn licenses_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request =
+        licenses::api::LicensesRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     services
         .licenses
-        .command(&app, &action, args)
+        .command(&app, request)
         .await
         .map_err(UiError::from_error)
 }
@@ -926,10 +975,11 @@ async fn unity_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request = unity::api::UnityRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     services
         .unity
-        .command(&app, &action, args)
+        .command(&app, request)
         .await
         .map_err(UiError::from_error)
 }
@@ -937,12 +987,12 @@ async fn unity_action(
 async fn native_dialog(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
-    kind: String,
-    options: Option<Value>,
-) -> Result<Value, UiError> {
+    kind: native::DialogKind,
+    options: Option<native::DialogOptions>,
+) -> Result<Option<native::DialogPick>, UiError> {
     let _operation = trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        native::dialog(&app, &kind, options.unwrap_or(json!({})))
+        native::dialog(&app, kind, options.unwrap_or_default())
     })
     .await
     .map_err(|_| UiError {
@@ -959,10 +1009,11 @@ async fn native_file_action(
     args: Value,
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
+    let request = native::FileRequest::parse(&action, args).map_err(UiError::from_error)?;
     let services = services.services()?;
     let catalogue = services.catalogue.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        native::file_action(&app, &catalogue, &action, args)
+        native::file_action(&app, &catalogue, request)
     })
     .await
     .map_err(|_| UiError {
@@ -982,13 +1033,13 @@ fn external_open(
 }
 
 #[tauri::command]
-fn native_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<Value, UiError> {
+fn native_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<native::Zoomed, UiError> {
     let _operation = trusted(&window)?;
     let factor = native::zoom_factor(scale).map_err(UiError::from_error)?;
     window.set_zoom(factor).map_err(|_| UiError {
         code: "ui_scale_failed".into(),
     })?;
-    Ok(json!({"scale":scale}))
+    Ok(native::Zoomed { scale })
 }
 
 #[tauri::command]
@@ -996,26 +1047,30 @@ async fn preview_cache(
     window: tauri::WebviewWindow,
     services: tauri::State<'_, LibraryHost>,
     url: String,
-) -> Result<Value, UiError> {
+) -> Result<preview::CachedPreview, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
-    let _work = services.catalogue.begin_catalogue_work().map_err(UiError::from_error)?;
+    let _work = services
+        .catalogue
+        .begin_catalogue_work()
+        .map_err(UiError::from_error)?;
     let path = services
         .previews
         .get(url)
         .await
         .map_err(UiError::from_error)?;
-    Ok(json!({"path":path}))
+    Ok(preview::CachedPreview { path })
 }
 
 #[tauri::command]
-async fn library_status(
-    window: tauri::WebviewWindow,
-) -> Result<LibraryStatus, UiError> {
+async fn library_status(window: tauri::WebviewWindow) -> Result<LibraryStatus, UiError> {
     let _operation = trusted(&window)?;
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || active_library_status(&app.state::<LibraryHost>()))
-        .await.map_err(|_| UiError { code: "worker_failed".into() })?
+        .await
+        .map_err(|_| UiError {
+            code: "worker_failed".into(),
+        })?
 }
 
 fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
@@ -1056,9 +1111,22 @@ fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
         {
             status.locale = locale;
         }
-        status.missing_credentials = services.catalogue.list("account").map_err(UiError::from_error)?
-            .into_iter().filter(|account| account["disconnected"] != true && account["status"] == "connected" && !services.stores.has_local_session(account))
-            .map(|account| json!({"id":account["id"],"name":account["name"],"store":account["store"]})).collect();
+        status.missing_credentials = services
+            .catalogue
+            .list("account")
+            .map_err(UiError::from_error)?
+            .into_iter()
+            .filter(|account| {
+                account["disconnected"] != true
+                    && account["status"] == "connected"
+                    && !services.stores.has_local_session(account)
+            })
+            .map(|account| LibraryCredential {
+                id: account["id"].as_str().unwrap_or_default().to_owned(),
+                name: account["name"].as_str().map(str::to_owned),
+                store: account["store"].as_str().map(str::to_owned),
+            })
+            .collect();
     } else if status.state == "unconfigured" {
         status.default_path = profile::default_library_path(&host.device_dir).ok();
     }
@@ -1221,13 +1289,22 @@ fn materialize_setup(
 }
 
 fn rearm_unpublished_setup_sessions(setup: &SetupState, target: &Catalogue, accounts: &[Value]) {
-    let unpublished: Vec<_> = accounts.iter().filter(|account| {
-        let Some(id) = account["id"].as_str() else { return false };
-        // Any uncertainty retains the released marker. In particular, an SQL
-        // commit error is never authority to delete a possibly committed login.
-        matches!(target.get("account", id), Ok(None))
-            && setup.catalogue.get("account", id).is_ok_and(|current| current.as_ref() == Some(*account))
-    }).cloned().collect();
+    let unpublished: Vec<_> = accounts
+        .iter()
+        .filter(|account| {
+            let Some(id) = account["id"].as_str() else {
+                return false;
+            };
+            // Any uncertainty retains the released marker. In particular, an SQL
+            // commit error is never authority to delete a possibly committed login.
+            matches!(target.get("account", id), Ok(None))
+                && setup
+                    .catalogue
+                    .get("account", id)
+                    .is_ok_and(|current| current.as_ref() == Some(*account))
+        })
+        .cloned()
+        .collect();
     let _ = setup.sessions.rearm(&unpublished);
 }
 
@@ -1363,7 +1440,7 @@ async fn library_open(
     path: PathBuf,
     locale: Option<String>,
     new_library: Option<bool>,
-) -> Result<Value, UiError> {
+) -> Result<LibraryOpened, UiError> {
     let _operation = trusted(&window)?;
     host.begin_opening()?;
     let result = async {
@@ -1381,14 +1458,16 @@ async fn library_open(
                     code: "worker_failed".into(),
                 })?
                 .map_err(UiError::from_error)?;
-            let mut reset_status = host.status.lock().map_err(|_| UiError { code: "library_unavailable".into() })?;
+            let mut reset_status = host.status.lock().map_err(|_| UiError {
+                code: "library_unavailable".into(),
+            })?;
             reset_status.state = "unconfigured".into();
             reset_status.path = None;
             reset_status.error_code = None;
             drop(reset_status);
             host.opening.store(false, Ordering::Release);
             changed(&app, "library");
-            return Ok(json!({"restarting":false}));
+            return Ok(LibraryOpened { restarting: false });
         }
         let setup = match host.active_setup()? {
             Some(setup) => Some(setup),
@@ -1429,7 +1508,7 @@ async fn library_open(
             {
                 host.opening.store(false, Ordering::Release);
                 changed(&app, "state");
-                return Ok(json!({"restarting":false}));
+                return Ok(LibraryOpened { restarting: false });
             }
         }
         let active = host.active_services()?;
@@ -1491,7 +1570,7 @@ async fn library_open(
             code: "library_unavailable".into(),
         })? = permit;
         restart_for_library(app);
-        Ok(json!({"restarting":true}))
+        Ok(LibraryOpened { restarting: true })
     }
     .await;
     if result.is_err() {
@@ -1564,7 +1643,10 @@ fn update_ready(host: &LibraryHost) -> Result<Services, UiError> {
     if services.setup_only {
         return Err(busy("updates_busy_library"));
     }
-    let jobs = services.catalogue.list("job").map_err(UiError::from_error)?;
+    let jobs = services
+        .catalogue
+        .list("job")
+        .map_err(UiError::from_error)?;
     match jobs.iter().find_map(updates::blocking_job) {
         Some(code) => Err(busy(code)),
         None => Ok(services),
@@ -1610,14 +1692,20 @@ pub fn run() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let app = window.app_handle().clone();
-                    let services = app.try_state::<LibraryHost>()
+                    let services = app
+                        .try_state::<LibraryHost>()
                         .and_then(|host| host.active_services().ok().flatten());
                     if let Some(services) = services {
                         if !services.storage.begin_local_import_shutdown() {
                             return;
                         }
                         tauri::async_runtime::spawn(async move {
-                            if services.storage.discard_waiting_local_imports().await.is_err() {
+                            if services
+                                .storage
+                                .discard_waiting_local_imports()
+                                .await
+                                .is_err()
+                            {
                                 eprintln!("Local import queue cleanup on close failed");
                             }
                             app.exit(0);
@@ -1628,330 +1716,7 @@ pub fn run() {
                 }
             }
         })
-        .setup(move |app| {
-            let data_dir = if cfg!(debug_assertions) {
-                std::env::var_os("NNA_DATA_DIR")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or(app.path().app_local_data_dir()?)
-            } else {
-                app.path().app_local_data_dir()?
-            };
-            std::fs::create_dir_all(&data_dir)?;
-            window_state::initialize(app, &data_dir, main_visible);
-            setup_sessions::schedule_cleanup(&data_dir);
-            if app_reset::pending(&data_dir) {
-                app.manage(LibraryHost {
-                    device_dir: data_dir.clone(),
-                    status: Mutex::new(LibraryStatus {
-                        state: "blocked".into(),
-                        path: app_reset::pending_library(&data_dir),
-                        default_path: None,
-                        error_code: Some("reset_incomplete".into()),
-                        locale: profile::selected_library(&data_dir)
-                            .ok()
-                            .flatten()
-                            .map(|selection| selection.locale)
-                            .unwrap_or_else(|| "en".into()),
-                        missing_credentials: vec![],
-                    }),
-                    services: Mutex::new(None),
-                    setup: Mutex::new(None),
-                    opening: AtomicBool::new(true),
-                    next_catalogue: Mutex::new(None),
-                    switching: Mutex::new(None),
-                });
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let result = tauri::async_runtime::spawn_blocking(move || {
-                        app_reset::apply_pending(&data_dir)
-                    })
-                    .await;
-                    let host = handle.state::<LibraryHost>();
-                    if matches!(result, Ok(Ok(()))) {
-                        if let Ok(mut status) = host.status.lock() {
-                            status.state = "unconfigured".into();
-                            status.path = None;
-                            status.error_code = None;
-                        }
-                    }
-                    host.opening.store(false, Ordering::Release);
-                    let _ = handle.emit("nna:changed", json!({"scope":"library"}));
-                });
-                return Ok(());
-            }
-            // Explicit reset retains its unconfigured fallback; no unrelated
-            // completed default is opened or changed while returning to setup.
-            let applying_reset = app_reset::pending(&data_dir);
-            let selection = app_reset::apply_pending(&data_dir)
-                .map_err(|_| anyhow::anyhow!("reset_incomplete"))
-                .and_then(|_| profile::selected_library(&data_dir));
-            let mut setup = None;
-            let (catalogue, mut status) = match selection {
-                Ok(Some(selection)) => {
-                    let opened: anyhow::Result<Option<Catalogue>> = (|| {
-                        let preferences = Catalogue::probe_setup_preferences(&selection.path)?;
-                        if preferences
-                            .is_some_and(|preferences| preferences["setupComplete"] == true)
-                        {
-                            Catalogue::open_bound(&selection.path, &data_dir).map(Some)
-                        } else {
-                            let candidate =
-                                validate_setup_candidate(selection.path.clone(), false)?;
-                            setup = Some(SetupState::new(&data_dir, candidate, &selection.locale)?);
-                            Ok(None)
-                        }
-                    })();
-                    let error = opened
-                        .as_ref()
-                        .err()
-                        .map(|error| UiError::from_library_error(error).code);
-                    (
-                        opened.ok().flatten(),
-                        LibraryStatus {
-                            state: if error.is_some() {
-                                "blocked"
-                            } else if setup.is_some() {
-                                "setup"
-                            } else {
-                                "ready"
-                            }
-                            .into(),
-                            path: Some(selection.path),
-                            default_path: None,
-                            error_code: error,
-                            locale: selection.locale,
-                            missing_credentials: vec![],
-                        },
-                    )
-                }
-                Ok(None) if !applying_reset => {
-                    let default_path = profile::default_library_path(&data_dir).ok();
-                    let opened = default_path
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
-                        .and_then(|path| validate_setup_candidate(path.clone(), false))
-                        .and_then(|path| {
-                            if path.exists()
-                                && Catalogue::probe_setup_preferences(&path)?
-                                    .is_some_and(|preferences| preferences["setupComplete"] == true)
-                            {
-                                Catalogue::open_bound(&path, &data_dir).map(Some)
-                            } else {
-                                setup = Some(SetupState::new(&data_dir, path, "en")?);
-                                Ok(None)
-                            }
-                        });
-                    let error = opened
-                        .as_ref()
-                        .err()
-                        .map(|error| UiError::from_library_error(error).code);
-                    let path = setup
-                        .as_ref()
-                        .and_then(|setup| setup.candidate().ok())
-                        .or_else(|| default_path.clone());
-                    let catalogue = opened.ok().flatten();
-                    (
-                        catalogue.clone(),
-                        LibraryStatus {
-                            state: if error.is_some() {
-                                if default_path.as_ref().is_some_and(|path| path.join(".nna/data/catalogue.sqlite3").is_file()) {
-                                    "blocked"
-                                } else {
-                                    "unconfigured"
-                                }
-                            } else if catalogue.is_some() {
-                                "ready"
-                            } else {
-                                "setup"
-                            }
-                            .into(),
-                            path,
-                            default_path,
-                            error_code: error,
-                            locale: "en".into(),
-                            missing_credentials: vec![],
-                        },
-                    )
-                }
-                Ok(None) => (
-                    None,
-                    LibraryStatus {
-                        state: "unconfigured".into(),
-                        path: None,
-                        default_path: None,
-                        error_code: None,
-                        locale: "en".into(),
-                        missing_credentials: vec![],
-                    },
-                ),
-                Err(error) => (
-                    None,
-                    LibraryStatus {
-                        state: "blocked".into(),
-                        path: profile::selected_library(&data_dir)
-                            .ok()
-                            .flatten()
-                            .map(|selection| selection.path)
-                            .or_else(|| app_reset::pending_library(&data_dir)),
-                        default_path: None,
-                        error_code: Some(UiError::from_error(error).code),
-                        locale: "en".into(),
-                        missing_credentials: vec![],
-                    },
-                ),
-            };
-            let Some(catalogue) = catalogue else {
-                app.manage(LibraryHost {
-                    device_dir: data_dir,
-                    status: Mutex::new(status),
-                    services: Mutex::new(None),
-                    setup: Mutex::new(setup),
-                    opening: AtomicBool::new(false),
-                    next_catalogue: Mutex::new(None),
-                    switching: Mutex::new(None),
-                });
-                return Ok(());
-            };
-            let prepared = (|| -> anyhow::Result<Services> {
-                if let Some(preferences) = catalogue.get("preferences", "app")? {
-                    if let Some(locale) = preferences["locale"].as_str() {
-                        status.locale = locale.into();
-                    }
-                }
-                let services = Services::new(catalogue.clone(), &data_dir)?;
-                app.asset_protocol_scope()
-                    .allow_directory(catalogue.data_dir().join("media"), true)?;
-                app.asset_protocol_scope()
-                    .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
-                if !services.setup_only {
-                    catalogue.start_sync_worker()?;
-                }
-                Ok(services)
-            })();
-            let services = match prepared {
-                Ok(services) => services,
-                Err(error) => {
-                    status.state = "blocked".into();
-                    status.error_code = Some(UiError::from_library_error(&error).code);
-                    app.manage(LibraryHost {
-                        device_dir: data_dir,
-                        status: Mutex::new(status),
-                        services: Mutex::new(None),
-                        setup: Mutex::new(None),
-                        opening: AtomicBool::new(false),
-                        next_catalogue: Mutex::new(None),
-                        switching: Mutex::new(None),
-                    });
-                    return Ok(());
-                }
-            };
-            let setup_only = services.setup_only;
-            let stores = services.stores.clone();
-            let storage = services.storage.clone();
-            let ai_jobs = services.ai_jobs.clone();
-            let unity = services.unity.clone();
-            let licenses = services.licenses.clone();
-            app.manage(LibraryHost {
-                device_dir: data_dir,
-                status: Mutex::new(status),
-                services: Mutex::new(Some(services)),
-                setup: Mutex::new(None),
-                opening: AtomicBool::new(false),
-                next_catalogue: Mutex::new(None),
-                switching: Mutex::new(None),
-            });
-            // Setup needs only explicit account/login commands. Starting the
-            // long-lived workers here would retain an old library after a new
-            // location choice and could begin downloads before Finish.
-            if setup_only {
-                return Ok(());
-            }
-            let automatic_storage = storage.clone();
-            app.listen("nna:changed", move |event| {
-                let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
-                    return;
-                };
-                if payload["sessionChanged"] == true {
-                    let storage = automatic_storage.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = storage.reevaluate_automatic().await;
-                    });
-                    return;
-                }
-                if payload["scope"] != "catalogue" {
-                    return;
-                }
-                let Some(ids) = payload["productIds"].as_array() else {
-                    return;
-                };
-                let ids: Vec<String> = ids
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect();
-                if ids.is_empty() {
-                    return;
-                }
-                let storage = automatic_storage.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = storage.source_products_changed(&ids).await;
-                });
-            });
-            let handle = app.handle().clone();
-            let startup_gate = handle.state::<NativeOperationGate>().0.clone();
-            tauri::async_runtime::spawn(async move {
-                // A failed installer releases this gate and startup work resumes normally.
-                let startup_permit = startup_gate.clone().read_owned().await;
-                let mut previous = catalogue.change_domains().unwrap_or((0, 0, 0));
-                let setup_was_complete = catalogue
-                    .get("preferences", "app")
-                    .ok()
-                    .flatten()
-                    .is_some_and(|preferences| preferences["setupComplete"] == true);
-                if storage.start(handle.clone()).await.is_err() {
-                    let _ = handle.emit("nna:changed", json!({"scope":"recovery"}));
-                }
-                // Explicit login/sync jobs need the workers even when isolated diagnostics
-                // suppress automatic startup scans.
-                let _ = stores.start(handle.clone()).await;
-                let _ = ai_jobs.start(&handle).await;
-                let _ = unity.start(&handle).await;
-                let _ = licenses.start(&handle).await;
-                drop(startup_permit);
-                #[cfg(debug_assertions)]
-                let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
-                    && std::env::var("NNA_SKIP_STARTUP_SYNC").as_deref() == Ok("1");
-                #[cfg(not(debug_assertions))]
-                let skip_startup_sync = false;
-                if !skip_startup_sync && setup_was_complete {
-                    // Native local state renders before authenticated network work.
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let _sync_permit = startup_gate.read_owned().await;
-                    let _ = sync_connected_accounts(&handle, &catalogue, &stores).await;
-                }
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if catalogue.check_library_available().is_err() {
-                        // Never continue writing after a surfaced loss of the NAS lock handle.
-                        handle.exit(1);
-                        break;
-                    }
-                    if let Ok(revisions) = catalogue.change_domains() {
-                        if revisions.1 != previous.1 {
-                            changed(&handle, "products");
-                        }
-                        if revisions.2 != previous.2 {
-                            changed(&handle, "collections");
-                        }
-                        if revisions.0 != previous.0 {
-                            changed(&handle, "state");
-                        }
-                        previous = revisions;
-                    }
-                }
-            });
-            Ok(())
-        })
+        .setup(move |app| setup_library(app, main_visible))
         .invoke_handler(tauri::generate_handler![
             library_status,
             library_open,
@@ -1973,4 +1738,356 @@ pub fn run() {
         ])
         .run(context)
         .expect("NekoNekoAsset could not start");
+}
+
+/// Opens the selected library or the setup state, then starts the long-lived workers.
+fn setup_library(
+    app: &mut tauri::App,
+    main_visible: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data_dir = if cfg!(debug_assertions) {
+        std::env::var_os("NNA_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(app.path().app_local_data_dir()?)
+    } else {
+        app.path().app_local_data_dir()?
+    };
+    std::fs::create_dir_all(&data_dir)?;
+    window_state::initialize(app, &data_dir, main_visible);
+    setup_sessions::schedule_cleanup(&data_dir);
+    if app_reset::pending(&data_dir) {
+        manage_pending_reset(app, data_dir);
+        return Ok(());
+    }
+    let (catalogue, mut status, setup) = select_library(&data_dir);
+    let Some(catalogue) = catalogue else {
+        app.manage(LibraryHost {
+            device_dir: data_dir,
+            status: Mutex::new(status),
+            services: Mutex::new(None),
+            setup: Mutex::new(setup),
+            opening: AtomicBool::new(false),
+            next_catalogue: Mutex::new(None),
+            switching: Mutex::new(None),
+        });
+        return Ok(());
+    };
+    let prepared = (|| -> anyhow::Result<Services> {
+        if let Some(preferences) = catalogue.get("preferences", "app")? {
+            if let Some(locale) = preferences["locale"].as_str() {
+                status.locale = locale.into();
+            }
+        }
+        let services = Services::new(catalogue.clone(), &data_dir)?;
+        app.asset_protocol_scope()
+            .allow_directory(catalogue.data_dir().join("media"), true)?;
+        app.asset_protocol_scope()
+            .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
+        if !services.setup_only {
+            catalogue.start_sync_worker()?;
+        }
+        Ok(services)
+    })();
+    let services = match prepared {
+        Ok(services) => services,
+        Err(error) => {
+            status.state = "blocked".into();
+            status.error_code = Some(UiError::from_library_error(&error).code);
+            app.manage(LibraryHost {
+                device_dir: data_dir,
+                status: Mutex::new(status),
+                services: Mutex::new(None),
+                setup: Mutex::new(None),
+                opening: AtomicBool::new(false),
+                next_catalogue: Mutex::new(None),
+                switching: Mutex::new(None),
+            });
+            return Ok(());
+        }
+    };
+    let setup_only = services.setup_only;
+    let stores = services.stores.clone();
+    let storage = services.storage.clone();
+    let ai_jobs = services.ai_jobs.clone();
+    let unity = services.unity.clone();
+    let licenses = services.licenses.clone();
+    app.manage(LibraryHost {
+        device_dir: data_dir,
+        status: Mutex::new(status),
+        services: Mutex::new(Some(services)),
+        setup: Mutex::new(None),
+        opening: AtomicBool::new(false),
+        next_catalogue: Mutex::new(None),
+        switching: Mutex::new(None),
+    });
+    // Setup needs only explicit account/login commands. Starting the
+    // long-lived workers here would retain an old library after a new
+    // location choice and could begin downloads before Finish.
+    if setup_only {
+        return Ok(());
+    }
+    listen_for_source_changes(app, &storage);
+    spawn_startup_work(app, catalogue, storage, stores, ai_jobs, unity, licenses);
+    Ok(())
+}
+
+/// An interrupted reset finishes before anything opens; the App then returns to setup.
+fn manage_pending_reset(app: &tauri::App, data_dir: PathBuf) {
+    app.manage(LibraryHost {
+        device_dir: data_dir.clone(),
+        status: Mutex::new(LibraryStatus {
+            state: "blocked".into(),
+            path: app_reset::pending_library(&data_dir),
+            default_path: None,
+            error_code: Some("reset_incomplete".into()),
+            locale: profile::selected_library(&data_dir)
+                .ok()
+                .flatten()
+                .map(|selection| selection.locale)
+                .unwrap_or_else(|| "en".into()),
+            missing_credentials: vec![],
+        }),
+        services: Mutex::new(None),
+        setup: Mutex::new(None),
+        opening: AtomicBool::new(true),
+        next_catalogue: Mutex::new(None),
+        switching: Mutex::new(None),
+    });
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let result =
+            tauri::async_runtime::spawn_blocking(move || app_reset::apply_pending(&data_dir)).await;
+        let host = handle.state::<LibraryHost>();
+        if matches!(result, Ok(Ok(()))) {
+            if let Ok(mut status) = host.status.lock() {
+                status.state = "unconfigured".into();
+                status.path = None;
+                status.error_code = None;
+            }
+        }
+        host.opening.store(false, Ordering::Release);
+        let _ = handle.emit("nna:changed", crate::ipc::Change::scope("library"));
+    });
+}
+
+/// The library to open, its status, and the setup state when setup is not finished.
+fn select_library(
+    data_dir: &std::path::Path,
+) -> (Option<Catalogue>, LibraryStatus, Option<SetupState>) {
+    // Explicit reset retains its unconfigured fallback; no unrelated
+    // completed default is opened or changed while returning to setup.
+    let applying_reset = app_reset::pending(data_dir);
+    let selection = app_reset::apply_pending(data_dir)
+        .map_err(|_| anyhow::anyhow!("reset_incomplete"))
+        .and_then(|_| profile::selected_library(data_dir));
+    let mut setup = None;
+    let (catalogue, status) = match selection {
+        Ok(Some(selection)) => {
+            let opened: anyhow::Result<Option<Catalogue>> = (|| {
+                let preferences = Catalogue::probe_setup_preferences(&selection.path)?;
+                if preferences.is_some_and(|preferences| preferences["setupComplete"] == true) {
+                    Catalogue::open_bound(&selection.path, data_dir).map(Some)
+                } else {
+                    let candidate = validate_setup_candidate(selection.path.clone(), false)?;
+                    setup = Some(SetupState::new(data_dir, candidate, &selection.locale)?);
+                    Ok(None)
+                }
+            })();
+            let error = opened
+                .as_ref()
+                .err()
+                .map(|error| UiError::from_library_error(error).code);
+            (
+                opened.ok().flatten(),
+                LibraryStatus {
+                    state: if error.is_some() {
+                        "blocked"
+                    } else if setup.is_some() {
+                        "setup"
+                    } else {
+                        "ready"
+                    }
+                    .into(),
+                    path: Some(selection.path),
+                    default_path: None,
+                    error_code: error,
+                    locale: selection.locale,
+                    missing_credentials: vec![],
+                },
+            )
+        }
+        Ok(None) if !applying_reset => {
+            let default_path = profile::default_library_path(data_dir).ok();
+            let opened = default_path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
+                .and_then(|path| validate_setup_candidate(path.clone(), false))
+                .and_then(|path| {
+                    if path.exists()
+                        && Catalogue::probe_setup_preferences(&path)?
+                            .is_some_and(|preferences| preferences["setupComplete"] == true)
+                    {
+                        Catalogue::open_bound(&path, data_dir).map(Some)
+                    } else {
+                        setup = Some(SetupState::new(data_dir, path, "en")?);
+                        Ok(None)
+                    }
+                });
+            let error = opened
+                .as_ref()
+                .err()
+                .map(|error| UiError::from_library_error(error).code);
+            let path = setup
+                .as_ref()
+                .and_then(|setup| setup.candidate().ok())
+                .or_else(|| default_path.clone());
+            let catalogue = opened.ok().flatten();
+            (
+                catalogue.clone(),
+                LibraryStatus {
+                    state: if error.is_some() {
+                        if default_path
+                            .as_ref()
+                            .is_some_and(|path| path.join(".nna/data/catalogue.sqlite3").is_file())
+                        {
+                            "blocked"
+                        } else {
+                            "unconfigured"
+                        }
+                    } else if catalogue.is_some() {
+                        "ready"
+                    } else {
+                        "setup"
+                    }
+                    .into(),
+                    path,
+                    default_path,
+                    error_code: error,
+                    locale: "en".into(),
+                    missing_credentials: vec![],
+                },
+            )
+        }
+        Ok(None) => (
+            None,
+            LibraryStatus {
+                state: "unconfigured".into(),
+                path: None,
+                default_path: None,
+                error_code: None,
+                locale: "en".into(),
+                missing_credentials: vec![],
+            },
+        ),
+        Err(error) => (
+            None,
+            LibraryStatus {
+                state: "blocked".into(),
+                path: profile::selected_library(data_dir)
+                    .ok()
+                    .flatten()
+                    .map(|selection| selection.path)
+                    .or_else(|| app_reset::pending_library(data_dir)),
+                default_path: None,
+                error_code: Some(UiError::from_error(error).code),
+                locale: "en".into(),
+                missing_credentials: vec![],
+            },
+        ),
+    };
+    (catalogue, status, setup)
+}
+
+/// Source changes and new sessions reevaluate automatic downloads.
+fn listen_for_source_changes(app: &tauri::App, storage: &Arc<StorageService>) {
+    let automatic_storage = storage.clone();
+    app.listen("nna:changed", move |event| {
+        let Ok(change) = serde_json::from_str::<ipc::Change>(event.payload()) else {
+            return;
+        };
+        if change.session_changed == Some(true) {
+            let storage = automatic_storage.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = storage.reevaluate_automatic().await;
+            });
+            return;
+        }
+        if change.scope != "catalogue" {
+            return;
+        }
+        let ids = change.product_ids.unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        let storage = automatic_storage.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = storage.source_products_changed(&ids).await;
+        });
+    });
+}
+
+/// Starts the workers once any installer has released the gate, syncs connected accounts
+/// and then watches the library for changes from other devices.
+fn spawn_startup_work(
+    app: &tauri::App,
+    catalogue: Catalogue,
+    storage: Arc<StorageService>,
+    stores: Arc<StoreService>,
+    ai_jobs: Arc<ai::jobs::AiJobs>,
+    unity: Arc<unity::UnityService>,
+    licenses: licenses::LicenseService,
+) {
+    let handle = app.handle().clone();
+    let startup_gate = handle.state::<NativeOperationGate>().0.clone();
+    tauri::async_runtime::spawn(async move {
+        // A failed installer releases this gate and startup work resumes normally.
+        let startup_permit = startup_gate.clone().read_owned().await;
+        let mut previous = catalogue.change_domains().unwrap_or((0, 0, 0));
+        let setup_was_complete = catalogue
+            .get("preferences", "app")
+            .ok()
+            .flatten()
+            .is_some_and(|preferences| preferences["setupComplete"] == true);
+        if storage.start(handle.clone()).await.is_err() {
+            let _ = handle.emit("nna:changed", crate::ipc::Change::scope("recovery"));
+        }
+        // Explicit login/sync jobs need the workers even when isolated diagnostics
+        // suppress automatic startup scans.
+        let _ = stores.start(handle.clone()).await;
+        let _ = ai_jobs.start(&handle).await;
+        let _ = unity.start(&handle).await;
+        let _ = licenses.start(&handle).await;
+        drop(startup_permit);
+        #[cfg(debug_assertions)]
+        let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
+            && std::env::var("NNA_SKIP_STARTUP_SYNC").as_deref() == Ok("1");
+        #[cfg(not(debug_assertions))]
+        let skip_startup_sync = false;
+        if !skip_startup_sync && setup_was_complete {
+            // Native local state renders before authenticated network work.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _sync_permit = startup_gate.read_owned().await;
+            let _ = sync_connected_accounts(&handle, &catalogue, &stores).await;
+        }
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if catalogue.check_library_available().is_err() {
+                // Never continue writing after a surfaced loss of the NAS lock handle.
+                handle.exit(1);
+                break;
+            }
+            if let Ok(revisions) = catalogue.change_domains() {
+                if revisions.1 != previous.1 {
+                    changed(&handle, "products");
+                }
+                if revisions.2 != previous.2 {
+                    changed(&handle, "collections");
+                }
+                if revisions.0 != previous.0 {
+                    changed(&handle, "state");
+                }
+                previous = revisions;
+            }
+        }
+    });
 }

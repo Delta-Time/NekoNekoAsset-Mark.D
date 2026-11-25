@@ -10,7 +10,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		Duplicate,
 		Update,
 		PathConflict,
-		GuidConflict
+		GuidConflict,
+		Blocked
 	}
 
 	public struct ImportConflict

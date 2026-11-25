@@ -68,15 +68,29 @@ fn minor_units(value: &Value, currency: &str) -> Option<i128> {
     }
 }
 
-fn totals(rows: &BTreeMap<String, i128>) -> Vec<Value> {
-    rows.iter().map(|(currency,minor)| {
-        let fraction = fraction_digits(currency).unwrap();
-        let scale = 10i128.pow(fraction);
-        let amount = if fraction == 0 { minor.to_string() } else {
-            format!("{}.{:0width$}",minor/scale,minor%scale,width=fraction as usize)
-        };
-        json!({"currency":currency,"amount":amount,"minorUnits":minor.to_string(),"fractionDigits":fraction})
-    }).collect()
+fn totals(rows: &BTreeMap<String, i128>) -> Vec<api::SpendingTotal> {
+    rows.iter()
+        .map(|(currency, minor)| {
+            let fraction = fraction_digits(currency).unwrap();
+            let scale = 10i128.pow(fraction);
+            let amount = if fraction == 0 {
+                minor.to_string()
+            } else {
+                format!(
+                    "{}.{:0width$}",
+                    minor / scale,
+                    minor % scale,
+                    width = fraction as usize
+                )
+            };
+            api::SpendingTotal {
+                currency: currency.clone(),
+                amount,
+                minor_units: minor.to_string(),
+                fraction_digits: fraction,
+            }
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -85,23 +99,14 @@ struct Fact {
     amounts: BTreeSet<(String, i128)>,
 }
 
-pub(super) fn summary(conn: &Connection, args: &Value) -> Result<Value> {
-    let selected = args["productIds"]
-        .as_array()
-        .context("catalogue.invalid_product_ids")?;
+pub(super) fn summary(conn: &Connection, request: &api::SpendingRequest) -> Result<Value> {
+    let selected = &request.product_ids;
     ensure!(
-        selected.len() <= 10_000
-            && selected
-                .iter()
-                .all(|v| v.as_str().is_some_and(|s| !s.is_empty())),
+        selected.len() <= 10_000 && selected.iter().all(|id| !id.is_empty()),
         "catalogue.invalid_product_ids"
     );
-    let accounts = match args.get("accountIds") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(values),
-        _ => anyhow::bail!("catalogue.invalid_account_ids"),
-    };
-    let ids: BTreeSet<_> = selected.iter().filter_map(Value::as_str).collect();
+    let accounts = request.account_ids.as_ref();
+    let ids: BTreeSet<_> = selected.iter().map(String::as_str).collect();
     let mut products = BTreeMap::<String, (String, BTreeMap<String, i128>, usize)>::new();
     let mut facts = BTreeMap::<(String, String, String), Fact>::new();
     for id in ids {
@@ -123,7 +128,7 @@ pub(super) fn summary(conn: &Connection, args: &Value) -> Result<Value> {
         }
         for row in related(conn, "acquisition", id)? {
             let account = text(&row, "accountId");
-            if accounts.is_some_and(|ids| !ids.iter().any(|id| id.as_str() == Some(account))) {
+            if accounts.is_some_and(|ids| !ids.iter().any(|id| id == account)) {
                 continue;
             }
             if row["observationKind"] == "localImport" {
@@ -182,7 +187,16 @@ pub(super) fn summary(conn: &Connection, args: &Value) -> Result<Value> {
                 .checked_add(*minor)
                 .context("catalogue.spending_overflow")?;
         }
-        output.push(json!({"productId":id,"title":title,"totals":totals(&paid),"unknownPaymentCount":unknown}));
+        output.push(api::ProductSpending {
+            product_id: id,
+            title,
+            totals: totals(&paid),
+            unknown_payment_count: unknown,
+        });
     }
-    Ok(json!({"totals":totals(&aggregate),"products":output,"skippedCount":skipped}))
+    Ok(serde_json::to_value(api::SpendingSummary {
+        totals: totals(&aggregate),
+        products: output,
+        skipped_count: skipped,
+    })?)
 }

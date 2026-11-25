@@ -358,6 +358,7 @@ mod platform {
     }
 }
 
+#[cfg(test)]
 pub fn save(
     profile: &Path,
     provider: StoreProvider,

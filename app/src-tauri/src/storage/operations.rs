@@ -79,7 +79,7 @@ impl StorageService {
             service.cancellations.lock().unwrap().remove(&task_id);
             service.changed(&app, Some(&task_id));
         });
-        Ok(json!({"jobId":id}))
+        super::api::answer(super::api::OperationJob { job_id: id })
     }
     pub(super) fn payload(
         &self,
@@ -108,7 +108,7 @@ impl StorageService {
         // Store products' current download lists; local products have none.
         let mut offered: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         for a in artifacts {
-            let root_id = io::required_string(&a, "rootId")?;
+            let root_id = io::required_string(a, "rootId")?;
             if root_filter.is_some_and(|id| id != root_id) {
                 continue;
             }
@@ -134,7 +134,7 @@ impl StorageService {
                 // A kept store file, one the store dropped or refused, exports its
                 // downloaded original even where extraction failed; the store's own
                 // files must be ready.
-                let product = io::required_string(&a, "productId")?;
+                let product = io::required_string(a, "productId")?;
                 if a["status"] != "ready" && !offered.contains_key(product) {
                     let ids = if self
                         .catalogue
@@ -147,8 +147,8 @@ impl StorageService {
                                 &["store_file_unavailable"],
                             )?
                             .iter()
-                                .filter_map(|f| f["id"].as_str().map(str::to_owned))
-                                .collect(),
+                            .filter_map(|f| f["id"].as_str().map(str::to_owned))
+                            .collect(),
                         )
                     } else {
                         None
@@ -161,18 +161,22 @@ impl StorageService {
                 });
                 ensure!(
                     a["status"] == "ready"
-                        || kept && matches!(a["status"].as_str(), Some("downloaded" | "extractionFailed")),
+                        || kept
+                            && matches!(
+                                a["status"].as_str(),
+                                Some("downloaded" | "extractionFailed")
+                            ),
                     "file_not_usable"
                 );
             }
             if a["originalAvailable"] == true && (!usable_only || a["extractedPath"].is_null()) {
-                let rel = io::required_string(&a, "relativePath")?;
+                let rel = io::required_string(a, "relativePath")?;
                 if seen.insert((root_id.to_owned(), rel.to_owned())) {
                     result.push(PayloadSource {
                         root_id: root_id.to_owned(),
                         relative_path: rel.to_owned(),
                         source_path: io::safe_join(&root_path, rel)?,
-                        expected_hash: Some(io::required_string(&a, "hash")?.to_owned()),
+                        expected_hash: Some(io::required_string(a, "hash")?.to_owned()),
                         is_directory: false,
                     });
                 }
@@ -211,7 +215,7 @@ impl StorageService {
             {
                 continue;
             }
-            let id = io::required_string(&product, "id")?;
+            let id = io::required_string(product, "id")?;
             let Some(artifact) = artifacts.iter().find(|a| a["productId"] == id) else {
                 continue;
             };
@@ -237,59 +241,109 @@ impl StorageService {
         Ok(result)
     }
     pub(super) fn backup_payload(&self, manifest: &Value) -> Result<Vec<PayloadSource>> {
-        let artifacts = manifest["records"]["artifact"].as_array()
+        let artifacts = manifest["records"]["artifact"]
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
-        let products = manifest["records"]["product"].as_array()
+        let products = manifest["records"]["product"]
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
         for artifact in artifacts {
-            ensure!(artifact["status"] != "ready" || artifact["originalAvailable"] == true
-                || artifact["extractedPath"].is_string(), "backup_payload_missing");
+            ensure!(
+                artifact["status"] != "ready"
+                    || artifact["originalAvailable"] == true
+                    || artifact["extractedPath"].is_string(),
+                "backup_payload_missing"
+            );
         }
         // Derive bytes from the exact captured records, rather than reading a
         // newer artifact list after an account or product was removed.
         let mut payload = self.payload_records(artifacts, products, None, None, false)?;
-        let by_path: HashMap<_, _> = payload.iter()
-            .map(|source| ((source.root_id.as_str(), source.relative_path.as_str()), source)).collect();
-        let roots: HashSet<_> = manifest["records"]["root"].as_array()
+        let by_path: HashMap<_, _> = payload
+            .iter()
+            .map(|source| {
+                (
+                    (source.root_id.as_str(), source.relative_path.as_str()),
+                    source,
+                )
+            })
+            .collect();
+        let roots: HashSet<_> = manifest["records"]["root"]
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?
-            .iter().filter_map(|root| root["id"].as_str()).collect();
-        let require = |root: &str, relative: &str, hash: &str, size: u64, directory: bool| -> Result<()> {
-            let source = by_path.get(&(root, relative))
-                .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
-            ensure!(source.is_directory == directory
-                && if directory { hash.is_empty() && size == 0 }
-                   else { source.expected_hash.as_deref() == Some(hash)
-                       && std::fs::metadata(&source.source_path)?.len() == size },
-                "backup_payload_missing");
-            Ok(())
-        };
+            .iter()
+            .filter_map(|root| root["id"].as_str())
+            .collect();
+        let require =
+            |root: &str, relative: &str, hash: &str, size: u64, directory: bool| -> Result<()> {
+                let source = by_path
+                    .get(&(root, relative))
+                    .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+                ensure!(
+                    source.is_directory == directory
+                        && if directory {
+                            hash.is_empty() && size == 0
+                        } else {
+                            source.expected_hash.as_deref() == Some(hash)
+                                && std::fs::metadata(&source.source_path)?.len() == size
+                        },
+                    "backup_payload_missing"
+                );
+                Ok(())
+            };
         for artifact in artifacts {
             let root = io::required_string(artifact, "rootId")?;
             ensure!(roots.contains(root), "backup_payload_missing");
             if artifact["originalAvailable"] == true {
-                require(root, io::required_string(artifact, "relativePath")?,
+                require(
+                    root,
+                    io::required_string(artifact, "relativePath")?,
                     io::required_string(artifact, "hash")?,
-                    artifact["sizeBytes"].as_u64().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?, false)?;
+                    artifact["sizeBytes"]
+                        .as_u64()
+                        .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
+                    false,
+                )?;
             }
             if let Some(base) = artifact["extractedPath"].as_str() {
-                let entries = artifact["extractedInventory"].as_array()
+                let entries = artifact["extractedInventory"]
+                    .as_array()
                     .filter(|entries| !entries.is_empty())
                     .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
                 for entry in entries {
-                    require(root, &format!("{base}/{}", io::required_string(entry, "relativePath")?),
-                        entry["hash"].as_str().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
-                        entry["sizeBytes"].as_u64().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
-                        entry["isDirectory"] == true)?;
+                    require(
+                        root,
+                        &format!("{base}/{}", io::required_string(entry, "relativePath")?),
+                        entry["hash"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
+                        entry["sizeBytes"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
+                        entry["isDirectory"] == true,
+                    )?;
                 }
-            } else if matches!(artifact["status"].as_str(), Some("ready" | "downloaded" | "extractionFailed")) {
-                ensure!(artifact["originalAvailable"] == true, "backup_payload_missing");
+            } else if matches!(
+                artifact["status"].as_str(),
+                Some("ready" | "downloaded" | "extractionFailed")
+            ) {
+                ensure!(
+                    artifact["originalAvailable"] == true,
+                    "backup_payload_missing"
+                );
             }
         }
         let media = self.media_payload()?;
-        let media_paths: HashSet<_> = media.iter().map(|source| source.relative_path.as_str()).collect();
-        for relative in manifest["media"].as_array()
-            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))? {
-            let relative = relative.as_str().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+        let media_paths: HashSet<_> = media
+            .iter()
+            .map(|source| source.relative_path.as_str())
+            .collect();
+        for relative in manifest["media"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?
+        {
+            let relative = relative
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
             ensure!(media_paths.contains(relative), "backup_payload_missing");
         }
         payload.extend(media);
@@ -442,101 +496,11 @@ impl StorageService {
                 self.catalogue.put_many(recovered)?;
                 Ok(root)
             }
-            "verify_root" => {
-                let mut root = self.root(args["rootId"].as_str())?;
-                let id = io::required_string(&root, "id")?.to_owned();
-                let path = match self.root_path(&root) {
-                    Ok(path) => path,
-                    Err(_) => {
-                        root["status"] = json!("offline");
-                        self.catalogue.put("root", &id, root)?;
-                        return Ok(json!({"status":"offline"}));
-                    }
-                };
-                let mut verified = 0;
-                let mut missing = 0;
-                for mut artifact in self
-                    .catalogue
-                    .list("artifact")?
-                    .into_iter()
-                    .filter(|a| a["rootId"] == id)
-                {
-                    io::check_cancel(cancel)?;
-                    if restored_artifact_state(&artifact).is_some() {
-                        match self.verify_restored_artifact_at(&artifact, &path, cancel) {
-                            Ok(original_available) => {
-                                recover_artifact_state(&mut artifact, original_available);
-                                self.catalogue.put(
-                                    "artifact",
-                                    io::required_string(&artifact, "id")?,
-                                    artifact.clone(),
-                                )?;
-                                verified += 1;
-                            }
-                            Err(error) => {
-                                io::check_cancel(cancel)?;
-                                if !path.is_dir() {
-                                    root["status"] = json!("offline");
-                                    self.catalogue.put("root", &id, root)?;
-                                    return Ok(json!({"status":"offline"}));
-                                }
-                                if io::stable_error(&error) == "permission_denied" {
-                                    return Err(error);
-                                }
-                                // Metadata-only claims are still unknown when bytes
-                                // are absent/different; no completed local fact existed.
-                                missing += 1;
-                            }
-                        }
-                        continue;
-                    }
-                    if !matches!(
-                        artifact["status"].as_str(),
-                        Some("ready" | "downloaded" | "extractionFailed" | "missing")
-                    ) {
-                        continue;
-                    }
-                    match self.verify_artifact_at(&artifact, &path, cancel) {
-                        Ok(()) => {
-                            verified += 1;
-                            if artifact["status"] == "missing" {
-                                artifact["status"] = artifact["previousStatus"].clone();
-                            }
-                        }
-                        Err(e) => {
-                            io::check_cancel(cancel)?;
-                            if !path.is_dir() {
-                                root["status"] = json!("offline");
-                                self.catalogue.put("root", &id, root)?;
-                                return Ok(json!({"status":"offline"}));
-                            }
-                            if io::stable_error(&e) == "permission_denied" {
-                                return Err(e);
-                            }
-                            missing += 1;
-                            if artifact["status"] != "missing" {
-                                artifact["previousStatus"] = artifact["status"].clone();
-                                // Newly missing is a new failure, whatever was cleared before.
-                                artifact.as_object_mut().unwrap().remove("attentionDismissed");
-                            }
-                            artifact["status"] = json!("missing");
-                            artifact["errorCode"] = json!("file_integrity_failed");
-                        }
-                    }
-                    self.catalogue.put(
-                        "artifact",
-                        io::required_string(&artifact, "id")?,
-                        artifact.clone(),
-                    )?;
-                }
-                root["status"] = json!("online");
-                self.catalogue.put("root", &id, root)?;
-                Ok(json!({"status":"online","verified":verified,"missing":missing}))
-            }
             "restore_backup" => self.restore(args, cancel, None),
             _ => bail!("unsupported_storage_action"),
         }
     }
+
     fn verify_artifact_at(&self, a: &Value, root: &Path, cancel: &AtomicBool) -> Result<()> {
         if a["originalAvailable"] == true {
             io::check_cancel(cancel)?;
@@ -694,12 +658,15 @@ impl StorageService {
     pub(super) fn open_artifact(&self, action: &str, args: &Value) -> Result<Value> {
         let path = self.resolve_open_target(action, args)?;
         io::open_path(&path)?;
-        Ok(json!({"opened":true}))
+        super::api::answer(super::api::Opened { opened: true })
     }
     /// Measured on request so Settings always shows the folder's and drive's current state.
     pub(super) fn root_usage(&self, args: &Value) -> Result<Value> {
         let path = self.root_path(&self.root(args["rootId"].as_str())?)?;
-        Ok(json!({"usedBytes":io::tree_bytes(&path)?,"freeBytes":fs2::available_space(&path)?}))
+        super::api::answer(super::api::RootUsage {
+            used_bytes: io::tree_bytes(&path)?,
+            free_bytes: fs2::available_space(&path)?,
+        })
     }
     /// Resolve a completed target without launching a shell; regression tests are inert.
     pub(super) fn resolve_open_target(&self, action: &str, args: &Value) -> Result<PathBuf> {
@@ -754,7 +721,7 @@ impl StorageService {
         self.available_file_target(&artifact, &root)
     }
     /// Opening is a path/existence check of a durably completed artifact.
-    /// Full content verification belongs to verify_root, migration and restore.
+    /// Full content verification belongs to migration and restore.
     fn available_file_target(&self, artifact: &Value, root: &Path) -> Result<PathBuf> {
         ensure!(
             matches!(
@@ -763,7 +730,7 @@ impl StorageService {
             ),
             "file_not_usable"
         );
-        let path = io::safe_join(&root, io::required_string(&artifact, "relativePath")?)?;
+        let path = io::safe_join(root, io::required_string(artifact, "relativePath")?)?;
         // Archive filename actions prefer completed extraction, independently of
         // whether an original was retained or has since become damaged.
         if artifact["status"] == "ready" && archive::is_supported_archive(&path) {
@@ -874,9 +841,21 @@ impl StorageService {
                 }
             }
         }
-        Ok(
-            json!({"folderAvailable":folder,"openableFileIds":openable,"rootStatus":if online{"online"}else if offline{"offline"}else{"unconfigured"}}),
-        )
+        super::api::answer(super::api::ProductAvailability {
+            folder_available: folder,
+            openable_file_ids: openable
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            root_status: if online {
+                "online"
+            } else if offline {
+                "offline"
+            } else {
+                "unconfigured"
+            },
+        })
     }
     pub(super) fn restore(
         &self,

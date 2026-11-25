@@ -1,0 +1,247 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(580px, 100%);
+  max-height: calc(100dvh - 44px);
+  overflow: hidden;
+}
+.modal.wide {
+  width: min(780px, 100%);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.modal-header h2,
+.modal-header h3 {
+  margin: 0;
+}
+.modal-body {
+  overflow: auto;
+  min-height: 0;
+}
+.modal-body p {
+  font-size: 12px;
+}
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+@media (max-height: 650px) {
+  .modal {
+    max-height: calc(100dvh - 24px);
+  }
+}
+.shell-dialog .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.avatar-manager-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.avatar-manager-all {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.avatar-manager-all .check-row,
+.avatar-shop-options .check-row {
+  min-height: 24px;
+  padding: 2px 0;
+  margin: 0;
+}
+.app .editor-sensitive-toggle .nna-toggle > button {
+  flex-basis: 44px;
+  width: 44px;
+  height: 26px;
+  min-height: 26px;
+}
+.app .editor-sensitive-toggle .nna-toggle > button > span {
+  left: 3px;
+  top: 3px;
+  width: 20px;
+  height: 20px;
+}
+.app .editor-sensitive-toggle .nna-toggle > button[aria-checked="true"] > span {
+  transform: translateX(18px);
+}
+.app .editor-sensitive-toggle .nna-toggle > button[aria-checked="mixed"] {
+  background: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+.app .editor-tag-options,
+.app .editor-collections {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+}
+.app .editor-tag-chips button {
+  border: 0;
+  border-radius: 99px;
+  background: var(--acc-1);
+  font-weight: 600;
+}
+.app .editor-tag-chips button:hover {
+  background: var(--acc-2);
+}
+.app .editor-tag-options button {
+  border: 0;
+  border-radius: 99px;
+  background: var(--hover);
+  font-weight: 600;
+}
+.app .editor-tag-options button:hover {
+  background: var(--acc-1);
+  color: var(--accent);
+}
+.app .editor-tag-options button[aria-selected="true"] {
+  background: var(--acc-1);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.app .editor-collections label {
+  border-radius: 8px;
+  transition: background-color 0.15s;
+}
+.app .editor-collections label:hover {
+  background: var(--hover);
+}
+.app .editor-manager-list {
+  border-top-color: var(--line);
+}
+.app .editor-manager-row {
+  border-bottom-color: var(--line);
+}
+.app .editor-thumbnail-preview {
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--field);
+}
+.app .editor-local-files,
+.app .editor-confirm .modal-footer {
+  border-top-color: var(--line);
+}
+.app .avatar-manager-all {
+  border-bottom-color: var(--line);
+}
+
+/* ---------- dialogs ---------- */
+.app .modal-backdrop {
+  padding: 24px;
+  background: color-mix(in oklab, var(--bg) 58%, transparent);
+  backdrop-filter: blur(7px) saturate(1.15);
+  animation: calm-fade-in 0.24s var(--ease) both;
+}
+.app .modal {
+  border: 1px solid var(--line-2);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--sh-3);
+  animation: calm-dialog-in 0.4s var(--ease) both;
+}
+.app .modal-header {
+  gap: 10px;
+  padding: 16px 14px 12px 20px;
+  border-bottom: 0;
+}
+.app .modal-header h2,
+.app .modal-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.app .modal-header > button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+.app .modal-header > button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.app .modal-body {
+  padding: 4px 20px 18px;
+}
+.app .modal-body p {
+  color: var(--muted);
+  line-height: 1.65;
+}
+.app .modal-footer {
+  gap: 8px;
+  padding: 12px 16px 12px 20px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel) 70%, var(--bg));
+}
+.app .editor-confirm .modal-header,
+.app .editor-confirm .modal-footer {
+  border: 0;
+}
+.app .spending-totals {
+  padding: 10px 0 4px;
+  gap: 2px;
+}
+.app .spending-totals > strong {
+  font-size: clamp(28px, 4.4vw, 42px);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+  animation: calm-fade-up 0.5s var(--ease) backwards;
+}
+.app .spending-totals > strong + strong {
+  font-size: clamp(20px, 3vw, 26px);
+  color: var(--muted);
+}
+.app .spending-totals > span,
+.app .spending-counts {
+  color: var(--muted);
+  font-weight: 600;
+}
+.app .spending-products h3 {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 700;
+}
+.app .spending-products li {
+  min-height: 42px;
+  align-items: center;
+  border-top-color: var(--line);
+  font-size: 12.5px;
+}
+@media (max-height: 650px) {
+  .app .modal-backdrop {
+    padding: 12px;
+  }
+}
+.app.reduce-motion .spending-fireworks {
+  display: none;
+}
+.app.reduce-motion .spending-totals-celebration > strong {
+  animation: none;
+}

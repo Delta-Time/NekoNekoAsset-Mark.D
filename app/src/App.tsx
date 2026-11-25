@@ -1,409 +1,299 @@
-
-import {useState,useEffect,useRef,useMemo,useLayoutEffect,useCallback} from 'react';
-import type {CSSProperties,MouseEvent,KeyboardEvent,PointerEvent,ReactNode} from 'react';
-import {Search,Grid2X2,List,Columns2,RefreshCw,Download,Folder,Plus,MoreHorizontal,X,FileArchive,FileBox,CheckCircle2,AlertCircle,Bookmark,Package,SlidersHorizontal,Tags,Settings,Eye,EyeOff,Trash2,LoaderCircle,BellOff,Scale} from 'lucide-react';
-import {categoryKeys,categoryName,statusKeys,isProductDownloaded,getProductDisplayStatus,sensitiveMatches,accountMatches,defaultSortDirection,thumbnailSizes,resultGeometry,isLightTheme,currentPriceLabel,cardPriceLabel,fileCountLabel} from './model';
-import type {Product,Locale,Account,SensitiveMode,SortDirection,CustomCategory} from './model';
-import {getVersion} from '@tauri-apps/api/app';
-import {version as packageVersion} from '../package.json';
-import {t,localeNames} from './i18n';
-import {shellText} from './shell-i18n';
-import Preview from './Preview';
-import {coalescedRefresh,changedPreferences} from './refresh';
-import {collectionMutationQueue,collectionQueryKey,collectionSnapshotKey,reconciledCollectionName} from './collections';
-import AvatarManager from './AvatarManager';
-import AssetInspector from './AssetInspector';
-import DeleteLocalProducts from './DeleteLocalProducts';
-import ConfirmProducts from './ConfirmProducts';
-import {useDragGestures} from './drag-gestures';
-import type {DragGestures} from './drag-gestures';
-import ConfirmDelete from './ConfirmDelete';
-import ScaleControl from './ScaleControl';
-import Toggle from './Toggle';
-import {contentLang} from './content-lang';
-import {StatusIcon,CategoryIcon} from './LibraryIcons';
-import UpdatePrompt from './UpdatePrompt';
-import {resumesAfterRestart,updateJobBlocker,updateText} from './update-i18n';
-import {resetText,resetErrorText} from './settings-reset-i18n';
+import type { CSSProperties } from 'react';
 import './settings-reset.css';
-import AiSuggestions from './AiSuggestions';
-import FeaturesSettings,{batchActionPreferences} from './FeaturesSettings';
-import SpendingDialog from './SpendingDialog';
-import {LibraryContextMenu,ResponsiveLibraryToolbar} from './LibraryMenus';
-import type {ContextAction} from './LibraryMenus';
-import ActivityHistory from './ActivityHistory';
-import {localImportText} from './local-import-i18n';
-import {uxText} from './ux-i18n';
-import {aiSuggestionsText} from './ai-suggestions-i18n';
-import ThemePicker,{defaultThemeOptions,themeDisplayName} from './ThemePicker';
-import Workflows,{WorkflowContent,LibraryAccess,isStoreJob,isStoreSyncJob,syncProgressLabel} from './Workflows';
-import type {ImportSeed} from './Workflows';
-import type {UnitySeed} from './UnityWorkflow';
-import {unityError} from './unity-i18n';
-import {isTauri} from '@tauri-apps/api/core';
-import {getCurrentWebview} from '@tauri-apps/api/webview';
-import EditDialogs,{builtInTheme,exportThemeConfig} from './EditDialogs';
-import {LicenseFilterDialog,licenseCells,licenseSummary} from './Licenses';
-import {licenseText} from './license-i18n';
-type Query={search:string;category:string;avatar:string;status:string;sensitive:SensitiveMode;accountIds:string[]|null;includeOffline:boolean;quick:'all'|'downloaded'|'attention'|'hidden';acquisition:string[]|null;license:Record<string,string>|null};
-type Saved={id?:string;name:string;query:Query;sort?:string;direction?:SortDirection};
-type Preset={id:string;name:string;tokens:Record<string,string>};
-
-const fresh:Query={search:'',category:'all',avatar:'all',status:'all',sensitive:'blur',accountIds:null,includeOffline:true,quick:'all',acquisition:null,license:null};
-const acquisitionKinds=['paid','free','gift'];
-function restoreQuery(raw:unknown):Query {
- const saved=raw&&typeof raw==='object'?raw as Partial<Query>:{search:typeof raw==='string'?raw:''};
- const license=licenseCells(saved.license);
- return {...fresh,...saved,includeOffline:typeof saved.includeOffline==='boolean'?saved.includeOffline:saved.accountIds==null,license:Object.keys(license).length?license:null};
+import { LibraryAccess } from './Workflows';
+import { appText } from './shared/app-text';
+import { useUiPreferences } from './features/preferences/useUiPreferences';
+import { useLayout } from './features/shell/useLayout';
+import { useNavigation } from './features/shell/useNavigation';
+import { useNotice } from './features/shell/useNotice';
+import { useLibrary } from './features/library/useLibrary';
+import { useSelection } from './features/selection/useSelection';
+import { useFilters } from './features/filters/useFilters';
+import { useCollections } from './features/collections/useCollections';
+import { useResults } from './features/results/useResults';
+import { useSelectedProducts } from './features/selection/useSelectedProducts';
+import { useNative } from './features/library/useNative';
+import { usePreferenceSync } from './features/preferences/usePreferenceSync';
+import { useCategories } from './features/categories/useCategories';
+import { useAvatars } from './features/avatars/useAvatars';
+import { useLocalFiles } from './features/local-files/useLocalFiles';
+import { useProductEdits } from './features/products/useProductEdits';
+import { useProductActions } from './features/products/useProductActions';
+import { useAppearance } from './features/appearance/useAppearance';
+import { useSettingsPane } from './features/settings/useSettingsPane';
+import { useUpdates } from './features/updates/useUpdates';
+import { useShortcuts } from './features/shell/useShortcuts';
+import Sidebar from './features/sidebar/Sidebar';
+import ActivityView from './features/activity/ActivityView';
+import { useWorkflowProps } from './features/workflows/useWorkflowProps';
+import Topbar from './features/shell/Topbar';
+import NavDivider from './features/sidebar/NavDivider';
+import AiPane from './features/ai/AiPane';
+import LibraryView from './features/results/LibraryView';
+import Statusbar from './features/shell/Statusbar';
+import AppDialogs from './features/shell/AppDialogs';
+export default function App() {
+  const uiPrefs = useUiPreferences();
+  const { locale, navWidth, setNavWidth, inspectorWidth, setInspectorWidth } = uiPrefs;
+  const layout = useLayout({
+    navWidth,
+    setNavWidth,
+    inspectorWidth,
+    setInspectorWidth,
+  });
+  const nav = useNavigation();
+  const { view, flow, dialog } = nav;
+  const q = (key: string) => appText(locale, key);
+  const notices = useNotice({ q, flow, dialog });
+  const library = useLibrary();
+  const { loaded, libraryState, libraryOpening, blockedLibraryRequest } = library;
+  const selection = useSelection();
+  const filters = useFilters({ selection, notices, nav, library });
+  const collectionStore = useCollections({ notices, filters, q });
+  const results = useResults({ library, filters, collectionStore, notices, q });
+  const selectedProducts = useSelectedProducts({
+    results,
+    selection,
+    library,
+    nav,
+    notices,
+    filters,
+    q,
+  });
+  const native = useNative({
+    library,
+    filters,
+    collectionStore,
+    uiPrefs,
+    nav,
+    results,
+    notices,
+    selection,
+    q,
+  });
+  const { openSelectedLibrary, chooseLibrary } = native;
+  const preferenceSync = usePreferenceSync({ library, notices, uiPrefs, q });
+  const categories = useCategories({ library, uiPrefs, native, filters, q });
+  const avatars = useAvatars({ uiPrefs, library, preferenceSync, native, notices, filters, q });
+  const localFiles = useLocalFiles({ filters, nav, library, native, notices, uiPrefs, q });
+  const edits = useProductEdits({
+    native,
+    notices,
+    selectedProducts,
+    filters,
+    results,
+    selection,
+    nav,
+    q,
+  });
+  const actions = useProductActions({
+    library,
+    notices,
+    native,
+    selectedProducts,
+    edits,
+    uiPrefs,
+    q,
+  });
+  const appearance = useAppearance({ uiPrefs, preferenceSync, notices, library, q });
+  const { themeTokens, themeDeleteTarget, appTheme, appClass } = appearance;
+  const settingsPane = useSettingsPane({ nav, library });
+  const updates = useUpdates({
+    nav,
+    edits,
+    appearance,
+    library,
+    collectionStore,
+    localFiles,
+    preferenceSync,
+  });
+  const { updateOpen } = updates;
+  const shortcuts = useShortcuts({
+    updates,
+    appearance,
+    library,
+    uiPrefs,
+    edits,
+    nav,
+    selection,
+    results,
+    notices,
+  });
+  const workflowProps = useWorkflowProps({
+    uiPrefs,
+    results,
+    library,
+    appearance,
+    native,
+    nav,
+    notices,
+    localFiles,
+    filters,
+    preferenceSync,
+  });
+  const sidebar = (
+    <Sidebar
+      uiPrefs={uiPrefs}
+      filters={filters}
+      results={results}
+      categories={categories}
+      nav={nav}
+      avatars={avatars}
+      notices={notices}
+      native={native}
+      collectionStore={collectionStore}
+      library={library}
+      selection={selection}
+      q={q}
+    />
+  );
+  const activity = (
+    <ActivityView
+      filters={filters}
+      localFiles={localFiles}
+      uiPrefs={uiPrefs}
+      library={library}
+      results={results}
+      actions={actions}
+      native={native}
+      nav={nav}
+      notices={notices}
+      settingsPane={settingsPane}
+      q={q}
+    />
+  );
+  if (
+    !libraryState ||
+    libraryState.state === 'blocked' ||
+    !loaded ||
+    (libraryOpening && !['ready', 'setup', 'unconfigured'].includes(libraryState.state))
+  )
+    return (
+      <div className={appClass} data-theme={appTheme} style={themeTokens as CSSProperties}>
+        <LibraryAccess
+          locale={locale}
+          status={libraryState}
+          busy={libraryOpening || !loaded}
+          onChoose={() => void chooseLibrary()}
+          onRetry={() => {
+            if (libraryState?.path) {
+              const request = blockedLibraryRequest.current;
+              void openSelectedLibrary(
+                libraryState.path,
+                request?.path === libraryState.path && request.newLibrary,
+              ).catch(() => {});
+            }
+          }}
+        />
+      </div>
+    );
+  const topbar = (
+    <Topbar
+      updates={updates}
+      appearance={appearance}
+      library={library}
+      nav={nav}
+      uiPrefs={uiPrefs}
+      shortcuts={shortcuts}
+      filters={filters}
+      settingsPane={settingsPane}
+      q={q}
+    />
+  );
+  const navDivider = <NavDivider layout={layout} uiPrefs={uiPrefs} q={q} />;
+  const aiPane = (
+    <AiPane
+      library={library}
+      nav={nav}
+      updates={updates}
+      appearance={appearance}
+      edits={edits}
+      uiPrefs={uiPrefs}
+      avatars={avatars}
+      filters={filters}
+    />
+  );
+  const libraryView = (
+    <LibraryView
+      filters={filters}
+      uiPrefs={uiPrefs}
+      library={library}
+      nav={nav}
+      selection={selection}
+      results={results}
+      categories={categories}
+      avatars={avatars}
+      selectedProducts={selectedProducts}
+      edits={edits}
+      actions={actions}
+      notices={notices}
+      appearance={appearance}
+      layout={layout}
+      preferenceSync={preferenceSync}
+      native={native}
+      localFiles={localFiles}
+      q={q}
+      workflowProps={workflowProps}
+    />
+  );
+  const statusbar = (
+    <Statusbar
+      nav={nav}
+      updates={updates}
+      appearance={appearance}
+      uiPrefs={uiPrefs}
+      results={results}
+      collectionStore={collectionStore}
+      notices={notices}
+      library={library}
+      q={q}
+    />
+  );
+  const dialogs = (
+    <AppDialogs
+      nav={nav}
+      actions={actions}
+      library={library}
+      selection={selection}
+      results={results}
+      uiPrefs={uiPrefs}
+      edits={edits}
+      notices={notices}
+      updates={updates}
+      selectedProducts={selectedProducts}
+      appearance={appearance}
+      collectionStore={collectionStore}
+      avatars={avatars}
+      native={native}
+      filters={filters}
+      categories={categories}
+      localFiles={localFiles}
+      q={q}
+      workflowProps={workflowProps}
+    />
+  );
+  return (
+    <div
+      className={appClass}
+      data-view={view}
+      data-theme={appTheme}
+      style={{ ...themeTokens, '--nav-width': navWidth + 'px' } as CSSProperties}
+    >
+      {topbar}
+      <div className="shell" inert={updateOpen || !!themeDeleteTarget}>
+        {view !== 'activity' && view !== 'ai-suggestions' && (
+          <>
+            {sidebar}
+            {navDivider}
+          </>
+        )}
+        <main className="workspace">
+          {aiPane}
+          {view === 'activity' ? activity : view === 'ai-suggestions' ? null : libraryView}
+        </main>
+      </div>
+      {statusbar}
+      {dialogs}
+    </div>
+  );
 }
-const params=new URLSearchParams(location.search);
-const neutralTokens=Object.fromEntries(Object.entries(builtInTheme).map(([key,value])=>['--'+key,value]));
-const initialPresets:Preset[]=[
- {id:'mint',name:'Mint',tokens:{'--secondary-accent':'#375e9a','--secondary-accent-text':'#ffffff','--bg':'#eef5f0','--panel':'#f8fcf9','--raised':'#ffffff','--border':'#acbfb2','--text':'#20392d','--muted':'#496454','--accent':'#306449','--control':'#dceadf','--positive':'#326545','--warning':'#815516','--negative':'#a33745'}},
- {id:'violet',name:'Violet',tokens:{'--secondary-accent':'#8ebdec','--secondary-accent-text':'#211b29','--bg':'#211b29','--panel':'#2c2337','--raised':'#382d45','--border':'#665573','--text':'#f5edf9','--muted':'#c0adcf','--accent':'#d2b5ee','--control':'#493957','--positive':'#aad3b4','--warning':'#e5c386','--negative':'#f0acb9'}},
- {id:'sky',name:'Sky',tokens:{'--secondary-accent':'#6a43a5','--secondary-accent-text':'#ffffff','--bg':'#eaf2f8','--panel':'#f6faff','--raised':'#ffffff','--border':'#a8bdcd','--text':'#20394d','--muted':'#496174','--accent':'#315d85','--control':'#d5e5f1','--positive':'#326448','--warning':'#825619','--negative':'#a33644'}},
- {id:'amber',name:'Amber',tokens:{'--secondary-accent':'#96bfea','--secondary-accent-text':'#292117','--bg':'#292117','--panel':'#352c20','--raised':'#433728','--border':'#75644a','--text':'#f6edda','--muted':'#c9b693','--accent':'#f0cb83','--control':'#50412e','--positive':'#b8d29a','--warning':'#f1cc8b','--negative':'#f0a6a0'}},
- {id:'rose',name:'Rose',tokens:{'--secondary-accent':'#416eb4','--secondary-accent-text':'#ffffff','--bg':'#f7eef1','--panel':'#fff8fa','--raised':'#ffffff','--border':'#cbb0ba','--text':'#4b2d39','--muted':'#765565','--accent':'#8e3e62','--control':'#eddce3','--positive':'#38634c','--warning':'#865617','--negative':'#aa3047'}},
- {id:'silver',name:'Silver',tokens:{'--secondary-accent':'#7cb9f2','--secondary-accent-text':'#10161c','--bg':'#10161c','--panel':'#1b242d','--raised':'#283440','--border':'#526373','--text':'#e9f1f8','--muted':'#abbccc','--accent':'#c3d4e3','--control':'#354554','--positive':'#a6d4bb','--warning':'#e2c28b','--negative':'#eda6ad'}}
-];
-
-function safeTokens(value:unknown):Record<string,string>|null{if(!value||typeof value!=='object'||Array.isArray(value))return null;const entries=Object.entries(value);if(!entries.length||entries.some(([key,color])=>!Object.hasOwn(neutralTokens,key)||typeof color!=='string'||!/^#[a-f0-9]{6}$/i.test(color)))return null;return {...neutralTokens,...value};}
-function Button({children,onClick,onMouseDown,title,primary=false,disabled=false,className=''}:{children:ReactNode;onClick?:()=>void;onMouseDown?:(event:MouseEvent<HTMLButtonElement>)=>void;title?:string;primary?:boolean;disabled?:boolean;className?:string}){return <button type="button" title={title} aria-label={title} className={`button ${primary?'primary':''} ${className}`} onClick={onClick} onMouseDown={onMouseDown} disabled={disabled}>{children}</button>;}
-function Status({p,q}:{p:Product;q:(key:string)=>string}){const status=getProductDisplayStatus(p);return <span className={`product-status ${status==='ready'?'good':status==='attention'?'warn':''}`} data-status={status} title={q(status)} aria-label={q(status)}><StatusIcon status={status}/><span title={q(status)}>{q(status)}</span></span>;}
-import {invokeAction,dialog as nativeDialog,emptyState,subscribeChanged,errorCode,nativeFileAction,nativeZoom,openExternal,fetchProductMetadata,updateLocalFiles,cancelAi,retryAi,cancelUnity,retryUnityInventory,libraryStatus,openLibrary,subscribeLocalImportProgress,type LocalImportProgress,type LocalFileChanges} from './backend';
-import type {NativeState,NativeJob,NativeRoot,Service,AvatarSetting,NativeCollection,LibraryStatus,ProductOverlayChange} from './backend';
-import {progressPercent} from './backend';
-const unfinishedLocalImport=(job:NativeJob)=>job.type==='storage:import_local'&&(!job.productIds?.length||job.productIds.some(id=>!job.completedProductIds?.includes(id)));
-const configuredLibraryRoot=(state:Pick<NativeState,'roots'|'preferences'>)=>typeof state.preferences.libraryRootId==='string'?state.roots.find(root=>root.id===state.preferences.libraryRootId):state.roots.find(root=>Reflect.get(root,'active')!==false);
-const mappedLibraryRoot=(root:NativeRoot|undefined)=>!!root&&typeof root.path==='string'&&!!root.path.trim()&&['active','online','ready','configured'].includes(root.status);
-const libraryAvailable=(state:Pick<NativeState,'roots'|'preferences'>)=>mappedLibraryRoot(configuredLibraryRoot(state));
-import {nativeErrorText} from './error-i18n';
-import {nativeWorkflowText} from './native-workflow-i18n';
-export default function App(){
- const [appVersion,setAppVersion]=useState(packageVersion);
- useEffect(()=>{if(isTauri())void getVersion().then(setAppVersion).catch(()=>{});},[]);
- const [nativeState,setNativeState]=useState<NativeState>(emptyState),[loaded,setLoaded]=useState(false),[loadingError,setLoadingError]=useState('');
- const [libraryState,setLibraryState]=useState<LibraryStatus|null>(null),[libraryOpening,setLibraryOpening]=useState(false),libraryStateRef=useRef<LibraryStatus|null>(null),credentialsPromptSeen=useRef(false),libraryRefreshPending=useRef(false),libraryEpoch=useRef(0);
- const blockedLibraryRequest=useRef<{path:string;newLibrary:boolean}|null>(null);
- const applyLibraryStatus=(status:LibraryStatus)=>{libraryStateRef.current=status;setLibraryState(status);};
- const [products,setProducts]=useState<Product[]>([]),[catalogueTotal,setCatalogueTotal]=useState(0),[catalogueCounts,setCatalogueCounts]=useState<{all:number;downloaded:number;attention:number;hidden?:number}>({all:0,downloaded:0,attention:0});
- const preferencesRef=useRef<Record<string,unknown>>({}),initialLoad=useRef(false),reloadSequence=useRef(0),reloadTask=useRef<(()=>Promise<void>)|null>(null);
- const displayedPreferences=useRef<Record<string,unknown>|null>(null),pendingPreferences=useRef<Record<string,unknown>>({}),preferenceSaves=useRef(new Set<Promise<void>>());
- const localFileLocks=useRef(new Set<string>()),[localFilePending,setLocalFilePending]=useState(new Set<string>());
- const [locale,setLocale]=useState<Locale>(()=>{const value=params.get('locale')||'en';return Object.hasOwn(localeNames,value)?value as Locale:'en';});
- const [theme,setTheme]=useState(params.get('theme')||'dark');
- const [presets,setPresets]=useState<Preset[]>(initialPresets);
- const [themePreview,setThemePreview]=useState<Record<string,string>|null>(null),[query,setQuery]=useState<Query>({...fresh}),[sort,setSort]=useState('acquired'),[direction,setDirection]=useState<SortDirection>('desc');
- const [selected,setSelected]=useState<string[]>([]),[focusId,setFocusId]=useState(''),[view,setView]=useState('library'),[settingsRoute,setSettingsRoute]=useState('appearance');
- const [unitySeed,setUnitySeed]=useState<UnitySeed>({productIds:[]});
- const openUnity=(productIds:string[],leafRefs?:string[])=>{setUnitySeed({productIds:[...new Set(productIds)],leafRefs});setFlow('unity');};
- const [flow,setFlow]=useState<string|null>(null),[dialog,setDialog]=useState<string|null>(null),[tab,setTab]=useState<'details'|'files'>('details');
- const [updateOpen,setUpdateOpen]=useState(false),[updateRequest,setUpdateRequest]=useState(0),[updateAvailable,setUpdateAvailable]=useState(false),[aiChatUpdateBlocked,setAiChatUpdateBlocked]=useState(false);
- const aiChatUpdateBlockedRef=useRef(false),updateBlockerRef=useRef('');
- const reportAiChatUpdateBlocked=useCallback((blocked:boolean)=>{aiChatUpdateBlockedRef.current=blocked;setAiChatUpdateBlocked(blocked);},[]);
- const [thumb,setThumb]=useState(128),[density,setDensity]=useState(74),[inspector,setInspector]=useState(true);
- const [navWidth,setNavWidth]=useState(176),[inspectorWidth,setInspectorWidth]=useState(336),[viewportWidth,setViewportWidth]=useState(innerWidth),[cardColumns,setCardColumns]=useState<string[]>(['shop']),[listColumns,setListColumns]=useState<string[]>(['shop','category','files','acquired','price']);
- const columns=thumb===0?listColumns:cardColumns,setColumns=thumb===0?setListColumns:setCardColumns;
- const [saved,setSaved]=useState<Saved[]>([]),[customCategories,setCustomCategories]=useState<CustomCategory[]>([]),[collections,setCollections]=useState<Record<string,string[]>>({}),[collection,setCollection]=useState(''),[savedScope,setSavedScope]=useState<number|null>(null);
- const reconciledCollections=useRef<NativeCollection[]>([]),collectionRows=useRef<NativeCollection[]>([]),collectionPending=useRef(false),collectionEpoch=useRef(0),collectionRefreshNeeded=useRef(false),collectionTask=useRef<(()=>Promise<void>)|null>(null);
- const [snapshotVersion,setSnapshotVersion]=useState(0),[collectionBusy,setCollectionBusy]=useState(false),[committedCollections,setCommittedCollections]=useState<NativeCollection[]>([]);
- const [libraryReady,setLibraryReady]=useState(false),[context,setContext]=useState<{x:number;y:number;ids:string[]}|null>(null),[licenseOpen,setLicenseOpen]=useState(false),licenseActive=useRef(false),licenseButton=useRef<HTMLButtonElement>(null);
- const [deleteLocalSelection,setDeleteLocalSelection]=useState<{ids:string[];names:string[]}|null>(null);
- const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
- const watchedDownloads=useRef(new Set<string>()),staleProducts=useRef(new Set<string>());
- const localProgress=useRef<LocalImportProgress|null>(null);
- const latestLocalProgress=useCallback(()=>localProgress.current,[]);
- useEffect(()=>{
-  let active=true,stop:(()=>void)|undefined;
-  void subscribeLocalImportProgress(progress=>{if(active)localProgress.current=progress;}).then(unlisten=>{if(active)stop=unlisten;else unlisten();}).catch(()=>{});
-  return()=>{active=false;stop?.();};
- },[]);
- const [notice,setNotice]=useState<{message:string;jobId?:string}|null>(null),[activityJobId,setActivityJobId]=useState(''),[undo,setUndo]=useState<string|null>(null),[autoAll,setAutoAll]=useState(false),[setupDone,setSetupDone]=useState(false);
- const [accounts,setAccounts]=useState<Account[]>([]),[revealed,setRevealed]=useState<Set<string>>(new Set()),[avatarSettings,setAvatarSettings]=useState<Record<string,AvatarSetting>>({}),[importSeed,setImportSeed]=useState<ImportSeed|undefined>();
- const avatarSettingsRef=useRef(avatarSettings);avatarSettingsRef.current=avatarSettings;
- useEffect(()=>{
-  if(!isTauri())return;
-  let disposed=false;let unlisten:(()=>void)|undefined;
-  void getCurrentWebview().onDragDropEvent(event=>{
-   if(event.payload.type!=='drop'||!event.payload.paths.length)return;
-   const point=event.payload.position;
-   const target=document.elementFromPoint(point.x/devicePixelRatio,point.y/devicePixelRatio);
-   if(!target?.closest('.result-workspace,.activity-history'))return;
-   const paths=event.payload.paths;
-   setImportSeed({name:paths[0].replace(/[\\/]+$/,'').split(/[\\/]/).pop()?.replace(/\.[^.]+$/,''),sources:paths,sourceKind:'local'});
-   setFlow('import');
-  }).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
-  return()=>{disposed=true;unlisten?.();};
- },[]);
- const [uiScale,setUiScale]=useState(100),zoomTarget=useRef(100),zoomQueue=useRef(Promise.resolve());
- const [roundedCorners,setRoundedCorners]=useState(true),[reduceMotion,setReduceMotion]=useState(false),[bundledFonts,setBundledFonts]=useState(true),[oneHandedDrag,setOneHandedDrag]=useState(false);
- const searchRef=useRef<HTMLInputElement>(null),anchor=useRef(''),scrollState=useRef({index:0,offset:0});
- const syncing=nativeState.jobs.some(job=>isStoreSyncJob(job.type)&&['queued','running'].includes(job.state));
- const jobs=useMemo(()=>new Map(nativeState.jobs.filter(j=>['download','storage:import_local'].includes(j.type)&&['queued','running'].includes(j.state)).flatMap(j=>[...new Set([j.productId,...(j.productIds??[])].filter((id):id is string=>!!id))].map(id=>[id,j] as const))),[nativeState.jobs]);
- const [queryResult,setQueryResult]=useState<{products:Product[];matchedIds:string[];total:number;allDownloaded?:boolean;key:string}|null>(null),[queryBusy,setQueryBusy]=useState(false),[failedQueryKey,setFailedQueryKey]=useState('');
- const queryResultRef=useRef(queryResult);queryResultRef.current=queryResult;
- const queryTask=useRef<(()=>Promise<void>)|null>(null),queryMounted=useRef(false),summaryCache=useRef(new Map<string,{fingerprint:string;product:Product}>());
- useEffect(()=>{queryMounted.current=true;return()=>{queryMounted.current=false;};},[]);
- const q=(key:string)=>(key.startsWith('licenses_')||key==='syncLicenses'?licenseText(locale,key):undefined)||resetErrorText(locale,key)||((key.startsWith('UNITY_')||key.startsWith('unity_'))?unityError(locale,key):undefined)||uxText(locale,key)||(key.startsWith('ai_')||key==='AI_INPUT_STALE'?nativeWorkflowText(locale,key):nativeErrorText(locale,key)||shellText(locale,key)||t(locale,key)),notify=(message:string)=>setNotice({message});
- const eventText=useRef(q);eventText.current=q;
- const aiEnabled=nativeState.preferences.aiFeaturesEnabled===true,licenseEnabled=nativeState.preferences.licenseFilter===true,batchEnabled=batchActionPreferences(nativeState.preferences.batchActions);licenseActive.current=licenseEnabled&&!!query.license;
- const settingsReturn=useRef({inspector:true,tab:'details' as 'details'|'files',view:'library'});
- const reloadOnce=async()=>{const sequence=++reloadSequence.current,collectionsAtStart=collectionEpoch.current;try{
-  const status=await libraryStatus();if(sequence!==reloadSequence.current)return;applyLibraryStatus(status);
-  if(!initialLoad.current&&Object.hasOwn(localeNames,String(status.locale)))setLocale(status.locale as Locale);
-  if(status.state==='blocked'){setLibraryReady(false);setLoaded(true);return;}
-  const state=await invokeAction<NativeState>('catalogue','bootstrap',{includeProducts:false});if(sequence!==reloadSequence.current)return;
-  if(status.state==='unconfigured'){setNativeState(state);setLibraryReady(false);setFlow('setup');setLoaded(true);setLoadingError('');return;}
- setNativeState(state);setCatalogueTotal(state.total??0);setCatalogueCounts(state.counts??{all:0,downloaded:0,attention:0});setAccounts(state.accounts);preferencesRef.current=state.preferences??{};if(!collectionPending.current&&collectionsAtStart===collectionEpoch.current)applyCollections((state.collections??[]) as unknown as NativeCollection[]);else collectionRefreshNeeded.current=true;setSnapshotVersion(version=>version+1);setSaved((state.savedSearches??[]).map(search=>({...search,query:restoreQuery(search.query)})) as Saved[]);setCustomCategories(state.customCategories??[]);libraryRefreshPending.current=false;setLibraryReady(libraryAvailable(state));if(status.state==='setup')setFlow('setup');if(!initialLoad.current){const p=state.preferences??{};if(Object.hasOwn(localeNames,String(p.locale)))setLocale(p.locale as Locale);if(typeof p.theme==='string')setTheme(p.theme);if(Array.isArray(p.presets))setPresets(p.presets.flatMap(value=>{if(!value||typeof value!=='object')return [];const preset=value as Preset,tokens=safeTokens(preset.tokens);return typeof preset.name==='string'&&typeof preset.id==='string'&&tokens?[{...preset,tokens}]:[];}));if(typeof p.thumb==='number'&&thumbnailSizes.includes(p.thumb as any))setThumb(p.thumb);if([40,74,90].includes(Number(p.density)))setDensity(Number(p.density));if(typeof p.navWidth==='number')setNavWidth(Math.max(132,Math.min(300,p.navWidth)));if(typeof p.inspectorWidth==='number')setInspectorWidth(Math.max(240,Math.min(900,p.inspectorWidth)));if(Array.isArray(p.cardColumns))setCardColumns(p.cardColumns as string[]);if(Array.isArray(p.listColumns))setListColumns(p.listColumns as string[]);if(p.avatarSettings&&typeof p.avatarSettings==='object'&&!Array.isArray(p.avatarSettings))setAvatarSettings(p.avatarSettings as Record<string,AvatarSetting>);if(typeof p.uiScale==='number'&&Number.isFinite(p.uiScale)&&p.uiScale>=80&&p.uiScale<=300){zoomTarget.current=p.uiScale;setUiScale(p.uiScale);}if(typeof p.roundedCorners==='boolean')setRoundedCorners(p.roundedCorners);if(typeof p.reduceMotion==='boolean')setReduceMotion(p.reduceMotion);if(typeof p.bundledFonts==='boolean')setBundledFonts(p.bundledFonts);if(typeof p.oneHandedDrag==='boolean')setOneHandedDrag(p.oneHandedDrag);setQuery(old=>({...old,sensitive:['blur','hide','show','only'].includes(String(p.sensitiveMode))?p.sensitiveMode as SensitiveMode:'blur'}));setAutoAll(typeof p.autoDownloadAll==='boolean'?p.autoDownloadAll:false);setSetupDone(p.setupComplete===true);if(!p.setupComplete)setFlow('setup');else if(!credentialsPromptSeen.current&&status.missingCredentials?.length)setFlow('signInOnDevice');credentialsPromptSeen.current=true;initialLoad.current=true;}setLoaded(true);setLoadingError('');}catch(error){const code=errorCode(error);setLoadingError(code);if(libraryRefreshPending.current)setLibraryReady(false);if(!initialLoad.current)applyLibraryStatus({state:'blocked',path:libraryStateRef.current?.path,errorCode:code});setLoaded(true);}};
- const reload=()=>{if(!reloadTask.current)reloadTask.current=coalescedRefresh(reloadOnce);return reloadTask.current();};
- const openSelectedLibrary=async(path:string,newLibrary=false)=>{const previous=libraryStateRef.current;let activated=false;setLibraryOpening(true);try{const result=await openLibrary(path,locale,newLibrary);blockedLibraryRequest.current=null;if(!result.restarting){
-  // Native selection has committed. Retain the setup draft and the new
-  // candidate or library if its bootstrap fails, then retry that selection.
-  activated=true;initialLoad.current=true;reloadSequence.current++;libraryEpoch.current++;libraryRefreshPending.current=true;
-  setLibraryReady(false);setNativeState(emptyState);setAccounts([]);setProducts([]);summaryCache.current.clear();setQueryResult(null);setQueryBusy(false);setFailedQueryKey('');
-  applyLibraryStatus({state:'unconfigured',path,defaultPath:path,locale});await reload();setLibraryOpening(false);
- }}catch(error){if(!activated){if(previous?.state==='ready'||previous?.state==='setup'||previous?.state==='unconfigured')applyLibraryStatus(previous);else{blockedLibraryRequest.current={path,newLibrary};applyLibraryStatus({state:'blocked',path,errorCode:errorCode(error),locale});}}setLibraryOpening(false);throw error;}};
- const chooseLibrary=async()=>{setLibraryOpening(true);try{const selected=await nativeDialog('folder',{defaultPath:libraryStateRef.current?.path});if(selected?.path)await openSelectedLibrary(selected.path,true);else setLibraryOpening(false);}catch(error){setLibraryOpening(false);if(libraryStateRef.current?.state!=='blocked')applyLibraryStatus({state:'blocked',path:libraryStateRef.current?.path,errorCode:errorCode(error),locale});}};
- const stateTask=useRef<(()=>Promise<void>)|null>(null);const refreshState=()=>{if(!stateTask.current)stateTask.current=coalescedRefresh(async()=>{if(libraryRefreshPending.current){await reload();return;}const sequence=reloadSequence.current,status=await libraryStatus();if(sequence!==reloadSequence.current)return;applyLibraryStatus(status);if(status.state!=='ready'&&status.state!=='setup')return;const state=await invokeAction<Pick<NativeState,'accounts'|'roots'|'jobs'|'preferences'|'sourceCoverage'|'conflicts'>>('catalogue','state');if(sequence!==reloadSequence.current)return;setNativeState(old=>({...old,...state}));setAccounts(state.accounts);preferencesRef.current=state.preferences;setLibraryReady(libraryAvailable(state));});return stateTask.current();};
- const avatarOptionsTask=useRef<(()=>Promise<void>)|null>(null);
- const refreshAvatarOptions=()=>{if(!avatarOptionsTask.current)avatarOptionsTask.current=coalescedRefresh(async()=>{if(libraryRefreshPending.current||libraryStateRef.current?.state!=='ready')return;const epoch=libraryEpoch.current,sequence=reloadSequence.current;const state=await invokeAction<Pick<NativeState,'avatarOptions'>>('catalogue','avatar_options');if(epoch!==libraryEpoch.current||sequence!==reloadSequence.current||libraryRefreshPending.current)return;setNativeState(old=>({...old,avatarOptions:state.avatarOptions??[]}));});return avatarOptionsTask.current();};
- const collectionError=useRef<(error:unknown)=>void>(()=>{});collectionError.current=error=>notify(q(errorCode(error)));
- const collectionQueue=useRef<ReturnType<typeof collectionMutationQueue>|null>(null);
- if(!collectionQueue.current)collectionQueue.current=collectionMutationQueue(args=>invokeAction<{collections:NativeCollection[]}>('catalogue','collection',args),(rows,committed,busy)=>{collectionEpoch.current++;collectionPending.current=busy;if(!busy){const before=reconciledCollections.current;reconciledCollections.current=committed;setCollection(name=>reconciledCollectionName(before,committed,name));}setCollectionBusy(busy);setCommittedCollections(before=>collectionSnapshotKey(before)===collectionSnapshotKey(committed)?before:committed);if(collectionSnapshotKey(rows)!==collectionSnapshotKey(collectionRows.current)){collectionRows.current=rows;setCollections(Object.fromEntries(rows.map(row=>[row.name,row.productIds??[]])));}if(!busy&&collectionRefreshNeeded.current){collectionRefreshNeeded.current=false;queueMicrotask(()=>void refreshCollections().catch(error=>collectionError.current(error)));}},error=>collectionError.current(error),()=>crypto.randomUUID());
- const applyCollections=(rows:NativeCollection[])=>collectionQueue.current!.setCommitted(rows);
- const reconcileCollections=async()=>{if(collectionPending.current)return;const epoch=collectionEpoch.current;const result=await invokeAction<{collections:NativeCollection[]}>('catalogue','collections');if(!collectionPending.current&&epoch===collectionEpoch.current)applyCollections(result.collections);};
- const refreshCollections=()=>{if(collectionPending.current){collectionRefreshNeeded.current=true;return Promise.resolve();}if(!collectionTask.current)collectionTask.current=coalescedRefresh(reconcileCollections);return collectionTask.current();};
- const changeCollection=(input:Record<string,unknown>)=>collectionQueue.current!.enqueue(input);
- const onNative=async(service:Service|'dialog',action:string,args:Record<string,unknown>={})=>{try{const setupAction=libraryStateRef.current?.state==='setup'&&(service==='booth'&&['account_add','account_login','account_logout','account_rename','account_remove','cancel_sync'].includes(action)||service==='catalogue'&&action==='preferences');if(service!=='dialog'&&(!setupAction&&libraryStateRef.current?.state!=='ready'||libraryRefreshPending.current))throw new Error('library_not_open');const result=service==='catalogue'&&action==='collection'?await changeCollection(args):service==='dialog'?await nativeDialog(action as 'folder'|'open_file'|'save_file',args):await invokeAction(service,action,args);if(result?.restartRequired===true){setLibraryOpening(true);return result;}if(service==='booth'&&!action.startsWith('fetch_')&&!action.startsWith('diagnose_'))await refreshState();return result;}catch(error){notify(q(errorCode(error)));throw error;}};
- const run=(operation:Promise<unknown>)=>{void operation.catch(error=>notify(q(errorCode(error))));};
- async function changeLocalFiles(productId:string,changes:LocalFileChanges|(()=>Promise<LocalFileChanges|undefined>)) {
-  if(localFileLocks.current.has(productId)||jobs.has(productId))throw new Error('storage_busy');
-  localFileLocks.current.add(productId);setLocalFilePending(new Set(localFileLocks.current));
-  try{const args=typeof changes==='function'?await changes():changes;if(!args)return;const result=await updateLocalFiles(productId,args);await refreshState();return result;}
-  finally{localFileLocks.current.delete(productId);setLocalFilePending(new Set(localFileLocks.current));}
- }
- const addLocalFiles=(productId:string,folder:boolean)=>run(changeLocalFiles(productId,async()=>{const result=await nativeDialog(folder?'folder':'open_file',{multiple:true});const sources=result?.paths??(result?.path?[result.path]:[]);return sources.length?{draftId:crypto.randomUUID(),addSources:sources,removeFileIds:[]}:undefined;}));
-
- const onPreferences=(patch:Record<string,unknown>)=>{const save=(async()=>{try{if(!['ready','setup'].includes(libraryStateRef.current?.state??'')||libraryRefreshPending.current)throw new Error('library_not_open');const result=await invokeAction('catalogue','preferences',{patch});if(result?.restartRequired===true){setLibraryOpening(true);return;}preferencesRef.current={...preferencesRef.current,...patch};setNativeState(old=>({...old,preferences:{...old.preferences,...patch}}));}catch(error){notify(q(errorCode(error)));throw error;}})();preferenceSaves.current.add(save);void save.then(()=>preferenceSaves.current.delete(save),()=>preferenceSaves.current.delete(save));return save;};
- const drainPreferenceWrites=async()=>{while(preferenceSaves.current.size)await Promise.all([...preferenceSaves.current]);const patch=pendingPreferences.current;pendingPreferences.current={};if(Object.keys(patch).length){try{await onPreferences(patch);}catch(error){pendingPreferences.current={...patch,...pendingPreferences.current};throw error;}}};
- const changeAvatarDetails=async(id:string,patch:{displayName:string;shopName:string})=>{const epoch=libraryEpoch.current;await drainPreferenceWrites();if(epoch!==libraryEpoch.current)throw new Error('library_not_open');const next={...avatarSettingsRef.current,[id]:{...avatarSettingsRef.current[id],...patch}};await onPreferences({avatarSettings:next});if(epoch!==libraryEpoch.current)return;avatarSettingsRef.current=next;if(displayedPreferences.current)displayedPreferences.current.avatarSettings=next;setAvatarSettings(next);await refreshAvatarOptions().catch(error=>notify(q(errorCode(error))));};
- const pendingSuggestionProduct=useRef('');
- const clearSelection=()=>{setSelected([]);setFocusId('');setRevealed(new Set());};
- // Hidden assets is a place of its own: going anywhere else leaves it.
- const leavingHidden=(old:Query):Partial<Query>=>old.quick==='hidden'?{quick:'all'}:{};
- const updateQuery=(patch:Partial<Query>)=>{pendingSuggestionProduct.current='';setQuery(old=>({...old,...(patch.category||patch.avatar||patch.quick?leavingHidden(old):{}),...patch}));clearSelection();setSavedScope(null);};
- const openLibraryProduct=(id:string)=>run(invokeAction<Product>('catalogue','product_details',{id}).then(product=>{pendingSuggestionProduct.current=id;setQuery({...fresh,sensitive:query.sensitive,search:product.title,category:product.category});setCollection('');setSavedScope(null);clearSelection();setView('library');setTab('details');setInspector(true);}));
- const clearFilters=()=>{setQuery({...fresh,sensitive:query.sensitive});setSort('acquired');setDirection('desc');setCollection('');setSavedScope(null);clearSelection();};
- const changeSort=(value:string)=>{setSort(value);setDirection(defaultSortDirection(value));setSavedScope(null);clearSelection();};
- const selectedCollectionKey=collectionQueryKey(committedCollections,collection);
- const categoryLabel=(key:string)=>categoryName(key,customCategories,q),categoryList=[...customCategories].sort((a,b)=>a.name.localeCompare(b.name,locale,{numeric:true}));
- const changeCategories=async(args:Record<string,unknown>)=>{const result=await onNative('catalogue','custom_category',args);if(Array.isArray(result?.customCategories))setCustomCategories(result.customCategories);if(args.op==='delete')setQuery(old=>old.category===args.id?{...old,category:'all'}:old);};
- const hideUnavailable=nativeState.preferences.hideUnavailable!==false,hideUnclassified=nativeState.preferences.hideUnclassified!==false,queryKey=JSON.stringify({query,collection,sort,direction,hideUnavailable,hideUnclassified,licenseEnabled}),accountScopeKey=JSON.stringify(query.accountIds===null?null:[...new Set(query.accountIds)].sort());const filtered=queryResult?.key===queryKey?queryResult.products:[];const matchedIds=queryResult?.key===queryKey?queryResult.matchedIds:[];
- // A changed search, filter or sort has no rows until its query answers: show progress, never "no results".
- const resultsPending=!loaded||libraryState?.state==='ready'&&!loadingError&&queryResult?.key!==queryKey&&failedQueryKey!==queryKey;
- // Product events can share a result; changed filters or collection membership cannot.
- const queryIdentity=JSON.stringify([queryKey,selectedCollectionKey]);
- const queryRequest=useRef({identity:queryIdentity,epoch:0,key:queryKey,args:{...query,license:licenseEnabled?query.license:null,hiddenOnly:query.quick==='hidden',hideUnavailable,hideUnclassified,collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))});
- queryRequest.current={identity:queryIdentity,epoch:queryRequest.current.epoch+(queryRequest.current.identity===queryIdentity?0:1),key:queryKey,args:{...query,license:licenseEnabled?query.license:null,hiddenOnly:query.quick==='hidden',hideUnavailable,hideUnclassified,collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))};
- if(!queryTask.current)queryTask.current=coalescedRefresh(async()=>{
-  if(!queryMounted.current||!initialLoad.current||libraryStateRef.current?.state!=='ready'||libraryRefreshPending.current)return;
-  const request=queryRequest.current,epoch=libraryEpoch.current,hasCurrent=queryResultRef.current?.key===request.key;
-  const current=()=>queryMounted.current&&request.epoch===queryRequest.current.epoch&&epoch===libraryEpoch.current&&!libraryRefreshPending.current;
-  try{
-   // Native returns only summaries whose fingerprint differs from this cache.
-   const knownSummaries=Object.fromEntries(Array.from(summaryCache.current,([id,entry])=>[id,entry.fingerprint]));
-   const result=await invokeAction<{products:Product[];fingerprints?:Record<string,string>;matchedIds:string[];total:number;allDownloaded:boolean;counts:{all:number;downloaded:number;attention:number;hidden?:number}}>('catalogue','query',{...request.args,knownSummaries});
-   if(epoch!==libraryEpoch.current)return;
-   for(const product of result.products)summaryCache.current.set(product.id,{fingerprint:result.fingerprints?.[product.id]??'',product});
-   if(!current())return;
-   const products=result.matchedIds.flatMap(id=>{const product=summaryCache.current.get(id)?.product;return product?[product]:[];});
-   setQueryResult({...result,products,key:request.key});setFailedQueryKey('');setCatalogueTotal(result.total);setCatalogueCounts(result.counts);
-   if(result.products.length)setProducts(old=>{const cache=new Map(old.map(product=>[product.id,product]));for(const product of result.products)cache.set(product.id,product);return [...cache.values()];});
-  }catch(error){if(current()){if(!hasCurrent)setQueryResult(null);setFailedQueryKey(request.key);request.onError(error);}}
-  finally{if(current())setQueryBusy(false);}
- });
- const defaultAccounts=query.includeOffline&&query.accountIds===null;
- const filtersActive=!!query.search||query.category!=='all'||query.avatar!=='all'||query.status!=='all'||!defaultAccounts||query.quick!=='all'||!!query.acquisition||licenseEnabled&&!!query.license||!!collection||sort!=='acquired'||direction!=='desc';
- const quickCounts=catalogueCounts;
- const selectedScope=useMemo(()=>new Set(matchedIds),[queryResult,queryKey]);const visibleSelected=selected.filter(id=>selectedScope.has(id));const selectedSet=useMemo(()=>new Set(visibleSelected),[selectedScope,selected]);
- const productMap=useMemo(()=>new Map(products.map(product=>[product.id,product])),[products]);
- const activeSummary=filtered.find(p=>p.id===(visibleSelected.length===1?visibleSelected[0]:focusId||visibleSelected[0]))||filtered[0];const detailsKey=JSON.stringify([activeSummary?.id,accountScopeKey]);const [productDetails,setProductDetails]=useState<{key:string;product:Product}|null>(null);const active=productDetails?.key===detailsKey?productDetails.product:activeSummary,chosen=visibleSelected.length?visibleSelected:active?[active.id]:[];const [availability,setAvailability]=useState<{key:string;folderAvailable:boolean;openableFileIds:string[]}|null>(null);const availabilityKey=JSON.stringify({id:active?.id,files:active?.files.map(file=>[file.id,file.status,file.originalAvailable,file.verifiedHash,file.relativePath]),roots:nativeState.roots.map(root=>[root.id,root.status,root.path])});
- const avatarOptions=(nativeState.avatarOptions??[]).map(option=>{const settings=avatarSettings[option.id];return {...option,displayName:settings?.displayName===undefined?option.displayName||option.sourceDisplayName:settings.displayName.trim()||option.sourceDisplayName||option.displayName,shopName:settings?.shopName===undefined?option.shopName||option.sourceShopName:settings.shopName.trim()||option.sourceShopName||option.shopName};}),avatarLabel=(id:string)=>{const option=avatarOptions.find(option=>option.id===id)??avatarOptions.find(option=>option.aliases.includes(id));return option?.displayName||[option?.officialName,option?.englishName].filter(Boolean).join(' / ')||id;};
- const avatarEnabled=(id:string)=>{const option=avatarOptions.find(option=>option.id===id),explicit=avatarSettings[id]?.enabled??option?.explicitEnabled;if(typeof explicit==='boolean')return explicit;const automatic=nativeState.preferences.avatarAutomaticEnabled;if(automatic&&typeof automatic==='object'&&!Array.isArray(automatic))return Reflect.get(automatic,id)===true;return option?.enabled??false;};
- const changeAvatars=(ids:string[],enabled:boolean)=>{setAvatarSettings(old=>({...old,...Object.fromEntries(ids.map(id=>[id,{...old[id],enabled}]))}));if(!enabled&&ids.includes(query.avatar))updateQuery({avatar:'all'});};
- const avatarChoices=avatarOptions.filter(option=>avatarEnabled(option.id)).map(option=>option.id),paneWidth=Math.max(240,Math.min(inspectorWidth,Math.max(640,viewportWidth)-navWidth-248)),wide=paneWidth>=520; const selectedTheme=presets.find(p=>p.id===theme)||defaultThemeOptions.find(p=>p.id===theme)||defaultThemeOptions[0],selectedThemeTokens={...neutralTokens,...selectedTheme.tokens},selectedThemeName=['dark','light'].includes(selectedTheme.id)?q(selectedTheme.id):themeDisplayName(locale,selectedTheme),themeTokens=themePreview||selectedThemeTokens;
- const batchPatch=async(changes:ProductOverlayChange[])=>{const prepared=[];for(const change of changes){const patch={...change.patch},clearFields:string[]=[];if(patch.thumbnailSourcePath){const copied=await nativeFileAction<{relativePath:string}>('copy_image',{path:patch.thumbnailSourcePath,productId:change.id});patch.thumbnailPath=copied.relativePath;clearFields.push('thumbnailHidden');}else if(patch.thumbnailSourcePath===null){clearFields.push('thumbnailPath','thumbnailHidden');delete patch.thumbnailOverrideUrl;delete patch.previewUrl;}delete patch.thumbnailSourcePath;if(patch.titleOverride===false){clearFields.push('title');delete patch.title;delete patch.titleOverride;}if(patch.thumbnailOverrideUrl===''&&patch.previewUrl==='')patch.thumbnailHidden=true;if(patch.sourceUrlOverride===false){clearFields.push('sourceUrl');delete patch.sourceUrl;}delete patch.sourceUrlOverride;const editable=['title','category','tags','note','ownedAvatars','sensitive','rejectedTags','thumbnailPath','thumbnailHidden','sourceUrl','sourceThumbnailUrl'];const nativePatch=Object.fromEntries(Object.entries(patch).filter(([key])=>editable.includes(key)));prepared.push({id:change.id,patch:nativePatch,clearFields,...(change.ownedAvatarsDelta?{ownedAvatarsDelta:change.ownedAvatarsDelta}:{})});}const result=await onNative('catalogue','overlay',{changes:prepared});if(result?.changed!==0)setUndo(result?.undoToken??result?.token??null);await refreshAvatarOptions().catch(error=>notify(q(errorCode(error))));};
- const userPatch=async(ids:string[],value:Partial<Product>)=>batchPatch(ids.map(id=>({id,patch:value})));
- const localSelection=(ids:string[])=>ids.length>0&&ids.every(id=>{const product=productMap.get(id);return product?product.provider==='local':query.includeOffline&&query.accountIds?.length===0;});
- const requestLocalDelete=(ids:string[])=>{if(localSelection(ids))setDeleteLocalSelection({ids:[...new Set(ids)],names:ids.map(id=>productMap.get(id)?.title??'').filter(Boolean)});};
- const onlineSelection=(ids:string[])=>ids.length>0&&ids.every(id=>{const product=productMap.get(id);return product?!!product.provider&&product.provider!=='local':query.quick==='hidden'||!query.includeOffline;});
- const hiddenSelection=(ids:string[])=>query.quick==='hidden'||ids.every(id=>productMap.get(id)?.hidden===true);
- const hideProducts=async(ids:string[],hidden:boolean)=>{
-  if(!onlineSelection(ids))return;
-  const result=await onNative('catalogue','overlay',{changes:[...new Set(ids)].map(id=>({id,patch:{hidden},clearFields:[]}))});if(result?.changed!==0)setUndo(result?.undoToken??result?.token??null);
-  setQueryResult(result=>result?{...result,products:result.products.filter(product=>!ids.includes(product.id)),matchedIds:result.matchedIds.filter(id=>!ids.includes(id))}:null);
-  setProducts(rows=>rows.map(product=>ids.includes(product.id)?{...product,hidden}:product));setSelected(rows=>rows.filter(id=>!ids.includes(id)));setFocusId(id=>ids.includes(id)?'':id);setProductDetails(null);await reload();
- };
- const deleteLocalProducts=async(ids:string[])=>{
-  try{
-   const result=await onNative('storage','delete_local_products',{productIds:ids}) as {deletedProductIds:string[]};
-   const removed=new Set(result.deletedProductIds);for(const id of removed)summaryCache.current.delete(id);
-   setQueryResult(result=>result?{...result,products:result.products.filter(product=>!removed.has(product.id)),matchedIds:result.matchedIds.filter(id=>!removed.has(id)),total:Math.max(0,result.total-removed.size)}:null);
-   setProducts(rows=>rows.filter(product=>!removed.has(product.id)));setSelected(rows=>rows.filter(id=>!removed.has(id)));setFocusId(id=>removed.has(id)?'':id);setProductDetails(null);setUndo(null);
-  }finally{await reload();}
- };
- const undoAction=async()=>{if(!undo)return;await onNative('catalogue','undo',{token:undo});setUndo(null);};
- const activeDownloads=(productId:string)=>nativeState.jobs.filter(job=>job.type==='download'&&job.productId===productId&&['queued','running'].includes(job.state));
- const cancelDownloads=(ids?:string[])=>run(onNative('storage','cancel_downloads',ids?{productIds:ids}:{}));
- /** The store lists no file for these products and none is on disk. */
- const allUnavailable=(ids:string[])=>ids.length>0&&ids.every(id=>productMap.get(id)?.unavailable===true);
- const hasDownloadedFiles=(ids:string[])=>ids.some(id=>{const product=productMap.get(id);return !product||product.downloaded>(product.keptFiles??0)||product.status==='attention';});
- const requestDeleteDownloads=(ids:string[])=>{const unique=[...new Set(ids)];if(onlineSelection(unique))setProductConfirm({kind:'deleteDownloads',ids:unique,names:unique.map(id=>productMap.get(id)?.title??'').filter(Boolean)});};
- const deleteDownloads=async(args:Record<string,unknown>,ids:string[])=>{setDeletingDownloads(old=>new Set([...old,...ids]));try{await invokeAction('storage','delete_downloads',args);}finally{setDeletingDownloads(old=>new Set([...old].filter(id=>!ids.includes(id))));}};
- /** Downloads started here update their product when the store no longer offers a file. */
- const watchDownloads=(result:unknown)=>{for(const id of (result as {jobIds?:unknown[]}|undefined)?.jobIds??[])if(typeof id==='string')watchedDownloads.current.add(id);};
- // One update per store covers every such product once those downloads settle, because a
- // store update slows that store's transfers to one. An asset downloaded whole then gets
- // its updated list through the download request it already holds.
- useEffect(()=>{
-  let active=false;
-  for(const job of nativeState.jobs as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})[]){
-   if(!watchedDownloads.current.has(job.id))continue;
-   // A download waiting for its account's sign-in holds up no other update.
-   if(['queued','running'].includes(job.state)){if(job.errorCode!=='auth_required')active=true;continue;}
-   watchedDownloads.current.delete(job.id);
-   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))staleProducts.current.add(job.productId);
-  }
-  if(active||!staleProducts.current.size)return;
-  // Store IDs carry their store (BOOTH's are bare numbers), so a busy or signed-out
-  // account of one store cannot fail another store's update.
-  const stores=new Map<string,string[]>();
-  for(const id of staleProducts.current){const store=id.includes(':')?id.slice(0,id.indexOf(':')):'booth';stores.set(store,[...stores.get(store)??[],id]);}
-  staleProducts.current.clear();
-  for(const productIds of stores.values())run(onNative('booth','update_products',{productIds}));
- },[nativeState.jobs]);
- const download=(ids:string[])=>{if(ids.length)run(onNative('storage','enqueue_products',{productIds:ids}).then(watchDownloads));};
- const downloadFile=(fileId:string,redownload:boolean)=>run(onNative('storage','enqueue_file',{fileId,redownload}).then(watchDownloads));
- const update=(ids:string[])=>{if(ids.length)run(onNative('booth','update_products',{productIds:ids}));};
- const syncLicenses=(ids:string[])=>{if(ids.length)run(invokeAction<{jobId?:string|null}>('licenses','sync',{productIds:ids}).then(result=>{if(!result?.jobId)notify(licenseText(locale,'noLicenseWork')!);}));};
- const needsAttention=(ids:string[])=>ids.some(id=>productMap.get(id)?.status==='attention');
- const dismissAttention=(ids:string[])=>{const targets=ids.filter(id=>productMap.get(id)?.status==='attention');if(targets.length)run(onNative('catalogue','dismiss_attention',{productIds:targets}));};
- /** Closed free offers can stay listed after a download. */
- const refusedFiles=(productId:string)=>{const job=nativeState.jobs.filter(job=>job.type==='download'&&job.productId===productId&&!['queued','running'].includes(job.state)).sort((a,b)=>(b.updatedAt??'').localeCompare(a.updatedAt??''))[0] as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})|undefined;return Object.entries(job?.failures??{}).filter(([,failure])=>failure?.errorCode==='free_offer_unavailable').map(([id])=>id);};
- const exportZip=async(ids:string[])=>{if(!ids.length)return;try{const destination=await nativeDialog('save_file',{defaultName:'NekoNekoAsset.zip',filters:[{name:'ZIP',extensions:['zip']}]});if(destination)await onNative('storage','export_zip',{productIds:ids,path:destination.path});}catch(error){notify(q(errorCode(error)));}};
- const edit=()=>setDialog(visibleSelected.length>1?'batch':'edit');
- const select=(p:Product,e?:Pick<MouseEvent,'shiftKey'|'ctrlKey'|'metaKey'>)=>{if(view==='settings'){setView('library');setTab('details');setInspector(true);}else if(view==='activity')setView('library');setFocusId(p.id);if(e?.shiftKey&&anchor.current){const a=filtered.findIndex(p=>p.id===anchor.current),b=filtered.findIndex(item=>item.id===p.id);setSelected(filtered.slice(Math.max(0,Math.min(a,b)),Math.max(a,b)+1).map(p=>p.id));}else if(e?.ctrlKey||e?.metaKey){setSelected(ids=>ids.includes(p.id)?ids.filter(id=>id!==p.id):[...ids,p.id]);anchor.current=p.id;}else{setSelected([p.id]);anchor.current=p.id;}};
- const keySelect=(e:KeyboardEvent,p:Product)=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){select(p);setInspector(true);return;}if(e.key===' '){e.preventDefault();select(p,{ctrlKey:true,metaKey:false,shiftKey:e.shiftKey});}if(['ArrowDown','ArrowUp','ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const index=filtered.findIndex(item=>item.id===p.id),next=filtered[Math.max(0,Math.min(filtered.length-1,index+(['ArrowDown','ArrowRight'].includes(e.key)?1:-1)*(['ArrowDown','ArrowUp'].includes(e.key)?Number(e.currentTarget.closest('.result-viewport')?.getAttribute('data-columns'))||1:1)))];if(next){select(next,{shiftKey:e.shiftKey,ctrlKey:false,metaKey:false});requestAnimationFrame(()=>requestAnimationFrame(()=>document.getElementById('product-'+next.id)?.focus({preventScroll:true})));}}};
- const resultKeys=(e:KeyboardEvent)=>{const editing=e.target instanceof Element&&!!e.target.closest('input,textarea,select,[contenteditable="true"]');if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'&&!e.nativeEvent.isComposing&&!editing){e.preventDefault();setSelected(matchedIds);}};
- const resize=(side:'left'|'right',e:PointerEvent)=>{e.preventDefault();const x=e.clientX,start=side==='left'?navWidth:inspectorWidth;const move=(event:globalThis.PointerEvent)=>{const value=start+(event.clientX-x)*(side==='left'?1:-1);if(side==='left')setNavWidth(Math.max(132,Math.min(300,viewportWidth-500,value)));else setInspectorWidth(Math.max(240,Math.min(900,viewportWidth-navWidth-248,value)));};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);document.body.classList.remove('resizing');};document.body.classList.add('resizing');window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});};
- const choosePreset=async(tokens:Record<string,string>,name='Custom')=>{let unique=name.trim()||'Custom',suffix=2;while(presets.some(p=>p.name.toLocaleLowerCase()===unique.toLocaleLowerCase()))unique=`${name} (${suffix++})`;const preset={id:'theme-'+Date.now(),name:unique,tokens};const next=[...presets,preset];await onPreferences({presets:next,theme:preset.id});setPresets(next);setTheme(preset.id);setThemePreview(null);};
- const themeDeleting=useRef(false),[themeDeleteBusy,setThemeDeleteBusy]=useState(false);
- const [themeDeleteTarget,setThemeDeleteTarget]=useState<{id:string;name:string}|null>(null);
- const deleteTheme=async(id:string)=>{if(themeDeleting.current)return;if(!presets.some(p=>p.id===id))throw new Error('entryUnavailable');themeDeleting.current=true;setThemeDeleteBusy(true);const next=presets.filter(p=>p.id!==id);try{await onPreferences({presets:next,...(theme===id?{theme:'dark'}:{})});setPresets(next);setTheme(current=>current===id?'dark':current);setThemePreview(null);}finally{themeDeleting.current=false;setThemeDeleteBusy(false);}};
- const openSettings=(route:string)=>{if(view!=='settings')settingsReturn.current={inspector,tab,view:view==='activity'||view==='ai-suggestions'?view:'library'};setSettingsRoute(route==='ai-settings'&&!aiEnabled?'features':route);setView('settings');setInspector(true);};
- const toggleSettings=()=>{if(view==='settings'){setView(settingsReturn.current.view==='ai-suggestions'&&!aiEnabled?'library':settingsReturn.current.view);setTab(settingsReturn.current.tab);setInspector(settingsReturn.current.inspector);}else openSettings(settingsRoute);};
- const changeScale=(scale:number)=>{const bounded=Math.max(80,Math.min(300,Math.round(scale)));zoomTarget.current=bounded;zoomQueue.current=zoomQueue.current.then(async()=>{if(bounded!==zoomTarget.current)return;try{const result=await nativeZoom(bounded);if(bounded===zoomTarget.current){pendingPreferences.current.uiScale=result.scale;setUiScale(result.scale);}}catch(error){if(bounded===zoomTarget.current)zoomTarget.current=uiScale;notify(q(errorCode(error)));}});};
- useEffect(()=>{if(loaded&&initialLoad.current)changeScale(zoomTarget.current);},[loaded]);
- useEffect(()=>{const resize=()=>setViewportWidth(innerWidth);window.addEventListener('resize',resize);return()=>window.removeEventListener('resize',resize);},[]);
- // A refresh refused while the update installer launches reruns on the next change; nothing failed.
- useEffect(()=>{let dispose:(()=>void)|undefined;let active=true;const report=(error:unknown)=>{const code=errorCode(error);if(code!=='updates_busy')notify(eventText.current(code));};let timer:ReturnType<typeof setTimeout>|undefined,registryTimer:ReturnType<typeof setTimeout>|undefined,productTimer:ReturnType<typeof setTimeout>|undefined,licenseTimer:ReturnType<typeof setTimeout>|undefined;void subscribeChanged(({scope,productIds})=>{if(!active)return;if(scope==='licenses'){if(licenseActive.current&&!licenseTimer)licenseTimer=setTimeout(()=>{licenseTimer=undefined;if(active)setSnapshotVersion(version=>version+1);},1000);return;}if(scope==='collections'){void refreshCollections().catch(report);return;}if(scope==='jobs'||scope==='state'){void refreshState().catch(report);return;}if(scope==='products'||scope==='catalogue'&&productIds?.length){if(!registryTimer)registryTimer=setTimeout(()=>{registryTimer=undefined;if(active)void refreshAvatarOptions().catch(report);},500);if(!productTimer)productTimer=setTimeout(()=>{productTimer=undefined;if(active){setSnapshotVersion(version=>version+1);void refreshState().catch(report);}},150);return;}if(registryTimer){clearTimeout(registryTimer);registryTimer=undefined;}if(!timer)timer=setTimeout(()=>{timer=undefined;if(active)void reload();},250);}).then(stop=>{if(active)dispose=stop;else stop();}).catch(report);void reload();return()=>{active=false;dispose?.();if(timer)clearTimeout(timer);if(registryTimer)clearTimeout(registryTimer);if(productTimer)clearTimeout(productTimer);if(licenseTimer)clearTimeout(licenseTimer);};},[]);
- useEffect(()=>{if(!loaded||!initialLoad.current||!['ready','setup'].includes(libraryStateRef.current?.state??'')||libraryRefreshPending.current)return;const current={locale,theme,presets,thumb,density,navWidth,inspectorWidth,cardColumns,listColumns,avatarSettings,uiScale,roundedCorners,reduceMotion,bundledFonts,oneHandedDrag};if(!displayedPreferences.current){displayedPreferences.current=current;return;}Object.assign(pendingPreferences.current,changedPreferences(displayedPreferences.current,current));displayedPreferences.current=current;if(!Object.keys(pendingPreferences.current).length)return;const timer=setTimeout(()=>{const patch=pendingPreferences.current;if(!Object.keys(patch).length)return;pendingPreferences.current={};run(onPreferences(patch).catch(error=>{pendingPreferences.current={...patch,...pendingPreferences.current};throw error;}));},250);return()=>clearTimeout(timer);},[loaded,locale,theme,presets,thumb,density,navWidth,inspectorWidth,cardColumns,listColumns,avatarSettings,uiScale,roundedCorners,reduceMotion,bundledFonts,oneHandedDrag]);
- useEffect(()=>{if(!loaded)return;const prefs=nativeState.preferences;setAutoAll(typeof prefs.autoDownloadAll==='boolean'?prefs.autoDownloadAll:false);const complete=prefs.setupComplete===true;setSetupDone(complete);if(complete)setFlow(current=>current==='setup'?null:current);},[loaded,nativeState.preferences]);
- useEffect(()=>{if(flow==='signInOnDevice'&&!libraryState?.missingCredentials?.length)setFlow(null);},[flow,libraryState?.missingCredentials]);
- useEffect(()=>{if(!initialLoad.current)return;setQueryBusy(queryResultRef.current?.key!==queryKey);void queryTask.current!();},[snapshotVersion,selectedCollectionKey,query,sort,direction,collection,hideUnavailable,hideUnclassified,licenseEnabled]);
- useEffect(()=>{if(!activeSummary){setProductDetails(null);return;}let current=true;void invokeAction<Product>('catalogue','product_details',{id:activeSummary.id,accountIds:JSON.parse(accountScopeKey)}).then(product=>{if(current)setProductDetails({key:detailsKey,product});}).catch(error=>{if(current)notify(q(errorCode(error)));});return()=>{current=false;};},[activeSummary?.id,accountScopeKey,snapshotVersion]); useEffect(()=>{if(!active||active.filesLoaded===false){setAvailability(null);return;}let current=true;void invokeAction<{folderAvailable:boolean;openableFileIds:string[]}>('storage','product_availability',{productId:active.id}).then(result=>{if(current)setAvailability({...result,key:availabilityKey});}).catch(()=>{if(current)setAvailability(null);});return()=>{current=false;};},[availabilityKey]); useEffect(()=>{document.documentElement.lang=locale;},[locale]);
- // Decode the UI-language face and the Japanese face for product titles while the library loads, so CJK text is not blank on first paint (fonts.css uses font-display:block).
- useEffect(()=>{if(!loaded||!bundledFonts)return;const ui=locale==='zh-Hant'?'Noto Sans TC':locale==='zh-Hans'?'Noto Sans SC':locale==='ko'?'Noto Sans KR':'Noto Sans JP';for(const family of new Set([ui,'Noto Sans JP']))void document.fonts.load(`13px "${family}"`,'あ一').catch(()=>{});},[loaded,bundledFonts,locale]);
- useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(null),notice.jobId?8000:5000);return()=>clearTimeout(timer);},[notice]);
- useEffect(()=>{if(flow||dialog)setNotice(null);},[flow,dialog]);
- useEffect(()=>{const handler=(e:globalThis.KeyboardEvent)=>{if(updateOpen||themeDeleteTarget)return;if(!['ready','setup'].includes(libraryStateRef.current?.state??'')||libraryOpening)return;if(e.isComposing||e.keyCode===229)return;const editing=e.target instanceof Element&&!!e.target.closest('input,textarea,select,[contenteditable="true"]');if((e.ctrlKey||e.metaKey)&&['+','=','-','Add','Subtract'].includes(e.key)){e.preventDefault();changeScale(zoomTarget.current+(['-','Subtract'].includes(e.key)?-10:10));return;}if(libraryStateRef.current?.state!=='ready')return;if(deleteLocalSelection)return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'&&!editing&&!flow&&!dialog&&!context&&['library','settings'].includes(view)){e.preventDefault();setSelected(matchedIds);return;}if((e.ctrlKey||e.metaKey)&&e.key==='f'&&!flow&&!dialog){e.preventDefault();searchRef.current?.focus();}if((e.ctrlKey||e.metaKey)&&e.key==='z'&&!flow&&!dialog&&!editing){e.preventDefault();run(undoAction());}if(e.key==='Escape'&&!flow&&!dialog){if(context)setContext(null);else clearSelection();}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[flow,dialog,deleteLocalSelection,undo,uiScale,context,matchedIds,view,libraryOpening,updateOpen,themeDeleteTarget]);
- useEffect(()=>{if(pendingSuggestionProduct.current){if(queryResult?.key!==queryKey)return;const id=pendingSuggestionProduct.current;pendingSuggestionProduct.current='';if(selectedScope.has(id)){setSelected([id]);setFocusId(id);anchor.current=id;return;}}if(selected.some(id=>!selectedScope.has(id)))setSelected(old=>old.filter(id=>selectedScope.has(id)));if(focusId&&!selectedScope.has(focusId))setFocusId('');},[selectedScope,queryResult,queryKey]);
- useEffect(()=>{const mode=nativeState.preferences.sensitiveMode;if(['blur','hide','show','only'].includes(String(mode)))setQuery(old=>old.sensitive===mode?old:{...old,sensitive:mode as SensitiveMode});if(!aiEnabled){if(view==='ai-suggestions')setView('library');if(settingsRoute==='ai-settings')setSettingsRoute('features');if(flow==='ai')setFlow(null);}},[nativeState.preferences.sensitiveMode,aiEnabled]);
- const cardArt=(p:Product,compact=false)=><div className={`thumb ${p.sensitive&&query.sensitive==='blur'&&!revealed.has(p.id)?'blurred':''}`}>{!compact&&columns.includes('category')&&<span className="card-category" title={categoryLabel(p.category)}>{categoryLabel(p.category)}</span>}<Preview src={p.thumbnailHidden?undefined:p.thumbnailOverrideUrl||p.previewUrl} title={p.title} className="asset-art" lazy/> {p.sensitive&&query.sensitive==='blur'&&!revealed.has(p.id)&&<button type="button" className="reveal" title={q('revealImage')} aria-label={q('showR18')} onClick={e=>{if(e.shiftKey||e.ctrlKey||e.metaKey)return;e.stopPropagation();setRevealed(old=>new Set([...old,p.id]));}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' ')e.stopPropagation();}}><span className="reveal-label">{compact?<Eye size={14}/>:q('showR18')}</span></button>}</div>;
- // Import joins Download once a selected file is on disk, and takes its place when every product is ready.
- const batchActions=(ids:string[])=>{const ready=ids.length>0&&ids.every(id=>{const p=productMap.get(id);return !!p&&getProductDisplayStatus(p)==='ready'&&isProductDownloaded(p);}),importable=ids.some(id=>(productMap.get(id)?.downloaded??0)>0);return <div className="scope-actions" role="group" aria-label={q('selected')}><div className="scope-actions-left">{batchEnabled.edit&&<Button title={q('edit')} onClick={edit} disabled={!ids.length}><SlidersHorizontal size={14}/><span>{q('edit')}</span></Button>}{batchEnabled.collection&&<Button title={q('addToCollection')} onClick={()=>setDialog('collection')} disabled={!ids.length}><Folder size={14}/><span>{q('addToCollection')}</span></Button>}{batchEnabled.export&&<Button title={q('exportZip')} onClick={()=>exportZip(ids)} disabled={!ids.length}><FileArchive size={14}/><span>{q('exportZip')}</span></Button>}{aiEnabled&&batchEnabled.ai&&<Button title={q('aiTags')} onClick={()=>setFlow('ai')} disabled={!ids.length}><Tags size={14}/><span>{q('aiTags')}</span></Button>}{batchEnabled.spending&&<Button title={q('spending')} onClick={()=>setDialog('spending')} disabled={!ids.length}><Package size={14}/><span>{q('spending')}</span></Button>}{batchEnabled.delete&&localSelection(ids)&&<Button title={q('delete')} className="danger" onClick={()=>requestLocalDelete(ids)}><Trash2 size={14}/><span>{q('delete')}</span></Button>}{batchEnabled.hide&&onlineSelection(ids)&&<Button title={q(hiddenSelection(ids)?'unhide':'hide')} onClick={()=>run(hideProducts(ids,!hiddenSelection(ids)))}><EyeOff size={14}/><span>{q(hiddenSelection(ids)?'unhide':'hide')}</span></Button>}</div><div className="scope-actions-right">{batchEnabled.update&&<Button title={q('update')} onClick={()=>update(ids)} disabled={!ids.length}><RefreshCw size={14}/><span>{q('update')}</span></Button>}{licenseEnabled&&batchEnabled.licenses&&<Button title={licenseText(locale,'syncLicenses')} onClick={()=>syncLicenses(ids)} disabled={!ids.length}><Scale size={14}/><span>{licenseText(locale,'syncLicenses')}</span></Button>}{batchEnabled.download&&!ready&&<Button title={q('download')} primary onClick={()=>download(ids)} disabled={!ids.length||allUnavailable(ids)}><Download size={14}/><span>{q('download')}</span></Button>}{batchEnabled.unity&&importable&&<Button title={q('importUnity')} className="unity-action" primary={ready} onClick={()=>openUnity(ids)}><FileBox size={14}/><span>{q('importUnity')}</span></Button>}</div></div>;};
- const singleActions=(p:Product)=>{const ready=getProductDisplayStatus(p)==='ready'&&isProductDownloaded(p),downloads=activeDownloads(p.id);return <div className="detail-actions">{!downloads.length&&allUnavailable([p.id])?<Button className="unavailable-action" title={q('downloadUnavailable')} disabled><span>{q('downloadUnavailable')}</span></Button>:downloads.length?<Button className="cancel-download" title={q('cancelDownload')} disabled={downloads.every(job=>job.cancelRequested)} onClick={()=>cancelDownloads([p.id])}><X size={14}/><span>{q('cancel')}</span></Button>:<Button primary={!ready} className={ready?'unity-action':''} title={q(ready?'importUnity':'download')} onClick={()=>ready?openUnity([p.id]):download([p.id])}>{ready?<FileBox size={14}/>:<Download size={14}/>}<span>{q(ready?'importUnity':'download')}</span></Button>}<Button onClick={edit}><SlidersHorizontal size={14}/>{q('edit')}</Button><details className="action-menu"><summary aria-label={q('more')}><MoreHorizontal size={16}/></summary><div className="popup-menu">{['update',...(licenseEnabled?['syncLicenses']:[]),'download',...(chosen.some(id=>activeDownloads(id).length)?['cancelDownload']:[]),...(aiEnabled?['ai']:[]),'importUnity','exportZip',...(needsAttention(chosen)?['dismissAttention']:[]),...(p.provider==='local'?['delete']:[p.hidden?'unhide':'hide',...(onlineSelection(chosen)&&hasDownloadedFiles(chosen)?['deleteDownloads']:[])])].map(key=><button key={key} className={key==='delete'||key==='deleteDownloads'?'danger':undefined} disabled={key==='download'&&allUnavailable(chosen)} onClick={e=>{e.currentTarget.closest('details')?.removeAttribute('open');if(key==='delete')requestLocalDelete([p.id]);else if(key==='hide'||key==='unhide')run(hideProducts([p.id],key==='hide'));else if(key==='update')update(chosen);else if(key==='syncLicenses')syncLicenses(chosen);else if(key==='download')download(chosen);else if(key==='cancelDownload')cancelDownloads(chosen);else if(key==='deleteDownloads')requestDeleteDownloads(chosen);else if(key==='dismissAttention')dismissAttention(chosen);else if(key==='ai')setFlow('ai');else if(key==='importUnity')openUnity(chosen);else exportZip(chosen);}}>{q(key)}</button>)}</div></details></div>;};
- const batchSummary=<div className="revised-batch"><div className="batch-stack" aria-hidden="true">{products.filter(p=>selectedSet.has(p.id)).slice(0,5).map((p,k)=><span key={p.id} className={p.sensitive&&query.sensitive==='blur'&&!revealed.has(p.id)?'blurred':undefined} style={{'--k':k} as CSSProperties}><Preview src={p.thumbnailHidden?undefined:p.thumbnailOverrideUrl||p.previewUrl} title="" className="asset-art"/></span>)}</div><h2 className="batch-count"><b>{visibleSelected.length.toLocaleString(locale)}</b><span>{q('selected')}</span></h2>{batchActions(visibleSelected)}<div className="selected-products">{products.filter(p=>selectedSet.has(p.id)).slice(0,12).map(p=><div key={p.id} title={p.title}><span lang={contentLang(p.title)}>{p.title}</span><Status p={p} q={q}/></div>)}</div></div>;
- const sidebar=<aside className="sidebar" style={{width:navWidth,flexBasis:navWidth}}>
- <div className="quick-scopes"><button className={`nav-item quick-scope ${query.category==='all'&&!collection&&query.avatar==='all'&&query.quick==='all'?'active':''}`} onClick={clearFilters}><Grid2X2 size={15}/><span>{q('allAssets')}</span><span className="count">{quickCounts.all.toLocaleString(locale)}</span></button>
- <button className={`nav-item quick-scope ${query.quick==='downloaded'?'active':''}`} onClick={()=>updateQuery({quick:'downloaded',category:'all',avatar:'all',status:'all'})}><CheckCircle2 size={15}/><span>{q('downloaded')}</span><span className="count">{quickCounts.downloaded.toLocaleString(locale)}</span></button>
- <button className={`nav-item quick-scope ${query.quick==='attention'?'active':''}`} onClick={()=>updateQuery({quick:'attention',category:'all',avatar:'all',status:'all'})}><AlertCircle size={15}/><span>{q('attention')}</span><span className="count">{quickCounts.attention.toLocaleString(locale)}</span></button><button className={`nav-item quick-scope ${query.quick==='hidden'?'active':''}`} onClick={()=>{updateQuery({...fresh,sensitive:query.sensitive,quick:'hidden'});setCollection('');}}><EyeOff size={15}/><span>{q('hidden')}</span><span className="count">{(quickCounts.hidden??0).toLocaleString(locale)}</span></button></div>
- <details className="nav-foldout" open><summary>{q('categories')}</summary>{categoryKeys.map(key=><button className={`nav-item category-item ${query.category===key?'active':''}`} key={key} data-drop-category={key} onClick={()=>updateQuery({category:key})}><CategoryIcon category={key}/><span>{q(key)}</span></button>)}</details>
- <section className="nav-avatar-section"><div className="nav-section-heading"><details className="nav-foldout" open><summary>{q('customCategories')}</summary>{categoryList.map(category=><button className={`nav-item category-item custom-category ${query.category===category.id?'active':''}`} key={category.id} title={category.name} data-drop-category={category.id} onClick={()=>updateQuery({category:category.id})}><CategoryIcon category={category.id}/><span>{category.name}</span></button>)}</details><button className="avatar-manager" title={q('customCategories')} aria-label={q('customCategories')} onClick={()=>setDialog('manageCategories')}>+</button></div></section>
- <section className="nav-avatar-section"><div className="nav-section-heading"><details className="nav-foldout" open><summary>{q('compatibleAvatars')}</summary>{avatarChoices.map(avatar=><button key={avatar} title={avatarLabel(avatar)} className={`nav-item avatar-row ${query.avatar===avatar?'active':''}`} onClick={()=>updateQuery({avatar})}><span lang={contentLang(avatarLabel(avatar))}>{avatarLabel(avatar)}</span><small>{avatarOptions.find(option=>option.id===avatar)?.matchingProductCount??0}</small></button>)}</details><button className="avatar-manager" title={q('manageAvatars')} aria-label={q('manageAvatars')} onClick={()=>{setDialog('avatars');run(refreshAvatarOptions());}}>+</button></div></section>
- <section className="nav-avatar-section"><div className="nav-section-heading"><details className="nav-foldout" open><summary>{q('collections')}</summary>{Object.keys(collections).map(name=><button className={`nav-item ${collection===name?'active':''}`} key={name} title={name} onClick={()=>{setCollection(name);updateQuery(leavingHidden(query));}}><Folder size={13}/><span>{name}</span></button>)}</details><button className="avatar-manager" title={q('collections')} aria-label={q('collections')} onClick={()=>setDialog('manageCollections')}>+</button></div></section>
- <section className="nav-avatar-section"><div className="nav-section-heading"><details className="nav-foldout" open><summary>{q('savedSearches')}</summary>{saved.map((search,i)=><button className={`nav-item ${savedScope===i?'active':''}`} key={i} title={search.name} onClick={()=>{setQuery({...fresh,...search.query,sensitive:query.sensitive,accountIds:search.query.accountIds??null});setSort(search.sort||'acquired');setDirection(search.direction||defaultSortDirection(search.sort||'acquired'));setCollection('');setSavedScope(i);clearSelection();}}><Bookmark size={13}/><span>{search.name}</span></button>)}</details><button className="avatar-manager" title={q('savedSearches')} aria-label={q('savedSearches')} onClick={()=>setDialog('manageSearches')}>+</button></div></section>
- </aside>;
- const filterChip=(id:string,label:string,value:string,onClear:()=>void)=><span key={id} className="filter-chip"><span title={label+': '+value}>{label}: {value}</span><button aria-label={q('clearFilters')+' · '+label} title={q('clearFilters')+' · '+label} onClick={onClear}><X size={12}/></button></span>;
- const accountControl=<details className="account-scope"><summary aria-label={q('accountScope')}>{query.accountIds===null?q('accountAll'):query.accountIds.length?q('selectedAccounts')+' · '+query.accountIds.length:query.includeOffline?nativeWorkflowText(locale,'offlineFiles'):q('noAccounts')}</summary><div className="popup-menu"><label className="check-row"><input type="checkbox" checked={query.accountIds===null} onChange={e=>updateQuery({accountIds:e.target.checked?null:[]})}/>{q('accountAll')}</label>{accounts.map(account=><label className="check-row" key={account.id}><input type="checkbox" checked={query.accountIds===null||query.accountIds.includes(account.id)} onChange={e=>{const ids=query.accountIds??accounts.map(account=>account.id);updateQuery({accountIds:e.target.checked?[...new Set([...ids,account.id])]:ids.filter(id=>id!==account.id)});}}/><span>{account.store} · {account.name}</span></label>)}<label className="check-row"><input type="checkbox" checked={query.includeOffline} onChange={e=>updateQuery({includeOffline:e.target.checked})}/><span>{nativeWorkflowText(locale,'offlineFiles')}</span></label></div></details>;
- const acquisitionControl=<details className="account-scope acquisition-scope"><summary aria-label={q('acquisitionFilter')}>{(query.acquisition??acquisitionKinds).map(kind=>q(kind+(query.acquisition?.length===1?'Assets':'Short'))).join(' · ')||q('noAssets')}</summary><div className="popup-menu">{acquisitionKinds.map(kind=><label className="check-row" key={kind}><input type="checkbox" checked={!query.acquisition||query.acquisition.includes(kind)} onChange={e=>{const kinds=acquisitionKinds.filter(item=>item===kind?e.target.checked:!query.acquisition||query.acquisition.includes(item));updateQuery({acquisition:kinds.length===acquisitionKinds.length?null:kinds});}}/><span>{q(kind+'Assets')}</span></label>)}</div></details>;
- const sortControls=<><select aria-label={q('sort')} value={sort} onChange={e=>changeSort(e.target.value)}>{['acquired','title','price','status'].map(key=><option key={key} value={key}>{q(key)}</option>)}</select><select className="sort-direction" title={q(direction==='asc'?'ascending':'descending')} aria-label={q('sortDirection')} value={direction} onChange={e=>{setDirection(e.target.value as SortDirection);setSavedScope(null);clearSelection();}}><option value="asc">{q('ascending')}</option><option value="desc">{q('descending')}</option></select>{sort==='status'&&<select aria-label={q('status')} value={query.status} onChange={e=>updateQuery({status:e.target.value})}><option value="all">{q('allStates')}</option>{statusKeys.map(status=><option key={status} value={status}>{q(status)}</option>)}</select>}<span className="toolbar-spacer"/><span className="result-total"><b>{resultsPending?'…':matchedIds.length.toLocaleString(locale)}</b> {q('products')}</span><Button title={q('details')} onClick={()=>setInspector(value=>!value)}><Columns2 size={14}/></Button></>;
- const licenseControl=licenseEnabled&&<button type="button" ref={licenseButton} className="license-scope" aria-pressed={!!query.license} onClick={()=>setLicenseOpen(true)}>{licenseText(locale,'license')}{query.license?` · ${Object.keys(query.license).length.toLocaleString(locale)}`:''}</button>;
- const chips=<>{query.search&&filterChip('search',q('searchFilter'),query.search,()=>updateQuery({search:''}))}{query.category!=='all'&&filterChip('category',q('categoryFilter'),categoryLabel(query.category),()=>updateQuery({category:'all'}))}{query.avatar!=='all'&&filterChip('avatar',q('avatarFilter'),avatarLabel(query.avatar),()=>updateQuery({avatar:'all'}))}{collection&&filterChip('collection',q('collectionFilter'),collection,()=>{setCollection('');clearSelection();})}{!defaultAccounts&&filterChip('accounts',q('accountFilter'),[...(query.accountIds===null?[q('accountAll')]:accounts.filter(account=>query.accountIds?.includes(account.id)).map(account=>account.name)),...(query.includeOffline?[nativeWorkflowText(locale,'offlineFiles')]:[])].join(', ')||q('noAccounts'),()=>updateQuery({accountIds:null,includeOffline:true}))}{query.acquisition&&filterChip('acquisition',q('acquisitionFilter'),query.acquisition.map(kind=>q(kind+'Short')).join(', ')||q('noAssets'),()=>updateQuery({acquisition:null}))}{licenseEnabled&&query.license&&filterChip('license',licenseText(locale,'license')!,licenseSummary(locale,query.license),()=>updateQuery({license:null}))}{query.quick!=='all'&&filterChip('quick',q('stateFilter'),q(query.quick),()=>updateQuery({quick:'all'}))}{query.status!=='all'&&filterChip('status',q('stateFilter'),q(query.status),()=>updateQuery({status:'all'}))}{(sort!=='acquired'||direction!=='desc')&&filterChip('sort',q('sortFilter'),q(sort)+' · '+q(direction==='asc'?'ascending':'descending'),()=>{setSort('acquired');setDirection('desc');clearSelection();})}{filtersActive&&<Button className="filter-clear-all" title={q('clearFilters')} onClick={clearFilters}><X size={14}/></Button>}</>;
- const toolbar=<ResponsiveLibraryToolbar accounts={<>{accountControl}{acquisitionControl}{licenseControl}</>} controls={sortControls} chips={chips} label={q('sortingMenu')}/>;
- const contextActions:ContextAction[]=context?[{id:'edit',label:q('edit'),icon:<SlidersHorizontal size={14}/>,onClick:()=>setDialog(context.ids.length>1?'batch':'edit')},{id:'collection',label:q('addToCollection'),icon:<Folder size={14}/>,onClick:()=>setDialog('collection')},{id:'unity',label:q('importUnity'),icon:<FileBox size={14}/>,onClick:()=>openUnity(context.ids)},{id:'export',label:q('exportZip'),icon:<FileArchive size={14}/>,onClick:()=>void exportZip(context.ids)},{id:'ai',label:q('aiTags'),icon:<Tags size={14}/>,disabled:!aiEnabled,onClick:()=>setFlow('ai')},{id:'spending',label:q('spending'),icon:<Package size={14}/>,onClick:()=>setDialog('spending')},{id:'selectAll',label:q('selectAll'),icon:<CheckCircle2 size={14}/>,onClick:()=>setSelected(matchedIds)},{id:'update',label:q('update'),icon:<RefreshCw size={14}/>,onClick:()=>update(context.ids)},...(licenseEnabled?[{id:'licenses',label:licenseText(locale,'syncLicenses')!,icon:<Scale size={14}/>,onClick:()=>syncLicenses(context.ids)}]:[]),{id:'download',label:q('download'),icon:<Download size={14}/>,disabled:allUnavailable(context.ids),onClick:()=>download(context.ids)},...(context.ids.some(id=>activeDownloads(id).length)?[{id:'cancelDownload',label:q('cancelDownload'),icon:<X size={14}/>,onClick:()=>cancelDownloads(context.ids)}]:[]),...(needsAttention(context.ids)?[{id:'dismissAttention',label:q('dismissAttention'),icon:<BellOff size={14}/>,onClick:()=>dismissAttention(context.ids)}]:[]),...(localSelection(context.ids)?[{id:'delete',label:q('delete'),icon:<Trash2 size={14}/>,danger:true,onClick:()=>requestLocalDelete(context.ids)}]:[]),...(onlineSelection(context.ids)?[{id:'hide',label:q(hiddenSelection(context.ids)?'unhide':'hide'),icon:<EyeOff size={14}/>,onClick:()=>run(hideProducts(context.ids,!hiddenSelection(context.ids)))}]:[]),...(onlineSelection(context.ids)&&hasDownloadedFiles(context.ids)?[{id:'deleteDownloads',label:q('deleteDownloads'),icon:<Trash2 size={14}/>,danger:true,onClick:()=>requestDeleteDownloads(context.ids)}]:[])]:[];
- const item=(p:Product,list:boolean)=><div id={'product-'+p.id} data-product-id={p.id} key={p.id} role="option" aria-selected={selectedSet.has(p.id)} tabIndex={0} className={(list?'revised-row':'product-card')+' '+(selectedSet.has(p.id)?'selected':'')} onClick={e=>select(p,e)} onContextMenu={e=>{e.preventDefault();const ids=selectedSet.has(p.id)?visibleSelected:[p.id];if(!selectedSet.has(p.id)){setSelected(ids);setFocusId(p.id);}setContext({x:e.clientX,y:e.clientY,ids});}} onDragStart={e=>e.preventDefault()} onMouseDown={e=>{if(e.shiftKey||e.ctrlKey||e.metaKey)e.preventDefault();}} onKeyDown={e=>keySelect(e,p)}>{(!list||density!==40)&&<div className={list?'row-thumb':''}>{cardArt(p,list)}</div>}<div className="product-info"><strong className="product-title" lang={contentLang(p.title)} title={p.title}>{p.title}</strong>{columns.includes('shop')&&(!list||density!==40)&&<span className="product-shop" lang={p.provider==='local'?undefined:contentLang(p.shop)} title={p.provider==='local'?q('localProductShop'):p.shop||q('unknownShop')}>{p.provider==='local'?q('localProductShop'):p.shop||q('unknownShop')}</span>}{list?<Status p={p} q={q}/>:<>{columns.includes('acquired')&&<span className="card-acquired" title={q('acquired')+': '+(p.acquired||q('unknown'))}>{p.acquired||q('unknown')}</span>}<div className={'card-bottom '+((columns.includes('price')&&cardPriceLabel(locale,p)||columns.includes('files')&&p.downloaded>0)?'has-metrics':'')}><Status p={p} q={q}/><span className="card-metrics">{columns.includes('price')&&cardPriceLabel(locale,p)&&<span className="card-price" title={cardPriceLabel(locale,p)!}>{cardPriceLabel(locale,p)}</span>}{columns.includes('files')&&p.downloaded>0&&<span className="card-file-count" title={q('downloaded')+': '+p.downloaded}><span aria-hidden="true">●</span> {p.downloaded}</span>}</span></div></>}</div>{list&&columns.includes('category')&&<span className="list-extra" title={categoryLabel(p.category)}>{categoryLabel(p.category)}</span>}{list&&columns.includes('files')&&<span className="list-extra file-count">{fileCountLabel(p)}</span>}{list&&columns.includes('acquired')&&<span className="list-extra">{p.acquired||q('unknown')}</span>}{list&&columns.includes('price')&&<span className="list-extra">{currentPriceLabel(locale,p)||'—'}</span>}<input type="checkbox" aria-label={q('select')+' '+p.title} checked={selectedSet.has(p.id)} onClick={e=>e.stopPropagation()} onChange={()=>select(p,{ctrlKey:true,metaKey:false,shiftKey:false})}/></div>;
- const footer=<footer className="result-footer">{visibleSelected.length>0&&<div className="selection-actions" onKeyUpCapture={e=>{const row=e.currentTarget,b=(e.target as HTMLElement).getBoundingClientRect(),r=row.getBoundingClientRect();if(b.right>r.right)row.scrollLeft+=b.right-r.right+2;else if(b.left<r.left)row.scrollLeft-=r.left-b.left+2;}} onFocusCapture={e=>{const row=e.currentTarget,target=e.target as HTMLElement;requestAnimationFrame(()=>{const b=target.getBoundingClientRect(),r=row.getBoundingClientRect();if(b.right>r.right)row.scrollLeft+=b.right-r.right+2;else if(b.left<r.left)row.scrollLeft-=r.left-b.left+2;});}}><div className="selection-group"><Button title={q('clearSelection')} onClick={()=>setSelected([])}><X size={13}/></Button><strong className="selection-count"><b key={visibleSelected.length}>{visibleSelected.length.toLocaleString(locale)}</b><span>{q('selected')}</span></strong>{batchEnabled.selectAll&&<Button title={q('selectAll')} onClick={()=>setSelected(matchedIds)} disabled={!matchedIds.length||queryBusy||visibleSelected.length>=matchedIds.length}><CheckCircle2 size={14}/><span>{q('selectAll')}</span></Button>}</div>{batchActions(visibleSelected)}</div>}<div className="result-controls"><label className="thumbnail-control" title={q('thumbnail')}><List size={14}/><input aria-label={q('thumbnail')} type="range" min={0} max={thumbnailSizes.length-1} step={1} value={thumbnailSizes.indexOf(thumb as typeof thumbnailSizes[number])} style={{'--fill':`${Math.max(0,thumbnailSizes.indexOf(thumb as typeof thumbnailSizes[number]))/(thumbnailSizes.length-1)*100}%`} as CSSProperties} aria-valuetext={thumb===0?q('listView'):`${q('thumbnail')} ${thumb}px`} onChange={e=>setThumb(thumbnailSizes[+e.target.value])}/><Grid2X2 size={14}/></label><select aria-label={q('density')} title={q(density===40?'compact':density===74?'standard':'comfortable')} value={density} onChange={e=>setDensity(+e.target.value)}><option value={40}>{q('compact')}</option><option value={74}>{q('standard')}</option><option value={90}>{q('comfortable')}</option></select><details className="column-menu"><summary aria-label={q('columns')} title={q('columns')}><Columns2 size={14}/><span>{q('columns')}</span></summary><div className="popup-menu">{['shop','category','files','acquired','price'].map(column=><label className="check-row" key={column}><input type="checkbox" checked={columns.includes(column)} onChange={e=>setColumns(e.target.checked?[...columns,column]:columns.filter(key=>key!==column))}/>{q(column)}</label>)}</div></details>{queryResult?.key===queryKey&&queryResult.allDownloaded!==true&&<Button primary title={q('downloadAll')} disabled={!matchedIds.length||queryBusy} onClick={()=>setProductConfirm({kind:'downloadAll',ids:matchedIds,names:[]})}><Download size={14}/><span>{q('downloadAll')}</span></Button>}</div></footer>;
- const localeOptions=Object.entries(localeNames).map(([id,name])=><option key={id} value={id}>{name}</option>);
- const themeOptions=[...defaultThemeOptions,...presets];
- const workflowProps={locale,products,catalogueVersion:snapshotVersion,selected:chosen,onLocaleChange:setLocale,themeOptions,themeId:theme,onThemeChange:setTheme,libraryReady,setupReady:libraryState?.state==='setup'&&!libraryRefreshPending.current,defaultLibraryPath:libraryRefreshPending.current||libraryState?.state==='setup'?libraryState?.path:libraryState?.defaultPath,defaultLibraryError:libraryRefreshPending.current?loadingError:['setup','unconfigured'].includes(libraryState?.state??'')?libraryState?.errorCode:undefined,missingCredentials:libraryState?.missingCredentials,onLibraryReady:async(path:string,_rootId?:string,newLibrary=false)=>{
-  if(libraryStateRef.current?.state==='ready'&&configuredLibraryRoot(nativeState)?.path===path)return;
-  await openSelectedLibrary(path,newLibrary);
- },unitySeed,onUnitySubmitted:()=>{setFlow(null);setView('activity');},onClose:()=>setFlow(null),onNotice:notify,onImportAccepted:(jobId:string,waiting:number)=>{const message=localImportText(locale,waiting>0?'importQueuedCount':'importQueued').replace('{count}',waiting.toLocaleString(locale));setNotice({message,jobId});},onPolicyChange:(all:boolean)=>{setAutoAll(all);if(flow==='setup')setSetupDone(true);},autoDownloadAll:autoAll,onUserPatch:userPatch,onBatchUserPatch:batchPatch,sensitiveMode:query.sensitive,accounts,importSeed,onNavigate:(route:string)=>{setFlow(null);openSettings(route);},nativeState,onNative,onPreferences};
- const updateCanOpen=!flow&&!dialog&&!deleteLocalSelection&&!themeDeleteTarget&&!libraryOpening&&!context;
- const updateBlocker=!setupDone||libraryState?.state!=='ready'||libraryOpening?'updates_busy_library':updateJobBlocker(nativeState.jobs)||(!updateCanOpen?'updates_busy_window':aiChatUpdateBlocked?'updates_busy_ai_chat':collectionBusy||localFilePending.size>0||themeDeleteBusy?'updates_busy_saving':'');
- updateBlockerRef.current=updateBlocker;
- const currentUpdateBlocker=()=>updateBlockerRef.current||(aiChatUpdateBlockedRef.current?'updates_busy_ai_chat':'');
- const prepareUpdate=async()=>{let blocker=currentUpdateBlocker();if(blocker)throw new Error(blocker);await zoomQueue.current;await drainPreferenceWrites();blocker=currentUpdateBlocker();if(blocker)throw new Error(blocker);};
- const appearance=<div className="appearance-content"><label className="field"><span>{q('language')}</span><select value={locale} onChange={e=>setLocale(e.target.value as Locale)}>{localeOptions}</select></label><label className="field"><span>{q('uiScale')}</span><ScaleControl label={q('uiScale')} value={uiScale} onCommit={changeScale}/></label><div className="appearance-toggles"><Toggle label={q('roundedCorners')} checked={roundedCorners} onChange={setRoundedCorners}/><Toggle label={q('reduceMotion')} checked={reduceMotion} onChange={setReduceMotion}/><Toggle label={q('oneHandedDrag')} checked={oneHandedDrag} onChange={setOneHandedDrag}/><Toggle label={q('bundledFonts')} checked={bundledFonts} onChange={setBundledFonts}/></div><label className="field"><span>{q('themePreset')}</span></label><ThemePicker locale={locale} options={themeOptions} value={theme} onChange={setTheme}/><div className="theme-actions"><Button disabled={themeDeleteBusy} onClick={()=>setDialog('theme')}>{q('editTheme')}</Button><Button className="danger" disabled={themeDeleteBusy||!presets.some(p=>p.id===theme)} onClick={()=>setThemeDeleteTarget({id:selectedTheme.id,name:selectedThemeName})}>{resetText(locale,'deleteTheme')}</Button><div className="theme-transfer-actions"><Button disabled={themeDeleteBusy} onClick={()=>{setThemePreview(null);setDialog('theme');}}>{q('importTheme')}</Button><Button disabled={themeDeleteBusy} onClick={()=>run(exportThemeConfig(selectedThemeTokens,selectedThemeName))}>{q('exportTheme')}</Button></div></div></div>;
- const inspectorPane=<><div role="separator" aria-orientation="vertical" aria-label={q('resizeDetails')} className="drag-divider right-divider" onPointerDown={e=>resize('right',e)} tabIndex={0} onKeyDown={e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();setInspectorWidth(value=>Math.max(240,Math.min(900,value+(e.key==='ArrowLeft'?32:-32))));}}}/><aside className={`inspector revised-inspector ${wide?'wide':''}`} style={{width:paneWidth,flexBasis:paneWidth}}><header className="inspector-header"><strong>{view==='settings'?q('settings'):q('details')}</strong></header>{view==='settings'?<><nav className="embedded-settings-nav">{['appearance','features','accounts','storage','download',...(aiEnabled?['ai-settings']:[])].map(route=><button key={route} className={settingsRoute===route?'active':''} onClick={()=>setSettingsRoute(route)}>{route==='ai-settings'?'AI':q(route==='download'?'downloads':route)}</button>)}</nav><div key={settingsRoute} className="embedded-settings-content">{settingsRoute==='appearance'?appearance:settingsRoute==='features'?<FeaturesSettings locale={locale} preferences={nativeState.preferences} onPreferences={onPreferences} licenseJob={nativeState.jobs.find(job=>job.type==='licenses:sync'&&['queued','running'].includes(job.state))} onNotice={notify}/>:<WorkflowContent {...workflowProps} flow={settingsRoute}/>}</div></>:visibleSelected.length>1?batchSummary:active?<AssetInspector product={active} categoryLabel={categoryLabel(active.category)} locale={locale} wide={wide} tab={tab} onTabChange={setTab} sensitiveMode={query.sensitive} revealed={revealed.has(active.id)} onReveal={()=>setRevealed(old=>new Set([...old,active.id]))} accountIds={query.accountIds} accounts={accounts} onOpenProductPage={url=>run(openExternal(url))} actions={singleActions(active)} onDismissAttention={()=>dismissAttention([active.id])} offerEndedFileIds={refusedFiles(active.id)} onEdit={edit} onTagClick={tag=>updateQuery({search:tag})} onFileRetry={downloadFile} onDownloadAll={()=>download([active.id])} onCancelDownload={()=>cancelDownloads([active.id])} cancelPending={activeDownloads(active.id).every(job=>job.cancelRequested)} cancellableFileIds={activeDownloads(active.id).flatMap(job=>job.selectedFileIds?.length===1&&!job.cancelRequested?job.selectedFileIds:[])} onFileCancel={fileId=>{const job=activeDownloads(active.id).find(job=>job.selectedFileIds?.length===1&&job.selectedFileIds[0]===fileId);if(job)run(onNative('storage','cancel_job',{jobId:job.id}));}} onDeleteDownloads={()=>requestDeleteDownloads([active.id])} onFileDelete={fileId=>run(deleteDownloads({fileId},[active.id]))} deleteDisabled={deletingDownloads.has(active.id)||activeDownloads(active.id).length>0}onLocalFilesAdd={folder=>addLocalFiles(active.id,folder)} onLocalFileRemove={fileId=>run(changeLocalFiles(active.id,{draftId:crypto.randomUUID(),addSources:[],removeFileIds:[fileId]}))} localFilesBusy={localFilePending.has(active.id)||jobs.has(active.id)} retryDisabled={nativeState.jobs.some(job=>job.type==='download'&&job.productId===active.id&&['queued','running'].includes(job.state)&&job.selectedFileIds==null)} busyFileIds={nativeState.jobs.filter(job=>job.type==='download'&&job.productId===active.id&&['queued','running'].includes(job.state)).flatMap(job=>job.fileIds??job.selectedFileIds??active.files.map(file=>file.id))} folderAvailable={availability?.key===availabilityKey&&availability.folderAvailable===true} openableFileIds={availability?.key===availabilityKey?availability.openableFileIds:[]} onOpenFolder={()=>run(onNative('storage','open_product_folder',{productId:active.id}))} onFileOpen={id=>run(onNative('storage','open_file',{fileId:id}))}/>:<div className="empty-state">{q('noSelection')}</div>}</aside></>;
- const activity=<ActivityHistory latestLocalProgress={latestLocalProgress} focusJobId={activityJobId} onOpenLocalProduct={openLibraryProduct} locale={locale} jobs={nativeState.jobs} accounts={accounts} products={products} aiEnabled={aiEnabled} onCancelDownloads={()=>cancelDownloads()}onClear={async()=>{await onNative('catalogue','clear_activity');await refreshState();}} onUnityResults={job=>setFlow('unity-results:'+job.id)} onUnityRetry={job=>{void retryUnityInventory(job.id).then(seed=>openUnity(seed.productIds,seed.leafRefs)).catch(error=>notify(q(errorCode(error))));}} onCancel={job=>run(job.type==='licenses:sync'?invokeAction('licenses','cancel',{jobId:job.id}):job.type==='unity:import'?cancelUnity(job.id):job.type.startsWith('ai:')?cancelAi(job.id):onNative(isStoreJob(job.type)?'booth':'storage',isStoreJob(job.type)?'cancel_sync':'cancel_job',{jobId:job.id}))} onRetry={job=>run(job.type==='licenses:sync'?invokeAction('licenses','retry',{jobId:job.id}):job.type.startsWith('ai:')?retryAi(job.id):onNative(isStoreJob(job.type)?'booth':'storage',isStoreJob(job.type)?'retry_sync':'retry_job',{jobId:job.id}))} onSignIn={job=>{if(job.accountId)run(onNative('booth','account_login',{accountId:job.accountId}));}} onOpenStorage={()=>openSettings('storage')}/>;
- const appTheme=themeTokens['--bg']?(isLightTheme(themeTokens)?'light':'dark'):theme==='light'?'light':'dark';
- const appClass='app corrected-shell variant-a'+(roundedCorners?'':' square-corners')+(reduceMotion?' reduce-motion':'')+(bundledFonts?'':' system-fonts');
- if(!libraryState||libraryState.state==='blocked'||!loaded||libraryOpening&&!['ready','setup','unconfigured'].includes(libraryState.state))return <div className={appClass} data-theme={appTheme} style={themeTokens as CSSProperties}><LibraryAccess locale={locale} status={libraryState} busy={libraryOpening||!loaded} onChoose={()=>void chooseLibrary()} onRetry={()=>{if(libraryState?.path){const request=blockedLibraryRequest.current;void openSelectedLibrary(libraryState.path,request?.path===libraryState.path&&request.newLibrary).catch(()=>{});}}}/></div>;
- return <div className={appClass} data-view={view} data-theme={appTheme} style={{...themeTokens,'--nav-width':navWidth+'px'} as CSSProperties}>
- <header className="topbar" inert={updateOpen||!!themeDeleteTarget}><div className="brand"><span className="brand-mark"><Package size={21}/></span><span>NekoNeko<span className="brand-light">Asset</span></span></div><nav className="main-nav">{['library','activity',...(aiEnabled?['ai-suggestions']:[])].map(name=><button key={name} className={view===name?'active':''} onClick={()=>setView(name)}>{name==='ai-suggestions'?aiSuggestionsText(locale,'aiSuggestions'):q(name)}</button>)}</nav><div className="searchbox"><Search size={16}/><input ref={searchRef} aria-label={q('search')} placeholder={q('searchPlaceholder')} value={query.search} onChange={e=>{updateQuery({search:e.target.value});if(view==='activity'||view==='ai-suggestions')setView('library');}}/><Button title={q('clearSearch')} disabled={!query.search} onMouseDown={e=>e.preventDefault()} onClick={()=>{const keyboard=!!document.activeElement?.closest('.searchbox button');updateQuery({search:''});if(keyboard)searchRef.current?.focus();}}><X size={13}/></Button><kbd>Ctrl F</kbd></div><Button title={q('saveSearch')} onClick={()=>setDialog('saveSearch')}><Bookmark size={15}/></Button><div className="top-actions"><Button title={q(syncing?'syncing':'sync')} onClick={()=>setFlow('sync')}><RefreshCw size={15} className={syncing?'sync-spinning':undefined}/><span>{q(syncing?'syncing':'sync')}</span></Button><Button title={q('import')} onClick={()=>{setImportSeed(undefined);setFlow('import');}}><Plus size={17}/><span>{q('importAssets')}</span></Button><Button title={q('settings')} onClick={toggleSettings}><Settings size={17}/></Button></div></header>
- <div className="shell" inert={updateOpen||!!themeDeleteTarget}>{view!=='activity'&&view!=='ai-suggestions'&&<>{sidebar}<div role="separator" aria-label={q('resizeNavigation')} aria-orientation="vertical" className="drag-divider left-divider" tabIndex={0} onPointerDown={e=>resize('left',e)} onKeyDown={e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();setNavWidth(value=>Math.max(132,Math.min(300,value+(e.key==='ArrowRight'?16:-16))));}}}/></>}<main className="workspace">{aiEnabled&&<div style={{display:view==='ai-suggestions'?'flex':'none',flex:1,minHeight:0}}><AiSuggestions active={view==='ai-suggestions'} frozen={updateOpen||!!themeDeleteTarget||!!flow||!!dialog||!!deleteLocalSelection||libraryOpening} onUpdateBlockedChange={reportAiChatUpdateBlocked} locale={locale} avatarOptions={avatarChoices.map(id=>({id,label:avatarLabel(id)}))} onOpenProduct={openLibraryProduct}/></div>}{view==='activity'?activity:view==='ai-suggestions'?null:<><div className="result-layout"><section className="result-workspace" onKeyDown={resultKeys} onDragOver={e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy';}}} onDrop={e=>e.preventDefault()}>{toolbar}{filtered.length?<Results items={filtered} size={thumb} density={density} state={scrollState.current} activeId={focusId} metadataCount={Number(cardColumns.includes('shop'))+Number(cardColumns.includes('acquired'))} render={item} gestures={oneHandedDrag?{selected:selectedSet,select:(ids,first)=>{setSelected(ids);if(first)anchor.current=first;},drop:(ids,category)=>run(userPatch(ids,{category,categoryOverride:true}).then(()=>notify(q('movedToCategory').replace('{count}',ids.length.toLocaleString(locale)).replace('{category}',categoryLabel(category)))))}:null}/>:resultsPending?<div className="empty-state results-loading" role="status"><LoaderCircle size={25} className="progress-spin" aria-hidden="true"/><h2>{q(loaded&&query.search.trim()?'searching':'loading')}</h2></div>:<div className="empty-state"><Search size={25}/><h2>{q(!catalogueTotal?'emptyLibrary':'noResults')}</h2>{products.length>0&&<Button onClick={clearFilters}>{q('clearFilters')}</Button>}</div>}{footer}</section>{inspector&&inspectorPane}</div></>}</main></div>
- <footer className="statusbar" inert={updateOpen||!!themeDeleteTarget}><button type="button" className="app-version" title={updateText(locale,'check')} aria-label={updateText(locale,'check')} disabled={!updateCanOpen} onClick={()=>{setUpdateOpen(true);setUpdateRequest(value=>value+1);}}>v{appVersion}{updateAvailable&&<span className="app-update-dot"/>}</button><span>{q('totalProducts').replace('{count}',catalogueTotal.toLocaleString(locale))}</span><span className="spacer"/>{(collectionBusy||notice||loadingError)&&<span className="inline-notice"><span role="status" title={notice?.message||(loadingError?q(loadingError):q('processing'))}>{notice?.message||(loadingError?q(loadingError):q('processing'))}</span>{notice?.jobId&&<button type="button" className="notice-activity" onClick={()=>{setActivityJobId(notice.jobId!);setView('activity');setNotice(null);}}>{q('activity')}</button>}{!collectionBusy&&<button title={q('close')} onClick={()=>{setNotice(null);setLoadingError('');}}><X size={12}/></button>}</span>}</footer>
- <UpdatePrompt locale={locale} currentVersion={appVersion} ready={loaded&&setupDone&&libraryState.state==='ready'} canPrompt={!updateBlocker} installBlocker={updateBlocker} currentInstallBlocker={currentUpdateBlocker} tasksResume={nativeState.jobs.some(resumesAfterRestart)} open={updateOpen} request={updateRequest} onOpenChange={setUpdateOpen} onAvailableChange={setUpdateAvailable} onBeforeInstall={prepareUpdate}/>
- <Workflows {...workflowProps} flow={flow}/>
- <EditDialogs aiFeaturesEnabled={aiEnabled} licenseEnabled={licenseEnabled} dialog={['edit','batch','saveSearch','collection','theme','manageCollections','manageCategories','manageSearches'].includes(dialog||'')?dialog:null} locale={locale} products={products} selected={chosen} active={active} onClose={()=>{setDialog(null);setThemePreview(null);}} onPatch={userPatch} onBatchPatch={batchPatch} onNotice={notify} collections={collections} collectionIds={Object.fromEntries(collectionRows.current.map(row=>[row.name,row.id]))} collectionBusy={collectionBusy} savedSearches={saved} tagOptions={nativeState.tagOptions} avatarOptions={avatarOptions} avatarLabel={avatarLabel} onRefreshAvatars={refreshAvatarOptions}
- onSaveSearch={async name=>{await onNative('catalogue','save_search',{op:'create',name,query:structuredClone(query),sort,direction});}}
- customCategories={categoryList} onCreateCategory={name=>changeCategories({op:'create',name})} onRenameCategory={(id,name)=>changeCategories({op:'update',id,name})} onDeleteCategory={id=>changeCategories({op:'delete',id})}
- onCreateCollection={async name=>{await onNative('catalogue','collection',{op:'create',name});}}
- onRenameCollection={async(oldName,name)=>{const id=collectionRows.current.find(c=>c.name===oldName)?.id;await onNative('catalogue','collection',{op:'update',id,name});if(collection===oldName)setCollection(name);}}
- onDeleteCollection={async(_name,id)=>{if(!id)throw new Error('entryUnavailable');const active=collectionRows.current.some(row=>row.id===id&&row.name===collection);await onNative('catalogue','collection',{op:'delete',id});if(active)clearFilters();}}
- onRenameSearch={async(index,name)=>{await onNative('catalogue','save_search',{op:'update',id:saved[index]?.id,name});}}
- onDeleteSearch={async(_index,id)=>{if(!id)throw new Error('entryUnavailable');const index=saved.findIndex(search=>search.id===id);await onNative('catalogue','save_search',{op:'delete',id});if(index>=0){if(savedScope===index)clearFilters();else if(savedScope!==null&&savedScope>index)setSavedScope(savedScope-1);}}}
- onCollection={async(name,ids,included)=>{const id=collectionRows.current.find(c=>c.name===name)?.id;if(!id)throw new Error('catalogue.not_found');await onNative('catalogue','collection',included?{op:'add_members',collectionIds:[id],ids}:{op:'remove_members',id,ids});}} onLocalFiles={changeLocalFiles} onFetchMetadata={fetchProductMetadata} themeTokens={selectedThemeTokens} themeName={selectedThemeName} onThemePreview={setThemePreview} onThemeSave={choosePreset}/>
- {dialog==='spending'&&<SpendingDialog locale={locale} productIds={chosen} accountIds={query.accountIds??undefined} onClose={()=>setDialog(null)}/>}
- {themeDeleteTarget&&<ConfirmDelete locale={locale} kind="theme" name={themeDeleteTarget.name} onDelete={()=>deleteTheme(themeDeleteTarget.id)} onClose={()=>setThemeDeleteTarget(null)}/>}
- {deleteLocalSelection&&<DeleteLocalProducts locale={locale} {...deleteLocalSelection} onDelete={deleteLocalProducts} onClose={()=>setDeleteLocalSelection(null)}/>}
- {productConfirm&&<ConfirmProducts locale={locale} {...(productConfirm.kind==='downloadAll'?{title:q('downloadAll'),message:q('confirmDownloadAll'),confirm:q('download')}:{title:q('deleteDownloads'),message:q('confirmDeleteDownloads'),confirm:q('delete'),danger:true})} count={productConfirm.ids.length} names={productConfirm.names} onConfirm={async()=>{if(productConfirm.kind==='downloadAll')watchDownloads(await invokeAction('storage','enqueue_products',{productIds:productConfirm.ids}));else await deleteDownloads({productIds:productConfirm.ids},productConfirm.ids);}} onClose={()=>setProductConfirm(null)}/>}
- {context&&<LibraryContextMenu {...context} actions={contextActions} onClose={()=>setContext(null)}/>}{licenseOpen&&licenseEnabled&&<LicenseFilterDialog locale={locale} value={query.license??{}} onChange={cells=>updateQuery({license:Object.keys(cells).length?cells:null})} onClose={()=>{setLicenseOpen(false);requestAnimationFrame(()=>licenseButton.current?.focus({preventScroll:true}));}}/>}
- {dialog==='avatars'&&<SmallDialog className="avatar-dialog" label={q('manageAvatars')} close={()=>setDialog(null)} q={q}><AvatarManager options={avatarOptions} enabled={avatarEnabled} label={avatarLabel} onChange={changeAvatars} onEdit={changeAvatarDetails} q={q}/></SmallDialog>}
- {libraryOpening&&<div className="modal-backdrop"><LibraryAccess locale={locale} status={libraryState} busy onChoose={()=>{}} onRetry={()=>{}}/></div>}
- </div>;
-}
-function SmallDialog({label,close,q,children,className=''}:{label:string;close:()=>void;q:(key:string)=>string;children:ReactNode;className?:string}){
- const ref=useRef<HTMLDivElement>(null);useEffect(()=>{const previous=document.activeElement as HTMLElement;(ref.current?.querySelector<HTMLElement>('input,select')??ref.current?.querySelector<HTMLElement>('button'))?.focus();return()=>{if(previous?.isConnected)previous.focus();};},[]);
- return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close();}}><div className={`modal shell-dialog ${className}`} role="dialog" aria-modal="true" aria-label={label} ref={ref} onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Escape'){e.stopPropagation();close();}if(e.key==='Tab'){const nodes=Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),summary,[tabindex="0"]')??[]).filter(node=>node.getClientRects().length);if(e.shiftKey&&document.activeElement===nodes[0]){e.preventDefault();nodes.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===nodes.at(-1)){e.preventDefault();nodes[0]?.focus();}}}}><header className="modal-header"><h2>{label}</h2><Button title={q('close')} onClick={close}><X size={14}/></Button></header><div className="modal-body">{children}</div><footer className="modal-footer"><Button onClick={close}>{q('close')}</Button></footer></div></div>;
-}
-function Results({items,size,density,state,activeId,metadataCount,render,gestures}:{items:Product[];size:number;density:number;state:{index:number;offset:number};activeId:string;metadataCount:number;render:(p:Product,list:boolean)=>ReactNode;gestures:DragGestures|null}){
- const ref=useRef<HTMLDivElement>(null),previousActive=useRef(activeId);const [width,setWidth]=useState(500),[height,setHeight]=useState(500),[top,setTop]=useState(0);
- const {list,gap,columns,actual,info,row}=resultGeometry(width,size,density,metadataCount),total=Math.ceil(items.length/columns)*row,pointerDown=useDragGestures({list,gap,columns,actual,row},items,gestures);
- useLayoutEffect(()=>{const element=ref.current!;const observer=new ResizeObserver(([entry])=>{setWidth(entry.contentRect.width);setHeight(entry.contentRect.height);});observer.observe(element);return()=>observer.disconnect();},[]);
- useLayoutEffect(()=>{const element=ref.current;if(!element)return;let target=Math.floor(Math.min(state.index,Math.max(0,items.length-1))/columns)*row+Math.min(state.offset,row-1);if(activeId!==previousActive.current){previousActive.current=activeId;const index=items.findIndex(p=>p.id===activeId),start=Math.floor(index/columns)*row;if(index>=0){if(start<target)target=start;else if(start+row>target+height)target=start+row-height;}}target=Math.max(0,Math.min(target,total-height));element.scrollTop=target;setTop(target);state.index=Math.floor(target/row)*columns;state.offset=target%row;},[row,columns,items,height,activeId]);
- const first=Math.max(0,Math.floor(top/row)-2),end=Math.min(Math.ceil(items.length/columns),Math.ceil((top+height)/row)+2);
- return <div className={`result-viewport ${list?'list-mode':'grid-mode'} ${density===40?'density-compact':density===74?'density-standard':'density-comfortable'}`} ref={ref} data-columns={columns} role="listbox" aria-multiselectable="true" onPointerDown={pointerDown} style={{'--result-row':`${row}px`,'--result-info':`${info}px`,'--result-gap':`${gap}px`,'--density':`${density}px`} as CSSProperties} onScroll={e=>{const value=e.currentTarget.scrollTop;setTop(value);state.index=Math.floor(value/row)*columns;state.offset=value%row;}}><div style={{height:total,position:'relative'}}><div className="result-items" style={{position:'absolute',top:first*row,left:12,right:12,display:'grid',gridTemplateColumns:list?'minmax(0,1fr)':`repeat(${columns},minmax(0,${actual}px))`,gap:list?0:gap}}>{items.slice(first*columns,end*columns).map(p=>render(p,list))}</div></div></div>;
-}
-
-
-
-
-
-
-
-
-
-

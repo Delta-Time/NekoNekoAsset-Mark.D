@@ -49,7 +49,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
         // Capture on Unity's main thread after the user confirms (and any targeted dirty save).
         public IAssetProbe FreshProbe;
         public Action<ImportPlanItem, int, int> Progress;
-        // Bridge persists each applied result here before the next write. A callback failure stops.
+        // Bridge records each result here before the next write and checkpoints it periodically.
+        // A callback failure stops.
         public Action<ImportItemResult> ItemCompleted;
     }
 
@@ -302,7 +303,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 var info = new FileInfo(package.FilePath);
                 if (!info.Exists || info.Length != package.FileLength || info.LastWriteTimeUtc.Ticks != package.FileLastWriteUtcTicks)
                     throw new IOException("The staged package changed since review.");
-                Dictionary<string, StagedAssetPayload> result = UnityPackageReader.StageSelected(package.FilePath, wanted, directory);
+                // Preparation already wrote every payload while it read the package; commit verifies each again.
+                Dictionary<string, StagedAssetPayload> result = PreparedPayloads(package, wanted)
+                    ?? UnityPackageReader.StageSelected(package.FilePath, wanted, directory);
                 info.Refresh();
                 if (info.Length != package.FileLength || info.LastWriteTimeUtc.Ticks != package.FileLastWriteUtcTicks)
                     throw new IOException("The staged package changed while reading payloads.");
@@ -326,6 +329,34 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 loose.Add(entry.Guid, payload);
             }
             return loose;
+        }
+
+        private static Dictionary<string, StagedAssetPayload> PreparedPayloads(LoadedPackage package, HashSet<string> wanted)
+        {
+            if (string.IsNullOrEmpty(package.PayloadDirectory)) return null;
+            var result = new Dictionary<string, StagedAssetPayload>(StringComparer.OrdinalIgnoreCase);
+            foreach (UnityPackageEntry entry in package.Entries)
+            {
+                if (entry == null || !wanted.Contains(entry.Guid)) continue;
+                var payload = new StagedAssetPayload();
+                if (entry.HasAssetMember)
+                {
+                    var asset = new FileInfo(Path.Combine(package.PayloadDirectory, entry.Guid + ".asset.payload"));
+                    if (!asset.Exists || asset.Length != entry.Size) return null;
+                    payload.AssetPath = asset.FullName;
+                    payload.AssetHash = entry.AssetHash;
+                    payload.AssetSize = asset.Length;
+                }
+                if (entry.HasMetaMember)
+                {
+                    string meta = Path.Combine(package.PayloadDirectory, entry.Guid + ".meta.payload");
+                    if (!File.Exists(meta)) return null;
+                    payload.MetaPath = meta;
+                    payload.MetaHash = entry.MetaHash;
+                }
+                result.Add(entry.Guid, payload);
+            }
+            return result;
         }
 
         private static void ValidatePayload(UnityPackageEntry entry, StagedAssetPayload payload)
@@ -423,8 +454,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
         }
 
         // Original Smart Package per-pair replacement/rollback, with streamed source files.
-        // Temporary and backup files stay in owned staging on the same volume: names beside a long
-        // target could pass Windows' MAX_PATH where Unity itself still imports the target.
+        // Backup files stay in owned staging on the same volume: names beside a long target could
+        // pass Windows' MAX_PATH where Unity itself still imports the target. Each payload already
+        // sits in this request's own staging, so it is verified once more and moved into place.
         private static void CommitFileParts(List<FilePart> parts, string stagingDirectory, List<string> recoveryBackups)
         {
             string operationId = Guid.NewGuid().ToString("N");
@@ -434,12 +466,11 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 for (int i = 0; i < parts.Count; i++)
                 {
                     FilePart part = parts[i];
-                    part.Staged = Path.Combine(stagingDirectory, operationId + "-" + i + ".tmp");
                     part.Backup = Path.Combine(stagingDirectory, operationId + "-" + i + ".bak");
                     part.HadOriginal = File.Exists(part.Target);
                     if (Directory.Exists(part.Target)) throw new IOException("A directory occupies a file/meta target: " + part.Target);
                     if (part.Source == null) continue;
-                    CopyFile(part.Source, part.Staged);
+                    part.Staged = part.Source;
                     if (!string.Equals(LooseFilePackage.HashFile(part.Staged), part.ExpectedHash, StringComparison.Ordinal))
                         throw new IOException("The staged replacement changed before commit.");
                 }
@@ -486,7 +517,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
         {
             using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { input.CopyTo(output, 64 * 1024); output.Flush(true); }
+                input.CopyTo(output, 64 * 1024);
         }
         private static void TryDelete(string path)
         {

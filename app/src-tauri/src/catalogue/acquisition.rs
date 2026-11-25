@@ -1,11 +1,79 @@
 //! Derived acquisition summaries. Raw provider records and identities stay intact.
+//!
+//! Acquisition-date order lives here. A sort key is a date from `date_key`, or for an
+//! undated free download `~` and its place in the free history (`freeHistoryOrder`, which
+//! BOOTH's sync gives it), sorting after every date. Each provenance row gets a key
+//! (`row_sort_key`), a product the earliest of its rows (`summarize`, stored in
+//! `products.acquired`), and the list orders by `order_by`. A local import has no rows with
+//! dates: its own `acquired` minute is shown and its `acquiredAt`, when it has one, orders it.
 use super::*;
+
+/// Starts a key that is a place in the free history rather than a date (`~` follows digits).
+const FREE_HISTORY_PLACE: char = '~';
+
+/// The order key of one acquisition: its date, else its place in the free history.
+fn row_sort_key(raw: &Value) -> Option<String> {
+    ["acquiredAt", "acquired", "acquiredDateText"]
+        .into_iter()
+        .find_map(|field| nonempty(&raw[field]).and_then(date_key))
+        .or_else(|| {
+            nonempty(&raw["freeHistoryOrder"]).map(|order| format!("{FREE_HISTORY_PLACE}{order}"))
+        })
+}
+
+/// The SQL key the list orders products by: the stored product key, or for selected
+/// accounts the earliest key of their rows. A local product keeps its own key.
+pub(super) fn sort_key_sql(accounts: Option<&[String]>, local_product: &str) -> String {
+    let Some(placeholders) = accounts else {
+        return "p.acquired".to_owned();
+    };
+    let account_order = if placeholders.is_empty() {
+        "NULL".to_owned()
+    } else {
+        format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(p.provenance) a WHERE json_extract(a.value,'$.accountId') IN({}))",placeholders.join(","))
+    };
+    format!("CASE WHEN {local_product} THEN p.acquired ELSE {account_order} END")
+}
+
+/// The ORDER BY terms for a key: dates in `dir`, then free-history places in `dir`, then
+/// products with nothing known.
+pub(super) fn order_by(key: &str, dir: &str) -> String {
+    format!(
+        "({key} IS NULL OR {key}='') ASC,substr({key},1,1)='{FREE_HISTORY_PLACE}' ASC,{key} {dir}"
+    )
+}
+
+/// BOOTH's clock: its receipts and histories show Japan time, which keeps no daylight saving.
+pub(crate) fn booth_clock() -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(9 * 3600).expect("UTC+9 is an offset")
+}
+
+/// When the App records adding an asset, on `clock`: the minute shown, written like a BOOTH
+/// receipt date, and the time to the millisecond that orders it, which keeps that clock's
+/// offset so it keys by the same clock as the minute it shows. A local import takes this
+/// device's clock, as its minute always has; a free BOOTH item takes BOOTH's, like the
+/// receipts it sorts among.
+pub(crate) fn added_time<Tz: chrono::TimeZone>(
+    at: chrono::DateTime<chrono::Utc>,
+    clock: &Tz,
+) -> (String, String)
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local = at.with_timezone(clock);
+    (
+        local.format("%Y/%m/%d %H:%M").to_string(),
+        local.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+    )
+}
 
 pub(super) fn date_key(value: &str) -> Option<String> {
     let value = value.trim();
     if let Ok(date) = chrono::DateTime::parse_from_rfc3339(value) {
+        // A time keys by the clock it was written in, like the unzoned receipt dates beside
+        // it: stores give UTC, and the App writes its own times with their clock's offset.
         return Some(
-            date.with_timezone(&chrono::Utc)
+            date.naive_local()
                 .format("%Y-%m-%dT%H:%M:%S%.9fZ")
                 .to_string(),
         );
@@ -61,11 +129,8 @@ pub(super) fn normalize_provenance(acquisitions: &[Value]) -> Vec<Value> {
                 .into_iter()
                 .find_map(|field| nonempty(&raw[field]))
                 .unwrap_or("");
-            let key = ["acquiredAt", "acquired", "acquiredDateText"]
-                .into_iter()
-                .find_map(|field| nonempty(&raw[field]).and_then(date_key));
             row["acquiredDisplay"] = json!(display);
-            row["acquiredSortKey"] = json!(key);
+            row["acquiredSortKey"] = json!(row_sort_key(raw));
             let paid = paid_observation(raw);
             row["paidPrice"] = json!(paid.map(|(amount, _)| amount));
             row["paidCurrency"] = json!(paid.map(|(_, currency)| currency));
@@ -82,9 +147,15 @@ fn in_scope(row: &Value, accounts: Option<&Vec<Value>>) -> bool {
     })
 }
 
-/// Used while materializing the default/all-account product summary.
-pub(super) fn apply_default(product: &mut Value, source_acquired: &str) {
-    summarize(product, None, Some(source_acquired));
+/// Used while materializing the default/all-account product summary. `source_acquired_at` is
+/// a local import's own time to the millisecond, which orders it while `source_acquired`, the
+/// minute, is shown.
+pub(super) fn apply_default(
+    product: &mut Value,
+    source_acquired: &str,
+    source_acquired_at: Option<&str>,
+) {
+    summarize(product, None, Some((source_acquired, source_acquired_at)));
 }
 
 /// Absent/null scope uses the materialized all-account summary. An explicit
@@ -211,12 +282,7 @@ fn scope_owned_prices(product: &mut Value, accounts: Option<&Vec<Value>>) {
     if !product["ownedCurrentPrices"].is_array() {
         return;
     }
-    let mut current: Vec<Value> = product["ownedCurrentPrices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .cloned()
-        .collect();
+    let mut current: Vec<Value> = product["ownedCurrentPrices"].as_array().unwrap().to_vec();
     if let Some(accounts) = accounts {
         for row in &mut current {
             row["accountIds"] = json!(strings(&row["accountIds"])
@@ -242,7 +308,11 @@ fn scope_owned_prices(product: &mut Value, accounts: Option<&Vec<Value>>) {
     product["ownedPaidPrices"] = json!(paid);
 }
 
-fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Option<&str>) {
+fn summarize(
+    product: &mut Value,
+    accounts: Option<&Vec<Value>>,
+    fallback: Option<(&str, Option<&str>)>,
+) {
     let mut rows: Vec<_> = product["provenance"]
         .as_array()
         .into_iter()
@@ -262,14 +332,19 @@ fn summarize(product: &mut Value, accounts: Option<&Vec<Value>>, fallback: Optio
                 .map(|key| (key, text(row, "acquiredDisplay")))
         })
         .min_by(|a, b| a.0.cmp(b.0));
-    let fallback = fallback.filter(|value| !value.trim().is_empty());
-    let fallback_key = fallback.and_then(date_key);
+    let fallback_at = fallback.and_then(|(_, at)| at);
+    let fallback = fallback
+        .map(|(display, _)| display)
+        .filter(|value| !value.trim().is_empty());
+    let fallback_key =
+        fallback.and_then(|display| fallback_at.and_then(date_key).or_else(|| date_key(display)));
     let (key, display) = match (earliest, fallback_key.as_deref()) {
         (Some((key, _)), Some(other)) if other < key => (Some(other), fallback.unwrap()),
-        (Some((key, display)), _) => (Some(key), display),
+        (Some((key, display)), _) if !key.starts_with(FREE_HISTORY_PLACE) => (Some(key), display),
         (None, Some(key)) => (Some(key), fallback.unwrap()),
-        (None, None) => (
-            None,
+        // No date: a free-history order still sorts, and nothing is shown as a date.
+        (order, _) => (
+            order.map(|(key, _)| key),
             rows.iter()
                 .find_map(|row| nonempty(&row["acquiredDisplay"]))
                 .or(fallback)

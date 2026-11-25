@@ -1,144 +1,316 @@
-import {invoke, convertFileSrc, isTauri} from '@tauri-apps/api/core';
-import {listen} from '@tauri-apps/api/event';
-import {getCurrentWebview} from '@tauri-apps/api/webview';
-import type {Product, Account, Locale, CustomCategory} from './model';
+import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { Product, Locale } from './model';
+import type {
+  Bootstrap,
+  CatalogueRequest,
+  CatalogueResponses,
+  DialogKind,
+  DialogOptions,
+  DialogPick,
+  FileRequest,
+  FileResponses,
+  Job,
+  LicensesRequest,
+  LibraryOpened,
+  LibraryStatus,
+  LicensesResponses,
+  LocalFiles,
+  NativeChange,
+  OverlayChange,
+  Preferences,
+  ProductMetadata,
+  StorageRequest,
+  StorageResponses,
+  StoreRequest,
+  StoreResponses,
+  UnityRequest,
+  UnityResponses,
+  UpdateCheck,
+  UpdateProgress,
+  Zoomed,
+} from './bindings';
+export type {
+  AvatarDelta,
+  AvatarOption,
+  AvatarSetting,
+  BridgeRelease,
+  Collection,
+  Job,
+  LibraryCredential,
+  LibraryStatus,
+  Preferences,
+  ProductMetadata,
+  Root,
+  TagOption,
+  UnityDetails,
+  UnityEditor,
+  UnityLeaf,
+  UpdateCheck,
+  UpdateProgress,
+} from './bindings';
 
-export type Service = 'catalogue'|'booth'|'storage'|'unity'|'licenses';
-export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number;incompleteProducts?:number}
-export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];localTitle?:string;reusedLocalAsset?:boolean;fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;cancelRequested?:boolean;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
-export function importOnlyUnityJob(job:NativeJob):NativeJob{
- if(job.type!=='unity:import')return job;
- const projected={...job};
- Reflect.deleteProperty(projected,'compileErrorCount');
- if(projected.stage==='compiling')projected.stage='refreshing';
- if(['unity_compile_errors','UNITY_COMPILE_ERRORS'].includes(projected.errorCode??'')){
-  delete projected.errorCode;
-  if(projected.stage==='completed'&&projected.resultCounts?.failed===0)projected.state='completed';
-  else if((projected.resultCounts?.failed??0)>0)projected.errorCode='unity_partial_failure';
-  else if(projected.stage==='interrupted')projected.errorCode='unity_interrupted';
-  else if(projected.stage==='failed')projected.errorCode='unity_import_failed';
- }
- return projected;
+export type Service = 'catalogue' | 'booth' | 'storage' | 'unity' | 'licenses';
+/** Each service's actions, generated from its Rust request enum. */
+type Requests = {
+  catalogue: CatalogueRequest;
+  booth: StoreRequest;
+  storage: StorageRequest;
+  unity: UnityRequest;
+  licenses: LicensesRequest;
+};
+/** What each typed action returns; the others return `any`. */
+type Responses = {
+  catalogue: CatalogueResponses;
+  booth: StoreResponses;
+  storage: StorageResponses;
+  unity: UnityResponses;
+  licenses: LicensesResponses;
+};
+export type Action<S extends Service> = Requests[S]['action'];
+type ActionArgs<S extends Service, A extends string> = Omit<
+  Extract<Requests[S], { action: A }>,
+  'action'
+>;
+/** Arguments may be left out when every one of them is optional. */
+export type ArgsParam<S extends Service, A extends string> =
+  Partial<ActionArgs<S, A>> extends ActionArgs<S, A>
+    ? [args?: ActionArgs<S, A>]
+    : [args: ActionArgs<S, A>];
+export type ActionResult<S extends Service, A extends string> = A extends keyof Responses[S]
+  ? Responses[S][A]
+  : any;
+/** A native action, or a native file dialog through the `dialog` service. */
+export type NativeCall = {
+  <S extends Service, A extends Action<S>>(
+    service: S,
+    action: A,
+    ...args: ArgsParam<S, A>
+  ): Promise<ActionResult<S, A>>;
+  (service: 'dialog', action: DialogKind, options?: Record<string, unknown>): Promise<any>;
+};
+/** The untyped form of `NativeCall`, for wrappers that declare its overloads themselves. */
+export type LooseNativeCall = (
+  service: Service | 'dialog',
+  action: string,
+  args?: Record<string, unknown>,
+) => Promise<any>;
+function importOnlyUnityJob(job: Job): Job {
+  if (job.type !== 'unity:import') return job;
+  const projected = { ...job };
+  Reflect.deleteProperty(projected, 'compileErrorCount');
+  if (projected.stage === 'compiling') projected.stage = 'refreshing';
+  if (['unity_compile_errors', 'UNITY_COMPILE_ERRORS'].includes(projected.errorCode ?? '')) {
+    delete projected.errorCode;
+    if (projected.stage === 'completed' && projected.resultCounts?.failed === 0)
+      projected.state = 'completed';
+    else if ((projected.resultCounts?.failed ?? 0) > 0)
+      projected.errorCode = 'unity_partial_failure';
+    else if (projected.stage === 'interrupted') projected.errorCode = 'unity_interrupted';
+    else if (projected.stage === 'failed') projected.errorCode = 'unity_import_failed';
+  }
+  return projected;
 }
-export interface UnityPreparation {preparationPhase?:string|null;preparationWaitingForEditor?:boolean;preparationBytes?:number|null;preparationTotalBytes?:number|null;preparationEntries?:number|null;preparationTotalEntries?:number|null}
-export function progressPercent(job:(NativeJob&UnityPreparation)|undefined):number|undefined{
- if(job?.type==='unity:import'&&['waitingForUser','importing','refreshing','compiling','completed'].includes(job.stage??''))return 100;
- if(typeof job?.progress==='number')return job.progress;
- if(job?.stage!=='preparing')return undefined;
- if(!job.preparationPhase||job.preparationWaitingForEditor)return undefined;
- const [done,total]=job.preparationPhase==='checkTargets'?[job.preparationEntries,job.preparationTotalEntries]:[job.preparationBytes,job.preparationTotalBytes];
- return typeof done==='number'&&typeof total==='number'&&total>0?Math.min(100,100*done/total):undefined;
+/** How a Unity request's transfer is going, on its job or its receipt. */
+export type UnityPreparation = Pick<
+  Job,
+  | 'preparationPhase'
+  | 'preparationWaitingForEditor'
+  | 'preparationBytes'
+  | 'preparationTotalBytes'
+  | 'preparationEntries'
+  | 'preparationTotalEntries'
+>;
+export function progressPercent(job: Job | undefined): number | undefined {
+  if (
+    job?.type === 'unity:import' &&
+    ['waitingForUser', 'importing', 'refreshing', 'compiling', 'completed'].includes(
+      job.stage ?? '',
+    )
+  )
+    return 100;
+  if (typeof job?.progress === 'number') return job.progress;
+  if (job?.stage !== 'preparing') return undefined;
+  if (!job.preparationPhase || job.preparationWaitingForEditor) return undefined;
+  const [done, total] =
+    job.preparationPhase === 'checkTargets'
+      ? [job.preparationEntries, job.preparationTotalEntries]
+      : [job.preparationBytes, job.preparationTotalBytes];
+  return typeof done === 'number' && typeof total === 'number' && total > 0
+    ? Math.min(100, (100 * done) / total)
+    : undefined;
 }
-export interface NativeRoot {id:string;path:string;label?:string;status:string}
-export interface AvatarOption {id:string;productId?:string;displayName?:string;sourceDisplayName?:string;sourceIdentityValue?:string;officialName:string;englishName?:string;labelStatus?:string;nameKind?:'single'|'bundle'|'fallback';labelQualifiers?:string[];shopName?:string;sourceShopName?:string;shopId?:string;aliases:string[];matchingProductCount?:number;baseProductIds?:string[];enabled?:boolean;explicitEnabled?:boolean}
-export interface AvatarSetting {enabled?:boolean;originalName?:string;englishName?:string;displayName?:string;shopName?:string;aliases?:string[]}
-export interface AvatarDelta {add:string[];remove:string[]}
-export interface ProductOverlayChange {id:string;patch:Partial<Product>;ownedAvatarsDelta?:AvatarDelta}
-export interface TagOption {id:string;label:string;kind:string;aliases:string[]}
-export interface FetchedProductMetadata {sourceUrl:string;title:string;category:Product['category'];tags:string[];thumbnailUrl:string|null}
-export interface LocalFileChanges {draftId:string;addSources:string[];removeFileIds:string[]}
-export async function updateLocalFiles(productId:string,changes:LocalFileChanges):Promise<{jobId:string;productIds:string[];state:string}>{return invokeAction('storage','local_files',{productId,...changes});}
-export interface NativeCollection {id:string;name:string;productIds:string[]}
-export interface LibraryCredential {id:string;name:string;store:string}
-export interface LibraryStatus {state:'ready'|'setup'|'unconfigured'|'blocked';path?:string;defaultPath?:string;errorCode?:string;locale?:string;missingCredentials?:LibraryCredential[]}
-export async function libraryStatus():Promise<LibraryStatus>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('library_status');}
-export async function openLibrary(path:string,locale?:Locale,newLibrary=false):Promise<{restarting:boolean}>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('library_open',{path,locale,newLibrary});}
-export interface NativeState {version:number;products:Product[];accounts:Account[];roots:NativeRoot[];jobs:NativeJob[];preferences:Record<string,unknown>;collections:Record<string,unknown>[];savedSearches:Record<string,unknown>[];customCategories?:CustomCategory[];sourceCoverage:Record<string,unknown>[];conflicts:Record<string,unknown>[];avatarOptions?:AvatarOption[];ownedBaseOptions?:AvatarOption[];tagOptions?:TagOption[];total?:number;counts?:{all:number;downloaded:number;attention:number;hidden?:number}}
-export const emptyState:NativeState={version:1,products:[],accounts:[],roots:[],jobs:[],preferences:{},collections:[],savedSearches:[],sourceCoverage:[],conflicts:[]};
-export interface DialogResult {path:string;content?:string;paths?:string[]}
-export async function invokeAction<T=any>(service:Service,action:string,args:Record<string,unknown>={}):Promise<T>{
- if(!isTauri())throw new Error('nativeUnavailable');
- const value=await invoke<T>(`${service}_action`,{action,args});
- if(service==='catalogue'&&['bootstrap','state'].includes(action)&&value&&typeof value==='object'&&'jobs' in value&&Array.isArray(value.jobs))value.jobs=value.jobs.map(importOnlyUnityJob);
- return value;
+/** An overlay change with its patch typed as product fields. */
+export type ProductOverlayChange = Omit<OverlayChange, 'patch'> & { patch: Partial<Product> };
+/** Files added to and removed from a product's own copies. */
+export type LocalFileChanges = Omit<LocalFiles, 'productId'>;
+export function updateLocalFiles(productId: string, changes: LocalFileChanges) {
+  return invokeAction('storage', 'local_files', { productId, ...changes });
 }
-export async function dialog(kind:'folder'|'open_file'|'save_file',options:Record<string,unknown>={}):Promise<DialogResult|null>{
- if(!isTauri())throw new Error('nativeUnavailable');
- const result=await invoke<DialogResult|string|string[]|null>('native_dialog',{kind,options});
- return typeof result==='string'?{path:result}:Array.isArray(result)?{path:result[0]??'',paths:result}:result;
+export async function libraryStatus(): Promise<LibraryStatus> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('library_status');
 }
-export interface NativeChange {scope?:string;productIds?:string[]}
-export async function subscribeChanged(reload:(change:NativeChange)=>void):Promise<()=>void>{return isTauri()?listen<{scope?:unknown;productIds?:unknown}>('nna:changed',event=>reload({scope:typeof event.payload?.scope==='string'?event.payload.scope:undefined,productIds:Array.isArray(event.payload?.productIds)?event.payload.productIds.filter((id):id is string=>typeof id==='string'):undefined})):()=>{};}
-export async function nativeFileAction<T=any>(action:string,args:Record<string,unknown>):Promise<T>{if(!isTauri())throw new Error('nativeUnavailable');return invoke<T>('native_file_action',{action,args});}
-export async function nativeZoom(scale:number):Promise<{scale:number}>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('native_zoom',{scale});}
-export interface AiKeyStatus {entryId?:string|null;configured?:boolean;provider:string;endpoint:string;model:string;keyPresent:boolean;visionSupported:boolean;keyRequired:boolean}
-export interface AiProviderPreset {id:string;label:string;endpoint:string;model:string;wire:string;visionSupported:boolean;keyRequired:boolean}
-export interface AiConnectionResult {ok:true;provider:string;model:string}
-export interface AiEntry {id:string;provider:string;endpoint:string;model:string;keyPresent:boolean;visionSupported:boolean;keyRequired:boolean}
-export interface AiEntryList {entries:AiEntry[];activeEntryId:string|null}
-export interface AiDraft {provider:string;endpoint:string;model:string;key:string}
-export interface AiDraftTest {ok:true;testToken:string}
-export type AiRequest = {action:'key_status'|'test_connection'|'providers'|'list_entries'}|({action:'test_draft'}&AiDraft)|({action:'save_entry';testToken:string}&AiDraft)|{action:'select_entry'|'remove_entry'|'test_entry';entryId:string};
-async function invokeAi<T>(request:AiRequest):Promise<T>{if(!isTauri())throw new Error('nativeUnavailable');return invoke<T>('ai_action',{request});}
-export function getAiKeyStatus():Promise<AiKeyStatus>{return invokeAi({action:'key_status'});}
-export function testAiConnection():Promise<AiConnectionResult>{return invokeAi({action:'test_connection'});}
-export function getAiProviders():Promise<{presets:AiProviderPreset[]}>{return invokeAi({action:'providers'});}
-export function listAiEntries():Promise<AiEntryList>{return invokeAi({action:'list_entries'});}
-export function testAiDraft(draft:AiDraft):Promise<AiDraftTest>{return invokeAi({action:'test_draft',...draft});}
-export function saveAiEntry(draft:AiDraft&{testToken:string}):Promise<AiEntryList>{return invokeAi({action:'save_entry',...draft});}
-export function selectAiEntry(entryId:string):Promise<AiEntryList>{return invokeAi({action:'select_entry',entryId});}
-export function removeAiEntry(entryId:string):Promise<AiEntryList>{return invokeAi({action:'remove_entry',entryId});}
-export function testAiEntry(entryId:string):Promise<AiConnectionResult>{return invokeAi({action:'test_entry',entryId});}
-export interface AiImage {mimeType:'image/jpeg'|'image/png';dataBase64:string}
-export interface AiChatMessage {role:'user'|'assistant';content:string}
-export interface AiSuggestionResponse {chatId?:string;answer:string;recommendations:{candidateId:string;origin:'library'|'store';productId?:string;title:string;provider:string;url?:string;thumbnailUrl?:string;thumbnailPath?:string;reason:string}[];searchStatus:{provider:string;status:'ok'|'unavailable'|'no_results'}[]}
-export interface AiSuggestionInput {requestId:string;chatId:string;entryId?:string;appLanguage:import('./model').Locale;prompt:string;preset:'outfit'|'similar'|'accessories'|'chat';scope:'library'|'online'|'both';stores:('booth'|'gumroad'|'jinxxy')[];category?:string;avatarId?:string;contextProductIds?:string[];history?:AiChatMessage[];images:AiImage[]}
-export async function sendAiSuggestion(input:AiSuggestionInput):Promise<AiSuggestionResponse>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('ai_suggestion_action',{request:{action:'send',...input}});}
-export async function cancelAiSuggestion(requestId:string):Promise<unknown>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('ai_suggestion_action',{request:{action:'cancel',requestId}});}
-export interface AiScopes {title:boolean;tags:boolean;description:boolean;files:boolean;images:boolean}
-export type AiMode='classify'|'organize';
-type AiAnalysisRequest={action:'start';mode:AiMode;productIds:string[];scopes:AiScopes}|{action:'cancel'|'retry';jobId:string}|{action:'dismiss_source_url';productId:string;url:string};
-async function invokeAiAnalysis<T>(request:AiAnalysisRequest):Promise<T>{if(!isTauri())throw new Error('nativeUnavailable');return invoke<T>('ai_analysis_action',{request});}
-export function startAi(request:{mode:AiMode;productIds:string[];scopes:AiScopes}):Promise<{jobId:string}>{return invokeAiAnalysis({action:'start',...request});}
-export function cancelAi(jobId:string):Promise<unknown>{return invokeAiAnalysis({action:'cancel',jobId});}
-export function retryAi(jobId:string):Promise<{jobId:string}>{return invokeAiAnalysis({action:'retry',jobId});}
-export function dismissAiSourceUrlCandidate(request:{productId:string;url:string}):Promise<unknown>{return invokeAiAnalysis({action:'dismiss_source_url',...request});}
-export function saveAiPreferences(patch:{aiEnabled:boolean;aiScopes:AiScopes}):Promise<unknown>{return invokeAction('catalogue','preferences',{patch});}
-export async function openExternal(url:string):Promise<void>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('external_open',{url});}
-export interface AppRelease {version:string;notes:string;releaseUrl:string}
-export interface BridgeRelease {version:string;unitypackageUrl:string;releaseUrl:string}
-export interface UpdateCheck {app:{currentVersion:string;installSupported:boolean;available?:AppRelease;errorCode?:string};bridge?:BridgeRelease;bridgeError?:string}
-export interface UpdateProgress {stage:'downloading'|'verifying'|'installing';downloadedBytes:number;totalBytes?:number|null}
-export async function checkUpdates():Promise<UpdateCheck>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('updates_check');}
-export async function installUpdate(version:string):Promise<void>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('updates_install',{version});}
-export async function subscribeUpdateProgress(callback:(progress:UpdateProgress)=>void):Promise<()=>void>{return isTauri()?listen<UpdateProgress>('updates:progress',event=>callback(event.payload)):()=>{};}
-export type LocalImportProgress={jobId:string;phase:'preparing'|'copying'|'verifying'|'extracting'|'finalizing';bytes:number|null;totalBytes:number|null};
-export async function subscribeLocalImportProgress(callback:(progress:LocalImportProgress)=>void):Promise<()=>void>{return isTauri()?listen<LocalImportProgress>('local-import:progress',event=>callback(event.payload)):()=>{};}
-export async function fetchProductMetadata(url:string,editedProductId?:string):Promise<FetchedProductMetadata>{return invokeAction('booth','fetch_product_metadata',{url,editedProductId});}
-export function previewSource(path:string|undefined):string|undefined{if(!path)return undefined;if(/^(https:\/\/|asset:|https?:\/\/asset\.localhost\/)/.test(path))return path;return isTauri()?convertFileSrc(path):undefined;}
+export async function openLibrary(
+  path: string,
+  locale?: Locale,
+  newLibrary = false,
+): Promise<LibraryOpened> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('library_open', { path, locale, newLibrary });
+}
+/** The parts of `bootstrap` the shell may not have loaded yet. */
+type LaterParts =
+  | 'customCategories'
+  | 'avatarOptions'
+  | 'ownedBaseOptions'
+  | 'tagOptions'
+  | 'total'
+  | 'counts';
+/** The open library as the shell holds it: `bootstrap`, refreshed by `state` and list queries.
+ * Preferences missing from the library read as none. */
+export type NativeState = Omit<Bootstrap, LaterParts | 'products' | 'preferences'> &
+  Partial<Pick<Bootstrap, LaterParts>> & {
+    products: Product[];
+    preferences: Preferences;
+  };
+export const emptyState: NativeState = {
+  version: 1,
+  products: [],
+  accounts: [],
+  roots: [],
+  jobs: [],
+  preferences: {},
+  collections: [],
+  savedSearches: [],
+  sourceCoverage: [],
+};
+/** What a file dialog picked, with the first path as `path`. */
+interface DialogResult {
+  path: string;
+  paths?: string[];
+}
+export async function invokeAction<S extends Service, A extends Action<S>>(
+  service: S,
+  action: A,
+  ...rest: ArgsParam<S, A>
+): Promise<ActionResult<S, A>> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  const args = rest[0] ?? {};
+  const value = await invoke<ActionResult<S, A>>(`${service}_action`, { action, args });
+  if (
+    service === 'catalogue' &&
+    ['bootstrap', 'state'].includes(action) &&
+    value &&
+    typeof value === 'object' &&
+    'jobs' in value &&
+    Array.isArray(value.jobs)
+  )
+    value.jobs = value.jobs.map(importOnlyUnityJob);
+  return value;
+}
+export async function dialog(
+  kind: DialogKind,
+  options: DialogOptions = {},
+): Promise<DialogResult | null> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  const result = await invoke<DialogPick | null>('native_dialog', { kind, options });
+  return result === null
+    ? null
+    : typeof result === 'string'
+      ? { path: result }
+      : { path: result[0] ?? '', paths: result };
+}
+export async function subscribeChanged(
+  reload: (change: NativeChange) => void,
+): Promise<() => void> {
+  return isTauri()
+    ? listen<NativeChange>('nna:changed', (event) => reload(event.payload))
+    : () => {};
+}
+type FileAction = FileRequest['action'];
+export async function nativeFileAction<A extends FileAction>(
+  action: A,
+  args: Omit<Extract<FileRequest, { action: A }>, 'action'>,
+): Promise<FileResponses[A]> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke<FileResponses[A]>('native_file_action', { action, args });
+}
+export async function nativeZoom(scale: number): Promise<Zoomed> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('native_zoom', { scale });
+}
+export async function openExternal(url: string): Promise<void> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('external_open', { url });
+}
+export async function checkUpdates(): Promise<UpdateCheck> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('updates_check');
+}
+export async function installUpdate(version: string): Promise<void> {
+  if (!isTauri()) throw new Error('nativeUnavailable');
+  return invoke('updates_install', { version });
+}
+export async function subscribeUpdateProgress(
+  callback: (progress: UpdateProgress) => void,
+): Promise<() => void> {
+  return isTauri()
+    ? listen<UpdateProgress>('updates:progress', (event) => callback(event.payload))
+    : () => {};
+}
+export type LocalImportProgress = {
+  jobId: string;
+  phase: 'preparing' | 'copying' | 'verifying' | 'extracting';
+  bytes: number | null;
+  totalBytes: number | null;
+};
+
+export async function subscribeLocalImportProgress(
+  callback: (progress: LocalImportProgress) => void,
+): Promise<() => void> {
+  return isTauri()
+    ? listen<LocalImportProgress>('local-import:progress', (event) => callback(event.payload))
+    : () => {};
+}
+
+export function fetchProductMetadata(
+  url: string,
+  editedProductId?: string,
+): Promise<ProductMetadata> {
+  return invokeAction('booth', 'fetch_product_metadata', { url, editedProductId });
+}
+export function previewSource(path: string | null | undefined): string | undefined {
+  if (!path) return undefined;
+  if (/^(https:\/\/|asset:|https?:\/\/asset\.localhost\/)/.test(path)) return path;
+  return isTauri() ? convertFileSrc(path) : undefined;
+}
 /** Only stable codes reach UI; private response text and URLs are never surfaced. */
-export function errorCode(error:unknown):string {const value=typeof error==='string'?error:error instanceof Error?error.message:error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'?error.code:'';return /^[A-Za-z][A-Za-z0-9_.-]{0,80}$/.test(value)?value:'operationFailed';}
+export function errorCode(error: unknown): string {
+  const value =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : '';
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,80}$/.test(value) ? value : 'operationFailed';
+}
 
-export interface UnityEditor {instanceId:string;sessionId:string;projectName:string;projectRoot:string;unityVersion:string;bridgeVersion?:string|null;busy:boolean}
-export interface UnityLeaf {leafRef:string;productId:string;productTitle:string;fileId:string;sourceName:string;variantName:string;revision:string;memberPath:string;displayName:string;relativePath:string;kind:'unitypackage'|'file';bytes:number;sha256:string}
-export interface UnityReceipt extends UnityPreparation {requestId:string;fingerprint:string;instanceId:string;sessionId:string;stage:string;staged:boolean;writesStarted:boolean;updatedUtc:string;error?:string|null;results:{entryId:string;path:string;state:'applied'|'skipped'|'failed';message?:string|null}[]}
-export interface UnityDetails {jobId:string;projectName:string;projectRoot:string;unityVersion:string;stage:string;errorCode?:string|null;receipt:UnityReceipt|null}
-export const listUnityEditors=()=>invokeAction<{editors:UnityEditor[]}>('unity','list_editors');
-export const unityInventory=(productIds:string[])=>invokeAction<{files:UnityLeaf[]}>('unity','inventory',{productIds});
+export const listUnityEditors = () => invokeAction('unity', 'list_editors');
+export const unityInventory = (productIds: string[]) =>
+  invokeAction('unity', 'inventory', { productIds });
 /** One package opens in Unity's own importer and leaves no job; anything else is a Bridge request. */
-export const submitUnity=(input:{productIds:string[];leafRefs:string[];instanceId:string;sessionId:string;locale?:string})=>invokeAction<{jobId?:string;native?:true}>('unity','submit',input);
-export const unityDetails=(jobId:string)=>invokeAction<UnityDetails>('unity','details',{jobId});
-export const queryUnity=(jobId:string)=>invokeAction<UnityDetails>('unity','status',{jobId});
-export const cancelUnity=(jobId:string)=>invokeAction<UnityDetails>('unity','cancel',{jobId});
-export const retryUnityInventory=(jobId:string)=>invokeAction<{productIds:string[];leafRefs:string[]}>('unity','retry_inventory',{jobId});
-
-export type {AiPersonalization,AiPersonalityId} from './ai-personalization';
-export interface AiChatSummary {id:string;title:string;presetId:string;createdAt:string;updatedAt:string}
-export interface AiStoredTurn {id:string;role:'user'|'assistant';content:string;images:AiImage[];createdAt:string;status?:'pending'|'sent'|'failed'|'cancelled';response?:AiSuggestionResponse}
-export interface AiChatDetail {chat:AiChatSummary;messages:AiStoredTurn[]}
-export interface AiCustomPreset {id:string;title:string;description:string;systemPrompt:string}
-export interface AiPresetDraft {id?:string;title:string;description:string;systemPrompt:string}
-export interface AiWorkspace {chats:AiChatSummary[];presets:AiCustomPreset[];personalization:import('./ai-personalization').AiPersonalization}
-async function invokeAiWorkspace<T>(action:string,args:Record<string,unknown>={}):Promise<T>{if(!isTauri())throw new Error('nativeUnavailable');return invoke<T>('ai_suggestion_action',{request:{action,...args}});}
-export function listAiWorkspace():Promise<AiWorkspace>{return invokeAiWorkspace('list_workspace');}
-export function createAiChat(presetId:string):Promise<AiChatDetail>{return invokeAiWorkspace('create_chat',{presetId});}
-export function getAiChat(chatId:string):Promise<AiChatDetail>{return invokeAiWorkspace('get_chat',{chatId});}
-export async function renameAiChat(chatId:string,title:string):Promise<AiChatSummary>{const result=await invokeAiWorkspace<{chat:AiChatSummary}>('rename_chat',{chatId,title});return result.chat;}
-export function deleteAiChat(chatId:string):Promise<unknown>{return invokeAiWorkspace('delete_chat',{chatId});}
-export async function saveAiPersonalization(personalization:import('./ai-personalization').AiPersonalization):Promise<import('./ai-personalization').AiPersonalization>{const result=await invokeAiWorkspace<{personalization:import('./ai-personalization').AiPersonalization}>('save_personalization',{personalization});return result.personalization;}
-export async function saveAiPreset(preset:AiPresetDraft):Promise<AiCustomPreset>{const result=await invokeAiWorkspace<{preset:AiCustomPreset}>('save_preset',{preset});return result.preset;}
-export function deleteAiPreset(presetId:string):Promise<unknown>{return invokeAiWorkspace('delete_preset',{presetId});}
-export async function importAiPreset(json:string):Promise<AiCustomPreset>{const result=await invokeAiWorkspace<{preset:AiCustomPreset}>('import_preset',{json});return result.preset;}
-export function exportAiPreset(presetId:string):Promise<{json:string}>{return invokeAiWorkspace('export_preset',{presetId});}
-export async function readAiDroppedImages(paths:string[]):Promise<AiImage[]>{const result=await invokeAiWorkspace<{images:AiImage[]}>('read_images',{paths});return result.images;}
-export async function subscribeAiImageDrop(callback:(paths:string[])=>void):Promise<()=>void>{if(!isTauri())return()=>{};return getCurrentWebview().onDragDropEvent(event=>{if(event.payload.type==='drop')callback(event.payload.paths);});}
+export const submitUnity = (input: {
+  productIds: string[];
+  leafRefs: string[];
+  instanceId: string;
+  sessionId: string;
+  locale?: string;
+}) => invokeAction('unity', 'submit', input);
+export const unityDetails = (jobId: string) => invokeAction('unity', 'details', { jobId });
+export const queryUnity = (jobId: string) => invokeAction('unity', 'status', { jobId });
+export const cancelUnity = (jobId: string) => invokeAction('unity', 'cancel', { jobId });
+export const retryUnityInventory = (jobId: string) =>
+  invokeAction('unity', 'retry_inventory', { jobId });

@@ -3,6 +3,7 @@
 //! untouched. Sync reads public BOOTH pages and the documents they link, plus a 0-yen
 //! license download with an account that holds the product. A failed read never replaces
 //! a result, and a user's edit always wins over a synced one.
+pub(crate) mod api;
 mod fetch;
 mod parse;
 #[cfg(test)]
@@ -44,11 +45,20 @@ fn vn3_cell(letter: &str, code: &str) -> Option<&'static str> {
         ("X", "present") => Some("yes"),
         ("V" | "X", _) | (_, "not_applicable") => None,
         // Asking the rights holder first is not permission; private use alone is not use.
-        (_, "ask" | "private_only" | "deny" | "deny_create" | "deny_distribute" | "deny_except_private") => Some("deny"),
         (
             _,
-            "allow" | "commercial" | "doujin" | "noncommercial" | "allow_public" | "allow_limited" | "allow_segregated"
-            | "allow_if_modified" | "free_only" | "free_only_bound" | "free_only_users" | "bound" | "users_only",
+            "ask"
+            | "private_only"
+            | "deny"
+            | "deny_create"
+            | "deny_distribute"
+            | "deny_except_private",
+        ) => Some("deny"),
+        (
+            _,
+            "allow" | "commercial" | "doujin" | "noncommercial" | "allow_public" | "allow_limited"
+            | "allow_segregated" | "allow_if_modified" | "free_only" | "free_only_bound"
+            | "free_only_users" | "bound" | "users_only",
         ) => Some("allow"),
         _ => None,
     }
@@ -70,7 +80,13 @@ pub fn cells(kind: &str, answers: &Value) -> BTreeMap<String, String> {
             }
         }
         "uv" => {
-            let term = |name: &str| if answers[name] == true { "allow" } else { "deny" };
+            let term = |name: &str| {
+                if answers[name] == true {
+                    "allow"
+                } else {
+                    "deny"
+                }
+            };
             for (letter, value) in [
                 ("A", "allow"),
                 ("B", term("ccu")),
@@ -87,7 +103,14 @@ pub fn cells(kind: &str, answers: &Value) -> BTreeMap<String, String> {
                 ("S", term("dmd")),
                 ("U", term("ddw")),
                 ("V", "required"),
-                ("X", if answers["remarks"] == true { "yes" } else { "no" }),
+                (
+                    "X",
+                    if answers["remarks"] == true {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                ),
             ] {
                 set(letter, value);
             }
@@ -115,8 +138,10 @@ fn valid_cells(value: &Value) -> BTreeMap<String, String> {
         .flatten()
         .filter_map(|(letter, v)| {
             let v = v.as_str()?;
-            (letter.len() == 1 && parse::LETTERS.contains(letter.as_str()) && cell_values(letter).contains(&v))
-                .then(|| (letter.clone(), v.to_owned()))
+            (letter.len() == 1
+                && parse::LETTERS.contains(letter.as_str())
+                && cell_values(letter).contains(&v))
+            .then(|| (letter.clone(), v.to_owned()))
         })
         .collect()
 }
@@ -134,7 +159,11 @@ fn booth_item(url: &str) -> Option<String> {
     let segments: Vec<_> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
     let at = segments.iter().position(|s| *s == "items")?;
     let id = segments.get(at + 1)?;
-    (at <= 1 && segments.len() == at + 2 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| (*id).to_owned())
+    (at <= 1
+        && segments.len() == at + 2
+        && !id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit()))
+    .then(|| (*id).to_owned())
 }
 
 /// A product whose BOOTH page may hold a license, with an account that holds it.
@@ -159,7 +188,10 @@ fn targets(catalogue: &Catalogue) -> Result<Vec<Target>> {
                 .get("account", account)
                 .ok()
                 .flatten()
-                .is_some_and(|record| record["disconnected"] != true && crate::stores::has_local_session(catalogue, &record))
+                .is_some_and(|record| {
+                    record["disconnected"] != true
+                        && crate::stores::has_local_session(catalogue, &record)
+                })
         })
     };
     Ok(catalogue
@@ -167,7 +199,12 @@ fn targets(catalogue: &Catalogue) -> Result<Vec<Target>> {
         .into_iter()
         .filter_map(|(product, facts)| {
             let item = match facts["provider"].as_str() {
-                Some("booth") if facts["availability"] != "unavailable" && product.bytes().all(|b| b.is_ascii_digit()) => product.clone(),
+                Some("booth")
+                    if facts["availability"] != "unavailable"
+                        && product.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    product.clone()
+                }
                 Some("local") => booth_item(facts["sourceUrl"].as_str()?)?,
                 _ => return None,
             };
@@ -175,11 +212,20 @@ fn targets(catalogue: &Catalogue) -> Result<Vec<Target>> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|row| Some((row["accountId"].as_str()?, rank(row["source"].as_str().unwrap_or_default()))))
+                .filter_map(|row| {
+                    Some((
+                        row["accountId"].as_str()?,
+                        rank(row["source"].as_str().unwrap_or_default()),
+                    ))
+                })
                 .filter(|(_, rank)| *rank < 3)
                 .min_by_key(|(account, rank)| (!usable(account), *rank))
                 .map(|(account, _)| account.to_owned());
-            Some(Target { product, item, account })
+            Some(Target {
+                product,
+                item,
+                account,
+            })
         })
         .collect())
 }
@@ -230,8 +276,16 @@ impl LicenseService {
     }
 
     /// Runs `work` on the license database, creating it only when `create`.
-    fn with_db<T>(&self, create: bool, work: impl FnOnce(&Connection) -> Result<T>) -> Result<Option<T>> {
-        let mut db = self.inner.db.lock().map_err(|_| anyhow::anyhow!("licenses.lock"))?;
+    fn with_db<T>(
+        &self,
+        create: bool,
+        work: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let mut db = self
+            .inner
+            .db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("licenses.lock"))?;
         if db.is_none() {
             if !create && !self.inner.path.is_file() {
                 return Ok(None);
@@ -253,15 +307,33 @@ impl LicenseService {
         Ok(self
             .with_db(false, |conn| {
                 let mut map = HashMap::new();
-                let mut found = conn.prepare("SELECT product_id,kind,answers FROM results WHERE state='found'")?;
-                for row in found.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))? {
+                let mut found = conn
+                    .prepare("SELECT product_id,kind,answers FROM results WHERE state='found'")?;
+                for row in found.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })? {
                     let (product, kind, answers) = row?;
-                    map.insert(product, cells(&kind, &serde_json::from_str(&answers).unwrap_or(Value::Null)));
+                    map.insert(
+                        product,
+                        cells(
+                            &kind,
+                            &serde_json::from_str(&answers).unwrap_or(Value::Null),
+                        ),
+                    );
                 }
                 let mut edits = conn.prepare("SELECT product_id,cells FROM edits")?;
-                for row in edits.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+                for row in edits.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })? {
                     let (product, edited) = row?;
-                    map.insert(product, valid_cells(&serde_json::from_str(&edited).unwrap_or(Value::Null)));
+                    map.insert(
+                        product,
+                        valid_cells(&serde_json::from_str(&edited).unwrap_or(Value::Null)),
+                    );
                 }
                 Ok(map)
             })?
@@ -278,27 +350,38 @@ impl LicenseService {
         let mut ids: Vec<String> = self
             .effective()?
             .into_iter()
-            .filter(|(_, cells)| wanted.iter().all(|(letter, value)| cells.get(letter) == Some(value)))
+            .filter(|(_, cells)| {
+                wanted
+                    .iter()
+                    .all(|(letter, value)| cells.get(letter) == Some(value))
+            })
             .map(|(product, _)| product)
             .collect();
         ids.sort();
         Ok(Some(ids))
     }
 
-    pub async fn command(&self, app: &AppHandle, action: &str, args: Value) -> Result<Value> {
-        match action {
-            "status" => {
+    pub async fn command(&self, app: &AppHandle, request: api::LicensesRequest) -> Result<Value> {
+        use api::LicensesRequest as Request;
+        match request {
+            Request::Status => {
                 let counts = self.with_db(false, |conn| {
                     let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0));
-                    Ok(json!({
-                        "found": count("SELECT COUNT(*) FROM results WHERE state='found'")?,
-                        "edited": count("SELECT COUNT(*) FROM edits")?,
-                    }))
+                    Ok(api::LicenseCounts {
+                        found: count("SELECT COUNT(*) FROM results WHERE state='found'")?,
+                        edited: count("SELECT COUNT(*) FROM edits")?,
+                    })
                 })?;
-                Ok(json!({"exists": counts.is_some(), "counts": counts, "running": self.running_job()}))
+                Ok(serde_json::to_value(api::LicenseStatus {
+                    exists: counts.is_some(),
+                    counts,
+                    running: self.running_job(),
+                })?)
             }
-            "get" => {
-                let product = args["productId"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?;
+            Request::Get { product_id } => {
+                let product = Some(product_id.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?;
                 let detail = self.with_db(false, |conn| {
                     let result = conn
                         .query_row(
@@ -308,19 +391,27 @@ impl LicenseService {
                         )
                         .optional()?;
                     let edited: Option<String> = conn.query_row("SELECT cells FROM edits WHERE product_id=?1", [product], |row| row.get(0)).optional()?;
-                    Ok(json!({
-                        "synced": result.as_ref().map(|(kind, version, source, answers, checked)| json!({
-                            "kind": kind, "version": version, "source": source, "checkedAt": checked,
-                            "cells": cells(kind, &serde_json::from_str(answers).unwrap_or(Value::Null)),
-                        })),
-                        "edited": edited.map(|e| valid_cells(&serde_json::from_str(&e).unwrap_or(Value::Null))),
-                    }))
+                    Ok(api::LicenseDetail {
+                        synced: result.map(|(kind, version, source, answers, checked)| {
+                            let cells = cells(&kind, &serde_json::from_str(&answers).unwrap_or(Value::Null));
+                            api::SyncedLicense { kind, version, source, checked_at: checked, cells }
+                        }),
+                        edited: edited.map(|e| valid_cells(&serde_json::from_str(&e).unwrap_or(Value::Null))),
+                    })
                 })?;
-                Ok(detail.unwrap_or(json!({"synced": null, "edited": null})))
+                Ok(serde_json::to_value(detail.unwrap_or(
+                    api::LicenseDetail {
+                        synced: None,
+                        edited: None,
+                    },
+                ))?)
             }
-            "set" => {
-                let product = args["productId"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?.to_owned();
-                let edited = (!args["cells"].is_null()).then(|| valid_cells(&args["cells"]));
+            Request::Set { product_id, cells } => {
+                let product = Some(product_id)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("INVALID_ARGUMENT_productId"))?;
+                // `null` and a missing table both remove the edit.
+                let edited = cells.as_ref().map(valid_cells);
                 self.with_db(edited.is_some(), |conn| {
                     match &edited {
                         Some(cells) => conn.execute(
@@ -331,27 +422,59 @@ impl LicenseService {
                     };
                     Ok(())
                 })?;
-                let _ = app.emit("nna:changed", json!({"scope":"licenses","productIds":[product]}));
-                Ok(json!({}))
+                let _ = app.emit(
+                    "nna:changed",
+                    crate::ipc::Change::products("licenses", [product]),
+                );
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            "sync" => {
-                let ids = args["productIds"].as_array().map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>());
-                let job = self.sync(app, ids.map(Selection::Chosen).unwrap_or(Selection::Unfinished)).await?;
-                Ok(json!({"jobId": job}))
+            Request::Sync { product_ids } => {
+                let job = self
+                    .sync(
+                        app,
+                        product_ids
+                            .map(Selection::Chosen)
+                            .unwrap_or(Selection::Unfinished),
+                    )
+                    .await?;
+                Ok(serde_json::to_value(api::LicenseJob { job_id: job })?)
             }
-            "retry" => {
-                let job_id = args["jobId"].as_str().unwrap_or_default();
-                let job = self.inner.catalogue.get("job", job_id)?.filter(|job| job["type"] == JOB_TYPE).ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
-                let done: BTreeSet<&str> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                let failed: BTreeSet<&str> = job["failures"].as_object().into_iter().flatten().map(|(id, _)| id.as_str()).collect();
-                let ids = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| failed.contains(id) || !done.contains(id)).map(str::to_owned).collect();
-                Ok(json!({"jobId": self.sync(app, Selection::Chosen(ids)).await?}))
+            Request::Retry { job_id } => {
+                let job = self
+                    .inner
+                    .catalogue
+                    .get("job", &job_id)?
+                    .filter(|job| job["type"] == JOB_TYPE)
+                    .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                let done: BTreeSet<&str> = job["completedProductIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let failed: BTreeSet<&str> = job["failures"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(id, _)| id.as_str())
+                    .collect();
+                let ids = job["productIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .filter(|id| failed.contains(id) || !done.contains(id))
+                    .map(str::to_owned)
+                    .collect();
+                Ok(serde_json::to_value(api::LicenseJob {
+                    job_id: self.sync(app, Selection::Chosen(ids)).await?,
+                })?)
             }
-            "cancel" => {
-                self.cancel(args["jobId"].as_str());
-                Ok(json!({}))
+            Request::Cancel { job_id } => {
+                self.cancel(job_id.as_deref());
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            "delete" => {
+            Request::Delete => {
                 self.cancel(None);
                 for _ in 0..600 {
                     if self.running_job().is_none() {
@@ -360,24 +483,32 @@ impl LicenseService {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 ensure!(self.running_job().is_none(), "licenses_busy");
-                let mut db = self.inner.db.lock().map_err(|_| anyhow::anyhow!("licenses.lock"))?;
+                let mut db = self
+                    .inner
+                    .db
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("licenses.lock"))?;
                 *db = None;
                 for suffix in ["", "-journal"] {
                     let path = PathBuf::from(format!("{}{suffix}", self.inner.path.display()));
                     if path.is_file() {
-                        std::fs::remove_file(&path).map_err(|_| anyhow::anyhow!("licenses_delete_failed"))?;
+                        std::fs::remove_file(&path)
+                            .map_err(|_| anyhow::anyhow!("licenses_delete_failed"))?;
                     }
                 }
                 drop(db);
-                let _ = app.emit("nna:changed", json!({"scope":"licenses"}));
-                Ok(json!({}))
+                let _ = app.emit("nna:changed", crate::ipc::Change::scope("licenses"));
+                Ok(serde_json::to_value(api::Done {})?)
             }
-            _ => bail!("UNKNOWN_ACTION"),
         }
     }
 
     fn running_job(&self) -> Option<String> {
-        self.inner.running.lock().ok().and_then(|running| running.as_ref().map(|(id, _)| id.clone()))
+        self.inner
+            .running
+            .lock()
+            .ok()
+            .and_then(|running| running.as_ref().map(|(id, _)| id.clone()))
     }
 
     /// Stops the running job, or only the named one.
@@ -396,7 +527,9 @@ impl LicenseService {
     pub async fn start(&self, app: &AppHandle) -> Result<()> {
         self.follow_syncs(app);
         for job in self.inner.catalogue.list("job")? {
-            if job["type"] == JOB_TYPE && matches!(job["state"].as_str(), Some("queued" | "running")) {
+            if job["type"] == JOB_TYPE
+                && matches!(job["state"].as_str(), Some("queued" | "running"))
+            {
                 // A job that cannot resume is left for the next start; reads still follow syncs.
                 let _ = self.resume(app, job);
             }
@@ -408,15 +541,22 @@ impl LicenseService {
         let service = self.clone();
         let handle = app.clone();
         app.listen("nna:changed", move |event| {
-            let scope = serde_json::from_str::<Value>(event.payload()).ok().and_then(|v| v["scope"].as_str().map(str::to_owned));
-            if scope.as_deref() != Some("booth") || service.inner.automatic_pending.swap(true, Ordering::AcqRel) {
+            let scope = serde_json::from_str::<Value>(event.payload())
+                .ok()
+                .and_then(|v| v["scope"].as_str().map(str::to_owned));
+            if scope.as_deref() != Some("booth")
+                || service.inner.automatic_pending.swap(true, Ordering::AcqRel)
+            {
                 return;
             }
             let service = service.clone();
             let handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                service.inner.automatic_pending.store(false, Ordering::Release);
+                service
+                    .inner
+                    .automatic_pending
+                    .store(false, Ordering::Release);
                 let _ = service.automatic(&handle).await;
             });
         });
@@ -425,7 +565,8 @@ impl LicenseService {
     /// Continues a job the last run left open; one that cannot continue is cancelled, so no
     /// job stays running with nothing behind it.
     fn resume(&self, app: &AppHandle, mut job: Value) -> Result<()> {
-        if self.enabled() && self.running_job().is_none() && self.resume_work(app, &mut job).is_ok() {
+        if self.enabled() && self.running_job().is_none() && self.resume_work(app, &mut job).is_ok()
+        {
             return Ok(());
         }
         job["state"] = json!("cancelled");
@@ -434,11 +575,21 @@ impl LicenseService {
     }
 
     fn resume_work(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
-        let mut done: BTreeSet<String> = job["completedProductIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+        let mut done: BTreeSet<String> = job["completedProductIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
         // The asset being read when the App stopped is read once more, since the App may just
         // have closed or updated. Stopped on it twice, as when its file crashes the reader, it
         // is not read again automatically; Retry or Sync licenses reads it.
-        if let Some(current) = job["current"].as_str().filter(|id| !done.contains(*id)).map(str::to_owned) {
+        if let Some(current) = job["current"]
+            .as_str()
+            .filter(|id| !done.contains(*id))
+            .map(str::to_owned)
+        {
             if job["resumedCurrent"].as_str() == Some(current.as_str()) {
                 self.record(&current, fetch::Outcome::Failed(INTERRUPTED.into()))?;
                 job["failures"][&current] = json!({"productId": current, "errorCode": INTERRUPTED});
@@ -450,8 +601,17 @@ impl LicenseService {
                 job["resumedCurrent"] = json!(current);
             }
         }
-        let left: BTreeSet<&str> = job["productIds"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|id| !done.contains(*id)).collect();
-        let mut work: Vec<Target> = targets(&self.inner.catalogue)?.into_iter().filter(|t| left.contains(t.product.as_str())).collect();
+        let left: BTreeSet<&str> = job["productIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|id| !done.contains(*id))
+            .collect();
+        let mut work: Vec<Target> = targets(&self.inner.catalogue)?
+            .into_iter()
+            .filter(|t| left.contains(t.product.as_str()))
+            .collect();
         // The interrupted asset goes first, so a second stop on it is recognised.
         if let Some(current) = job["resumedCurrent"].as_str() {
             if let Some(at) = work.iter().position(|t| t.product == current) {
@@ -468,7 +628,8 @@ impl LicenseService {
         }
         // BOOTH's own sync ends with this scope; other stores' events find nothing new to read.
         let store_busy = self.inner.catalogue.list("job")?.iter().any(|job| {
-            job["type"].as_str().is_some_and(|t| t.starts_with("booth")) && matches!(job["state"].as_str(), Some("queued" | "running"))
+            job["type"].as_str().is_some_and(|t| t.starts_with("booth"))
+                && matches!(job["state"].as_str(), Some("queued" | "running"))
         });
         if !store_busy {
             self.sync(app, Selection::New).await?;
@@ -494,9 +655,14 @@ impl LicenseService {
         let work: Vec<Target> = match &selection {
             Selection::Chosen(ids) => {
                 let chosen: BTreeSet<&String> = ids.iter().collect();
-                all.into_iter().filter(|t| chosen.contains(&t.product)).collect()
+                all.into_iter()
+                    .filter(|t| chosen.contains(&t.product))
+                    .collect()
             }
-            _ => all.into_iter().filter(|t| !settled.contains(&t.product)).collect(),
+            _ => all
+                .into_iter()
+                .filter(|t| !settled.contains(&t.product))
+                .collect(),
         };
         if work.is_empty() {
             return Ok(None);
@@ -515,8 +681,11 @@ impl LicenseService {
     fn settled(&self, condition: &str) -> Result<BTreeSet<String>> {
         Ok(self
             .with_db(false, |conn| {
-                let mut statement = conn.prepare(&format!("SELECT product_id FROM results WHERE {condition}"))?;
-                let ids = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<BTreeSet<_>>>()?;
+                let mut statement =
+                    conn.prepare(&format!("SELECT product_id FROM results WHERE {condition}"))?;
+                let ids = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()?;
                 Ok(ids)
             })?
             .unwrap_or_default())
@@ -527,7 +696,11 @@ impl LicenseService {
         let cancel = Arc::new(AtomicBool::new(false));
         let job_id = job["id"].as_str().unwrap_or_default().to_owned();
         {
-            let mut running = self.inner.running.lock().map_err(|_| anyhow::anyhow!("licenses.lock"))?;
+            let mut running = self
+                .inner
+                .running
+                .lock()
+                .map_err(|_| anyhow::anyhow!("licenses.lock"))?;
             ensure!(running.is_none(), "licenses_busy");
             *running = Some((job_id.clone(), cancel.clone()));
         }
@@ -560,14 +733,23 @@ impl LicenseService {
             if let Ok(mut running) = service.inner.running.lock() {
                 *running = None;
             }
-            let _ = app.emit("nna:changed", json!({"scope":"licenses"}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("licenses"));
         });
         Ok(())
     }
 
-    async fn work(&self, app: &AppHandle, job: &mut Value, work: Vec<Target>, cancel: &AtomicBool) -> Result<()> {
+    async fn work(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        work: Vec<Target>,
+        cancel: &AtomicBool,
+    ) -> Result<()> {
         let reader = fetch::Reader::new(self.inner.booth.clone())?;
-        let total = job["productIds"].as_array().map_or(work.len(), Vec::len).max(1);
+        let total = job["productIds"]
+            .as_array()
+            .map_or(work.len(), Vec::len)
+            .max(1);
         let mut saved = std::time::Instant::now();
         let mut changed = vec![];
         for target in work {
@@ -578,7 +760,9 @@ impl LicenseService {
             // down is not read again at the next start or by the next automatic read.
             job["current"] = json!(target.product);
             job["updatedAt"] = json!(now());
-            self.inner.catalogue.put("job", job["id"].as_str().unwrap_or_default(), job.clone())?;
+            self.inner
+                .catalogue
+                .put("job", job["id"].as_str().unwrap_or_default(), job.clone())?;
             self.with_db(true, |conn| {
                 conn.execute(
                     "INSERT INTO results(product_id,state,code,checked_at) VALUES(?1,'failed',?2,?3) ON CONFLICT(product_id) DO NOTHING",
@@ -586,10 +770,20 @@ impl LicenseService {
                 )?;
                 Ok(())
             })?;
-            let holder = target.account.as_deref().map(|account| Holder { booth: &self.inner.booth, app, account });
-            let outcome = reader.read(&target.item, holder.as_ref().map(|h| h as &dyn fetch::FreeDownload)).await;
+            let holder = target.account.as_deref().map(|account| Holder {
+                booth: &self.inner.booth,
+                app,
+                account,
+            });
+            let outcome = reader
+                .read(
+                    &target.item,
+                    holder.as_ref().map(|h| h as &dyn fetch::FreeDownload),
+                )
+                .await;
             if let fetch::Outcome::Failed(code) = &outcome {
-                job["failures"][&target.product] = json!({"productId": target.product, "errorCode": code});
+                job["failures"][&target.product] =
+                    json!({"productId": target.product, "errorCode": code});
             } else if let Some(failures) = job["failures"].as_object_mut() {
                 failures.remove(&target.product);
             }
@@ -602,12 +796,18 @@ impl LicenseService {
             job["progress"] = json!((100 * done / total).min(100));
             if saved.elapsed() > std::time::Duration::from_secs(2) {
                 self.save_job(app, job)?;
-                let _ = app.emit("nna:changed", json!({"scope":"licenses","productIds":changed}));
+                let _ = app.emit(
+                    "nna:changed",
+                    crate::ipc::Change::products("licenses", changed),
+                );
                 changed = vec![];
                 saved = std::time::Instant::now();
             }
         }
-        let _ = app.emit("nna:changed", json!({"scope":"licenses","productIds":changed}));
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change::products("licenses", changed),
+        );
         Ok(())
     }
 
@@ -638,7 +838,7 @@ impl LicenseService {
         job["updatedAt"] = json!(now());
         let id = job["id"].as_str().unwrap_or_default().to_owned();
         self.inner.catalogue.put("job", &id, job)?;
-        let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
         Ok(())
     }
 }
@@ -650,8 +850,14 @@ struct Holder<'a> {
     account: &'a str,
 }
 impl fetch::FreeDownload for Holder<'_> {
-    fn download<'a>(&'a self, route: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-        Box::pin(self.booth.free_license_file(self.app, self.account, route, fetch::DOCUMENT_LIMIT))
+    fn download<'a>(
+        &'a self,
+        route: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(
+            self.booth
+                .free_license_file(self.app, self.account, route, fetch::DOCUMENT_LIMIT),
+        )
     }
 }
 

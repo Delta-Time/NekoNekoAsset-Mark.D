@@ -1,0 +1,139 @@
+/* ---------- motion ---------- */
+@keyframes calm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes calm-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes calm-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+}
+@keyframes calm-pop-up {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(4px);
+  }
+}
+@keyframes calm-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.965);
+  }
+}
+@keyframes calm-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.94);
+  }
+}
+@keyframes calm-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@keyframes calm-dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+}
+@keyframes calm-count {
+  0% {
+    transform: scale(0.7);
+  }
+  60% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes calm-ambient-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes calm-stack-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) rotate(0deg) scale(0.9);
+  }
+}
+@keyframes calm-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@keyframes calm-pulse {
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+/* A third-wide band at -50% and 150% sits just outside the track, so each sweep leaves before the next enters. */
+@keyframes calm-indeterminate {
+  from {
+    background-position: -50% 0;
+  }
+  to {
+    background-position: 150% 0;
+  }
+}
+@keyframes calm-boot-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+@keyframes calm-boot-left {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+}
+@keyframes calm-boot-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app,
+  .app *,
+  .app *::before,
+  .app *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Progress indicators keep moving slowly; they report state rather than decorate. */
+  .app progress:indeterminate {
+    animation-name: calm-indeterminate !important;
+    animation-timing-function: linear !important;
+  }
+}
+.app.reduce-motion,
+.app.reduce-motion *,
+.app.reduce-motion *::before,
+.app.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+.app.reduce-motion progress:indeterminate {
+  animation-duration: 3s !important;
+  animation-iteration-count: infinite !important;
+}

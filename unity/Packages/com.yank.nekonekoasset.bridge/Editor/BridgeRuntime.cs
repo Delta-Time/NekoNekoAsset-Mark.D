@@ -19,6 +19,21 @@ namespace NekoNekoAsset.Bridge
         private static readonly ConcurrentQueue<Action> MainActions = new ConcurrentQueue<Action>();
         private static readonly Dictionary<string, StoredBridgeRequest> Requests = new Dictionary<string, StoredBridgeRequest>(StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> PendingTerminalSaves = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Finished receipts stay on disk for same-ID queries and load only when one arrives.
+        private static readonly HashSet<string> FinishedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private const string FinishedMarker = "finished";
+        private static readonly byte[] Cleaned = { (byte)'c' };
+        // What the listener thread may answer while the main thread is held by a long import.
+        private sealed class PublishedHello { internal string capability, instanceId, sessionId, json; }
+        private sealed class PublishedStatus { internal string requestId, fingerprint, sessionId, json; }
+        private static volatile PublishedHello publishedHello;
+        private static volatile PublishedStatus publishedStatus;
+        // True only while writing files or refreshing holds the main thread for a long time.
+        private static volatile bool holdingMainThread;
+        private static readonly object RegistryGate = new object();
+        private static BridgeRegistry publishedRegistry;
+        private static double lastMainPublish;
+        private static Timer heartbeat;
         private static BridgeRegistry registry;
         private static BridgeServer server;
         private static StoredBridgeRequest active;
@@ -100,7 +115,7 @@ namespace NekoNekoAsset.Bridge
                 requestsRoot = BridgeFiles.Under(root, "Library/NekoNekoAssetBridge/requests");
                 Directory.CreateDirectory(requestsRoot);
                 RestoreRequests();
-                server = new BridgeServer(json => OnMain(() => BeginCommand(json)),
+                server = new BridgeServer(BeginFromListener,
                     (submission, success, error) => OnMain(() => FinishTransfer(submission, success, error), true));
                 registry.port = server.Port;
                 EditorApplication.update += Update;
@@ -108,6 +123,7 @@ namespace NekoNekoAsset.Bridge
                 AssemblyReloadEvents.beforeAssemblyReload += Shutdown;
                 Menu.SetChecked(MenuPath, registry.enabled);
                 Publish();
+                heartbeat = new Timer(HeartbeatWhileBusy, null, 2000, 2000);
                 RestoreImportResult();
             }
             catch (Exception error)
@@ -119,7 +135,7 @@ namespace NekoNekoAsset.Bridge
             }
         }
 
-        private static T OnMain<T>(Func<T> work, bool durableTransferFinish = false)
+        private static T OnMain<T>(Func<T> work, bool durableTransferFinish = false, int wait = 10000)
         {
             if (Thread.CurrentThread.ManagedThreadId == mainThread) return work();
             var completion = new TaskCompletionSource<T>();
@@ -129,7 +145,7 @@ namespace NekoNekoAsset.Bridge
                 try { completion.TrySetResult(work()); }
                 catch (Exception error) { completion.TrySetException(error); }
             });
-            if (!completion.Task.Wait(10000))
+            if (!completion.Task.Wait(wait))
             {
                 if (!durableTransferFinish && Interlocked.CompareExchange(ref ownership, 2, 0) == 0)
                     throw new TimeoutException("Editor is busy.");
@@ -149,15 +165,18 @@ namespace NekoNekoAsset.Bridge
                 nextHeartbeat = EditorApplication.timeSinceStartup + 2;
                 foreach (string id in PendingTerminalSaves.ToArray())
                     if (Requests.TryGetValue(id, out StoredBridgeRequest pending) && SaveTerminal(pending))
-                    {
-                        if (!pending.receipt.writesStarted) TryCleanupInputs(pending);
                         FinishImportResult(pending);
-                    }
                 try { Publish(); }
                 catch (IOException) { /* Discovery remains stale; never claim connection success. */ }
                 catch (UnauthorizedAccessException) { }
             }
             ObserveRefresh();
+            if (active != null && active.receipt.stage == "staging" && EditorApplication.timeSinceStartup >= active.nextPreparationPublish)
+            {
+                active.nextPreparationPublish = EditorApplication.timeSinceStartup + .5;
+                ReportProgress(active, new BridgePreparationProgress { phase = "receive",
+                    bytes = Interlocked.Read(ref active.receivedBytes), totalBytes = active.expectedBytes });
+            }
             if (active != null && active.receipt.stage == "preparing")
             {
                 if (!active.preparingReview) ShowReview(active);
@@ -173,15 +192,73 @@ namespace NekoNekoAsset.Bridge
         private static void Publish()
         {
             if (registry == null || string.IsNullOrEmpty(registryPath)) return;
-            try
+            lock (RegistryGate)
             {
-                registry.busy = Busy;
-                registry.heartbeatUtc = BridgeFiles.Now();
-                if (registry.enabled && !stopped) BridgeFiles.AtomicWrite(registryPath, JsonUtility.ToJson(registry));
-                else if (File.Exists(registryPath)) { BridgeFiles.RejectLinks(registryPath); File.Delete(registryPath); }
+                try
+                {
+                    registry.busy = Busy;
+                    registry.heartbeatUtc = BridgeFiles.Now();
+                    if (registry.enabled && !stopped) BridgeFiles.AtomicWrite(registryPath, JsonUtility.ToJson(registry));
+                    else if (File.Exists(registryPath)) { BridgeFiles.RejectLinks(registryPath); File.Delete(registryPath); }
+                }
+                catch (IOException) { /* Discovery failure never changes durable import status. */ }
+                catch (UnauthorizedAccessException) { }
+                lastMainPublish = CheckpointClock.Elapsed.TotalSeconds;
+                publishedRegistry = registry.enabled && !stopped ? JsonUtility.FromJson<BridgeRegistry>(JsonUtility.ToJson(registry)) : null;
+                BridgeResponse hello = Response(registry.enabled ? "ready" : "disabled", registry.enabled);
+                hello.projectName = registry.projectName;
+                hello.projectRoot = registry.projectRoot;
+                hello.unityVersion = registry.unityVersion;
+                hello.bridgeVersion = registry.bridgeVersion;
+                hello.busy = true; // Only answered while the main thread does not respond.
+                publishedHello = new PublishedHello { capability = registry.capability, instanceId = registry.instanceId,
+                    sessionId = registry.sessionId, json = SerializeResponse(hello) };
             }
-            catch (IOException) { /* Discovery failure never changes durable import status. */ }
-            catch (UnauthorizedAccessException) { }
+        }
+
+        // A long import or refresh holds the main thread; keep discovery fresh and marked busy.
+        private static void HeartbeatWhileBusy(object state)
+        {
+            lock (RegistryGate)
+            {
+                BridgeRegistry copy = publishedRegistry;
+                if (stopped || !holdingMainThread || copy == null || CheckpointClock.Elapsed.TotalSeconds - lastMainPublish < 4) return;
+                copy.busy = true;
+                copy.heartbeatUtc = BridgeFiles.Now();
+                try { BridgeFiles.AtomicWrite(registryPath, JsonUtility.ToJson(copy)); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        // Most commands run on the main thread. While it stays busy, hello and status answer from
+        // what it last published, so the App keeps real progress and the Editor stays listed as busy.
+        private static BridgeSubmission BeginFromListener(string json)
+        {
+            BridgeCommand command = null;
+            try { command = JsonUtility.FromJson<BridgeCommand>(json); }
+            catch (Exception) { }
+            if (command == null || (command.command != "hello" && command.command != "status") || !holdingMainThread)
+                return OnMain(() => BeginCommand(json));
+            try { return OnMain(() => BeginCommand(json), wait: 2000); }
+            catch (TimeoutException)
+            {
+                string reply = PublishedReply(command);
+                if (reply == null) throw;
+                return new BridgeSubmission { ResponseJson = reply };
+            }
+        }
+
+        private static string PublishedReply(BridgeCommand command)
+        {
+            PublishedHello hello = publishedHello;
+            if (hello == null || command.version != 1 || !BridgeFiles.EqualCapability(command.capability, hello.capability)
+                || command.instanceId != hello.instanceId) return null;
+            if (command.command == "hello") return command.sessionId == hello.sessionId ? hello.json : null;
+            PublishedStatus status = publishedStatus;
+            if (status == null || command.requestId != status.requestId || command.fingerprint != status.fingerprint
+                || (command.sessionId != status.sessionId && command.sessionId != hello.sessionId)) return null;
+            return status.json;
         }
 
         private static string RequestDirectory(string requestId) => BridgeFiles.Under(requestsRoot, requestId);
@@ -196,6 +273,11 @@ namespace NekoNekoAsset.Bridge
                 throw new InvalidDataException("Local receipt exceeds storage bound.");
             BridgeFiles.AtomicWrite(path, json);
             request.lastDurableJson = json;
+            BridgeResponse status = Response("status", true, request.receipt.requestId);
+            status.receipt = DurableReceipt(json);
+            status.busy = true; // Only answered while the main thread does not respond.
+            publishedStatus = new PublishedStatus { requestId = request.receipt.requestId, fingerprint = request.receipt.fingerprint,
+                sessionId = request.receipt.sessionId, json = SerializeResponse(status) };
         }
 
         private static bool SaveTerminal(StoredBridgeRequest request)
@@ -204,6 +286,7 @@ namespace NekoNekoAsset.Bridge
             {
                 Save(request);
                 PendingTerminalSaves.Remove(request.receipt.requestId);
+                MarkFinished(request.receipt.requestId);
                 return true;
             }
             catch (IOException) { PendingTerminalSaves.Add(request.receipt.requestId); return false; }
@@ -219,21 +302,27 @@ namespace NekoNekoAsset.Bridge
             {
                 string id = Path.GetFileName(folder);
                 if (!BridgeFiles.IsUuid(id)) continue;
-                string path = BridgeFiles.Under(folder, "receipt.json");
-                if (!File.Exists(path) || new FileInfo(path).Length > BridgeFiles.MaximumStoredBytes) continue;
                 try
                 {
-                    string durableJson = File.ReadAllText(path, BridgeFiles.Utf8);
-                    var request = JsonUtility.FromJson<StoredBridgeRequest>(durableJson);
-                    if (request?.receipt == null || request.version != 1 || request.receipt.requestId != id
-                        || request.receipt.instanceId != registry.instanceId || !BridgeFiles.IsHash(request.receipt.fingerprint)) continue;
-                    Requests[id] = request;
-                    request.lastDurableJson = durableJson;
-                    if (Terminal(request.receipt.stage))
+                    // A read-only check per request; a marker that is no longer empty records finished cleanup.
+                    var marker = new FileInfo(Path.Combine(folder, FinishedMarker));
+                    if (marker.Exists)
                     {
-                        if (!request.receipt.writesStarted) TryCleanupInputs(request);
+                        FinishedIds.Add(id);
+                        if (marker.Length == 0) TryCleanupTerminal(id);
                         continue;
                     }
+                    StoredBridgeRequest request = LoadRequest(id);
+                    if (request == null) continue;
+                    if (Terminal(request.receipt.stage))
+                    {
+                        // Receipts from older Bridges have no marker yet; later reloads skip parsing them.
+                        MarkFinished(id);
+                        FinishedIds.Add(id);
+                        TryCleanupTerminal(request);
+                        continue;
+                    }
+                    Requests[id] = request;
                     bool resumable = request.receipt.sessionId == registry.sessionId && request.receipt.staged
                         && (request.receipt.stage == "preparing" || request.receipt.stage == "waitingForUser" || request.receipt.stage == "refreshing" || request.receipt.stage == "compiling");
                     bool unconfirmed = request.receipt.stage == "preparing" || request.receipt.stage == "waitingForUser";
@@ -262,14 +351,51 @@ namespace NekoNekoAsset.Bridge
                     else
                     {
                         request.receipt.stage = "interrupted";
-                        request.receipt.error = "Editor restarted or staging was interrupted; no automatic replay.";
-                        Save(request);
-                        if (!request.receipt.writesStarted) TryCleanupInputs(request);
+                        request.receipt.error = Labels(request).Message("Editor restarted or staging was interrupted; no automatic replay.");
+                        if (SaveTerminal(request)) TryCleanupTerminal(request);
                         ShowImportResult(request);
                     }
                 }
                 catch (Exception) { /* Existing corrupt receipt is never overwritten by a duplicate submit. */ }
             }
+        }
+
+        private static StoredBridgeRequest LoadRequest(string id)
+        {
+            try
+            {
+                string path = BridgeFiles.Under(RequestDirectory(id), "receipt.json");
+                if (!File.Exists(path) || new FileInfo(path).Length > BridgeFiles.MaximumStoredBytes) return null;
+                string durableJson = File.ReadAllText(path, BridgeFiles.Utf8);
+                var request = JsonUtility.FromJson<StoredBridgeRequest>(durableJson);
+                if (request?.receipt == null || request.version != 1 || request.receipt.requestId != id
+                    || request.receipt.instanceId != registry.instanceId || !BridgeFiles.IsHash(request.receipt.fingerprint)) return null;
+                request.lastDurableJson = durableJson;
+                return request;
+            }
+            catch (Exception) { return null; }
+        }
+
+        // A finished receipt loads on first use: a same-ID query, or its result window after a reload.
+        private static bool TryGetRequest(string id, out StoredBridgeRequest request)
+        {
+            if (Requests.TryGetValue(id ?? string.Empty, out request)) return true;
+            if (string.IsNullOrEmpty(id) || !FinishedIds.Contains(id)) return false;
+            request = LoadRequest(id);
+            if (request == null) return false;
+            Requests[id] = request;
+            return true;
+        }
+
+        private static void MarkFinished(string requestId)
+        {
+            try
+            {
+                string marker = BridgeFiles.Under(RequestDirectory(requestId), FinishedMarker);
+                if (!File.Exists(marker)) File.WriteAllBytes(marker, Array.Empty<byte>());
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         private static BridgeResponse Response(string code, bool ok, string requestId = null, BridgeReceipt receipt = null)
@@ -281,8 +407,13 @@ namespace NekoNekoAsset.Bridge
         {
             if (receipt == null || !Requests.TryGetValue(receipt.requestId, out StoredBridgeRequest request)
                 || string.IsNullOrEmpty(request.lastDurableJson)) return null;
+            return DurableReceipt(request.lastDurableJson);
+        }
+
+        private static BridgeReceipt DurableReceipt(string durableJson)
+        {
             // A failed disk commit must never expose a merely mutated staged=true receipt.
-            var durable = JsonUtility.FromJson<StoredBridgeRequest>(request.lastDurableJson);
+            var durable = JsonUtility.FromJson<StoredBridgeRequest>(durableJson);
             BridgeReceipt result = durable.receipt;
             // Preserve historical stored evidence while returning only import facts.
             result.compileErrors = new List<string>();
@@ -327,7 +458,7 @@ namespace NekoNekoAsset.Bridge
                 return Reply(Response("invalidRequest", false));
             if (!BridgeFiles.IsUuid(command.requestId) || !BridgeFiles.IsHash(command.fingerprint))
                 return Reply(Response("invalidRequest", false));
-            if (Requests.TryGetValue(command.requestId, out StoredBridgeRequest existing))
+            if (TryGetRequest(command.requestId, out StoredBridgeRequest existing))
             {
                 if (existing.receipt.fingerprint != command.fingerprint) return Reply(Response("fingerprintMismatch", false, command.requestId));
                 if (command.sessionId != existing.receipt.sessionId && command.sessionId != registry.sessionId)
@@ -346,7 +477,8 @@ namespace NekoNekoAsset.Bridge
                 var request = new StoredBridgeRequest {
                     manifestJson = command.manifestJson,
                     receipt = new BridgeReceipt { requestId = command.requestId, fingerprint = command.fingerprint,
-                        instanceId = registry.instanceId, sessionId = registry.sessionId, stage = "staging" }
+                        instanceId = registry.instanceId, sessionId = registry.sessionId, stage = "staging" },
+                    expectedBytes = manifest.entries.Sum(entry => entry.bytes)
                 };
                 Save(request);
                 active = request;
@@ -379,18 +511,48 @@ namespace NekoNekoAsset.Bridge
                     || Path.GetFileName(package).Any(c => c < ' ' || c > '~'))
                     return Reply(Response("invalidRequest", false));
                 if (!File.Exists(package)) return Reply(Response("notFound", false));
+                var header = new byte[1024];
+                int length = 0;
+                using (var stream = new FileStream(package, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    for (int read; length < header.Length && (read = stream.Read(header, length, header.Length - length)) > 0;) length += read;
+                // Older Apps then send the package through submit, as the current App does itself.
+                if (!NativeImportReads(header, length)) return Reply(Response("invalidRequest", false));
             }
             catch (Exception) { return Reply(Response("invalidRequest", false)); }
             // Runs next in this main-thread queue while the listener thread sends the reply.
             MainActions.Enqueue(() =>
             {
+                // Obsolete from Unity 6.6, whose replacement (AssetPackage.Package.Import) 2022.3 lacks.
+#pragma warning disable 618
                 try { AssetDatabase.ImportPackage(package, true); }
+#pragma warning restore 618
                 catch (Exception error)
                 {
                     UnityEngine.Debug.LogError("NekoNekoAsset Bridge could not open Unity's package import (" + error.GetType().Name + ").");
                 }
             });
             return Reply(Response("accepted", true));
+        }
+
+        // The App's rule: Unity 2022.3 imports nothing, without an error, from a package whose gzip
+        // header names a file with an extension other than .tar. Unity's own exporter names archtemp.tar.
+        internal static bool NativeImportReads(byte[] header, int length)
+        {
+            if (length < 4 || header[0] != 0x1f || header[1] != 0x8b || header[2] != 8) return false;
+            if ((header[3] & 0x08) == 0) return length >= 10;
+            int start = 10;
+            if ((header[3] & 0x04) != 0)
+            {
+                if (length < 12) return false;
+                start = 12 + (header[10] | header[11] << 8);
+            }
+            int end = start < length ? Array.IndexOf(header, (byte)0, start, length - start) : -1;
+            if (end < 0) return false;
+            var name = new char[end - start];
+            for (int i = start; i < end; i++) name[i - start] = (char)header[i];
+            string file = new string(name);
+            file = file.Substring(Math.Max(file.LastIndexOf('/'), file.LastIndexOf('\\')) + 1);
+            return file.EndsWith(".tar", StringComparison.OrdinalIgnoreCase) || file.IndexOf('.') < 0;
         }
 
         private static BridgeManifest ValidateManifest(BridgeCommand command)
@@ -428,12 +590,12 @@ namespace NekoNekoAsset.Bridge
             StoredBridgeRequest request = submission.Request;
             if (request.receipt.stage == "cancelled")
             {
-                TryCleanupInputs(request);
+                TryCleanupTerminal(request);
                 return SerializeResponse(Response("cancelled", true, request.receipt.requestId, request.receipt));
             }
             if (!success)
             {
-                Fail(request, error);
+                Fail(request, Labels(request).Message(error));
                 return SerializeResponse(Response("failed", false, request.receipt.requestId, request.receipt));
             }
             request.receipt.staged = true;
@@ -454,6 +616,7 @@ namespace NekoNekoAsset.Bridge
             request.preparedSnapshot = null;
             request.preparedPreview = null;
             request.receipt.stage = "cancelled";
+            EndProgress(request);
             bool durable = SaveTerminal(request);
             server?.CancelTransfer(request.receipt.requestId);
             if (review != null && active == null)
@@ -463,7 +626,7 @@ namespace NekoNekoAsset.Bridge
                 review = null;
                 pending?.CancelPending();
             }
-            if (durable && request.receipt.staged) TryCleanupInputs(request);
+            if (durable && request.receipt.staged) TryCleanupTerminal(request);
             Publish();
         }
 
@@ -472,12 +635,13 @@ namespace NekoNekoAsset.Bridge
             request.preparedPackages = null;
             request.preparedSnapshot = null;
             request.preparedPreview = null;
-            request.receipt.error = message;
+            request.receipt.error = BridgeFiles.Diagnostic(message, 256);
             request.receipt.stage = "failed";
+            EndProgress(request);
             bool durable = SaveTerminal(request);
             // The receiver has closed its payload handles; preparation failures arrive
             // after the worker exits. Retain only durable dedupe and any applied-write recovery.
-            if (durable && !request.receipt.writesStarted && !request.preparingReview) TryCleanupInputs(request);
+            if (durable && !request.preparingReview) TryCleanupTerminal(request);
             if (durable) ShowImportResult(request);
             Publish();
         }
@@ -486,9 +650,14 @@ namespace NekoNekoAsset.Bridge
         {
             if (stopped) return;
             stopped = true;
+            heartbeat?.Dispose();
+            heartbeat = null;
             // Stop owned preparation promptly; its durable pre-write state can resume after domain reload.
             foreach (StoredBridgeRequest request in Requests.Values)
+            {
                 if (request.preparingReview) request.cancelTransfer = true;
+                EndProgress(request);
+            }
             // A utility window survives hot reload while its delegates/packages do not.
             // Retire this window; the durable waiting receipt opens a fresh review later.
             var pendingReview = review;

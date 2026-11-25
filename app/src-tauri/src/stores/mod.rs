@@ -1,6 +1,6 @@
 //! Small store dispatch boundary. Provider collectors retain their own source contracts.
+pub(crate) mod api;
 pub mod gumroad;
-mod gumroad_service;
 pub mod http;
 pub mod jinxxy;
 mod public_metadata;
@@ -72,8 +72,125 @@ pub fn validate_download_response(
 ) -> Result<()> {
     match provider {
         StoreProvider::Booth => crate::booth::validate_download_response(response),
-        StoreProvider::Gumroad => gumroad_service::validate_download_response(response),
+        StoreProvider::Gumroad => gumroad::service::validate_download_response(response),
         StoreProvider::Jinxxy => jinxxy::validate_download_response(response, expected_origin),
+    }
+    .map_err(StoreError::classify)
+}
+
+/// What storage records when a store gives no download. Each store error is classified once,
+/// where it leaves `download_ticket` or `validate_download_response`, and storage reads only
+/// this class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadError {
+    AuthRequired,
+    /// The store refused this file to the signed-in account.
+    AccessDenied,
+    /// The store no longer offers the file.
+    FileUnavailable,
+    FreeOfferUnavailable,
+    /// A signed link expired; a fresh ticket may work.
+    LinkExpired,
+    RateLimited,
+    /// The store gave no download link; a fresh ticket may work.
+    ResolverFailed,
+    /// The download server answered with an error.
+    HttpFailed,
+    NetworkFailed,
+    /// The file's facts changed under the download.
+    SourceChanged,
+    ManifestIncomplete,
+    Cancelled,
+    /// Any other store error.
+    Failed,
+}
+
+impl DownloadError {
+    /// The class of each store code; every code not named is `Failed`.
+    fn of(code: &str) -> Self {
+        match code {
+            "AUTH_REQUIRED"
+            | "ACCOUNT_UNAVAILABLE"
+            | "ACCOUNT_IDENTITY_MISMATCH"
+            | "STORE_IDENTITY_CHANGED"
+            | "AUTH_CHALLENGE"
+            | "AUTH_ISOLATION_UNAVAILABLE"
+            | "AUTH_SESSION_STORAGE_FAILED"
+            | "AUTH_TIMEOUT"
+            | "AUTH_WINDOW_FAILED"
+            | "INVALID_AUTH_URL" => Self::AuthRequired,
+            "PERMISSION_DENIED" => Self::AccessDenied,
+            "FILE_UNAVAILABLE" => Self::FileUnavailable,
+            "FREE_OFFER_UNAVAILABLE" => Self::FreeOfferUnavailable,
+            "SIGNED_LINK_EXPIRED" => Self::LinkExpired,
+            "RATE_LIMITED" => Self::RateLimited,
+            "DOWNLOAD_RESOLVER_FAILED" => Self::ResolverFailed,
+            "DOWNLOAD_HTTP_FAILED" => Self::HttpFailed,
+            "NETWORK_UNAVAILABLE" => Self::NetworkFailed,
+            "SOURCE_CHANGED" => Self::SourceChanged,
+            "JINXXY_MANIFEST_INCOMPLETE" | "SOURCE_MANIFEST_INCOMPLETE" => Self::ManifestIncomplete,
+            "CANCELLED" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+
+    /// The stable code storage records and the UI translates.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "auth_required",
+            Self::AccessDenied => "store_access_denied",
+            Self::FileUnavailable => "store_file_unavailable",
+            Self::FreeOfferUnavailable => "free_offer_unavailable",
+            Self::LinkExpired => "link_expired",
+            Self::RateLimited => "rate_limited",
+            Self::ResolverFailed => "download_resolver_failed",
+            Self::HttpFailed => "download_http_failed",
+            Self::NetworkFailed => "network_failed",
+            Self::SourceChanged => "source_changed",
+            Self::ManifestIncomplete => "manifest_incomplete",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "storage_failed",
+        }
+    }
+}
+
+/// A store's download error: the store's own code, shown as before, and its class.
+#[derive(Debug)]
+pub struct StoreError {
+    pub class: DownloadError,
+    code: String,
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.code)
+    }
+}
+
+impl StoreError {
+    pub(crate) fn classify(error: anyhow::Error) -> anyhow::Error {
+        if error.downcast_ref::<Self>().is_some() {
+            return error;
+        }
+        let code = error.to_string();
+        let class = DownloadError::of(&code);
+        error.context(Self { class, code })
+    }
+}
+
+/// Keeps how many assets a completed sync left as they were on its account, beside the
+/// sync's other outcome, so the count outlives the job row Clear history removes.
+pub(crate) fn record_sync_incomplete(account: &mut Value, job: &Value, completed: bool) {
+    match job["progress"]["incompleteProducts"]
+        .as_u64()
+        .filter(|count| completed && *count > 0)
+    {
+        Some(count) => account["lastSyncIncompleteProducts"] = json!(count),
+        None => {
+            if let Some(fields) = account.as_object_mut() {
+                fields.remove("lastSyncIncompleteProducts");
+            }
+        }
     }
 }
 
@@ -112,7 +229,7 @@ pub(crate) fn has_local_session(catalogue: &Catalogue, account: &Value) -> bool 
 pub struct StoreService {
     catalogue: Catalogue,
     booth: Arc<BoothService>,
-    gumroad: gumroad_service::GumroadService,
+    gumroad: gumroad::service::GumroadService,
     jinxxy: jinxxy::JinxxyService,
     command_gate: Arc<tokio::sync::Mutex<()>>,
     public_gumroad: http::MetadataHttp,
@@ -168,7 +285,7 @@ impl StoreService {
     }
 
     pub fn new(catalogue: Catalogue, booth: Arc<BoothService>) -> Result<Self> {
-        let gumroad = gumroad_service::GumroadService::new(catalogue.clone())?;
+        let gumroad = gumroad::service::GumroadService::new(catalogue.clone())?;
         let jinxxy = jinxxy::JinxxyService::new(catalogue.clone())?;
         Ok(Self {
             catalogue,
@@ -186,7 +303,10 @@ impl StoreService {
     }
 
     pub(crate) fn rebind_catalogue(&self, catalogue: Catalogue) -> Result<Self> {
-        ensure!(catalogue.device_dir() == self.catalogue.device_dir(), "STORE_DEVICE_MISMATCH");
+        ensure!(
+            catalogue.device_dir() == self.catalogue.device_dir(),
+            "STORE_DEVICE_MISMATCH"
+        );
         Ok(Self {
             booth: Arc::new(self.booth.rebind_catalogue(catalogue.clone())?),
             gumroad: self.gumroad.rebind_catalogue(catalogue.clone())?,
@@ -362,7 +482,7 @@ impl StoreService {
         Ok(())
     }
 
-    /// Public listing facts, with optional availability reconciliation for an edited BOOTH asset.
+    /// A public listing's facts. No session, gate or catalogue write.
     async fn public_product(&self, raw: &str, edited: Option<(&AppHandle, &str)>) -> Result<Value> {
         let Some((provider, url)) = public_metadata::product_url(raw)? else {
             return self.booth.fetch_product_metadata(raw, edited).await;
@@ -377,7 +497,9 @@ impl StoreService {
 
     /// What a pasted store link asks now. Any other link never reaches the network.
     pub(crate) async fn listing_price(&self, raw: &str) -> Result<Option<Value>> {
-        let product = self.public_product(&public_metadata::bare_url(raw)?, None).await?;
+        let product = self
+            .public_product(&public_metadata::bare_url(raw)?, None)
+            .await?;
         Ok(product.get("listingPrice").cloned())
     }
 
@@ -406,6 +528,10 @@ impl StoreService {
                 if let Some(scope) = args.get("accountId") {
                     provider_args["accountId"] = scope.clone();
                 }
+                // Only a BOOTH update can keep a verified file as it is.
+                if provider == StoreProvider::Booth && args["keepVerified"] == true {
+                    provider_args["keepVerified"] = json!(true);
+                }
                 let result = match provider {
                     StoreProvider::Booth => self.booth.command(app, action, provider_args).await?,
                     StoreProvider::Gumroad => {
@@ -422,7 +548,10 @@ impl StoreService {
                     jobs.insert(id.into());
                 }
             }
-            return Ok(json!({"jobId":jobs.first(),"jobIds":jobs}));
+            return api::answer(api::StoreJobs {
+                job_id: jobs.first().cloned(),
+                job_ids: jobs.into_iter().collect(),
+            });
         }
         let provider = if matches!(action, "cancel_sync" | "retry_sync") {
             let job = args["jobId"]
@@ -434,6 +563,10 @@ impl StoreService {
         } else {
             requested.unwrap_or(StoreProvider::Booth)
         };
+        // Only BOOTH lets an account download a free item without buying it.
+        if action == "import_free" {
+            require_provider(Some(StoreProvider::Booth), provider)?;
+        }
         let account_id = args["accountId"].as_str().map(str::to_owned);
         let retried = if action == "retry_sync" {
             self.catalogue
@@ -441,7 +574,7 @@ impl StoreService {
         } else {
             None
         };
-        if action == "sync"
+        if matches!(action, "sync" | "import_free")
             || (action == "retry_sync"
                 && retried
                     .as_ref()
@@ -466,8 +599,11 @@ impl StoreService {
                 .ok_or_else(|| anyhow::anyhow!("ACCOUNT_UNAVAILABLE"))?;
             let name = normalized_account_name(&args["name"])?;
             self.rename_account(id, &name)?;
-            let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-            return Ok(json!({"accountId":id,"name":name}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
+            return api::answer(api::AccountRenamed {
+                account_id: id.to_owned(),
+                name,
+            });
         }
         if matches!(action, "account_logout" | "account_remove") {
             self.catalogue.require_account_idle(
@@ -498,8 +634,8 @@ impl StoreService {
                     "createdAt":chrono::Utc::now().to_rfc3339()
                 }),
             )?;
-            let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-            return Ok(json!({"accountId":id}));
+            let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
+            return api::answer(api::StoreAccount { account_id: id });
         }
         let result = match provider {
             StoreProvider::Booth => {
@@ -516,10 +652,10 @@ impl StoreService {
             StoreProvider::Gumroad => self.gumroad.command(app, action, args).await,
             StoreProvider::Jinxxy => self.jinxxy.command(app, action, args).await,
         };
-        if result.is_err() && matches!(action, "account_login" | "login") {
+        if result.is_err() && action == "account_login" {
             if let Some(id) = account_id {
                 if self.catalogue.discard_unverified_account(&id)? {
-                    let _ = app.emit("nna:changed", json!({"scope":"booth"}));
+                    let _ = app.emit("nna:changed", crate::ipc::Change::scope("booth"));
                 }
             }
         }
@@ -527,6 +663,12 @@ impl StoreService {
     }
 
     pub async fn download_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
+        self.provider_ticket(app, file_id)
+            .await
+            .map_err(StoreError::classify)
+    }
+
+    async fn provider_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
         let file = self
             .catalogue
             .get("remote_file", file_id)?
@@ -596,286 +738,4 @@ fn normalized_account_name(value: &Value) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    #[cfg(windows)]
-    #[test]
-    fn shared_account_views_follow_device_credentials_without_changing_ownership() {
-        use tauri::webview::Cookie;
-        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!(
-                "nna-authored-shared-session-{}",
-                uuid::Uuid::new_v4()
-            ));
-        let library = base.join("library");
-        let first_device = base.join("first-device");
-        let second_device = base.join("second-device");
-        std::fs::create_dir_all(&library).unwrap();
-        let first = Catalogue::open_bound(&library, &first_device).unwrap();
-        let service = StoreService::new(
-            first.clone(),
-            Arc::new(BoothService::new(first.clone()).unwrap()),
-        )
-        .unwrap();
-        let mut expected = Vec::new();
-        for provider in [
-            StoreProvider::Booth,
-            StoreProvider::Gumroad,
-            StoreProvider::Jinxxy,
-        ] {
-            let id = uuid::Uuid::new_v4().to_string();
-            let account = json!({"id":id,"store":provider.label(),"name":"Authored shared name","status":"connected","state":"connected","identityVerified":true,"identityHash":"authored-binding","disconnected":false});
-            let entitlement = json!({"id":id,"accountId":id,"productId":"authored-product","fileIds":["authored-file"]});
-            first.put("account", &id, account.clone()).unwrap();
-            first.put("entitlement", &id, entitlement.clone()).unwrap();
-            let host = match provider {
-                StoreProvider::Booth => "booth.pm",
-                StoreProvider::Gumroad => "gumroad.com",
-                StoreProvider::Jinxxy => "jinxxy.com",
-            };
-            let profile = session::profile_path(&first.device_dir(), provider, &id).unwrap();
-            session_cache::save(
-                &profile,
-                provider,
-                &id,
-                vec![Cookie::build(("authored_session", "AUTHORED_COOKIE_VALUE"))
-                    .domain(host)
-                    .path("/")
-                    .secure(true)
-                    .build()],
-            )
-            .unwrap();
-            assert!(service.has_local_session(&account));
-            expected.push((provider, id, account, entitlement));
-        }
-        assert!(!first.data_dir().join("auth").exists());
-        drop(service);
-        drop(first);
-        let second = Catalogue::open_bound(&library, &second_device).unwrap();
-        let service = StoreService::new(
-            second.clone(),
-            Arc::new(BoothService::new(second.clone()).unwrap()),
-        )
-        .unwrap();
-        let views = service.account_views(second.list("account").unwrap());
-        for (_, id, account, entitlement) in expected {
-            let view = views.iter().find(|view| view["id"] == id).unwrap();
-            assert_eq!(view["status"], "expired");
-            assert_eq!(view["localSessionAvailable"], false);
-            assert_eq!(view["disconnected"], false);
-            assert_eq!(view["name"], account["name"]);
-            assert_eq!(second.get("account", &id).unwrap(), Some(account));
-            assert_eq!(second.get("entitlement", &id).unwrap(), Some(entitlement));
-        }
-        drop(service);
-        drop(second);
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[tokio::test]
-    async fn store_execution_queue_is_shared_by_accounts_but_not_by_other_providers() {
-        let path = std::env::temp_dir().join(format!("store-queues-{}", uuid::Uuid::new_v4()));
-        let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
-        let service = super::StoreService::new(
-            catalogue.clone(),
-            std::sync::Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap()),
-        )
-        .unwrap();
-        // These are the same gates acquired by the actual provider executors.
-        let first_booth_account = service.booth.execution_gate().lock().await;
-        assert!(service.booth.execution_gate().try_lock().is_err());
-        let first_gumroad_account = service.gumroad.execution_gate().try_lock().unwrap();
-        assert!(service.gumroad.execution_gate().try_lock().is_err());
-        drop(first_booth_account);
-        assert!(service.booth.execution_gate().try_lock().is_ok());
-        drop(first_gumroad_account);
-        assert!(service.gumroad.execution_gate().try_lock().is_ok());
-        drop(service);
-        drop(catalogue);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    use super::*;
-    #[test]
-    fn account_display_name_validation_is_bounded() {
-        assert_eq!(
-            normalized_account_name(&json!("  Authored\n name  ")).unwrap(),
-            "Authored name"
-        );
-        assert!(normalized_account_name(&json!(" \n\t ")).is_err());
-        assert!(normalized_account_name(&Value::Null).is_err());
-        assert_eq!(
-            normalized_account_name(&json!("猫".repeat(201)))
-                .unwrap()
-                .chars()
-                .count(),
-            200
-        );
-    }
-    #[test]
-    fn account_rename_preserves_native_identity_and_entitlements_across_restart() {
-        let root = std::env::var("NNA_STORE_EVIDENCE_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir());
-        let path = root.join(format!("rename-{}", uuid::Uuid::new_v4()));
-        let catalogue = Catalogue::open(&path).unwrap();
-        let service = StoreService::new(
-            catalogue.clone(),
-            Arc::new(BoothService::new(catalogue.clone()).unwrap()),
-        )
-        .unwrap();
-        let mut expected = Vec::new();
-        for provider in [
-            StoreProvider::Booth,
-            StoreProvider::Gumroad,
-            StoreProvider::Jinxxy,
-        ] {
-            let id = uuid::Uuid::new_v4().to_string();
-            let mut account = json!({"id":id,"store":provider.label(),"name":"Before","label":"Before","identityHash":"authored-identity","identityVerified":true,"state":"connected","status":"connected","disconnected":false});
-            catalogue.put("account", &id, account.clone()).unwrap();
-            let entitlement = json!({"id":id,"accountId":id,"productId":"authored-product","manifestComplete":true,"fileIds":["authored-file"]});
-            catalogue
-                .put("entitlement", &id, entitlement.clone())
-                .unwrap();
-            service.rename_account(&id, "After").unwrap();
-            account["name"] = json!("After");
-            account["label"] = json!("After");
-            expected.push((id, account, entitlement));
-        }
-        drop(service);
-        drop(catalogue);
-        let reopened = Catalogue::open(&path).unwrap();
-        for (id, account, entitlement) in expected {
-            assert_eq!(reopened.get("account", &id).unwrap(), Some(account));
-            assert_eq!(reopened.get("entitlement", &id).unwrap(), Some(entitlement));
-        }
-    }
-
-    #[test]
-    fn explicit_store_cannot_override_persisted_account_or_job_provider() {
-        for provider in [
-            StoreProvider::Booth,
-            StoreProvider::Gumroad,
-            StoreProvider::Jinxxy,
-        ] {
-            assert_eq!(require_provider(None, provider).unwrap(), provider);
-            for requested in [
-                StoreProvider::Booth,
-                StoreProvider::Gumroad,
-                StoreProvider::Jinxxy,
-            ] {
-                assert_eq!(
-                    require_provider(Some(requested), provider).is_ok(),
-                    requested == provider
-                );
-            }
-        }
-        assert!(requested_provider(&json!({"store":null})).is_err());
-        assert!(requested_provider(&json!({"store":"unknown"})).is_err());
-        assert!(requested_provider(&json!({"store":"BOOTH","provider":"gumroad"})).is_err());
-    }
-
-    #[test]
-    fn mixed_selected_update_groups_are_namespace_bound_and_preflight_all_accounts() {
-        let path = std::env::temp_dir().join(format!(
-            "nna-authored-store-groups-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        let catalogue = Catalogue::open(&path).unwrap();
-        let service = StoreService::new(
-            catalogue.clone(),
-            Arc::new(BoothService::new(catalogue.clone()).unwrap()),
-        )
-        .unwrap();
-        for (id, store) in [
-            ("900001", "BOOTH"),
-            ("gumroad:900001", "Gumroad"),
-            ("jinxxy:900001", "Jinxxy"),
-        ] {
-            catalogue
-                .put(
-                    "product",
-                    id,
-                    json!({"id":id,"store":store,"title":"Authored product"}),
-                )
-                .unwrap();
-        }
-        let local_id = "local:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        catalogue.put("product", local_id, json!({"id":local_id,"provider":"local","store":"Local Files","title":"Authored local product"})).unwrap();
-        let args =
-            json!({"productIds":["900001","gumroad:900001","jinxxy:900001","900001",local_id]});
-        let groups = service.selected_groups(&args).unwrap();
-        assert_eq!(groups.len(), 3);
-        assert_eq!(
-            groups[&StoreProvider::Booth],
-            BTreeSet::from(["900001".into()])
-        );
-        assert_eq!(
-            groups[&StoreProvider::Gumroad],
-            BTreeSet::from(["gumroad:900001".into()])
-        );
-        assert_eq!(
-            groups[&StoreProvider::Jinxxy],
-            BTreeSet::from(["jinxxy:900001".into()])
-        );
-        let local_groups = service
-            .selected_groups(&json!({"productIds":[local_id]}))
-            .unwrap();
-        assert!(local_groups.is_empty());
-        assert!(service.preflight_updates(&local_groups, &json!({})).is_ok());
-        for (id, provider, store) in [
-            ("local:conflicting", "local", "Gumroad"),
-            ("gumroad:conflicting", "local", "Local Files"),
-            ("local:unknown", "unknown", "Local Files"),
-            ("unknown:product", "unknown", "Unknown Store"),
-        ] {
-            catalogue.put("product", id, json!({"id":id,"provider":provider,"store":store,"title":"Authored invalid identity"})).unwrap();
-            assert!(service
-                .selected_groups(&json!({"productIds":[local_id,id,"900001"]}))
-                .is_err());
-        }
-        let mut conflicting = args;
-        conflicting["store"] = json!("BOOTH");
-        assert!(service.selected_groups(&conflicting).is_err());
-        assert!(service.preflight_updates(&groups, &json!({})).is_err());
-        assert!(catalogue.list("job").unwrap().is_empty());
-        let accounts = [
-            (
-                "ffffffff-ffff-4fff-8fff-ffffffffffff",
-                "Gumroad",
-                "gumroad:900001",
-            ),
-            (
-                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-                "Jinxxy",
-                "jinxxy:900001",
-            ),
-        ];
-        for (account, store, product) in accounts {
-            catalogue.put("account", account, json!({"id":account,"store":store,"status":"connected","state":"connected","identityVerified":true,"identityHash":"authored-buyer-binding"})).unwrap();
-            catalogue.put("entitlement", account, json!({"id":account,"accountId":account,"productId":product,"fileIds":[],"manifestComplete":false})).unwrap();
-        }
-        let historical = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-        catalogue.put("account", historical, json!({"id":historical,"store":"Gumroad","status":"disconnected","state":"disconnected","identityVerified":false,"identityHash":"authored-old-binding"})).unwrap();
-        catalogue.put("entitlement", historical, json!({"id":historical,"accountId":historical,"productId":"gumroad:900001","fileIds":[]})).unwrap();
-        assert!(service.preflight_updates(&groups, &json!({})).is_ok());
-        assert_eq!(
-            service
-                .preflight_updates(&groups, &json!({"accountId":historical}))
-                .unwrap_err()
-                .to_string(),
-            "AUTH_REQUIRED"
-        );
-        catalogue.put("job", "authored-job", json!({"id":"authored-job","type":"gumroadUpdate","store":"Gumroad","accountId":accounts[0].0,"state":"running"})).unwrap();
-        assert_eq!(
-            service
-                .preflight_updates(&groups, &json!({}))
-                .unwrap_err()
-                .to_string(),
-            "ACCOUNT_BUSY"
-        );
-        drop(service);
-        drop(catalogue);
-        let _ = std::fs::remove_dir_all(path);
-    }
-}
+mod tests;

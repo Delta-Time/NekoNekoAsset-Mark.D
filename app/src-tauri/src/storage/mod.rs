@@ -1,5 +1,6 @@
 //! Durable product-level downloads and guarded, verified local storage.
 mod ai_evidence;
+pub(crate) mod api;
 pub(crate) use ai_evidence::{
     ai_public_urls_in_text, redact_ai_evidence_text, safe_ai_evidence_name,
 };
@@ -15,7 +16,7 @@ mod shared;
 mod tests;
 mod transfer;
 mod unity_snapshot;
-pub use unity_snapshot::{UnityLeaf, UnitySnapshot, UnitySnapshotEntry};
+pub(crate) use unity_snapshot::UnityLeaf;
 
 pub(crate) fn checked_library_root(path: &Path) -> Result<PathBuf> {
     ensure!(path.is_absolute(), "root_offline");
@@ -33,6 +34,9 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
 /// Startup queues these again: a download restarts only its unfinished file and a
 /// local import only its uncopied ones, so an App update need not wait for them.
 pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
+/// A queued download whose store refused a file, waiting for that store's list to be read
+/// again; its product stays in progress meanwhile.
+const STORE_UPDATE: &str = "storeUpdate";
 
 use crate::{catalogue::Catalogue, stores::StoreService};
 use anyhow::{bail, ensure, Result};
@@ -40,7 +44,7 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     path::{Path, PathBuf},
     sync::{
@@ -114,12 +118,15 @@ fn adaptive_download_count(
     let syncing = provider.is_some_and(|provider| {
         jobs.iter().any(|job| {
             matches!(job["state"].as_str(), Some("queued" | "running"))
-                && match (provider, job["type"].as_str()) {
+                && matches!(
+                    (provider, job["type"].as_str()),
                     (StoreProvider::Booth, Some("boothSync" | "boothUpdate"))
-                    | (StoreProvider::Gumroad, Some("gumroadSync" | "gumroadUpdate"))
-                    | (StoreProvider::Jinxxy, Some("jinxxySync" | "jinxxyUpdate")) => true,
-                    _ => false,
-                }
+                        | (
+                            StoreProvider::Gumroad,
+                            Some("gumroadSync" | "gumroadUpdate")
+                        )
+                        | (StoreProvider::Jinxxy, Some("jinxxySync" | "jinxxyUpdate"))
+                )
         })
     });
     if syncing {
@@ -166,6 +173,41 @@ fn skipped_failures(alone: bool) -> &'static [&'static str] {
         &["store_file_unavailable", "free_offer_unavailable"]
     }
 }
+/// Files a free item page read at `read_at` offers again: the record a closed offer left on
+/// each one's last download before then goes, so its row shows it as offered and Download
+/// takes it. A failed automatic download stays failed, as any does until the user retries.
+/// A record goes only while unchanged, so a download that started since keeps its own.
+/// Returns the products whose files changed.
+pub(crate) fn reopen_free_offers(
+    catalogue: &Catalogue,
+    file_ids: impl IntoIterator<Item = String>,
+    read_at: &str,
+) -> Result<BTreeSet<String>> {
+    let time = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok();
+    let read_at = time(read_at);
+    let mut products = BTreeSet::new();
+    for file_id in file_ids {
+        let id = format!("pending-{}", io::key(&file_id));
+        let Some(record) = catalogue.get("artifact", &id)? else {
+            continue;
+        };
+        // Records from before failures carried their time are older than any read.
+        let ended_before = match record["updatedAt"].as_str().map(time) {
+            Some(ended) => ended.zip(read_at).is_some_and(|(ended, read)| ended < read),
+            None => true,
+        };
+        if record["errorCode"] == "free_offer_unavailable"
+            && ended_before
+            && catalogue.write_many_if_unchanged(
+                vec![("artifact".into(), id.clone(), None)],
+                vec![("artifact".into(), id, Some(record.clone()))],
+            )?
+        {
+            products.extend(record["productId"].as_str().map(str::to_owned));
+        }
+    }
+    Ok(products)
+}
 fn selected_download_files(files: Vec<Value>, selected: &Value) -> Result<Vec<Value>> {
     if selected.is_null() {
         return Ok(files);
@@ -181,6 +223,18 @@ fn selected_download_files(files: Vec<Value>, selected: &Value) -> Result<Vec<Va
         .collect();
     ensure!(files.len() == 1, "file_missing");
     Ok(files)
+}
+/// A download with nothing to fetch: after the store's update, which only a refusal asks for,
+/// because the store no longer offers any of its files; otherwise because the list is not
+/// known yet.
+fn ensure_files(job: &Value, files: &[Value]) -> Result<()> {
+    if !files.is_empty() {
+        return Ok(());
+    }
+    if job["storeUpdated"] == true {
+        bail!("store_file_unavailable");
+    }
+    bail!("manifest_incomplete")
 }
 #[cfg(test)]
 fn native_seven_zip_test_tool() -> PathBuf {
@@ -212,10 +266,16 @@ impl StorageService {
         })
     }
     fn changed(&self, app: &tauri::AppHandle, id: Option<&str>) {
-        let _ = app.emit("nna:changed", json!({"scope":"products","jobId":id}));
+        let _ = app.emit(
+            "nna:changed",
+            crate::ipc::Change {
+                job_id: id.map(str::to_owned),
+                ..crate::ipc::Change::scope("products")
+            },
+        );
     }
     fn jobs_changed(&self, app: &tauri::AppHandle, id: &str) {
-        let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
+        let _ = app.emit("nna:changed", crate::ipc::Change::job("jobs", id));
     }
     fn root(&self, id: Option<&str>) -> Result<Value> {
         let configured = self.preferences()?["libraryRootId"]
@@ -283,8 +343,11 @@ impl StorageService {
     }
     fn put_job(&self, job: &mut Value, state: &str, error: Option<&str>) -> Result<()> {
         if state == "queued" {
-            // A retry reuses this record, and its failure must raise Attention again.
-            job.as_object_mut().unwrap().remove("attentionDismissed");
+            // A retry reuses this record: it shows in Activity again, and its failure
+            // must raise Attention again.
+            let job = job.as_object_mut().unwrap();
+            job.remove("attentionDismissed");
+            job.remove("activityCleared");
         }
         job["state"] = json!(state);
         job["updatedAt"] = json!(now());
@@ -302,13 +365,21 @@ impl StorageService {
     }
     fn cancel_job(&self, id: &str) -> Result<Value> {
         loop {
-            let before = self.catalogue.get("job", id)?
+            let before = self
+                .catalogue
+                .get("job", id)?
                 .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
-            ensure!(before["type"] == "download"
-                || before["type"].as_str().is_some_and(|t| t.starts_with("storage:")),
-                "invalid_job");
+            ensure!(
+                before["type"] == "download"
+                    || before["type"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("storage:")),
+                "invalid_job"
+            );
             if !matches!(before["state"].as_str(), Some("queued" | "running")) {
-                return Ok(json!({"cancelRequested":false}));
+                return api::answer(api::CancelRequested {
+                    cancel_requested: false,
+                });
             }
             let mut job = before.clone();
             job["cancelRequested"] = json!(true);
@@ -322,7 +393,9 @@ impl StorageService {
                 vec![("job".into(), id.to_owned(), Some(before))],
             )? {
                 self.cancellation(id).store(true, Ordering::Release);
-                return Ok(json!({"cancelRequested":true}));
+                return api::answer(api::CancelRequested {
+                    cancel_requested: true,
+                });
             }
         }
     }
@@ -340,9 +413,9 @@ impl StorageService {
                     job["type"] == "download"
                         && job["cancelRequested"] != true
                         && matches!(job["state"].as_str(), Some("queued" | "running"))
-                        && products.as_ref().is_none_or(|ids| {
-                            ids.iter().any(|id| job["productId"] == id.as_str())
-                        })
+                        && products
+                            .as_ref()
+                            .is_none_or(|ids| ids.iter().any(|id| job["productId"] == id.as_str()))
                 })
                 .collect();
             let mut records = Vec::new();
@@ -364,7 +437,9 @@ impl StorageService {
                     self.cancellation(job["id"].as_str().unwrap_or(""))
                         .store(true, Ordering::Release);
                 }
-                return Ok(json!({"cancelled":active.len()}));
+                return api::answer(api::DownloadsCancelled {
+                    cancelled: active.len(),
+                });
             }
         }
     }
@@ -412,11 +487,17 @@ impl StorageService {
                 .filter_map(|f| f["id"].as_str().map(str::to_owned))
                 .collect();
             let source = |f: &Value| {
-                (f["accountId"].as_str().map(str::to_owned), f["sourceFileId"].as_str().map(str::to_owned))
+                (
+                    f["accountId"].as_str().map(str::to_owned),
+                    f["sourceFileId"].as_str().map(str::to_owned),
+                )
             };
             let offered: HashSet<_> = files
                 .iter()
-                .filter(|f| f["originKind"] != "local" && f["sourceFileId"].as_str().is_some_and(|id| !id.is_empty()))
+                .filter(|f| {
+                    f["originKind"] != "local"
+                        && f["sourceFileId"].as_str().is_some_and(|id| !id.is_empty())
+                })
                 .map(source)
                 .collect();
             files.extend(
@@ -452,6 +533,99 @@ impl StorageService {
             }
         }
         Ok(remaining)
+    }
+    /// Every file's artifact at its current revision has one of `statuses`. Automatic
+    /// downloads leave such files alone; checking their bytes again is left to a
+    /// Download the user asks for.
+    fn all_at_revision(&self, files: &[Value], statuses: &[&str]) -> Result<bool> {
+        for file in files {
+            let known = file["revision"]
+                .as_str()
+                .is_some_and(|revision| !revision.is_empty() && revision != "unknown");
+            if !known || file["requiresContentVerification"] == true {
+                return Ok(false);
+            }
+            let Some(artifact) = self.catalogue.get("artifact", &artifact_id(file))? else {
+                return Ok(false);
+            };
+            if !statuses.contains(&artifact["status"].as_str().unwrap_or("")) {
+                return Ok(false);
+            }
+        }
+        Ok(!files.is_empty())
+    }
+    /// The intent remembers which list a product's last download asked for, so
+    /// clearing Activity never makes an automatic download ask for it again.
+    fn remember_attempt(&self, job: &Value) -> Result<()> {
+        let Some(product) = job["productId"].as_str() else {
+            return Ok(());
+        };
+        if job["type"] != "download" || !job["selectedFileIds"].is_null() {
+            return Ok(());
+        }
+        // Every product download writes the intent; one removed since stays removed.
+        while let Some(before) = self.catalogue.get("download_intent", product)? {
+            if before["manifestFingerprint"] == job["manifestFingerprint"] {
+                break;
+            }
+            let mut intent = before.clone();
+            intent["manifestFingerprint"] = job["manifestFingerprint"].clone();
+            if self.catalogue.put_many_if_unchanged(
+                vec![("download_intent".into(), product.to_owned(), intent)],
+                vec![("download_intent".into(), product.to_owned(), Some(before))],
+            )? {
+                break;
+            }
+        }
+        Ok(())
+    }
+    /// Intents written before 0.4.0 kept no list; only their download jobs did. Copy each
+    /// product's latest one while Activity still lists it, so a failed or cancelled download
+    /// keeps waiting for a retry after the first Clear history.
+    fn remember_listed_attempts(&self) -> Result<()> {
+        let mut jobs: Vec<_> = self
+            .catalogue
+            .list("job")?
+            .into_iter()
+            .filter(|job| {
+                job["type"] == "download"
+                    && job["selectedFileIds"].is_null()
+                    && job["manifestFingerprint"].is_string()
+                    && job["productId"].is_string()
+            })
+            .collect();
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        // In the order they ran, so each product keeps its latest.
+        jobs.sort_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
+        let latest: HashMap<&str, &Value> = jobs
+            .iter()
+            .map(|job| (job["productId"].as_str().unwrap_or(""), job))
+            .collect();
+        // One write, read again should another change an intent first.
+        for _ in 0..4 {
+            let (mut writes, mut expected) = (Vec::new(), Vec::new());
+            for intent in self.catalogue.list("download_intent")? {
+                let Some(id) = intent["id"].as_str().map(str::to_owned) else {
+                    continue;
+                };
+                let Some(job) = latest.get(id.as_str()) else {
+                    continue;
+                };
+                if !intent["manifestFingerprint"].is_null() {
+                    continue;
+                }
+                let mut remembered = intent.clone();
+                remembered["manifestFingerprint"] = job["manifestFingerprint"].clone();
+                writes.push(("download_intent".to_owned(), id.clone(), remembered));
+                expected.push(("download_intent".to_owned(), id, Some(intent)));
+            }
+            if writes.is_empty() || self.catalogue.put_many_if_unchanged(writes, expected)? {
+                break;
+            }
+        }
+        Ok(())
     }
     /// What a download job covers of its product's current list.
     fn job_files(&self, job: &Value, files: Vec<Value>) -> Result<Vec<Value>> {
@@ -498,7 +672,10 @@ impl StorageService {
         state: &str,
         error: Option<&str>,
     ) -> Result<bool> {
-        ensure!(before["type"] == "download" && before["state"] == "queued", "invalid_job");
+        ensure!(
+            before["type"] == "download" && before["state"] == "queued",
+            "invalid_job"
+        );
         let id = io::required_string(before, "id")?;
         job["state"] = json!(state);
         job["updatedAt"] = json!(now());
@@ -516,11 +693,39 @@ impl StorageService {
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
-            let before = job.clone();
+            let mut before = job.clone();
+            if job["stage"] == STORE_UPDATE {
+                if !job["updateJobIds"].is_array() || self.store_update_active(&job)? {
+                    continue;
+                }
+                let fields = job.as_object_mut().unwrap();
+                fields.remove("stage");
+                fields.remove("updateJobIds");
+                // One refused file has nothing left to fetch; a product goes on with its new list.
+                if !job["selectedFileIds"].is_null() {
+                    changed |= self.put_queued_download(
+                        &before,
+                        &mut job,
+                        "needsAction",
+                        Some("store_file_unavailable"),
+                    )?;
+                    continue;
+                }
+                if !self.put_queued_download(&before, &mut job, "queued", None)? {
+                    continue;
+                }
+                changed = true;
+                before = job.clone();
+            }
             if !self.download_has_local_session(&job, &accounts)? {
                 if job["stage"] != "authRequired" || job["errorCode"] != "auth_required" {
                     job["stage"] = json!("authRequired");
-                    changed |= self.put_queued_download(&before, &mut job, "queued", Some("auth_required"))?;
+                    changed |= self.put_queued_download(
+                        &before,
+                        &mut job,
+                        "queued",
+                        Some("auth_required"),
+                    )?;
                 }
                 continue;
             }
@@ -534,6 +739,100 @@ impl StorageService {
             return Ok((Some(job), changed));
         }
         Ok((None, changed))
+    }
+    fn store_update_active(&self, job: &Value) -> Result<bool> {
+        for id in strings(&job["updateJobIds"]) {
+            if self.catalogue.get("job", &id)?.is_some_and(|update| {
+                matches!(update["state"].as_str(), Some("queued" | "running"))
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    /// A file its store refused may have been replaced, so the download goes back to the
+    /// queue, once, until its store's list has been read again. A cancel requested
+    /// meanwhile ends it instead.
+    fn wait_for_store_list(
+        &self,
+        job: &mut Value,
+        result: &Result<()>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        let refused = result
+            .as_ref()
+            .is_err_and(|error| io::stable_error(error) == "store_file_unavailable")
+            || job["failures"].as_object().is_some_and(|failures| {
+                failures
+                    .values()
+                    .any(|failure| failure["errorCode"] == "store_file_unavailable")
+            });
+        if !refused || job["storeUpdated"] == true || cancel.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let id = io::required_string(job, "id")?.to_owned();
+        let Some(before) = self
+            .catalogue
+            .get("job", &id)?
+            .filter(|stored| stored["state"] == "running" && stored["cancelRequested"] != true)
+        else {
+            return Ok(false);
+        };
+        job["stage"] = json!(STORE_UPDATE);
+        job["storeUpdated"] = json!(true);
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.clone(), job.clone())],
+            vec![("job".into(), id, Some(before))],
+        )
+    }
+    /// Once nothing else can download, one update per store reads again the lists of the
+    /// products waiting for one: an update slows its store's transfers to one, and one
+    /// store's busy or signed-out account must not fail another's.
+    async fn start_store_updates(&self, app: &tauri::AppHandle) -> Result<bool> {
+        let waiting: Vec<_> = self
+            .catalogue
+            .queued_jobs(Some("download"), None)?
+            .into_iter()
+            .filter(|job| job["stage"] == STORE_UPDATE && !job["updateJobIds"].is_array())
+            .collect();
+        if waiting.is_empty() {
+            return Ok(false);
+        }
+        let mut stores: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for job in &waiting {
+            let product = job["productId"].as_str().unwrap_or("");
+            // Store product IDs carry their store; BOOTH's are bare numbers.
+            let store = product.split_once(':').map_or("booth", |(store, _)| store);
+            stores.entry(store).or_default().insert(product);
+        }
+        let mut updates = HashMap::new();
+        for products in stores.values() {
+            // The files the download just verified need no second verification.
+            let jobs = self
+                .stores
+                .command(
+                    app,
+                    "update_products",
+                    json!({"productIds":products,"keepVerified":true}),
+                )
+                .await
+                .map_or_else(|_| json!([]), |answer| answer["jobIds"].clone());
+            for product in products {
+                updates.insert(*product, jobs.clone());
+            }
+        }
+        for before in &waiting {
+            let mut job = before.clone();
+            job["updateJobIds"] = updates
+                .get(before["productId"].as_str().unwrap_or(""))
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            self.put_queued_download(before, &mut job, "queued", None)?;
+        }
+        Ok(true)
     }
     /// Held for the App lifetime in the library data folder. Windows denies other
     /// handles' reads of this byte-range lock, so a library move skips it.
@@ -554,16 +853,26 @@ impl StorageService {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let queue = self.queue_gate.lock().await;
+        let gate = self.queue_gate.lock().await;
         let setup = (|| -> Result<()> {
             self.lock_process()?;
+            // First, before anything slower lets a Clear history remove those jobs.
+            let _ = self.remember_listed_attempts();
             for mut job in self.catalogue.list("job")? {
+                let other_device = job["type"] == "storage:import_local"
+                    && self.catalogue.library_root().is_some()
+                    && job["originDeviceId"] != self.catalogue.device_id();
+                // Earlier versions marked it with the code for sources nobody recorded.
+                if other_device
+                    && job["state"] == "needsAction"
+                    && job["errorCode"] == "local_source_required"
+                {
+                    self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
+                    continue;
+                }
                 if matches!(job["state"].as_str(), Some("running" | "queued")) {
-                    if job["type"] == "storage:import_local"
-                        && self.catalogue.library_root().is_some()
-                        && job["originDeviceId"] != self.catalogue.device_id()
-                    {
-                        self.put_job(&mut job, "needsAction", Some("local_source_required"))?;
+                    if other_device {
+                        self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
                         continue;
                     }
                     if RESUMED_AT_STARTUP.contains(&job["type"].as_str().unwrap_or("")) {
@@ -578,8 +887,13 @@ impl StorageService {
             }
             Ok(())
         })();
-        drop(queue);
-        let setup = setup.and_then(|()| self.reconcile_archive_cleanup());
+        drop(gate);
+        let setup = setup.and_then(|()| {
+            self.reconcile_archive_cleanup()?;
+            // Should it fail, those products keep their sources in their jobs, as before.
+            let _ = self.record_listed_local_sources();
+            Ok(())
+        });
         if let Err(e) = setup {
             *self.process_lock.lock().unwrap() = None;
             self.started.store(false, Ordering::Release);
@@ -590,10 +904,7 @@ impl StorageService {
             // Recovery evaluates the existing catalogue once. Source ingestion and
             // preference changes subsequently provide explicit, bounded invalidation.
             let _ = service.reevaluate_automatic().await;
-            loop {
-                if service.closing_local_imports.load(Ordering::Acquire) {
-                    break;
-                }
+            while !service.closing_local_imports.load(Ordering::Acquire) {
                 let _ = service.drain_automatic_changes().await;
                 let work = match service.catalogue.begin_catalogue_work() {
                     Ok(permit) => permit,
@@ -607,12 +918,16 @@ impl StorageService {
                     .queued_jobs(Some("storage:import_local"), None)
                     .ok()
                     .and_then(|jobs| {
-                        jobs.into_iter().filter(|job| {
-                            service.catalogue.library_root().is_none()
-                                || job["originDeviceId"] == service.catalogue.device_id()
-                        }).min_by_key(|job| {
-                            job["createdAt"].as_str().and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
-                        })
+                        jobs.into_iter()
+                            .filter(|job| {
+                                service.catalogue.library_root().is_none()
+                                    || job["originDeviceId"] == service.catalogue.device_id()
+                            })
+                            .min_by_key(|job| {
+                                job["createdAt"].as_str().and_then(|time| {
+                                    chrono::DateTime::parse_from_rfc3339(time).ok()
+                                })
+                            })
                     });
                 if let Some(job) = local {
                     service.process_local_job(&app, job).await;
@@ -630,9 +945,20 @@ impl StorageService {
                     if job["cancelRequested"] == true {
                         cancel.store(true, Ordering::Release);
                     }
-                    if service.put_queued_download(&before, &mut job, "running", None).unwrap_or(false) {
+                    if service
+                        .put_queued_download(&before, &mut job, "running", None)
+                        .unwrap_or(false)
+                    {
                         service.changed(&app, Some(&id));
                         let result = service.run_download(&app, &mut job, &cancel).await;
+                        if service
+                            .wait_for_store_list(&mut job, &result, &cancel)
+                            .unwrap_or(false)
+                        {
+                            service.changed(&app, Some(&id));
+                            service.cancellations.lock().unwrap().remove(&id);
+                            continue;
+                        }
                         let (state, error) = match &result {
                             Ok(()) => ("completed", None),
                             Err(e) if io::stable_error(e) == "cancelled" => ("cancelled", None),
@@ -661,6 +987,8 @@ impl StorageService {
                                 )
                             }
                         };
+                        // Before the job ends, so a delete of its files cannot start in between.
+                        let _ = service.remember_attempt(&job);
                         let _ = service.put_job(&mut job, state, error);
                         service.changed(&app, Some(&id));
                         if let Some(product) = job["productId"].as_str() {
@@ -671,6 +999,9 @@ impl StorageService {
                     }
                     service.cancellations.lock().unwrap().remove(&id);
                 } else {
+                    if service.start_store_updates(&app).await.unwrap_or(false) {
+                        service.changed(&app, None);
+                    }
                     drop(operation);
                     drop(work);
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -745,16 +1076,14 @@ impl StorageService {
         let accounts = self.available_download_accounts()?;
         let mut pending = Vec::new();
         for id in product_ids {
+            let intent = self.catalogue.get("download_intent", id)?;
             // Deleting downloaded files opts out of download-all until the next Download.
-            let wanted = self
-                .catalogue
-                .get("download_intent", id)?
-                .map(|intent| intent["wantDownload"].clone());
+            let wanted = intent.as_ref().map(|intent| intent["wantDownload"].clone());
             if wanted == Some(json!(false)) || (!all && wanted != Some(json!(true))) {
                 continue;
             }
             let files = self.catalogue.related("remote_file", id)?;
-            let entitlements = self.catalogue.effective_entitlements(&id)?;
+            let entitlements = self.catalogue.effective_entitlements(id)?;
             let (files, _) = file_manifest(files, &entitlements);
             let files: Vec<_> = files
                 .into_iter()
@@ -768,16 +1097,24 @@ impl StorageService {
             // still holding that file.
             let with_ended = fingerprint(&files);
             let files = self.without_last_failure(files, skipped_failures(false))?;
-            if files.is_empty() {
+            // Bytes already here leave nothing to fetch, as Downloaded counts them.
+            let here = ["ready", "downloaded", "extracting", "extractionFailed"];
+            if files.is_empty() || self.all_at_revision(&files, &here)? {
                 continue;
             }
             let fingerprint = fingerprint(&files);
-            // Failed/cancelled work requires an explicit retry; only a changed manifest queues again.
-            if self.catalogue.related("job", id)?.iter().any(|job| {
-                job["type"] == "download"
-                    && (job["manifestFingerprint"] == fingerprint
-                        || job["manifestFingerprint"] == with_ended)
-            }) {
+            let asked = |value: &Value| *value == fingerprint || *value == with_ended;
+            // Failed/cancelled work requires an explicit retry; only a changed manifest
+            // queues again. Jobs from before the intent remembered its list still count.
+            if intent
+                .as_ref()
+                .is_some_and(|intent| asked(&intent["manifestFingerprint"]))
+                || self
+                    .catalogue
+                    .related("job", id)?
+                    .iter()
+                    .any(|job| job["type"] == "download" && asked(&job["manifestFingerprint"]))
+            {
                 continue;
             }
             pending.push(id.clone());
@@ -815,11 +1152,13 @@ impl StorageService {
         let active: Vec<_> = jobs
             .iter()
             .filter(|j| {
-                j["type"] == "download" && j["cancelRequested"] != true
+                j["type"] == "download"
+                    && j["cancelRequested"] != true
                     && matches!(j["state"].as_str(), Some("queued" | "running"))
             })
             .collect();
         let mut writes = Vec::new();
+        let mut source_required = false;
         for id in ids.into_iter().collect::<HashSet<_>>() {
             let Some(product) = self.catalogue.get("product", &id)? else {
                 if automatic {
@@ -835,8 +1174,14 @@ impl StorageService {
             }
             if product["provider"] == "local" {
                 ensure!(selected.is_null(), "local_source_required");
-                if let Some(job_id) = self.retry_local_product_locked(&id, &jobs)? {
-                    result.push(json!(job_id));
+                match self.retry_local_product_locked(&id, &jobs) {
+                    Ok(job) => result.extend(job.map(Value::from)),
+                    // Several products at once go on without one whose source must be
+                    // chosen again; asked for alone, or with nothing else to do, it says so.
+                    Err(error) if bulk && error.to_string() == "local_source_required" => {
+                        source_required = true;
+                    }
+                    Err(error) => return Err(error),
                 }
                 continue;
             }
@@ -858,14 +1203,8 @@ impl StorageService {
                 continue;
             }
             let files = selected_download_files(files, &selected)?;
-            if selected.is_null() {
-                writes.push((
-                    "download_intent".into(),
-                    id.clone(),
-                    json!({"id":id,"wantDownload":true}),
-                ));
-            }
-            if let Some(job) = active.iter().find(|job| {
+            let fingerprint = fingerprint(&files);
+            let running = active.iter().find(|job| {
                 job["productId"] == id
                     && if selected.is_null() {
                         job["selectedFileIds"].is_null()
@@ -874,7 +1213,18 @@ impl StorageService {
                             || (job["selectedFileIds"].is_null()
                                 && strings(&job["fileIds"]).contains(&strings(&selected)[0]))
                     }
-            }) {
+            });
+            if selected.is_null() {
+                // The list a job asks for; one already active asks for its own.
+                let asked =
+                    running.map_or(json!(fingerprint), |job| job["manifestFingerprint"].clone());
+                writes.push((
+                    "download_intent".into(),
+                    id.clone(),
+                    json!({"id":id,"wantDownload":true,"manifestFingerprint":asked}),
+                ));
+            }
+            if let Some(job) = running {
                 ensure!(
                     args["redownload"] != true || job["redownload"] == true,
                     "storage_busy"
@@ -882,14 +1232,22 @@ impl StorageService {
                 result.push(job["id"].clone());
                 continue;
             }
-            let fingerprint = fingerprint(&files);
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
             writes.push(("job".into(), job_id.clone(), job));
             result.push(json!(job_id));
         }
+        if source_required && result.is_empty() && !automatic {
+            bail!("local_source_required");
+        }
         self.catalogue.put_many(writes)?;
-        Ok(json!({"jobIds":result}))
+        api::answer(api::DownloadJobs {
+            job_ids: result
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        })
     }
     #[cfg(test)]
     pub(crate) async fn enqueue_for_test(&self, args: &Value) -> Result<Value> {
@@ -928,7 +1286,6 @@ impl StorageService {
                 "remap_root"
                     | "migrate_root"
                     | "cleanup_old_root"
-                    | "verify_root"
                     | "export_backup"
                     | "restore_backup"
                     | "export_zip"
@@ -957,7 +1314,7 @@ impl StorageService {
             }
             "cancel_downloads" => self.cancel_downloads(&args).await,
             "delete_downloads" => self.delete_downloads(&args).await,
-            "retry_job" | "retry_file" => {
+            "retry_job" => {
                 let mut retry = args.clone();
                 if let Some(id) = args["jobId"].as_str() {
                     let job = self
@@ -985,11 +1342,13 @@ impl StorageService {
                 }
                 self.enqueue(&retry).await
             }
-            "configure_root" => self.configure_root(&args).await,
-            "remap_root" | "migrate_root" | "cleanup_old_root" | "verify_root"
-            | "export_backup" | "restore_backup" | "export_zip" => {
-                self.launch_operation(app, action, args).await
+            "discard_import" => {
+                let id = io::required_string(&args, "jobId")?;
+                self.discard_local_import(id).await
             }
+            "configure_root" => self.configure_root(&args).await,
+            "remap_root" | "migrate_root" | "cleanup_old_root" | "export_backup"
+            | "restore_backup" | "export_zip" => self.launch_operation(app, action, args).await,
             "product_availability" => {
                 let service = self.clone();
                 tokio::task::spawn_blocking(move || service.product_availability(&args)).await?
