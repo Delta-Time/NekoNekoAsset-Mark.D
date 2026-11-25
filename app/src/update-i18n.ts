@@ -34,7 +34,7 @@ export function updateJobBlocker(jobs: { type: string; state: string }[]): strin
 // A Mark.D revision follows the upstream Bridge of the same base version.
 export function isNewerBridge(latest: string, current: string | null | undefined): boolean {
   const parse = (value: string) =>
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-D\.([1-9]\d*))?$/
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+D([1-9]\d*))?$/
       .exec(value)
       ?.slice(1)
       .map((part) => Number(part ?? 0));

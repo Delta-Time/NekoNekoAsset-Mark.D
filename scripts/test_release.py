@@ -100,10 +100,10 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(release.version(), version)
         self.assertEqual(release.bridge_version(version), "0.3.13")
         self.assertEqual(release.release_notes(version), expected)
-        self.write_bridge_version("0.3.13-D.1")
-        self.assertEqual(release.bridge_version(version), release.bridge_release_version(version))
-        self.assertIn(f"{release.PACKAGE}-0.3.13-D.1.tgz", release.asset_names(version, True))
-        self.write_bridge_version("0.3.13-D.2")
+        self.write_bridge_version(version)
+        self.assertEqual(release.bridge_version(version), version)
+        self.assertIn(f"{release.PACKAGE}-{version}.tgz", release.asset_names(version, True))
+        self.write_bridge_version("0.3.13+D2")
         with self.assertRaises(ValueError):
             release.bridge_version(version)
 
