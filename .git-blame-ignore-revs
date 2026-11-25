@@ -1,0 +1,7 @@
+# Formatting-only commits. GitHub blame skips them; locally run
+# git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the frontend with Biome
+ac4bf5f91f81cdca67beb8794e1678095753e88d
+# Format Rust with rustfmt
+daef20402b3c372ad3dfbcbf3befcd80a5194e1f

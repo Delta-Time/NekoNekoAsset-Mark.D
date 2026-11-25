@@ -28,7 +28,7 @@ namespace NekoNekoAsset.Bridge
                 ? localization.Text("pathManaged") : item.Entry.IdentityGuid;
             string existingGuid = string.IsNullOrEmpty(conflict.ExistingGuid)
                 ? localization.Text("none") : conflict.ExistingGuid;
-            window.message = localization.Format("conflictDetails", localization.Text("guidConflict"),
+            window.message = localization.Format("conflictDetails", localization.Kind(conflict.Kind),
                 item.IncomingPath, incomingGuid, item.TargetPath, existingGuid);
             window.minSize = new Vector2(520f, 270f);
             window.maxSize = new Vector2(760f, 420f);

@@ -23,6 +23,16 @@ namespace NekoNekoAsset.Bridge
         private readonly Dictionary<PackageAssetNode, PackageAssetNode.ToggleState> treeStates = new Dictionary<PackageAssetNode, PackageAssetNode.ToggleState>();
         private int treeStateVersion = -1;
         private bool treeKeyboardFocus;
+        // Package trees draw only the rows inside the scroll view, from a flat list rebuilt on Layout.
+        private struct FlatRow { public PackageAssetNode Node; public int Depth; }
+        private readonly Dictionary<PackageAssetNode, List<FlatRow>> flatTrees = new Dictionary<PackageAssetNode, List<FlatRow>>();
+        private readonly Dictionary<PackageAssetNode, float> treeTops = new Dictionary<PackageAssetNode, float>();
+        private readonly Dictionary<ImportConflictKind, float> badgeWidths = new Dictionary<ImportConflictKind, float>();
+        private float importerViewHeight = 540f;
+        private static readonly Color NewColor = new Color(.30f, .70f, .30f, .85f);
+        private static readonly Color IdenticalColor = new Color(.25f, .50f, .90f, .85f);
+        private static readonly Color UpdateColor = new Color(.80f, .52f, .10f, .90f);
+        private static readonly Color ConflictColor = new Color(.85f, .20f, .20f, .90f);
 
         private PackageAssetNode.ToggleState GetTreeState(PackageAssetNode node)
         {
@@ -59,7 +69,9 @@ namespace NekoNekoAsset.Bridge
         private void BeginTreeGUI()
         {
             Event current = Event.current;
-            if (treeKeyboardFocus && GUI.GetNameOfFocusedControl().StartsWith("NNAImportTree:", StringComparison.Ordinal)
+            // A highlighted row scrolled out of view is not drawn, so its focused control has no name.
+            string focused = GUI.GetNameOfFocusedControl();
+            if (treeKeyboardFocus && (focused.Length == 0 || focused.StartsWith("NNAImportTree:", StringComparison.Ordinal))
                 && !EditorGUIUtility.editingTextField && importerHighlightNode != null
                 && current.type == EventType.KeyDown)
             {
@@ -69,9 +81,11 @@ namespace NekoNekoAsset.Bridge
                 {
                     case KeyCode.UpArrow:
                         if (index > 0) importerHighlightNode = visibleRows[index - 1];
+                        RevealHighlight();
                         break;
                     case KeyCode.DownArrow:
                         if (index >= 0 && index + 1 < visibleRows.Count) importerHighlightNode = visibleRows[index + 1];
+                        RevealHighlight();
                         break;
                     case KeyCode.LeftArrow:
                         if (importerHighlightNode.IsFolder && importerHighlightNode.IsExpanded)
@@ -97,13 +111,64 @@ namespace NekoNekoAsset.Bridge
             visibleRows.Clear();
         }
 
+        private void RevealHighlight()
+        {
+            foreach (KeyValuePair<PackageAssetNode, List<FlatRow>> tree in flatTrees)
+            {
+                int index = tree.Value.FindIndex(row => row.Node == importerHighlightNode);
+                if (index < 0 || !treeTops.TryGetValue(tree.Key, out float top)) continue;
+                float y = top + index * RowHeight;
+                if (y < importerScroll.y) importerScroll.y = y;
+                else if (y + RowHeight > importerScroll.y + importerViewHeight) importerScroll.y = y + RowHeight - importerViewHeight;
+                return;
+            }
+        }
+
+        private void DrawVirtualTree(PackageAssetNode root, Dictionary<string, ImportConflict> conflicts)
+        {
+            if (!flatTrees.TryGetValue(root, out List<FlatRow> rows) || Event.current.type == EventType.Layout)
+            {
+                if (rows == null) flatTrees[root] = rows = new List<FlatRow>();
+                rows.Clear();
+                Flatten(root, 0, rows);
+            }
+            // Keyboard order includes the rows outside the view.
+            foreach (FlatRow row in rows) visibleRows.Add(row.Node);
+            Rect block = GUILayoutUtility.GetRect(0f, rows.Count * RowHeight, GUILayout.ExpandWidth(true));
+            if (Event.current.type == EventType.Repaint) treeTops[root] = block.y;
+            // The last repaint's position keeps the drawn slice identical across a frame's events.
+            float top = treeTops.TryGetValue(root, out float known) ? known : 0f;
+            int first = Mathf.Max(0, Mathf.FloorToInt((importerScroll.y - top) / RowHeight) - 1);
+            int last = Mathf.Min(rows.Count, Mathf.CeilToInt((importerScroll.y + importerViewHeight - top) / RowHeight) + 1);
+            for (int i = first; i < last; i++)
+                DrawNodeRow(rows[i].Node, rows[i].Depth, conflicts, new Rect(block.x, block.y + i * RowHeight, block.width, RowHeight));
+        }
+
+        private static void Flatten(PackageAssetNode node, int depth, List<FlatRow> rows)
+        {
+            // The synthetic Project container is not a selectable package entry.
+            if (node.Parent == null && string.IsNullOrEmpty(node.FullPath))
+            {
+                foreach (PackageAssetNode topLevel in node.Children) Flatten(topLevel, depth, rows);
+                return;
+            }
+            rows.Add(new FlatRow { Node = node, Depth = depth });
+            if (node.IsFolder && node.IsExpanded)
+                foreach (PackageAssetNode child in node.Children) Flatten(child, depth + 1, rows);
+        }
+
         private PackageAssetNode DisplayedTreeParent(PackageAssetNode node)
             => looseTreeOwners.ContainsKey(node) ? (individualDestinations ? null : unifiedLooseLeafParent) : node.Parent;
 
-        private Rect DrawRowCore(PackageAssetNode node, int depth, float tailWidth)
+        private Rect DrawRowCore(PackageAssetNode node, int depth, float tailWidth, Rect? placed = null)
         {
-            Rect row = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.Height(RowHeight), GUILayout.ExpandWidth(true));
-            visibleRows.Add(node);
+            Rect row;
+            if (placed.HasValue) row = placed.Value;
+            else
+            {
+                row = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.Height(RowHeight), GUILayout.ExpandWidth(true));
+                visibleRows.Add(node);
+            }
             if (node == importerHighlightNode && Event.current.type == EventType.Repaint)
                 EditorGUI.DrawRect(row, new Color(.24f, .48f, .90f, .20f));
             float middleY = row.y + (RowHeight - 16f) * .5f;
@@ -113,7 +178,11 @@ namespace NekoNekoAsset.Bridge
             float x = row.x + indent;
             var foldoutRect = new Rect(x, middleY, TreeFoldoutWidth, 16f);
             if (node.IsFolder && node.Children.Count > 0)
-                node.IsExpanded = EditorGUI.Foldout(foldoutRect, node.IsExpanded, GUIContent.none, true);
+            {
+                bool expanded = EditorGUI.Foldout(foldoutRect, node.IsExpanded, GUIContent.none, true);
+                // Keys then act on the row whose arrow was clicked, never on an earlier highlighted row.
+                if (expanded != node.IsExpanded) { node.IsExpanded = expanded; HighlightRow(node); }
+            }
             x += TreeFoldoutWidth;
 
             var toggleRect = new Rect(x, middleY, TreeToggleWidth, 16f);
@@ -151,13 +220,18 @@ namespace NekoNekoAsset.Bridge
             GUI.Label(nameRect, new GUIContent(node.Name, tooltip), RowNameStyle);
             if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && nameRect.Contains(Event.current.mousePosition))
             {
-                importerHighlightNode = node;
-                treeKeyboardFocus = true;
-                GUI.FocusControl(TreeControlName(node));
-                Repaint();
+                HighlightRow(node);
                 Event.current.Use();
             }
             return new Rect(row.xMax - tailWidth, row.y, tailWidth, RowHeight);
+        }
+
+        private void HighlightRow(PackageAssetNode node)
+        {
+            importerHighlightNode = node;
+            treeKeyboardFocus = true;
+            GUI.FocusControl(TreeControlName(node));
+            Repaint();
         }
 
         private Texture GetCachedIconFor(PackageAssetNode node)
@@ -197,45 +271,50 @@ namespace NekoNekoAsset.Bridge
                 foreach (PackageAssetNode topLevel in node.Children) DrawNode(topLevel, depth, conflicts);
                 return;
             }
-            ImportConflictKind badgeKind = default;
-            bool hasBadge = false;
-            if (node.IsFolder)
-            {
-                if (node.HasCheckedGuidConflict || node.HasCheckedPathConflict || node.HasCheckedUpdate)
-                { badgeKind = ImportConflictKind.GuidConflict; hasBadge = true; }
-                else if (node.HasCheckedDuplicate) { badgeKind = ImportConflictKind.Duplicate; hasBadge = true; }
-            }
-            else if (node.IsChecked && conflicts != null && conflicts.TryGetValue(node.FullPath, out ImportConflict conflict)
-                && !(conflict.Kind == ImportConflictKind.Duplicate && conflict.ExistingFromProject))
-            {
-                badgeKind = VisibleBadgeKind(conflict.Kind);
-                hasBadge = true;
-            }
-            float badgeWidth = hasBadge ? EditorStyles.miniLabel.CalcSize(new GUIContent(BadgeLabel(badgeKind))).x + 12f : 0f;
-            Rect tail = DrawRowCore(node, depth, badgeWidth);
-            if (hasBadge) DrawConflictBadge(new Rect(tail.x, tail.y + (RowHeight - 16f) * .5f, badgeWidth, 16f), badgeKind);
+            DrawNodeRow(node, depth, conflicts);
             if (node.IsFolder && node.IsExpanded)
                 foreach (PackageAssetNode child in node.Children) DrawNode(child, depth + 1, conflicts);
         }
 
-        private string BadgeLabel(ImportConflictKind kind)
+        private void DrawNodeRow(PackageAssetNode node, int depth, Dictionary<string, ImportConflict> conflicts, Rect? placed = null)
         {
-            if (kind == ImportConflictKind.New) return L("new");
-            return kind == ImportConflictKind.Duplicate ? L("identical") : L("guidConflict");
+            ImportConflictKind badgeKind = default;
+            bool hasBadge = true;
+            // A folder shows what most needs a look among its checked contents.
+            if (node.IsFolder)
+            {
+                if (node.HasCheckedBlocked) badgeKind = ImportConflictKind.Blocked;
+                else if (node.HasCheckedPathConflict) badgeKind = ImportConflictKind.PathConflict;
+                else if (node.HasCheckedGuidConflict) badgeKind = ImportConflictKind.GuidConflict;
+                else if (node.HasCheckedUpdate) badgeKind = ImportConflictKind.Update;
+                else if (node.HasCheckedDuplicate) badgeKind = ImportConflictKind.Duplicate;
+                else hasBadge = false;
+            }
+            else if (node.IsChecked && conflicts != null && conflicts.TryGetValue(node.FullPath, out ImportConflict conflict)
+                && !(conflict.Kind == ImportConflictKind.Duplicate && conflict.ExistingFromProject))
+                badgeKind = conflict.Kind;
+            else hasBadge = false;
+            float badgeWidth = hasBadge ? BadgeWidth(badgeKind) : 0f;
+            Rect tail = DrawRowCore(node, depth, badgeWidth, placed);
+            if (hasBadge) DrawConflictBadge(new Rect(tail.x, tail.y + (RowHeight - 16f) * .5f, badgeWidth, 16f), badgeKind);
         }
 
-        private static ImportConflictKind VisibleBadgeKind(ImportConflictKind kind)
+        private float BadgeWidth(ImportConflictKind kind)
         {
-            return kind == ImportConflictKind.New || kind == ImportConflictKind.Duplicate ? kind : ImportConflictKind.GuidConflict;
+            if (!badgeWidths.TryGetValue(kind, out float width))
+                badgeWidths[kind] = width = EditorStyles.miniLabel.CalcSize(new GUIContent(localization.Kind(kind))).x + 12f;
+            return width;
         }
+
+        private static Color BadgeColor(ImportConflictKind kind)
+            => kind == ImportConflictKind.New ? NewColor : kind == ImportConflictKind.Duplicate ? IdenticalColor
+                : kind == ImportConflictKind.Update ? UpdateColor : ConflictColor;
 
         private void DrawConflictBadge(Rect rect, ImportConflictKind kind)
         {
-            Color background = kind == ImportConflictKind.New ? new Color(.30f, .70f, .30f, .85f)
-                : kind == ImportConflictKind.Duplicate ? new Color(.25f, .50f, .90f, .85f)
-                : new Color(.85f, .20f, .20f, .90f);
-            EditorGUI.DrawRect(rect, background);
-            GUI.Label(rect, BadgeLabel(kind), EditorStyles.whiteMiniLabel);
+            if (Event.current.type != EventType.Repaint) return;
+            EditorGUI.DrawRect(rect, BadgeColor(kind));
+            GUI.Label(rect, localization.Kind(kind), EditorStyles.whiteMiniLabel);
         }
     }
 }

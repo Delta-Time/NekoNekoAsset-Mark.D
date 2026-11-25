@@ -121,11 +121,12 @@ namespace NekoNekoAsset.Bridge
                 if (package.IsLooseFiles) EnsurePackageTally(package);
             if (!individualDestinations)
             {
-                bool guid = false, path = false, update = false, duplicate = false;
+                bool guid = false, path = false, blocked = false, update = false, duplicate = false;
                 foreach (PackageAssetNode leaf in unifiedLooseLeafParent.Children)
                 {
                     guid |= leaf.HasCheckedGuidConflict;
                     path |= leaf.HasCheckedPathConflict;
+                    blocked |= leaf.HasCheckedBlocked;
                     update |= leaf.HasCheckedUpdate;
                     duplicate |= leaf.HasCheckedDuplicate;
                 }
@@ -133,6 +134,7 @@ namespace NekoNekoAsset.Bridge
                 {
                     folder.HasCheckedGuidConflict = guid;
                     folder.HasCheckedPathConflict = path;
+                    folder.HasCheckedBlocked = blocked;
                     folder.HasCheckedUpdate = update;
                     folder.HasCheckedDuplicate = duplicate;
                 }
@@ -165,17 +167,22 @@ namespace NekoNekoAsset.Bridge
             EnsurePackageTally(package);
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    string name = !string.IsNullOrEmpty(package.DisplayName) ? package.DisplayName
-                        : package.IsLooseFiles ? L("looseFiles") : Path.GetFileName(package.FilePath);
-                    var label = new GUIContent($"{name}   ({package.SelectedCount} / {package.LeafCount})", name);
-                    package.IsExpanded = EditorGUILayout.Foldout(package.IsExpanded, label, true);
-                    GUILayout.FlexibleSpace();
-                    DrawPackageConflictTallies(package);
-                }
+                string name = !string.IsNullOrEmpty(package.DisplayName) ? package.DisplayName
+                    : package.IsLooseFiles ? L("looseFiles") : Path.GetFileName(package.FilePath);
+                var label = new GUIContent($"{name}   ({package.SelectedCount} / {package.LeafCount})", name);
+                // Counts sit at the right; a long name is clipped before them instead of running under them.
+                Rect header = GUILayoutUtility.GetRect(0f, RowHeight, GUILayout.ExpandWidth(true));
+                float tallies = DrawPackageConflictTallies(package, header);
+                float nameWidth = Mathf.Max(0f, header.width - tallies), labelWidth = EditorGUIUtility.labelWidth;
+                // A foldout clips its label at the label width, so give it all the room left of the counts.
+                EditorGUIUtility.labelWidth = nameWidth;
+                bool expanded = EditorGUI.Foldout(new Rect(header.x, header.y, nameWidth, header.height),
+                    package.IsExpanded, label, true, ClippedFoldout);
+                EditorGUIUtility.labelWidth = labelWidth;
+                // The header foldout now has the keys; a highlighted row must not take them.
+                if (expanded != package.IsExpanded) { package.IsExpanded = expanded; treeKeyboardFocus = false; }
                 if (package.IsExpanded && package.Tree != null)
-                    DrawNode(package.Tree, 0, package.ConflictByPath);
+                    DrawVirtualTree(package.Tree, package.ConflictByPath);
             }
         }
 
@@ -296,7 +303,7 @@ namespace NekoNekoAsset.Bridge
             if (!destinationInvalid)
             {
                 importBlocked = !preview.CanApply;
-                error = preview.CanApply ? reviewErrorMessage : string.Join("\n", preview.Errors);
+                error = preview.CanApply ? reviewErrorMessage : Errors(preview.Errors);
             }
             importerCheckVersion++;
             Repaint();
@@ -306,22 +313,24 @@ namespace NekoNekoAsset.Bridge
         {
             if (package == null || package.Tree == null || package.TallyVersion == importerCheckVersion) return;
             package.TallyVersion = importerCheckVersion;
-            int guid = 0, path = 0, update = 0, duplicate = 0, selected = 0;
-            AggregateConflicts(package.Tree, package.ConflictByPath, ref guid, ref path, ref update, ref duplicate, ref selected);
+            int guid = 0, path = 0, update = 0, duplicate = 0, blocked = 0, selected = 0;
+            AggregateConflicts(package.Tree, package.ConflictByPath, ref guid, ref path, ref update, ref duplicate, ref blocked, ref selected);
             package.GuidConflictCount = guid;
             package.PathConflictCount = path;
             package.UpdateCount = update;
             package.DuplicateCount = duplicate;
+            package.BlockedCount = blocked;
             package.SelectedCount = selected;
         }
 
         private void AggregateConflicts(PackageAssetNode node, Dictionary<string, ImportConflict> map,
-            ref int guid, ref int path, ref int update, ref int duplicate, ref int selected)
+            ref int guid, ref int path, ref int update, ref int duplicate, ref int blocked, ref int selected)
         {
             if (!node.IsFolder || (node.Children.Count == 0 && node.HasPackageEntry))
             {
                 node.HasCheckedGuidConflict = false;
                 node.HasCheckedPathConflict = false;
+                node.HasCheckedBlocked = false;
                 node.HasCheckedUpdate = false;
                 node.HasCheckedDuplicate = false;
                 if (node.IsChecked)
@@ -331,6 +340,7 @@ namespace NekoNekoAsset.Bridge
                     {
                         if (conflict.Kind == ImportConflictKind.GuidConflict) { guid++; node.HasCheckedGuidConflict = true; }
                         else if (conflict.Kind == ImportConflictKind.PathConflict) { path++; node.HasCheckedPathConflict = true; }
+                        else if (conflict.Kind == ImportConflictKind.Blocked) { blocked++; node.HasCheckedBlocked = true; }
                         else if (conflict.Kind == ImportConflictKind.Update) { update++; node.HasCheckedUpdate = true; }
                         else if (conflict.Kind == ImportConflictKind.Duplicate && !conflict.ExistingFromProject)
                         { duplicate++; node.HasCheckedDuplicate = true; }
@@ -338,12 +348,13 @@ namespace NekoNekoAsset.Bridge
                 }
                 return;
             }
-            bool folderGuid = false, folderPath = false, folderUpdate = false, folderDuplicate = false;
+            bool folderGuid = false, folderPath = false, folderBlocked = false, folderUpdate = false, folderDuplicate = false;
             foreach (PackageAssetNode child in node.Children)
             {
-                AggregateConflicts(child, map, ref guid, ref path, ref update, ref duplicate, ref selected);
+                AggregateConflicts(child, map, ref guid, ref path, ref update, ref duplicate, ref blocked, ref selected);
                 folderGuid |= child.HasCheckedGuidConflict;
                 folderPath |= child.HasCheckedPathConflict;
+                folderBlocked |= child.HasCheckedBlocked;
                 folderUpdate |= child.HasCheckedUpdate;
                 folderDuplicate |= child.HasCheckedDuplicate;
             }
@@ -353,29 +364,43 @@ namespace NekoNekoAsset.Bridge
             {
                 folderGuid |= folderConflict.Kind == ImportConflictKind.GuidConflict;
                 folderPath |= folderConflict.Kind == ImportConflictKind.PathConflict;
+                folderBlocked |= folderConflict.Kind == ImportConflictKind.Blocked;
                 folderUpdate |= folderConflict.Kind == ImportConflictKind.Update;
                 folderDuplicate |= folderConflict.Kind == ImportConflictKind.Duplicate && !folderConflict.ExistingFromProject;
             }
             node.HasCheckedGuidConflict = folderGuid;
             node.HasCheckedPathConflict = folderPath;
+            node.HasCheckedBlocked = folderBlocked;
             node.HasCheckedUpdate = folderUpdate;
             node.HasCheckedDuplicate = folderDuplicate;
         }
 
-        private void DrawPackageConflictTallies(LoadedPackage package)
+        private static GUIStyle clippedFoldout;
+        private static GUIStyle ClippedFoldout => clippedFoldout ?? (clippedFoldout = new GUIStyle(EditorStyles.foldout) { clipping = TextClipping.Clip });
+
+        // Drawn right to left; returns the width they take from the header.
+        private float DrawPackageConflictTallies(LoadedPackage package, Rect header)
         {
-            int conflicts = package.GuidConflictCount + package.PathConflictCount + package.UpdateCount;
-            if (conflicts > 0) DrawTallyBadge(localization.Format("conflictCount", conflicts), new Color(.85f, .20f, .20f, .90f));
-            if (package.DuplicateCount > 0) DrawTallyBadge(localization.Format("identicalCount", package.DuplicateCount), new Color(.25f, .50f, .90f, .85f));
+            float left = header.xMax;
+            if (package.DuplicateCount > 0) left = DrawTallyBadge(localization.Format("identicalCount", package.DuplicateCount), IdenticalColor, left, header.y);
+            if (package.UpdateCount > 0) left = DrawTallyBadge(localization.Format("updateCount", package.UpdateCount), UpdateColor, left, header.y);
+            if (package.GuidConflictCount > 0) left = DrawTallyBadge(localization.Format("guidConflictCount", package.GuidConflictCount), ConflictColor, left, header.y);
+            if (package.PathConflictCount > 0) left = DrawTallyBadge(localization.Format("pathTakenCount", package.PathConflictCount), ConflictColor, left, header.y);
+            if (package.BlockedCount > 0) left = DrawTallyBadge(localization.Format("blockedCount", package.BlockedCount), ConflictColor, left, header.y);
+            return header.xMax - left;
         }
 
-        private static void DrawTallyBadge(string label, Color background)
+        private static float DrawTallyBadge(string label, Color background, float right, float y)
         {
             var content = new GUIContent(label);
-            Vector2 size = EditorStyles.miniLabel.CalcSize(content);
-            Rect rect = GUILayoutUtility.GetRect(size.x + 12f, 16f, GUILayout.Width(size.x + 12f), GUILayout.Height(16f));
-            EditorGUI.DrawRect(rect, background);
-            GUI.Label(rect, content, EditorStyles.whiteMiniLabel);
+            float width = EditorStyles.miniLabel.CalcSize(content).x + 12f;
+            var rect = new Rect(right - width, y + (RowHeight - 16f) * .5f, width, 16f);
+            if (Event.current.type == EventType.Repaint)
+            {
+                EditorGUI.DrawRect(rect, background);
+                GUI.Label(rect, content, EditorStyles.whiteMiniLabel);
+            }
+            return rect.x - 3f;
         }
     }
 }

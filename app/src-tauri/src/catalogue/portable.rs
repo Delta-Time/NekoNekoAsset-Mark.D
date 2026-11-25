@@ -1,6 +1,6 @@
 //! Versioned metadata portability. Filesystem payload copying belongs to StorageService.
 use super::*;
-use std::{collections::BTreeSet, io::Write};
+use std::collections::BTreeSet;
 const PORTABLE: &[&str] = &[
     "product",
     "overlay",
@@ -343,8 +343,8 @@ pub(super) fn restore(
     let backup = backup_dir.join(format!("before-restore-{}.sqlite3", Uuid::new_v4()));
     conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
     let roots = rows(&conn, "root")?;
-    // Keep causal history and tombstone replaced entities; a later folder exchange
-    // must not resurrect the pre-restore catalogue or reuse actor sequence numbers.
+    // Keep causal history and tombstone replaced entities; the history must not
+    // resurrect the pre-restore catalogue or reuse actor sequence numbers.
     let mut doc = cache.take().unwrap();
     // Invalidate cached history before replacement; failed transactions reload the old durable doc.
     let tx = conn.transaction()?;
@@ -360,7 +360,7 @@ pub(super) fn restore(
     tx.execute_batch("DELETE FROM undo; DELETE FROM am_changes;")?;
     // Local job continuity is explicit; jobs from the backup are never imported.
     tx.execute(
-        "DELETE FROM entities WHERE kind IN ('job','checkpoint','download_intent') AND (?1 IS NULL OR kind<>'job' OR id<>?1)",
+        "DELETE FROM entities WHERE kind IN ('job','checkpoint','download_intent','local_source') AND (?1 IS NULL OR kind<>'job' OR id<>?1)",
         [active_restore_job_id],
     )?;
     for (kind, id, mut value) in records {
@@ -412,93 +412,12 @@ pub(super) fn restore(
         "INSERT INTO sync_trust(key,digest) VALUES('base',?1)",
         [Catalogue::digest(&bytes)],
     )?;
-    Catalogue::save_conflicts(&tx, &sync::conflicts(&doc)?)?;
     tx.execute("INSERT INTO meta(key,value) VALUES('sync_revision',1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
     tx.execute("INSERT INTO meta(key,value) VALUES('last_restore_backup',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[backup.to_string_lossy().as_ref()])?;
     Catalogue::bump_revision(&tx)?;
     tx.commit()?;
     *cache = Some(doc);
     Ok(())
-}
-fn csv_cell(value: &str) -> String {
-    // Spreadsheet formula execution is not metadata. Escape first-cell formula prefixes.
-    let safe = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        format!("'{value}")
-    } else {
-        value.to_owned()
-    };
-    format!("\"{}\"", safe.replace('"', "\"\""))
-}
-pub(super) fn csv(catalogue: &Catalogue, args: Value) -> Result<Value> {
-    let conn = catalogue
-        .inner
-        .lock()
-        .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-    let selected: Option<BTreeSet<_>> = args.get("ids").map(|v| strings(v).into_iter().collect());
-    let custom: std::collections::BTreeMap<_, _> = rows(&conn, "custom_category")?
-        .iter()
-        .map(|row| (text(row, "id").to_owned(), text(row, "name").to_owned()))
-        .collect();
-    let mut output =
-        String::from("id,title,sourceTitle,shop,category,status,price,acquired,note,tags,priceCurrency,paidPrice,paidCurrency\r\n");
-    let mut count = 0;
-    for p in projection::all(&conn)? {
-        if selected
-            .as_ref()
-            .is_some_and(|ids| !ids.contains(text(&p, "id")))
-        {
-            continue;
-        }
-        let mut fields = vec![];
-        for key in ["id", "title", "sourceTitle", "shop", "category", "status"] {
-            let value = text(&p, key);
-            let value = if key == "category" {
-                custom.get(value).map_or(value, String::as_str)
-            } else {
-                value
-            };
-            fields.push(value.to_owned());
-        }
-        fields.push(
-            p["price"]
-                .as_f64()
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        );
-        fields.push(text(&p, "acquired").into());
-        fields.push(text(&p, "note").into());
-        fields.push(strings(&p["tags"]).join("; "));
-        fields.push(text(&p, "priceCurrency").into());
-        fields.push(
-            p["paidPrice"]
-                .as_f64()
-                .map(|amount| amount.to_string())
-                .unwrap_or_default(),
-        );
-        fields.push(text(&p, "paidCurrency").into());
-        output.push_str(
-            &fields
-                .iter()
-                .map(|s| csv_cell(s))
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        output.push_str("\r\n");
-        count += 1;
-    }
-    drop(conn);
-    if let Some(path) = args["path"].as_str() {
-        let path = Path::new(path);
-        ensure!(path.is_absolute(), "catalogue.absolute_path_required");
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        file.write_all(output.as_bytes())?;
-        file.sync_all()?;
-        return Ok(json!({"ok":true,"count":count}));
-    }
-    Ok(json!({"text":output,"count":count}))
 }
 
 #[cfg(test)]

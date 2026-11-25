@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using NekoNekoAsset.Bridge.SmartPackage;
 using UnityEditor;
@@ -12,15 +13,21 @@ namespace NekoNekoAsset.Bridge
 {
     public static partial class BridgeRuntime
     {
+        // Real time for checkpoint and progress-bar pacing; it keeps running inside a long import.
+        private static readonly Stopwatch CheckpointClock = Stopwatch.StartNew();
+
         private static List<LoadedPackage> LoadInputs(StoredBridgeRequest request)
         {
             var manifest = JsonUtility.FromJson<BridgeManifest>(request.manifestJson);
             return PrepareInputs(manifest, InputsDirectory(request), request);
         }
 
-        // Plain filesystem/metadata work; no Unity API or project writes run here.
-        private static List<LoadedPackage> PrepareInputs(BridgeManifest manifest, string inputsDirectory, StoredBridgeRequest request)
+        // Plain filesystem/metadata work; no Unity API or project writes run here. Package members
+        // are written to the request's own staging while they are read, so Import only moves them.
+        private static List<LoadedPackage> PrepareInputs(BridgeManifest manifest, string inputsDirectory, StoredBridgeRequest request,
+            string stagedDirectory = null)
         {
+            if (stagedDirectory != null) DeleteOwnedTree(stagedDirectory);
             var packages = new List<LoadedPackage>();
             long totalBytes = manifest.entries.Sum(entry => entry.bytes), completedBytes = 0;
             var progressClock = Stopwatch.StartNew();
@@ -56,7 +63,8 @@ namespace NekoNekoAsset.Bridge
                 };
                 if (entry.kind == "unitypackage")
                 {
-                    LoadedPackage package = LoadedPackage.LoadPackage(staged, order, entry.sha256, progress, () => request.cancelTransfer);
+                    LoadedPackage package = LoadedPackage.LoadPackage(staged, order, entry.sha256, progress, () => request.cancelTransfer,
+                        stagedDirectory == null ? null : Path.Combine(stagedDirectory, "package-" + order));
                     package.DisplayName = entry.displayName;
                     packages.Add(package);
                 }
@@ -124,6 +132,10 @@ namespace NekoNekoAsset.Bridge
             }
         }
 
+        // One manifest parse per request, not one per progress update or result.
+        private static BridgeLocalization Labels(StoredBridgeRequest request)
+            => request.labels ?? (request.labels = new BridgeLocalization(Locale(request)));
+
         private static void ShowReview(StoredBridgeRequest request)
         {
             if (stopped || request == null || active != request || !registry.enabled
@@ -147,8 +159,9 @@ namespace NekoNekoAsset.Bridge
                 {
                     var manifest = JsonUtility.FromJson<BridgeManifest>(request.manifestJson);
                     string inputsDirectory = InputsDirectory(request);
+                    string stagedDirectory = BridgeFiles.Under(RequestDirectory(request.receipt.requestId), "staged");
                     request.preparingReview = true;
-                    Task.Run(() => PrepareInputs(manifest, inputsDirectory, request)).ContinueWith(prepared => MainActions.Enqueue(() => {
+                    Task.Run(() => PrepareInputs(manifest, inputsDirectory, request, stagedDirectory)).ContinueWith(prepared => MainActions.Enqueue(() => {
                         if (!AcceptPreparationResult(request, prepared)) return;
                         request.preparedPackages = prepared.Result;
                         PublishPreparationProgress(request, true);
@@ -193,22 +206,31 @@ namespace NekoNekoAsset.Bridge
                         preparedSnapshot: request.preparedSnapshot, preparedPreview: request.preparedPreview,
                         preparedPolicy: request.preparedPolicy);
                 PublishPreparationProgress(request, true);
+                EndProgress(request);
                 request.receipt.preparationWaitingForEditor = false;
                 request.receipt.stage = "waitingForUser";
                 Save(request);
             }
-            catch (Exception error) { Fail(request, PreparationFailure(request.preparingEntry, error)); }
+            catch (Exception error) { Fail(request, LocalizedPreparationFailure(request, error)); }
         }
 
         private static bool AcceptPreparationResult<T>(StoredBridgeRequest request, Task<T> prepared)
         {
             if (prepared.IsFaulted) _ = prepared.Exception; // No incoming content/paths enter logs.
             request.preparingReview = false;
-            if (Terminal(request.receipt.stage) && !request.receipt.writesStarted) TryCleanupInputs(request);
+            if (Terminal(request.receipt.stage)) TryCleanupTerminal(request);
             if (stopped || active != request || !registry.enabled || Terminal(request.receipt.stage)) return false;
             if (prepared.IsFaulted || prepared.IsCanceled)
-            { Fail(request, PreparationFailure(request.preparingEntry, prepared.Exception?.InnerException)); return false; }
+            { Fail(request, LocalizedPreparationFailure(request, prepared.Exception?.InnerException)); return false; }
             return true;
+        }
+
+        private static string LocalizedPreparationFailure(StoredBridgeRequest request, Exception error)
+        {
+            BridgeLocalization labels = Labels(request);
+            string english = PreparationFailure(null, error);
+            if (string.IsNullOrEmpty(error?.Message)) return labels.Message(english);
+            return PreparationFailure(request.preparingEntry, new InvalidDataException(labels.Reason(english)));
         }
 
         // Shown in the result window and App, never logged. Wire v1 bounds a receipt error at
@@ -222,11 +244,75 @@ namespace NekoNekoAsset.Bridge
             return BridgeFiles.Diagnostic(string.IsNullOrEmpty(entry) ? reason : entry + ": " + reason, 256);
         }
 
+        // The per-file sentence only over listed failures; a run that stopped before any file
+        // failed (its working folder could not be made, say) keeps the engine's own reason.
+        private static string RunError(BridgeLocalization labels, string projectRoot, List<BridgeFileResult> results, List<string> errors)
+            => results.Any(result => result.state == "failed") ? labels.Message(PerFileFailures)
+                : ProjectReason(labels, projectRoot, errors.FirstOrDefault());
+
+        // A reason in the request's language within the wire bound; an exception without a message
+        // still gives one. OS and engine errors can name absolute paths: this project's folder is cut
+        // from them in any case and with either separator, except at a drive or share root, whose cut
+        // would make every other path there look like the project's own.
+        private static string ProjectReason(BridgeLocalization labels, string projectRoot, string reason)
+        {
+            if (reason == null) return null;
+            string root = (projectRoot ?? "").TrimEnd('\\', '/');
+            if (root.Length > 0 && !string.Equals(root, Path.GetPathRoot(projectRoot).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                reason = Regex.Replace(reason, Regex.Escape(root.Replace('\\', '/')).Replace("/", @"[\\/]") + @"[\\/]", "",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (string.IsNullOrWhiteSpace(reason)) reason = "File operation failed.";
+            return BridgeFiles.Diagnostic(labels.Reason(reason), 256);
+        }
+
+        // Every output's check after refresh: the same one comparison per output, without stopping at
+        // the first that fails. Each failure's reason is keyed to the rows of the entry that produced
+        // the output, its file and a loose file's .meta; an output an older Bridge stored names none.
+        private static Dictionary<string, string> OutputFailures(BridgeLocalization labels, string projectRoot, List<BridgeOutputCheck> outputs)
+        {
+            var failures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (BridgeOutputCheck output in outputs)
+            {
+                string reason = null;
+                try
+                {
+                    string path = BridgeFiles.Under(projectRoot, output.path);
+                    if (output.isFolder ? !Directory.Exists(path) : !File.Exists(path)) reason = "Missing after Unity refreshed the project.";
+                    // Smart Package fingerprints are Base64; transport hashes are hexadecimal.
+                    else if (!output.isFolder && !string.IsNullOrEmpty(output.assetHash)
+                        && BridgeFiles.HashFile(path) != BridgeFiles.Hex(Convert.FromBase64String(output.assetHash)))
+                        reason = "Changed while Unity refreshed the project.";
+                    else if (!string.IsNullOrEmpty(output.guid) && !string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(path + ".meta")), output.guid, StringComparison.OrdinalIgnoreCase))
+                        reason = "Its GUID changed while Unity refreshed the project.";
+                }
+                catch (Exception error) { reason = error.Message; }
+                if (reason == null) continue;
+                reason = ProjectReason(labels, projectRoot, reason);
+                failures[RowKey(output.entryId, output.path)] = reason;
+                if (output.metaEntryId != null) failures[RowKey(output.metaEntryId, output.path + ".meta")] = reason;
+            }
+            return failures;
+        }
+
+        private static string RowKey(string entryId, string path) => entryId + "\n" + path;
+
+        // Only the rows of the entry that produced a failed output read failed with why: another
+        // package's row at that path keeps its state (a variant the user skipped stays skipped), and a
+        // row that already failed keeps its reason. An identical skip whose file a project script
+        // changed fails too, deliberately: the project no longer holds the package's file.
+        private static void MarkFailed(List<BridgeFileResult> results, Dictionary<string, string> failures)
+        {
+            foreach (BridgeFileResult result in results)
+                if (result.state != "failed" && failures.TryGetValue(RowKey(result.entryId, result.path), out string message))
+                { result.state = "failed"; result.message = message; }
+        }
+
         private static void PublishPreparationProgress(StoredBridgeRequest request, bool force = false)
         {
             BridgePreparationProgress progress = request.preparationProgress;
             if (progress == null || (!force && EditorApplication.timeSinceStartup < request.nextPreparationPublish)) return;
             request.nextPreparationPublish = EditorApplication.timeSinceStartup + .5;
+            ReportProgress(request, progress);
             BridgeReceipt receipt = request.receipt;
             if (receipt.preparationPhase == progress.phase && receipt.preparationWaitingForEditor == progress.waitingForEditor
                 && receipt.preparationBytes == progress.bytes
@@ -241,6 +327,34 @@ namespace NekoNekoAsset.Bridge
             Save(request);
         }
 
+        // Unity's own background-task progress (status bar), so preparation shows in the Editor too.
+        private static void ReportProgress(StoredBridgeRequest request, BridgePreparationProgress progress)
+        {
+            BridgeLocalization labels = Labels(request);
+            string text = progress.waitingForEditor ? labels.Text("waitingForEditor")
+                : progress.phase == "checkTargets" ? labels.Text("checkingTargets")
+                : progress.phase == "readPackage" ? labels.Text("readingPackage")
+                : progress.phase == "receive" ? labels.Text("receiving") : labels.Text("verifying");
+            float done = progress.phase == "checkTargets"
+                ? (progress.totalEntries > 0 ? (float)progress.entries / progress.totalEntries : 0f)
+                : (progress.totalBytes > 0 ? (float)((double)progress.bytes / progress.totalBytes) : 0f);
+            if (request.progressId == 0 || !UnityEditor.Progress.Exists(request.progressId))
+            {
+                request.progressId = UnityEditor.Progress.Start(labels.Text("title"), text);
+                UnityEditor.Progress.RegisterCancelCallback(request.progressId, () => {
+                    EditorApplication.delayCall += () => { if (!stopped) CancelRequest(request); };
+                    return true;
+                });
+            }
+            UnityEditor.Progress.Report(request.progressId, Mathf.Clamp01(done), text);
+        }
+
+        private static void EndProgress(StoredBridgeRequest request)
+        {
+            if (request.progressId != 0 && UnityEditor.Progress.Exists(request.progressId)) UnityEditor.Progress.Remove(request.progressId);
+            request.progressId = 0;
+        }
+
         private static void ApplySelection(StoredBridgeRequest request, ImportReviewSelection selection)
         {
             if (active != request || stopped || !registry.enabled || Terminal(request.receipt.stage)) return;
@@ -248,18 +362,19 @@ namespace NekoNekoAsset.Bridge
             { EditorApplication.delayCall += () => ApplySelection(request, selection); return; }
             bool reloadLocked = false;
             bool editing = false;
+            BridgeLocalization labels = Labels(request);
             try
             {
                 if (!FitsReceipt(request, selection.Plan))
                 {
-                    ReopenReview(request, selection, new BridgeLocalization(Locale(request)).Text("receiptTooLarge"));
+                    ReopenReview(request, selection, labels.Text("receiptTooLarge"));
                     return;
                 }
                 SnapshotAssetProbe.SaveDirtyTargets(selection.Packages, out HashSet<string> unknown);
                 SnapshotAssetProbe fresh = SnapshotAssetProbe.Capture(true, unknown);
                 if (!ImportSession.Validate(selection.Plan, fresh, out List<string> errors))
                 {
-                    ReopenReview(request, selection, new BridgeLocalization(Locale(request)).Text("planChanged"));
+                    ReopenReview(request, selection, labels.Text("planChanged"));
                     return;
                 }
                 // Write intent is durable before the first asset/meta replacement.
@@ -272,17 +387,22 @@ namespace NekoNekoAsset.Bridge
                 request.preparedPreview = null;
                 EditorApplication.LockReloadAssemblies();
                 reloadLocked = true;
+                holdingMainThread = true;
                 AssetDatabase.StartAssetEditing();
                 editing = true;
+                string title = labels.Text("importing");
+                long nextBar = 0;
+                request.nextCheckpoint = CheckpointClock.Elapsed.TotalSeconds + .5;
                 ImportRunResult result = ImportSession.Apply(selection.Plan, new ImportExecutionOptions {
                     ProjectRoot = registry.projectRoot,
                     StagingDirectory = RequestDirectory(request.receipt.requestId),
                     FreshProbe = fresh,
                     Progress = (item, index, total) => {
-                        if (!Application.isBatchMode) EditorUtility.DisplayProgressBar(new BridgeLocalization(Locale(request)).Text("importing"), index + " / " + total + "  " + item.TargetPath,
-                            total == 0 ? 1 : (float)index / total);
+                        if (Application.isBatchMode || (CheckpointClock.ElapsedMilliseconds < nextBar && index < total)) return;
+                        nextBar = CheckpointClock.ElapsedMilliseconds + 100;
+                        EditorUtility.DisplayProgressBar(title, index + " / " + total + "  " + item.TargetPath, total == 0 ? 1 : (float)index / total);
                     },
-                    ItemCompleted = item => RecordItem(request, item)
+                    ItemCompleted = item => RecordItem(request, item, registry.projectRoot)
                 });
                 request.engineDirectory = result.OwnedStagingDirectory;
                 foreach (ImportItemResult item in result.Items)
@@ -291,11 +411,11 @@ namespace NekoNekoAsset.Bridge
                 if (result.NeedsReview)
                 {
                     request.receipt.writesStarted = false;
-                    ReopenReview(request, selection, new BridgeLocalization(Locale(request)).Text("planChanged"));
+                    ReopenReview(request, selection, labels.Text("planChanged"));
                     return;
                 }
                 request.appliedFailed = result.Status == ImportRunStatus.PartiallyFailed || result.Status == ImportRunStatus.PreflightFailed;
-                if (request.appliedFailed) request.receipt.error = "Some files were not imported; inspect the per-file results.";
+                if (request.appliedFailed) request.receipt.error = RunError(labels, registry.projectRoot, request.receipt.results, result.Errors);
                 request.receipt.stage = "refreshing";
                 Save(request); // Checkpoint precedes refresh/reload and survives process exit.
                 AssetDatabase.StopAssetEditing();
@@ -308,12 +428,13 @@ namespace NekoNekoAsset.Bridge
             catch (Exception)
             {
                 request.appliedFailed = true;
-                request.receipt.error = "Import interrupted; applied entries remain and backups are retained.";
+                request.receipt.error = labels.Message("Import interrupted; imported files remain and backups are retained.");
                 request.receipt.stage = "interrupted";
                 SaveTerminal(request);
             }
             finally
             {
+                holdingMainThread = false;
                 try { if (editing) AssetDatabase.StopAssetEditing(); }
                 finally
                 {
@@ -324,27 +445,26 @@ namespace NekoNekoAsset.Bridge
             }
         }
 
-        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item)
+        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item, string projectRoot)
         {
             string entryId = Path.GetFileName(string.IsNullOrEmpty(item.Item.Entry.SourceAssetPath)
                 ? item.Item.Package.FilePath : item.Item.Entry.SourceAssetPath);
             string state = item.Status == ImportItemStatus.Applied ? "applied"
                 : item.Status == ImportItemStatus.IdenticalSkipped || item.Status == ImportItemStatus.PolicySkipped ? "skipped" : "failed";
             string message = item.Status == ImportItemStatus.NotAttempted ? "Not attempted after an earlier failure." : item.Error;
-            message = BridgeFiles.Diagnostic(message, 256);
+            message = ProjectReason(Labels(request), projectRoot, message);
             PutResult(request, new BridgeFileResult { entryId = entryId, path = item.TargetPath, state = state, message = message });
-            if (!string.IsNullOrEmpty(item.Item.Entry.SourceMetaPath))
-            {
-                string metaId = Path.GetFileName(item.Item.Entry.SourceMetaPath);
-                if (BridgeFiles.IsUuid(metaId))
-                    PutResult(request, new BridgeFileResult { entryId = metaId, path = item.TargetPath + ".meta", state = state, message = message });
-            }
+            string metaId = Path.GetFileName(item.Item.Entry.SourceMetaPath ?? "");
+            if (BridgeFiles.IsUuid(metaId))
+                PutResult(request, new BridgeFileResult { entryId = metaId, path = item.TargetPath + ".meta", state = state, message = message });
+            else metaId = null;
             if (item.Status == ImportItemStatus.Applied || item.Status == ImportItemStatus.IdenticalSkipped)
             {
+                // The last entry to write or match a path owns its check after refresh, with its rows.
                 request.outputs.RemoveAll(output => string.Equals(output.path, item.TargetPath, StringComparison.OrdinalIgnoreCase));
                 request.outputs.Add(new BridgeOutputCheck { path = item.TargetPath, assetHash = item.AssetHash,
                     guid = string.IsNullOrEmpty(item.IdentityGuid) ? null : item.IdentityGuid,
-                    isFolder = item.Item.Entry.IsFolder });
+                    isFolder = item.Item.Entry.IsFolder, entryId = entryId, metaEntryId = metaId });
             }
             foreach (string parent in item.CreatedParents)
                 if (!request.createdParents.Contains(parent)) request.createdParents.Add(parent);
@@ -356,7 +476,11 @@ namespace NekoNekoAsset.Bridge
                         metaHash = item.MetaHash, isFolder = item.Item.Entry.IsFolder,
                         generatedMeta = item.Item.Package.IsLooseFiles && !item.Item.Entry.HasMetaMember });
             }
-            Save(request); // Each completed pair is independently durable; never promise whole-request rollback.
+            // About twice a second, never per file: after a crash the last unsaved results are missing,
+            // and their new files count as unprovable, so cleanup never removes them.
+            if (CheckpointClock.Elapsed.TotalSeconds < request.nextCheckpoint) return;
+            request.nextCheckpoint = CheckpointClock.Elapsed.TotalSeconds + .5;
+            Save(request);
         }
 
         private static void ObserveRefresh()
@@ -366,9 +490,11 @@ namespace NekoNekoAsset.Bridge
             // A same-session reload can resume the durable refresh checkpoint, never
             // the asset writes. Compiler results are owned by the Unity Console.
             EditorApplication.LockReloadAssemblies();
+            holdingMainThread = true;
             try { CompleteRefresh(request); }
             finally
             {
+                holdingMainThread = false;
                 try { FinishImportResult(request); }
                 finally { EditorApplication.UnlockReloadAssemblies(); }
             }
@@ -382,23 +508,17 @@ namespace NekoNekoAsset.Bridge
                 // Refresh alone does not register new or changed embedded package manifests.
                 if (request.outputs.Any(output => output.path.StartsWith("Packages/", StringComparison.Ordinal)))
                     UnityEditor.PackageManager.Client.Resolve();
-                foreach (BridgeOutputCheck output in request.outputs)
-                {
-                    string path = BridgeFiles.Under(registry.projectRoot, output.path);
-                    if (output.isFolder ? !Directory.Exists(path) : !File.Exists(path)) throw new IOException("Imported output missing.");
-                    // Smart Package fingerprints are Base64; transport hashes are hexadecimal.
-                    if (!output.isFolder && !string.IsNullOrEmpty(output.assetHash)
-                        && BridgeFiles.HashFile(path) != BridgeFiles.Hex(Convert.FromBase64String(output.assetHash)))
-                        throw new IOException("Imported output changed during refresh.");
-                    if (!string.IsNullOrEmpty(output.guid) && !string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(path + ".meta")), output.guid, StringComparison.OrdinalIgnoreCase))
-                        throw new IOException("Imported GUID changed during refresh.");
-                }
+                // A project script can rewrite or remove imported files during refresh: each one reads
+                // failed with why, so the result window counts and lists them all.
+                Dictionary<string, string> failures = OutputFailures(Labels(request), registry.projectRoot, request.outputs);
+                MarkFailed(request.receipt.results, failures);
+                if (failures.Count > 0) throw new IOException("Imported files changed during refresh.");
                 request.receipt.stage = request.appliedFailed ? "failed" : "completed";
             }
             catch (Exception)
             {
                 request.receipt.stage = "failed";
-                request.receipt.error = "Could not refresh or verify imported outputs; applied files and backups remain.";
+                request.receipt.error = Labels(request).Message("Could not refresh or verify the imported files; they and their backups remain.");
             }
             // Record only Unity-recognized metadata for unchanged new loose outputs,
             // even when another output made refresh/verification fail.
@@ -427,12 +547,11 @@ namespace NekoNekoAsset.Bridge
         {
             if (PendingTerminalSaves.Contains(request.receipt.requestId)) { Publish(); return; }
             // Temp cleanup failures cannot change an already durable verified terminal result.
-            if (request.receipt.stage == "completed")
+            if (Terminal(request.receipt.stage))
             {
-                try { CleanupSuccessfulEngine(request); CleanupInputs(request); }
-                catch (Exception) { /* Temp cleanup cannot alter the durable import result. */ }
+                TryCleanupTerminal(request);
+                ShowImportResult(request);
             }
-            if (Terminal(request.receipt.stage)) ShowImportResult(request);
             Publish();
         }
 
@@ -489,16 +608,55 @@ namespace NekoNekoAsset.Bridge
             ImportSession.CleanupSuccessfulRun(run);
         }
 
-        private static void TryCleanupInputs(StoredBridgeRequest request)
+        // A finished request never reads its transferred inputs or staged payloads again. Its
+        // receipt stays for same-ID queries and backups of overwritten files stay for recovery.
+        private static void TryCleanupTerminal(StoredBridgeRequest request)
         {
-            try { CleanupInputs(request); }
+            try
+            {
+                if (request.receipt.stage == "completed") CleanupSuccessfulEngine(request);
+            }
+            catch (Exception) { /* Temp cleanup cannot alter the durable import result. */ }
+            TryCleanupTerminal(request.receipt.requestId);
+        }
+
+        private static void TryCleanupTerminal(string requestId)
+        {
+            try
+            {
+                string directory = RequestDirectory(requestId);
+                if (!Directory.Exists(directory)) return;
+                CleanupInputs(BridgeFiles.Under(directory, "inputs"));
+                DeleteOwnedTree(BridgeFiles.Under(directory, "staged"));
+                foreach (string engine in Directory.GetDirectories(directory, "engine-*"))
+                {
+                    BridgeFiles.RejectLinks(engine);
+                    foreach (string payloads in Directory.GetDirectories(engine, "package-*")) DeleteOwnedTree(payloads);
+                    foreach (string temporary in Directory.GetFiles(engine, "*.tmp")) { BridgeFiles.RejectLinks(temporary); File.Delete(temporary); }
+                    if (Directory.GetFileSystemEntries(engine).Length == 0) Directory.Delete(engine);
+                }
+                // Nothing is left to remove: later reloads skip this finished request.
+                var marker = new FileInfo(BridgeFiles.Under(directory, FinishedMarker));
+                if (marker.Exists && marker.Length == 0) File.WriteAllBytes(marker.FullName, Cleaned);
+            }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
 
-        private static void CleanupInputs(StoredBridgeRequest request)
+        // Removes a folder this request created, refusing links anywhere inside it.
+        private static void DeleteOwnedTree(string path)
         {
-            string root = InputsDirectory(request);
+            if (!Directory.Exists(path)) return;
+            BridgeFiles.RejectLinks(path);
+            foreach (string folder in Directory.GetDirectories(path)) DeleteOwnedTree(folder);
+            foreach (string file in Directory.GetFiles(path)) { BridgeFiles.RejectLinks(file); File.Delete(file); }
+            Directory.Delete(path);
+        }
+
+        private static void CleanupInputs(StoredBridgeRequest request) => CleanupInputs(InputsDirectory(request));
+
+        private static void CleanupInputs(string root)
+        {
             if (!Directory.Exists(root)) return;
             BridgeFiles.RejectLinks(root);
             foreach (string file in Directory.GetFiles(root))

@@ -13,16 +13,23 @@ use std::hash::{Hash, Hasher};
 pub(super) struct ListSnapshot {
     revision: Option<i64>,
     total: i64,
-    /// Sidebar counts by whether unavailable, then Unclassified, products are hidden.
-    counts: [[Value; 2]; 2],
+    /// Sidebar counts by which products the list hides (`hidden_set`), then by whether
+    /// Unclassified products are hidden from All.
+    counts: [[api::ListCounts; 2]; 4],
     summaries: HashMap<String, u64>,
 }
 
-/// A store product whose store lists no file for it and that has no bytes on
-/// disk cannot be downloaded. Derived from stored rows, so none is rewritten.
+/// The count set for what the list hides: unavailable products, terms-only ones, or both.
+fn hidden_set(unavailable: bool, terms_only: bool) -> usize {
+    usize::from(unavailable) | usize::from(terms_only) << 1
+}
+
+/// A store product that has no bytes on disk and whose store lists no file for it, or only
+/// files whose free offer ended, cannot be downloaded. Derived from stored rows, so none is
+/// rewritten.
 macro_rules! unavailable_sql {
     () => {
-        "(COALESCE(json_extract(p.summary,'$.provider'),'') IN('booth','gumroad','jinxxy') AND COALESCE(json_extract(p.summary,'$.total'),1)=0 AND NOT EXISTS(SELECT 1 FROM entities x WHERE x.kind='artifact' AND x.product_id=p.id AND (json_extract(x.body,'$.originalAvailable')=1 OR json_extract(x.body,'$.extractedPath') IS NOT NULL)))"
+        "(COALESCE(json_extract(p.summary,'$.provider'),'') IN('booth','gumroad','jinxxy') AND NOT EXISTS(SELECT 1 FROM entities x WHERE x.kind='artifact' AND x.product_id=p.id AND (json_extract(x.body,'$.originalAvailable')=1 OR json_extract(x.body,'$.extractedPath') IS NOT NULL)) AND COALESCE(json_extract(p.summary,'$.endedFiles'),0)=COALESCE(json_extract(p.summary,'$.total'),1))"
     };
 }
 /// How acquisition row `a` was obtained. An account that received the product as a gift
@@ -32,10 +39,13 @@ macro_rules! unavailable_sql {
 /// row of that account has one, and otherwise follows that account's current price.
 const ACQUISITION_KIND: &str = "CASE WHEN json_extract(a.value,'$.source')='gift' THEN 'gift' WHEN EXISTS(SELECT 1 FROM json_each(p.provenance) g WHERE json_extract(g.value,'$.accountId') IS json_extract(a.value,'$.accountId') AND (json_extract(g.value,'$.source')='gift' OR (json_extract(a.value,'$.source')='free' AND json_extract(g.value,'$.source') IN('library','purchase')))) THEN '' WHEN json_extract(a.value,'$.source')='free' OR json_extract(a.value,'$.paidPrice')=0 THEN 'free' WHEN json_extract(a.value,'$.paidPrice')>0 THEN 'paid' WHEN EXISTS(SELECT 1 FROM json_each(p.provenance) o WHERE json_extract(o.value,'$.accountId') IS json_extract(a.value,'$.accountId') AND json_extract(o.value,'$.paidPrice') IS NOT NULL) THEN '' WHEN COALESCE((SELECT MAX(json_extract(v.value,'$.price')) FROM json_each(p.prices) v,json_each(v.value,'$.accountIds') x WHERE x.value=json_extract(a.value,'$.accountId')),p.price)=0 THEN 'free' ELSE 'paid' END";
 // Keep the effective values of the former summary predicates and ordering.
-const LIST_COLUMNS: &str =concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",summary");
+const LIST_COLUMNS: &str =concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",0,summary");
+/// The rows that may hold only terms of use (`terms_only`): BOOTH products every row of
+/// which is a free download, with few files. Only these read their files and listing.
+const TERMS_CANDIDATES: &str = "json_extract(l.summary,'$.provider')='booth' AND COALESCE(json_extract(l.summary,'$.total'),0) BETWEEN 1 AND 20 AND EXISTS(SELECT 1 FROM json_each(l.provenance)) AND NOT EXISTS(SELECT 1 FROM json_each(l.provenance) a WHERE json_extract(a.value,'$.source') IS NOT 'free')";
 // The UPDATE condition matches products_changed_update, so each recorded event is one revision.
 // Trigger steps inherit an upsert's conflict policy, so the change log has no key and may repeat ids.
-const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,unavailable INTEGER NOT NULL,summary TEXT NOT NULL);
+const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,unavailable INTEGER NOT NULL,terms_only INTEGER NOT NULL,summary TEXT NOT NULL);
  CREATE TEMP TABLE IF NOT EXISTS list_changes(id);
  CREATE TEMP TABLE IF NOT EXISTS list_events(n INTEGER NOT NULL);
  INSERT INTO temp.list_events SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM temp.list_events);
@@ -84,6 +94,7 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             &format!("INSERT INTO temp.list_rows SELECT {LIST_COLUMNS} FROM products p {changed}"),
             [],
         )?;
+        mark_terms_only(conn, partial)?;
         let mut stmt = conn.prepare(&format!("SELECT id,summary FROM temp.list_rows {changed}"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -92,18 +103,19 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             next.summaries.insert(row.get(0)?, hasher.finish());
         }
         conn.execute_batch("DELETE FROM temp.list_changes; UPDATE temp.list_events SET n=0;")?;
-        // Two count sets: every product, and the default list without unavailable ones.
-        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 2] = Default::default();
+        // One count set for each combination of what the list hides (`hidden_set`).
+        let mut sets: [(BTreeMap<String, i64>, BTreeMap<String, i64>, i64, i64); 4] =
+            Default::default();
         let mut hidden = 0i64;
-        let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,unavailable=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6,7")?;
+        let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,unavailable=1,terms_only=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6,7,8")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let count: i64 = row.get(7)?;
+            let count: i64 = row.get(8)?;
             next.total += count;
             if row.get(4)? {
-                let unavailable: bool = row.get(6)?;
+                let (unavailable, terms_only): (bool, bool) = (row.get(6)?, row.get(7)?);
                 for (index, set) in sets.iter_mut().enumerate() {
-                    if index == 1 && unavailable {
+                    if (index & 1 == 1 && unavailable) || (index & 2 == 2 && terms_only) {
                         continue;
                     }
                     *set.0.entry(row.get(0)?).or_default() += count;
@@ -118,7 +130,14 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             let attention = statuses.get("attention").copied().unwrap_or(0);
             // All hides Unclassified products unless the user lists them there.
             let listed: i64 = statuses.values().sum();
-            [listed, all].map(|all| json!({"all":all,"downloaded":downloaded,"attention":attention,"hidden":hidden,"categories":categories,"statuses":statuses}))
+            [listed, all].map(|all| api::ListCounts {
+                all,
+                downloaded,
+                attention,
+                hidden: Some(hidden),
+                categories: Some(categories.clone()),
+                statuses: Some(statuses.clone()),
+            })
         });
         Ok(next)
     })();
@@ -135,27 +154,112 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
     }
 }
 
-pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -> Result<Value> {
+/// Whether a candidate's files are only its listing's terms of use.
+fn files_terms_only(product: &Value, source: &Value) -> bool {
+    let files = product["files"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    // A file the user added is theirs, whatever it is called.
+    let listed: Option<Vec<_>> = files
+        .iter()
+        .map(|file| {
+            (file["userAdded"] != true).then(|| super::terms_only::TermsFile {
+                name: file["name"].as_str().unwrap_or(""),
+                variant_id: file["provenance"][0]["variantId"].as_str(),
+            })
+        })
+        .collect();
+    listed.is_some_and(|files| super::terms_only::terms_only(&files, &source["publicVariants"]))
+}
+
+/// Whether the list leaves this product out as only a listing's terms of use while that
+/// preference is on: `TERMS_CANDIDATES`, then the files, as `mark_terms_only` reads them.
+pub(super) fn terms_only_product(conn: &Connection, id: &str) -> Result<bool> {
+    let row: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT p.summary,p.body,s.body FROM products p LEFT JOIN entities s ON s.kind='product' AND s.id=p.id WHERE p.id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((summary, body, source)) = row else {
+        return Ok(false);
+    };
+    let summary: Value = serde_json::from_str(&summary)?;
+    let candidate = summary["provider"] == "booth"
+        && (1.0..=20.0).contains(&summary["total"].as_f64().unwrap_or(0.0))
+        && summary["provenance"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|row| row["source"] == "free"));
+    if !candidate {
+        return Ok(false);
+    }
+    let product: Value = serde_json::from_str(&body)?;
+    let source = source
+        .and_then(|body| serde_json::from_str(&body).ok())
+        .unwrap_or(Value::Null);
+    Ok(files_terms_only(&product, &source))
+}
+
+/// Marks the copied rows that hold only a listing's terms of use, from each candidate's files
+/// and its listing's variations; a partial refresh reads only the rows it copied again.
+fn mark_terms_only(conn: &Connection, partial: bool) -> Result<()> {
+    let changed = if partial {
+        " AND l.id IN(SELECT id FROM temp.list_changes)"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!("SELECT l.id,p.body,s.body FROM temp.list_rows l JOIN products p ON p.id=l.id LEFT JOIN entities s ON s.kind='product' AND s.id=l.id WHERE {TERMS_CANDIDATES}{changed}"))?;
+    let mut rows = stmt.query([])?;
+    let mut marked = vec![];
+    while let Some(row) = rows.next()? {
+        let product: Value = serde_json::from_str(row.get_ref(1)?.as_str()?)?;
+        let source: Value = row
+            .get::<_, Option<String>>(2)?
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or(Value::Null);
+        if files_terms_only(&product, &source) {
+            marked.push(row.get::<_, String>(0)?);
+        }
+    }
+    let mut mark = conn.prepare("UPDATE temp.list_rows SET terms_only=1 WHERE id=?1")?;
+    for id in marked {
+        mark.execute([id])?;
+    }
+    Ok(())
+}
+
+pub(super) fn query(
+    conn: &Connection,
+    args: &api::QueryRequest,
+    cache: &mut ListSnapshot,
+) -> Result<Value> {
     let list = snapshot(conn, cache)?;
     let mut conditions = vec!["1=1".to_owned()];
-    let hidden_only = args["hiddenOnly"].as_bool().unwrap_or(false);
+    let hidden_only = args.hidden_only.unwrap_or(false);
     conditions.push(format!("p.hidden={}", i32::from(hidden_only)));
     // The Hidden scope shows every product the user hid, available or not.
-    let hide_unavailable = args["hideUnavailable"] == true && !hidden_only;
+    let hide_unavailable = args.hide_unavailable == Some(true) && !hidden_only;
     if hide_unavailable {
         conditions.push("p.unavailable=0".to_owned());
     }
-    let hide_unclassified = args["hideUnclassified"] != false;
+    let hide_terms_only = args.hide_terms_only == Some(true) && !hidden_only;
+    if hide_terms_only {
+        conditions.push("p.terms_only=0".to_owned());
+    }
+    let hide_unclassified = args.hide_unclassified != Some(false);
     let mut binds: Vec<Sql> = vec![];
     let mut bind = |value: Sql| {
         binds.push(value);
         format!("?{}", binds.len())
     };
-    let category = args["category"].as_str().unwrap_or("all");
-    let quick = args["quick"].as_str().unwrap_or("all");
-    let collection = args["collectionId"]
-        .as_str()
-        .or(args["collection"].as_str())
+    let category = args.category.as_deref().unwrap_or("all");
+    let quick = args.quick.as_deref().unwrap_or("all");
+    let collection = args
+        .collection_id
+        .as_deref()
+        .or(args.collection.as_deref())
         .unwrap_or("");
     if category != "all" && !category.is_empty() {
         conditions.push(format!(
@@ -178,25 +282,24 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         // Read membership once instead of reparsing the collection for each product.
         conditions.push(format!("p.id IN(SELECT m.value FROM entities c,json_each(c.body,'$.productIds') m WHERE c.kind='collection' AND c.id={})",bind(Sql::Text(collection.to_owned()))));
     }
-    let sort = args["sort"].as_str().unwrap_or("acquired");
-    let status = text(args, "status");
+    let sort = args.sort.as_deref().unwrap_or("acquired");
+    let status = args.status.as_deref().unwrap_or("");
     if !status.is_empty() && status != "all" {
         conditions.push(format!("p.status={}", bind(Sql::Text(status.to_owned()))));
     }
-    let sensitive = args["sensitive"]
-        .as_str()
-        .or(args["sensitiveMode"].as_str())
-        .or(args["r18"].as_str())
+    let sensitive = args
+        .sensitive
+        .as_deref()
+        .or(args.sensitive_mode.as_deref())
+        .or(args.r18.as_deref())
         .unwrap_or("show");
     match sensitive {
         "only" => conditions.push("p.sensitive=1".into()),
         "hide" => conditions.push("p.sensitive=0".into()),
         _ => {}
     }
-    let account_ids = args["accountIds"].as_array();
-    let include_offline = args["includeOffline"]
-        .as_bool()
-        .unwrap_or(account_ids.is_none());
+    let account_ids = args.account_ids.as_ref();
+    let include_offline = args.include_offline.unwrap_or(account_ids.is_none());
     let local_product = "p.local=1";
     if !include_offline {
         conditions.push(format!("NOT ({local_product})"));
@@ -205,7 +308,6 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     if let Some(accounts) = account_ids {
         account_placeholders = accounts
             .iter()
-            .filter_map(Value::as_str)
             .map(|s| bind(Sql::Text(s.to_owned())))
             .collect::<Vec<_>>();
         let account_scope = if account_placeholders.is_empty() {
@@ -222,94 +324,43 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             account_scope
         });
     }
-    if let Some(kinds) = args["acquisition"].as_array() {
-        let listed = ["paid", "free", "gift"]
-            .into_iter()
-            .filter(|kind| kinds.iter().any(|value| value == kind))
-            .map(|kind| format!("'{kind}'"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let scope = match account_ids {
-            None => "1=1".to_owned(),
-            Some(_) if account_placeholders.is_empty() => "0=1".to_owned(),
-            Some(_) => format!(
-                "json_extract(a.value,'$.accountId') IN({})",
-                account_placeholders.join(",")
-            ),
-        };
-        conditions.push(format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND));
+    if let Some(kinds) = &args.acquisition {
+        conditions.push(acquisition_condition(
+            kinds,
+            account_ids,
+            &account_placeholders,
+            local_product,
+        ));
     }
     // The license database chose these; an empty list keeps nothing.
-    if let Some(ids) = args["licenseIds"].as_array() {
-        conditions.push(format!("p.id IN(SELECT value FROM json_each({}))", bind(Sql::Text(json!(ids).to_string()))));
+    if let Some(ids) = &args.license_ids {
+        conditions.push(format!(
+            "p.id IN(SELECT value FROM json_each({}))",
+            bind(Sql::Text(json!(ids).to_string()))
+        ));
     }
-    let avatar = text(args, "avatar");
+    let avatar = args.avatar.as_deref().unwrap_or("");
     let mut pinned = vec![];
     if !avatar.is_empty() && avatar != "all" {
-        let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-        let registry = avatars::registry_from(
-            &projection::bases_in(conn, "temp.list_rows")?,
-            &preferences,
+        avatar_filter(
+            conn,
+            avatar,
+            hidden_only,
+            sensitive,
+            (hide_unavailable, hide_terms_only),
+            account_ids,
+            &account_placeholders,
+            include_offline,
+            local_product,
+            &mut bind,
+            &mut pinned,
+            &mut conditions,
         )?;
-        let avatar_id = registry.resolve(avatar);
-        // Base pins override ordinary filters, but never the user's explicit
-        // hidden/visible, R-18 or unavailable visibility boundaries.
-        let mut visible_base = conn.prepare_cached(
-            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) FROM temp.list_rows WHERE id=?1",
-        )?;
-        for id in registry.bases(&avatar_id) {
-            if visible_base.query_row(params![id, hidden_only, sensitive, hide_unavailable], |row| row.get::<_, bool>(0))? {
-                pinned.push(id);
-            }
-        }
-        // Names and item links have no ID of this identity stored. Match the raw
-        // evidence that option counts assign to it, before or after its aliases persist.
-        let known = |id: &str| registry.entries.contains_key(id) || id.starts_with("avatar:");
-        let mut pairs = conn.prepare_cached("SELECT DISTINCT COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'') FROM temp.list_rows p,json_each(p.evidence) e")?;
-        let mut rows = pairs.query([])?;
-        let mut values = vec![];
-        while let Some(row) = rows.next()? {
-            let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
-            if registry.evidence_identity(&preferences, &evidence_id, &name, &known).as_ref() == Some(&avatar_id) {
-                values.push(format!("({},{})", bind(Sql::Text(evidence_id)), bind(Sql::Text(name))));
-            }
-        }
-        let assigned = if values.is_empty() {
-            "0=1".to_owned()
-        } else {
-            format!("(COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'')) IN(VALUES{})", values.join(","))
-        };
-        let matches = if avatar_id.starts_with("avatar:") {
-            assigned
-        } else {
-            let avatar_binds = registry
-                .terms(&avatar_id)
-                .into_iter()
-                .map(|v| bind(Sql::Text(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("({assigned} OR json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds})))")
-        };
-        let scope = if account_ids.is_some() {
-            let account_scope = if account_placeholders.is_empty() {
-                "0=1".to_owned()
-            } else {
-                format!("(json_extract(e.value,'$.source') IN('user','sourceTag','userTag') OR json_extract(e.value,'$.accountId') IN({}))",account_placeholders.join(","))
-            };
-            if include_offline {
-                format!("({local_product} OR {account_scope})")
-            } else {
-                account_scope
-            }
-        } else {
-            "1=1".into()
-        };
-        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"));
     }
     let search = normalized(
-        args["search"]
-            .as_str()
-            .or(args["query"].as_str())
+        args.search
+            .as_deref()
+            .or(args.query.as_deref())
             .unwrap_or(""),
     );
     for term in search.split_whitespace() {
@@ -324,51 +375,14 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             bind(Sql::Text(term.to_owned()))
         ));
     }
-    let acquired_order = if account_ids.is_none() {
-        "p.acquired".to_owned()
-    } else {
-        let account_order = if account_placeholders.is_empty() {
-            "NULL".to_owned()
-        } else {
-            format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(p.provenance) a WHERE json_extract(a.value,'$.accountId') IN({}))",account_placeholders.join(","))
-        };
-        format!("CASE WHEN {local_product} THEN p.acquired ELSE {account_order} END")
-    };
-    let price_order = if account_ids.is_none() {
-        "p.price".to_owned()
-    } else {
-        let scope = if account_placeholders.is_empty() {
-            "0=1".to_owned()
-        } else {
-            format!("a.value IN({})", account_placeholders.join(","))
-        };
-        format!("CASE WHEN {local_product} THEN p.price WHEN json_type(p.prices)='array' THEN (SELECT CASE WHEN COUNT(*)=1 THEN MAX(json_extract(v.value,'$.price')) END FROM json_each(p.prices) v WHERE EXISTS(SELECT 1 FROM json_each(v.value,'$.accountIds') a WHERE {scope})) ELSE p.price END")
-    };
-    let order = match sort {
-        "title" => "p.title",
-        "price" => &price_order,
-        "status" => "NULLIF(p.status,'unknown')",
-        _ => &acquired_order,
-    };
-    let dir =
-        if args["direction"]
-            .as_str()
-            .unwrap_or(if sort == "acquired" { "desc" } else { "asc" })
-            == "desc"
-        {
-            "DESC"
-        } else {
-            "ASC"
-        };
-    let predicate = conditions.join(" AND ");
-    // Group original currencies; values in different currencies are not comparable.
-    // Existing BOOTH projections predate priceCurrency and remain JPY.
-    let currency_order = if sort == "price" {
-        "p.currency ASC,"
-    } else {
-        ""
-    };
-    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{currency_order}{order} {dir},p.id ASC");
+    let sql = list_sql(
+        args,
+        sort,
+        account_ids,
+        &account_placeholders,
+        local_product,
+        &conditions,
+    );
     let mut stmt = conn.prepare(&sql)?;
     let normal_ids = stmt
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
@@ -394,30 +408,228 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             .filter(|id| !pinned_set.contains(id)),
     );
     all_downloaded &= !ids.is_empty();
-    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-    let limit = if args["allSummaries"] == true
-        && args["includeFiles"] == false
-        && args["presentation"] == "list"
-    {
+    let (products, fingerprints) = page_products(conn, args, list, &ids, account_ids)?;
+    // Sidebar counts follow the preferences in every scope, including Hidden.
+    let counts = &list.counts[hidden_set(
+        args.hide_unavailable == Some(true),
+        args.hide_terms_only == Some(true),
+    )][usize::from(hide_unclassified)];
+    Ok(serde_json::to_value(api::QueryResult {
+        products,
+        total: list.total,
+        matched: ids.len(),
+        matched_ids: ids,
+        counts: counts.clone(),
+        all_downloaded,
+        fingerprints,
+    })?)
+}
+
+/// Products acquired as paid, free or gift, by the selected accounts when there are any.
+fn acquisition_condition(
+    kinds: &[String],
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    local_product: &str,
+) -> String {
+    let listed = ["paid", "free", "gift"]
+        .into_iter()
+        .filter(|kind| kinds.iter().any(|value| value == kind))
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let scope = match account_ids {
+        None => "1=1".to_owned(),
+        Some(_) if account_placeholders.is_empty() => "0=1".to_owned(),
+        Some(_) => format!(
+            "json_extract(a.value,'$.accountId') IN({})",
+            account_placeholders.join(",")
+        ),
+    };
+    format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND)
+}
+
+/// A selected avatar keeps the products compatible with it and pins its own Base products.
+fn avatar_filter(
+    conn: &Connection,
+    avatar: &str,
+    hidden_only: bool,
+    sensitive: &str,
+    (hide_unavailable, hide_terms_only): (bool, bool),
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    include_offline: bool,
+    local_product: &str,
+    bind: &mut impl FnMut(Sql) -> String,
+    pinned: &mut Vec<String>,
+    conditions: &mut Vec<String>,
+) -> Result<()> {
+    let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
+    let registry =
+        avatars::registry_from(&projection::bases_in(conn, "temp.list_rows")?, &preferences)?;
+    let avatar_id = registry.resolve(avatar);
+    // Base pins override ordinary filters, but never the user's explicit
+    // hidden/visible, R-18, unavailable or terms-only visibility boundaries.
+    let mut visible_base = conn.prepare_cached(
+            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) AND (?4=0 OR unavailable=0) AND (?5=0 OR terms_only=0) FROM temp.list_rows WHERE id=?1",
+        )?;
+    for id in registry.bases(&avatar_id) {
+        if visible_base.query_row(
+            params![
+                id,
+                hidden_only,
+                sensitive,
+                hide_unavailable,
+                hide_terms_only
+            ],
+            |row| row.get::<_, bool>(0),
+        )? {
+            pinned.push(id);
+        }
+    }
+    // Names and item links have no ID of this identity stored. Match the raw
+    // evidence that option counts assign to it, before or after its aliases persist.
+    let known = |id: &str| registry.entries.contains_key(id) || id.starts_with("avatar:");
+    let mut pairs = conn.prepare_cached("SELECT DISTINCT COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'') FROM temp.list_rows p,json_each(p.evidence) e")?;
+    let mut rows = pairs.query([])?;
+    let mut values = vec![];
+    while let Some(row) = rows.next()? {
+        let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
+        if registry
+            .evidence_identity(&preferences, &evidence_id, &name, &known)
+            .as_ref()
+            == Some(&avatar_id)
+        {
+            values.push(format!(
+                "({},{})",
+                bind(Sql::Text(evidence_id)),
+                bind(Sql::Text(name))
+            ));
+        }
+    }
+    let assigned = if values.is_empty() {
+        "0=1".to_owned()
+    } else {
+        format!("(COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'')) IN(VALUES{})", values.join(","))
+    };
+    let matches = if avatar_id.starts_with("avatar:") {
+        assigned
+    } else {
+        let avatar_binds = registry
+            .terms(&avatar_id)
+            .into_iter()
+            .map(|v| bind(Sql::Text(v)))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("({assigned} OR json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds})))")
+    };
+    let scope = if account_ids.is_some() {
+        let account_scope = if account_placeholders.is_empty() {
+            "0=1".to_owned()
+        } else {
+            format!("(json_extract(e.value,'$.source') IN('user','sourceTag','userTag') OR json_extract(e.value,'$.accountId') IN({}))",account_placeholders.join(","))
+        };
+        if include_offline {
+            format!("({local_product} OR {account_scope})")
+        } else {
+            account_scope
+        }
+    } else {
+        "1=1".into()
+    };
+    conditions.push(format!(
+        "EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"
+    ));
+    Ok(())
+}
+
+/// The list query: the filters, then the chosen order with empty values last.
+fn list_sql(
+    args: &api::QueryRequest,
+    sort: &str,
+    account_ids: Option<&Vec<String>>,
+    account_placeholders: &[String],
+    local_product: &str,
+    conditions: &[String],
+) -> String {
+    let price_order = if account_ids.is_none() {
+        "p.price".to_owned()
+    } else {
+        let scope = if account_placeholders.is_empty() {
+            "0=1".to_owned()
+        } else {
+            format!("a.value IN({})", account_placeholders.join(","))
+        };
+        format!("CASE WHEN {local_product} THEN p.price WHEN json_type(p.prices)='array' THEN (SELECT CASE WHEN COUNT(*)=1 THEN MAX(json_extract(v.value,'$.price')) END FROM json_each(p.prices) v WHERE EXISTS(SELECT 1 FROM json_each(v.value,'$.accountIds') a WHERE {scope})) ELSE p.price END")
+    };
+    let dir =
+        if args
+            .direction
+            .as_deref()
+            .unwrap_or(if sort == "acquired" { "desc" } else { "asc" })
+            == "desc"
+        {
+            "DESC"
+        } else {
+            "ASC"
+        };
+    let predicate = conditions.join(" AND ");
+    let empty_last = |order: &str, group: &str| {
+        format!("({order} IS NULL OR {order}='') ASC,{group}{order} {dir}")
+    };
+    let order_by = match sort {
+        "title" => empty_last("p.title", ""),
+        // Group original currencies; values in different currencies are not comparable.
+        // Existing BOOTH projections predate priceCurrency and remain JPY.
+        "price" => empty_last(&price_order, "p.currency ASC,"),
+        "status" => empty_last("NULLIF(p.status,'unknown')", ""),
+        _ => acquisition::order_by(
+            &acquisition::sort_key_sql(account_ids.map(|_| account_placeholders), local_product),
+            dir,
+        ),
+    };
+    format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY {order_by},p.id ASC")
+}
+
+/// The requested page of products, scoped to the selected accounts; a list client gets only
+/// the summaries it does not already hold, with their fingerprints.
+fn page_products(
+    conn: &Connection,
+    args: &api::QueryRequest,
+    list: &ListSnapshot,
+    ids: &[String],
+    account_ids: Option<&Vec<String>>,
+) -> Result<(Vec<Value>, Option<BTreeMap<String, String>>)> {
+    let summaries = args.include_files == Some(false);
+    let list_presentation = args.presentation.as_deref() == Some("list");
+    let offset = args.offset.unwrap_or(0) as usize;
+    let limit = if args.all_summaries == Some(true) && summaries && list_presentation {
         ids.len()
     } else {
-        args["limit"].as_u64().unwrap_or(100).min(10000) as usize
+        args.limit.unwrap_or(100).min(10000) as usize
     };
     // A list client sends the fingerprints of summaries it already holds. Only
     // new or changed summaries cross IPC; fingerprints include the account scope.
-    let known = if args["includeFiles"] == false {
-        args["knownSummaries"].as_object()
+    let known = if summaries {
+        args.known_summaries.as_ref()
     } else {
         None
     };
     let scope = {
         let mut hasher = DefaultHasher::new();
-        (args["accountIds"].to_string(), args["presentation"].to_string()).hash(&mut hasher);
+        (
+            serde_json::to_string(&args.account_ids)?,
+            serde_json::to_string(&args.presentation)?,
+        )
+            .hash(&mut hasher);
         hasher.finish()
     };
-    let mut fingerprints = Map::new();
+    let mut fingerprints = BTreeMap::new();
+    // The account scope as `apply_scope` reads it.
+    let scope_accounts: Option<Vec<Value>> =
+        account_ids.map(|ids| ids.iter().map(|id| json!(id)).collect());
     let mut products = vec![];
-    let mut product_stmt = conn.prepare_cached(if args["includeFiles"] == false {
+    let mut product_stmt = conn.prepare_cached(if summaries {
         "SELECT summary,unavailable FROM temp.list_rows WHERE id=?1"
     } else {
         "SELECT p.body,l.unavailable FROM products p JOIN temp.list_rows l ON l.id=p.id WHERE p.id=?1"
@@ -427,102 +639,119 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             let mut hasher = DefaultHasher::new();
             (list.summaries.get(id), scope).hash(&mut hasher);
             let fingerprint = format!("{:016x}", hasher.finish());
-            if known.get(id).and_then(Value::as_str) == Some(&fingerprint) {
+            if known.get(id) == Some(&fingerprint) {
                 continue;
             }
-            fingerprints.insert(id.clone(), json!(fingerprint));
+            fingerprints.insert(id.clone(), fingerprint);
         }
         let (body, unavailable): (String, bool) =
             product_stmt.query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let mut product = serde_json::from_str::<Value>(&body)?;
         // List summaries carry the derived fact; stored product bodies stay unchanged.
-        if args["includeFiles"] == false {
+        if summaries {
             product["unavailable"] = json!(unavailable);
         }
-        acquisition::apply_scope(&mut product, account_ids);
+        acquisition::apply_scope(&mut product, scope_accounts.as_ref());
         // Compact transport only after native filtering and scoped financial
         // calculations. Keep the facts used by cached list/editor consumers.
-        if args["includeFiles"] == false && args["presentation"] == "list" {
-            if let Some(fields) = product.as_object_mut() {
-                for field in [
-                    "provenance",
-                    "categoryInference",
-                    "sources",
-                    "sourceShop",
-                    "sourceOriginUrl",
-                    "publicPageAvailability",
-                    "store",
-                    "sourceKind",
-                ] {
-                    fields.remove(field);
-                }
-                for (field, keep) in [
-                    ("tagSuggestions", &["label"][..]),
-                    (
-                        "ownedAvatarEvidence",
-                        &["avatar", "source", "accountId"][..],
-                    ),
-                ] {
-                    if let Some(rows) = fields.get_mut(field).and_then(Value::as_array_mut) {
-                        for row in rows {
-                            if let Some(row) = row.as_object_mut() {
-                                row.retain(|key, _| keep.contains(&key.as_str()));
-                            }
-                        }
+        if summaries && list_presentation {
+            compact_for_list(&mut product);
+        }
+        products.push(product);
+    }
+    Ok((products, known.map(|_| fingerprints)))
+}
+
+/// List summaries drop what only the inspector reads.
+pub(super) fn compact_for_list(product: &mut Value) {
+    if let Some(fields) = product.as_object_mut() {
+        for field in [
+            "provenance",
+            "categoryInference",
+            "sources",
+            "sourceShop",
+            "sourceOriginUrl",
+            "publicPageAvailability",
+            "store",
+            "sourceKind",
+        ] {
+            fields.remove(field);
+        }
+        for (field, keep) in [
+            ("tagSuggestions", &["label"][..]),
+            (
+                "ownedAvatarEvidence",
+                &["avatar", "source", "accountId"][..],
+            ),
+        ] {
+            if let Some(rows) = fields.get_mut(field).and_then(Value::as_array_mut) {
+                for row in rows {
+                    if let Some(row) = row.as_object_mut() {
+                        row.retain(|key, _| keep.contains(&key.as_str()));
                     }
                 }
             }
         }
-        products.push(product);
     }
-    // Sidebar counts follow the preferences in every scope, including Hidden.
-    let counts = &list.counts[usize::from(args["hideUnavailable"] == true)]
-        [usize::from(hide_unclassified)];
-    let mut result = json!({"products":products,"total":list.total,"matchedIds":ids,"matched":ids.len(),"counts":counts,"allDownloaded":all_downloaded});
-    if known.is_some() {
-        result["fingerprints"] = Value::Object(fingerprints);
-    }
-    Ok(result)
 }
 
-/// The saved list preferences: unavailable products, and Unclassified ones in All,
-/// are hidden unless turned off.
-fn list_preferences(conn: &Connection) -> Result<(bool, bool)> {
+/// The saved list preferences: unavailable products, terms-only ones, and Unclassified ones
+/// in All, are hidden unless turned off.
+struct ListPreferences {
+    unavailable: bool,
+    terms_only: bool,
+    unclassified: bool,
+}
+
+fn list_preferences(conn: &Connection) -> Result<ListPreferences> {
     let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-    Ok((
-        preferences["hideUnavailable"] != false,
-        preferences["hideUnclassified"] != false,
-    ))
+    Ok(ListPreferences {
+        unavailable: preferences["hideUnavailable"] != false,
+        terms_only: preferences["hideTermsOnly"] != false,
+        unclassified: preferences["hideUnclassified"] != false,
+    })
 }
 
 /// Visible account totals are independent of query filters and visited pages.
-pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
-    let mut accounts = Map::new();
+pub(super) fn account_counts(conn: &Connection, cache: &mut ListSnapshot) -> Result<Value> {
+    snapshot(conn, cache)?;
+    let mut accounts = BTreeMap::new();
     let mut known = conn.prepare("SELECT id FROM entities WHERE kind='account'")?;
     for id in known.query_map([], |row| row.get::<_, String>(0))? {
-        accounts.insert(id?, json!(0));
+        accounts.insert(id?, 0);
     }
-    let visible = if list_preferences(conn)?.0 {
-        concat!("COALESCE(json_extract(p.summary,'$.hidden'),0)=0 AND NOT ", unavailable_sql!())
-    } else {
-        "COALESCE(json_extract(p.summary,'$.hidden'),0)=0"
-    };
-    let mut statement = conn.prepare(&format!("SELECT a.value,COUNT(DISTINCT p.id) FROM products p,json_each(p.summary,'$.accountIds') a JOIN entities e ON e.kind='account' AND e.id=a.value WHERE {visible} GROUP BY a.value"))?;
+    let preferences = list_preferences(conn)?;
+    let mut visible = "p.hidden=0".to_owned();
+    if preferences.unavailable {
+        visible.push_str(" AND p.unavailable=0");
+    }
+    if preferences.terms_only {
+        visible.push_str(" AND p.terms_only=0");
+    }
+    let mut statement = conn.prepare(&format!("SELECT a.value,COUNT(DISTINCT p.id) FROM temp.list_rows p,json_each(p.accounts) a JOIN entities e ON e.kind='account' AND e.id=a.value WHERE {visible} GROUP BY a.value"))?;
     for row in statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })? {
         let (account, count) = row?;
-        accounts.insert(account, json!(count));
+        accounts.insert(account, count);
     }
-    let unassigned: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM products p WHERE {visible} AND COALESCE(json_extract(p.summary,'$.custom'),0)<>1 AND NOT EXISTS(SELECT 1 FROM json_each(p.summary,'$.accountIds') a JOIN entities e ON e.kind='account' AND e.id=a.value)"), [], |row| row.get(0))?;
-    Ok(json!({"accounts":accounts,"unassigned":unassigned}))
+    let unassigned: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM temp.list_rows p WHERE {visible} AND COALESCE(json_extract(p.summary,'$.custom'),0)<>1 AND NOT EXISTS(SELECT 1 FROM json_each(p.accounts) a JOIN entities e ON e.kind='account' AND e.id=a.value)"), [], |row| row.get(0))?;
+    Ok(serde_json::to_value(api::AccountCounts {
+        accounts,
+        unassigned,
+    })?)
 }
 
-pub(super) fn counts(conn: &Connection, cache: &mut ListSnapshot) -> Result<(i64, Value)> {
-    let (unavailable, unclassified) = list_preferences(conn)?;
+pub(super) fn counts(
+    conn: &Connection,
+    cache: &mut ListSnapshot,
+) -> Result<(i64, api::ListCounts)> {
+    let preferences = list_preferences(conn)?;
     let list = snapshot(conn, cache)?;
     Ok((
         list.total,
-        list.counts[usize::from(unavailable)][usize::from(unclassified)].clone(),
+        list.counts[hidden_set(preferences.unavailable, preferences.terms_only)]
+            [usize::from(preferences.unclassified)]
+        .clone(),
     ))
 }

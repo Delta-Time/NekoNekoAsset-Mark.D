@@ -130,6 +130,10 @@ namespace NekoNekoAsset.Bridge
         [NonSerialized] internal volatile BridgePreparationProgress preparationProgress;
         [NonSerialized] internal string preparingEntry;
         [NonSerialized] internal double nextPreparationPublish;
+        [NonSerialized] internal BridgeLocalization labels;
+        [NonSerialized] internal double nextCheckpoint;
+        [NonSerialized] internal int progressId;
+        [NonSerialized] internal long receivedBytes, expectedBytes;
         public int version = 1;
         public string manifestJson;
         public BridgeReceipt receipt;
@@ -176,5 +180,8 @@ namespace NekoNekoAsset.Bridge
         public string assetHash;
         public string guid;
         public bool isFolder;
+        // The rows of the entry that produced this output: its file and a loose file's .meta.
+        public string entryId;
+        public string metaEntryId;
     }
 }

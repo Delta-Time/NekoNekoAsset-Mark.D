@@ -81,7 +81,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 		{
 			if (!hasCurrentEntry) throw new InvalidOperationException("No current entry");
 			if (currentEntrySize < 0 || currentEntrySize > maximumSize || currentEntrySize > int.MaxValue)
-				throw new InvalidDataException("TAR member is too large to buffer: " + currentEntrySize + " bytes.");
+				throw new InvalidDataException("TAR member is too large to buffer.");
 			byte[] buffer = new byte[(int)currentEntrySize];
 			int read = 0;
 			while (read < buffer.Length)

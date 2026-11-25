@@ -1,0 +1,393 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.searchbox {
+  display: flex;
+  align-items: center;
+}
+.searchbox > svg {
+  flex-shrink: 0;
+}
+.searchbox input {
+  min-width: 0;
+  width: 100%;
+  outline: none;
+}
+.searchbox kbd {
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: 10px inherit;
+  white-space: nowrap;
+}
+.top-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+@media (max-width: 1120px) {
+  .top-actions button {
+    padding: 4px 7px;
+    font-size: 12px;
+  }
+}
+@media (max-width: 900px) {
+  .topbar .brand {
+    flex-basis: auto;
+  }
+  .searchbox kbd {
+    display: none;
+  }
+}
+.main-nav button {
+  padding: 5px 9px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.main-nav button.active {
+  background: var(--control);
+  color: var(--text);
+}
+@media (max-width: 1120px) {
+  .main-nav button {
+    padding: 5px 7px;
+    font-size: 12px;
+  }
+}
+@media (max-width: 1000px) {
+  .main-nav button {
+    padding: 5px 6px;
+  }
+}
+@media (max-width: 900px) {
+  .brand > span:last-child {
+    display: none;
+  }
+}
+
+/* Source leaf is primary; duplicate leaves retain a compact parent discriminator. */
+
+/* Approved A foundation with an adaptive preview/file workspace. */
+.app .top-actions {
+  justify-content: flex-end;
+}
+/* Second pass restores the original type/brand treatment and dense A shell. */
+.searchbox > .button {
+  border-color: transparent;
+}
+.searchbox > .button:disabled {
+  opacity: 0.25;
+}
+@media (max-width: 760px) {
+  .app .main-nav button {
+    font-size: 11px;
+    padding: 5px;
+  }
+  .app .top-actions button {
+    padding: 4px 6px;
+  }
+}
+.top-actions > .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+@media (max-width: 639px) {
+  .app[data-view="settings"] .topbar {
+    gap: 4px;
+  }
+  .app[data-view="settings"] .top-actions button > span {
+    display: none;
+  }
+  .app[data-view="settings"] .top-actions button {
+    width: 29px;
+    min-width: 29px;
+    padding: 4px;
+  }
+  .app[data-view="settings"] .searchbox {
+    min-width: 80px;
+    gap: 4px;
+    padding: 0 6px;
+  }
+}
+
+/* ---------- shell ---------- */
+.app.app .topbar {
+  min-height: 52px;
+  height: 52px;
+  gap: 10px;
+  padding: 0 10px 0 0;
+  background: transparent;
+  border-bottom: 0;
+  animation: calm-boot-down 0.6s var(--ease) backwards;
+}
+.app.app .brand {
+  flex: 0 0 auto;
+  width: var(--nav-width, 176px);
+  min-width: 0;
+  padding-left: 14px;
+  gap: 9px;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.app.app .brand > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app .brand-mark {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--accent);
+}
+.app .brand-mark svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.7;
+}
+.app .brand-light {
+  font-weight: 400;
+  color: var(--muted);
+}
+.app .main-nav {
+  align-items: center;
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 0;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--line);
+  isolation: isolate;
+  flex: none;
+  --n: 2;
+  --i: 0;
+}
+.app .main-nav:has(> button:nth-child(3)) {
+  --n: 3;
+}
+.app .main-nav:has(> button:nth-child(2).active) {
+  --i: 1;
+}
+.app .main-nav:has(> button:nth-child(3).active) {
+  --i: 2;
+}
+.app .main-nav::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 3px;
+  top: 3px;
+  bottom: 3px;
+  width: calc((100% - 6px) / var(--n));
+  border-radius: 7px;
+  background: var(--raised);
+  box-shadow:
+    var(--sh-1),
+    inset 0 0 0 1px color-mix(in oklab, var(--text) 7%, transparent);
+  transform: translateX(calc(var(--i) * 100%));
+  transition:
+    transform 0.38s var(--ease),
+    opacity 0.2s;
+}
+.app .main-nav:not(:has(> button.active))::before {
+  opacity: 0;
+}
+.app.app .main-nav > button {
+  position: relative;
+  z-index: 1;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.app.app .main-nav > button:hover {
+  background: transparent;
+  color: var(--text);
+}
+.app.app .main-nav > button.active {
+  background: transparent;
+  color: var(--text);
+}
+.app.app .searchbox {
+  flex: 1 1 auto;
+  max-width: 520px;
+  min-width: 140px;
+  height: 34px;
+  gap: 8px;
+  margin-left: 4px;
+  padding: 0 6px 0 11px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition:
+    box-shadow 0.2s,
+    max-width 0.4s var(--ease),
+    background-color 0.3s;
+}
+.app.app .searchbox:hover {
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.app.app .searchbox:focus-within {
+  max-width: 600px;
+  border: 0;
+  box-shadow:
+    inset 0 0 0 1px var(--acc-ring),
+    0 0 0 3px var(--acc-1);
+}
+.app .searchbox > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+.app .searchbox input {
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.app .searchbox input:focus,
+.app .searchbox input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.app .searchbox > .button {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  animation: calm-pop-in 0.2s var(--ease);
+}
+.app .searchbox > .button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.app .searchbox > .button:disabled {
+  display: none;
+}
+.app .searchbox > .button svg {
+  width: 13px;
+  height: 13px;
+}
+.app .topbar > .button,
+.app .top-actions > .button {
+  background: transparent;
+  color: var(--text);
+}
+.app .topbar > .button {
+  width: 30px;
+  padding: 0;
+}
+.app .topbar > .button svg,
+.app .top-actions > .button svg {
+  color: var(--muted);
+  transition: color 0.2s;
+}
+.app .topbar > .button:hover,
+.app .top-actions > .button:hover {
+  background: var(--hover);
+}
+.app .topbar > .button:hover svg,
+.app .top-actions > .button:hover svg {
+  color: var(--text);
+}
+.app.app .top-actions {
+  gap: 2px;
+  margin-left: auto;
+}
+.app .top-actions > .button:nth-child(-n + 2) {
+  background: color-mix(in oklab, var(--text) 5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.app .top-actions > .button:nth-child(-n + 2):hover {
+  background: color-mix(in oklab, var(--text) 9%, transparent);
+}
+.app .top-actions > .button:nth-child(3) {
+  width: 30px;
+  padding: 0;
+}
+.app[data-view="settings"] .top-actions > .button:nth-child(3) {
+  background: var(--acc-1);
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 1000px) {
+  .app.app .brand {
+    width: auto;
+    padding-left: 12px;
+  }
+  .app.app .brand > span:last-child {
+    display: none;
+  }
+  .app .searchbox kbd {
+    display: none;
+  }
+  .app .main-nav {
+    grid-auto-columns: auto;
+  }
+  .app .main-nav::before {
+    display: none;
+  }
+  .app.app .main-nav > button {
+    padding: 0 9px;
+  }
+  .app.app .main-nav > button.active {
+    background: var(--raised);
+    box-shadow:
+      var(--sh-1),
+      inset 0 0 0 1px color-mix(in oklab, var(--text) 7%, transparent);
+  }
+}
+@media (max-width: 900px) {
+  .app .top-actions > .button > span {
+    display: none;
+  }
+  .app .top-actions > .button {
+    width: 30px;
+    padding: 0;
+  }
+}
+@media (max-width: 760px) {
+  .app.app .topbar {
+    gap: 6px;
+    padding-right: 6px;
+  }
+  .app.app .main-nav > button {
+    padding: 0 7px;
+    font-size: 12px;
+  }
+  .app.app .searchbox {
+    min-width: 110px;
+    margin-left: 0;
+  }
+}

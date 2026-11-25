@@ -30,6 +30,9 @@ comparison; the Bridge added that comparison for confirmed-plan safety. Archive
 entry order is retained. Bridge now advances observations only for its own newly
 created parents, preserving GUID/meta/content checks, and continues independent
 entries after ordinary per-item failure (durable-checkpoint failures still stop).
+Each payload already sits in the request's owned staging, so the writer hashes it
+again and moves it into place instead of copying it, and owned staging is not
+flushed per file.
 
 Original Bridge changes: optional fingerprinted App locale, compact two-column
 native review and per-file Assets destinations, counted progress, native terminal
@@ -42,8 +45,13 @@ original Bridge changes; MIT notice and all preexisting stable GUIDs remain.
 ## Current preparation and review adaptations
 
 The existing TAR/GUID/package reader and import-plan subset now verifies the
-compressed digest during the metadata read, reuses a bounded read buffer and
-reports byte/entry preparation progress. Parsed packages and initial previews
+compressed digest during the metadata read, can write each member to owned staging
+in that same read, reuses a bounded read buffer and reports byte/entry preparation
+progress. Under Ask the planner overwrites a plain update of a project asset (same
+GUID and path) without a decision; selected packages sharing a GUID at one path
+still ask, and blocked entries have their own Blocked kind. Its diagnostics name a
+case-colliding pair with a comma and omit an oversized TAR member's byte count.
+Parsed packages and initial previews
 survive Editor busy/compile deferral. AssetDatabase observations are captured
 on the main thread; filesystem target planning runs in the preparation worker.
 Review/write guards remain. Runtime/receipt/review changes are original Bridge

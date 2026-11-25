@@ -130,7 +130,10 @@ fn read_on_apartment(requests: std::sync::mpsc::Receiver<ReadingRequest>) {
 
 #[cfg(target_os = "windows")]
 fn reading_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, String>> {
-    use std::{collections::BTreeMap, sync::{Mutex, OnceLock}};
+    use std::{
+        collections::BTreeMap,
+        sync::{Mutex, OnceLock},
+    };
     static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
@@ -185,9 +188,14 @@ mod tests {
         let bounded = bounded.expect("Windows local phonetic analyzer bounded input");
         let chunks = super::reading_chunks(&input);
         assert_eq!(chunks.concat(), input);
-        assert!(chunks.iter().all(|chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())));
-        let independently_read = chunks.iter().map(|chunk| super::reading(chunk))
-            .collect::<Option<Vec<_>>>().expect("Windows local phonetic analyzer exact chunks");
+        assert!(chunks
+            .iter()
+            .all(|chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())));
+        let independently_read = chunks
+            .iter()
+            .map(|chunk| super::reading(chunk))
+            .collect::<Option<Vec<_>>>()
+            .expect("Windows local phonetic analyzer exact chunks");
         assert_eq!(bounded, independently_read.concat());
         assert_eq!(super::reading("Synthetic English"), None);
         assert_eq!(super::reading("合成한국어"), None);
@@ -195,23 +203,46 @@ mod tests {
 
     #[test]
     fn reading_chunks_cover_every_scalar_below_the_native_boundary() {
-        for input in [String::new(), "星".repeat(16), "星".repeat(17), "星".repeat(100), "星空".repeat(60),
-            "星".repeat(15) + "\u{20000}" + "猫", "\u{20000}".repeat(100)] {
+        for input in [
+            String::new(),
+            "星".repeat(16),
+            "星".repeat(17),
+            "星".repeat(100),
+            "星空".repeat(60),
+            "星".repeat(15) + "\u{20000}" + "猫",
+            "\u{20000}".repeat(100),
+        ] {
             let chunks = super::reading_chunks(&input);
             assert_eq!(chunks.concat(), input);
-            assert!(chunks.iter().all(|chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())));
+            assert!(chunks.iter().all(
+                |chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())
+            ));
         }
     }
 
     #[test]
     fn complete_chunk_reading_rejects_missing_empty_and_partial_source_coverage() {
-        let pieces = [("星空".into(), "ほしぞら".into()), ("猫".into(), "ねこ".into())];
-        assert_eq!(super::complete_chunk_reading("星空猫", &pieces).as_deref(), Some("ほしぞらねこ"));
+        let pieces = [
+            ("星空".into(), "ほしぞら".into()),
+            ("猫".into(), "ねこ".into()),
+        ];
+        assert_eq!(
+            super::complete_chunk_reading("星空猫", &pieces).as_deref(),
+            Some("ほしぞらねこ")
+        );
         for pieces in [
-            vec![], vec![("星空".into(), "ほしぞら".into())],
-            vec![("星空猫".into(), "".into())], vec![("".into(), "ほしぞらねこ".into())],
-            vec![("猫".into(), "ねこ".into()), ("星空".into(), "ほしぞら".into())],
-            vec![("星空猫".into(), "ほしぞらねこ".into()), ("猫".into(), "ねこ".into())],
+            vec![],
+            vec![("星空".into(), "ほしぞら".into())],
+            vec![("星空猫".into(), "".into())],
+            vec![("".into(), "ほしぞらねこ".into())],
+            vec![
+                ("猫".into(), "ねこ".into()),
+                ("星空".into(), "ほしぞら".into()),
+            ],
+            vec![
+                ("星空猫".into(), "ほしぞらねこ".into()),
+                ("猫".into(), "ねこ".into()),
+            ],
         ] {
             assert_eq!(super::complete_chunk_reading("星空猫", &pieces), None);
         }
@@ -223,15 +254,22 @@ mod tests {
         let mut calls = 0;
         let reading = super::complete_chunk_with_retry("星空猫", || {
             calls += 1;
-            Some(if calls == 1 { vec![] } else { vec![("星空猫".into(), "ほしぞらねこ".into())] })
+            Some(if calls == 1 {
+                vec![]
+            } else {
+                vec![("星空猫".into(), "ほしぞらねこ".into())]
+            })
         });
         assert_eq!(reading.as_deref(), Some("ほしぞらねこ"));
         assert_eq!(calls, 2);
         let mut calls = 0;
-        assert_eq!(super::complete_chunk_with_retry("星空猫", || {
-            calls += 1;
-            Some(vec![])
-        }), None);
+        assert_eq!(
+            super::complete_chunk_with_retry("星空猫", || {
+                calls += 1;
+                Some(vec![])
+            }),
+            None
+        );
         assert_eq!(calls, 3);
         for result in [
             None,
@@ -239,14 +277,16 @@ mod tests {
             Some(vec![("星空猫".into(), "".into())]),
         ] {
             let mut calls = 0;
-            assert_eq!(super::complete_chunk_with_retry("星空猫", || {
-                calls += 1;
-                result.clone()
-            }), None);
+            assert_eq!(
+                super::complete_chunk_with_retry("星空猫", || {
+                    calls += 1;
+                    result.clone()
+                }),
+                None
+            );
             assert_eq!(calls, 1);
         }
     }
-
 
     // Only authored synthetic input reaches this probe. Report native API stages
     // and HRESULTs without adding catalogue text to test output.
@@ -271,11 +311,20 @@ mod tests {
         // Longer probes are left out: near-100 calls preceded hosted crashes.
         let cases = [
             ("short-synthetic", vec!["星空猫".into()]),
-            ("punctuated-safe-split-120", super::reading_chunks(&"星空を見て猫と歩く。".repeat(12))),
-            ("kanji-safe-split-120", super::reading_chunks(&"星空".repeat(60))),
+            (
+                "punctuated-safe-split-120",
+                super::reading_chunks(&"星空を見て猫と歩く。".repeat(12)),
+            ),
+            (
+                "kanji-safe-split-120",
+                super::reading_chunks(&"星空".repeat(60)),
+            ),
         ];
         for (case, chunks) in cases {
-            let unit_counts: Vec<_> = chunks.iter().map(|input| input.encode_utf16().count()).collect();
+            let unit_counts: Vec<_> = chunks
+                .iter()
+                .map(|input| input.encode_utf16().count())
+                .collect();
             let outcome = std::thread::spawn(move || -> Result<(usize, usize), String> {
                 unsafe { RoInitialize(RO_INIT_SINGLETHREADED) }
                     .map_err(|e| native_error("RoInitialize", e, 0, 0))?;

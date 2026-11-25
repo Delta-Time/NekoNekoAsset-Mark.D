@@ -1,6 +1,7 @@
 //! Local SQLite catalogue. Edits, projections and durable sync intents commit together.
 mod accounts;
-mod acquisition;
+pub(crate) mod acquisition;
+pub(crate) mod api;
 mod avatars;
 mod custom_categories;
 #[cfg(test)]
@@ -20,595 +21,15 @@ mod spending;
 #[cfg(test)]
 mod status_tests;
 mod sync;
+pub(crate) mod terms_only;
 #[cfg(test)]
 mod tests;
 mod worker;
 
 #[cfg(test)]
-mod ai_overlay_tests {
-    use super::*;
+mod ai_overlay_tests;
 
-    #[test]
-    fn image_analysis_tracks_preview_identity_and_chat_candidates_exclude_private_fields() {
-        let dir = std::env::temp_dir().join(format!("nna-ai-preview-synthetic-{}", Uuid::new_v4()));
-        let c = Catalogue::open(&dir).unwrap();
-        let id = "local:synthetic-preview";
-        let mut source = json!({"id":id,"provider":"local","store":"Local Files","custom":true,"title":"Authored purple jacket","sourceTags":["Purple"],"previewUrl":"https://example.invalid/one.png","privateEvidence":"DO_NOT_SEND","sourceCategory":{"name":"Hair"}});
-        c.put("product", id, source.clone()).unwrap();
-        c.command(
-            "overlay",
-            json!({"ids":[id],"patch":{"note":"DO_NOT_SEND"}}),
-        )
-        .unwrap();
-        let mut snapshot = c.collect_ai_metadata(id).unwrap();
-        let reference = format!("i-{}", "a".repeat(64));
-        snapshot.input.files.push(crate::ai_analysis::FileEvidence {
-            evidence_ref: reference.clone(),
-            file_name: "image-1.png".into(),
-            text_excerpt: String::new(),
-            candidate_public_urls: vec![],
-        });
-        let result=serde_json::from_value(json!({"category":{"category":"Clothes","evidenceRefs":[reference],"basis":"Visual garment evidence","confidence":0.8},"tags":[],"tagAliases":[],"sourceUrlCandidates":[]})).unwrap();
-        assert!(c
-            .publish_ai_analysis(
-                id,
-                &snapshot.catalogue_fingerprint,
-                &snapshot.input,
-                &result,
-                "synthetic-model"
-            )
-            .is_err());
-        c.publish_ai_analysis_with_preview(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &result,
-            "synthetic-model",
-            Some(&snapshot.preview_fingerprint),
-        )
-        .unwrap();
-        assert_eq!(
-            c.command("product_details", json!({"id":id})).unwrap()["aiCurrent"],
-            true
-        );
-        let candidates = c
-            .ai_recommendation_candidates("purple jacket", None, None, &[])
-            .unwrap();
-        assert_eq!(candidates[0]["productId"], id);
-        assert!(!serde_json::to_string(&candidates)
-            .unwrap()
-            .contains("DO_NOT_SEND"));
-        assert!(candidates[0].get("accountIds").is_none());
-        assert!(candidates[0].get("previewUrl").is_none());
-        source["previewUrl"] = json!("https://example.invalid/two.png");
-        c.put("product", id, source).unwrap();
-        assert_eq!(
-            c.command("product_details", json!({"id":id})).unwrap()["aiCurrent"],
-            false
-        );
-        assert_eq!(
-            c.publish_ai_analysis_with_preview(
-                id,
-                &snapshot.catalogue_fingerprint,
-                &snapshot.input,
-                &result,
-                "synthetic-model",
-                Some(&snapshot.preview_fingerprint)
-            )
-            .unwrap_err()
-            .to_string(),
-            "AI_INPUT_STALE"
-        );
-        snapshot.input.files.clear();
-        let text_result=serde_json::from_value(json!({"category":{"category":"Clothes","evidenceRefs":["title"],"basis":"Title evidence","confidence":0.8},"tags":[],"tagAliases":[],"sourceUrlCandidates":[]})).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &text_result,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert_eq!(
-            c.command("product_details", json!({"id":id})).unwrap()["aiCurrent"],
-            true
-        );
-        let mut preview_product = c.get("product", id).unwrap().unwrap();
-        preview_product["previewUrl"] = json!("https://i.pximg.net/authored-source.png");
-        preview_product["thumbnailPath"] = json!("media/source-only.png");
-        c.put("product", id, preview_product.clone()).unwrap();
-        c.put("overlay", id, json!({"id":id})).unwrap();
-        let handles = c.ai_preview_source(id).unwrap();
-        assert_eq!(
-            handles.preview_fingerprint,
-            c.collect_ai_metadata(id).unwrap().preview_fingerprint
-        );
-        assert_eq!(
-            handles.public_url.as_deref(),
-            Some("https://i.pximg.net/authored-source.png")
-        );
-        assert!(handles.managed_relative_path.is_none());
-        c.put(
-            "overlay",
-            id,
-            json!({"id":id,"sourceThumbnailUrl":"https://i.pximg.net/authored-override.png"}),
-        )
-        .unwrap();
-        assert_eq!(
-            c.ai_preview_source(id).unwrap().public_url.as_deref(),
-            Some("https://i.pximg.net/authored-override.png")
-        );
-        c.put("overlay", id, json!({"id":id,"sourceThumbnailUrl":"https://i.pximg.net/authored-override.png","thumbnailPath":"media\\authored.png"})).unwrap();
-        let handles = c.ai_preview_source(id).unwrap();
-        assert_eq!(
-            handles.managed_relative_path.as_deref(),
-            Some("media/authored.png")
-        );
-        assert!(handles.public_url.is_none());
-        c.put(
-            "overlay",
-            id,
-            json!({"id":id,"thumbnailPath":"media/authored.png","thumbnailHidden":true}),
-        )
-        .unwrap();
-        let handles = c.ai_preview_source(id).unwrap();
-        assert!(handles.managed_relative_path.is_none() && handles.public_url.is_none());
-        assert_eq!(
-            handles.preview_fingerprint,
-            c.collect_ai_metadata(id).unwrap().preview_fingerprint
-        );
-        c.put("overlay", id, json!({"id":id,"sourceThumbnailUrl":""}))
-            .unwrap();
-        assert!(c.ai_preview_source(id).unwrap().public_url.is_none());
-        c.put(
-            "overlay",
-            id,
-            json!({"id":id,"thumbnailPath":"other/authored.png"}),
-        )
-        .unwrap();
-        assert!(c.ai_preview_source(id).is_err());
-        c.put("overlay", id, json!({"id":id})).unwrap();
-        preview_product["previewUrl"] = Value::Null;
-        c.put("product", id, preview_product).unwrap();
-        let handles = c.ai_preview_source(id).unwrap();
-        assert!(handles.managed_relative_path.is_none() && handles.public_url.is_none());
-        drop(c);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn ai_metadata_result_survives_download_but_publication_still_rejects_stale_snapshot() {
-        let dir =
-            std::env::temp_dir().join(format!("nna-ai-evidence-synthetic-{}", Uuid::new_v4()));
-        let c = Catalogue::open(&dir).unwrap();
-        let id = "local:metadata-ai";
-        c.put("product", id, json!({"id":id,"provider":"local","store":"Local Files","custom":true,"title":"Synthetic garment","sourceTags":["Source Tag"],"sourceCategory":{"name":"Hair"}})).unwrap();
-        c.put("remote_file", "synthetic-file", json!({"id":"synthetic-file","productId":id,"provider":"local","name":"Assets/model.zip","revision":"one"})).unwrap();
-        let mut snapshot = c.collect_ai_metadata(id).unwrap();
-        snapshot.input.files.clear();
-        let result = serde_json::from_value(json!({"category":{"category":"Clothes","evidenceRefs":["title"],"basis":"Authored title","confidence":0.9},"tags":[],"tagAliases":[],"sourceUrlCandidates":[]})).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        let aliases = vec![crate::ai_analysis::TagAliasSuggestion {
-            from: "Source Tag".into(),
-            to: "Organized Tag".into(),
-            evidence_refs: vec!["sourceTags".into()],
-            basis: "Explicit organization".into(),
-            confidence: 0.9,
-        }];
-        c.publish_ai_tag_organization(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &aliases,
-            "synthetic-model",
-        )
-        .unwrap();
-        let artifact = json!({"id":"synthetic-artifact","productId":id,"fileId":"synthetic-file","revision":"one","hash":"downloaded-hash","relativePath":"managed/model.zip","status":"ready","extractedInventory":[{"relativePath":"README.md","hash":"readme-hash","sizeBytes":3,"isDirectory":false}]});
-        c.put("artifact", "synthetic-artifact", artifact).unwrap();
-        let details = c.command("product_details", json!({"id":id})).unwrap();
-        assert_eq!(details["aiCurrent"], true);
-        assert_eq!(details["category"], "Clothes");
-        assert!(strings(&details["tags"]).contains(&"Organized Tag".into()));
-        assert_eq!(
-            c.publish_ai_analysis(
-                id,
-                &snapshot.catalogue_fingerprint,
-                &snapshot.input,
-                &result,
-                "synthetic-model"
-            )
-            .unwrap_err()
-            .to_string(),
-            "AI_INPUT_STALE"
-        );
-        // Filename-only evidence likewise does not claim to have read file bytes.
-        let mut names = c.collect_ai_metadata(id).unwrap();
-        names
-            .input
-            .files
-            .retain(|file| file.evidence_ref == opaque_ai_file_ref("synthetic-file", ""));
-        c.publish_ai_analysis(
-            id,
-            &names.catalogue_fingerprint,
-            &names.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        let mut artifact = c.get("artifact", "synthetic-artifact").unwrap().unwrap();
-        artifact["hash"] = json!("changed-unread-bytes");
-        c.put("artifact", "synthetic-artifact", artifact).unwrap();
-        assert_eq!(
-            c.command("product_details", json!({"id":id})).unwrap()["aiCurrent"],
-            true
-        );
-        drop(c);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn ai_catalogue_candidates_match_filename_but_never_establish_local_origin() {
-        let dir =
-            std::env::temp_dir().join(format!("nna-ai-candidates-synthetic-{}", Uuid::new_v4()));
-        let c = Catalogue::open(&dir).unwrap();
-        let local = "local:candidate-synthetic";
-        c.put("product",local,json!({"id":local,"provider":"local","store":"Local Files","custom":true,"title":"Imported product"})).unwrap();
-        c.put("remote_file","synthetic-zip",json!({"id":"synthetic-zip","productId":local,"provider":"local","name":"Futura_Meadow_v2.zip","revision":"authored"})).unwrap();
-        for (id, provider, store, title, url) in [
-            (
-                "gumroad:futura",
-                "gumroad",
-                "Gumroad",
-                "Futura Meadow VRChat Outfit",
-                "https://maker.gumroad.com/l/futura-meadow",
-            ),
-            (
-                "jinxxy:other",
-                "jinxxy",
-                "Jinxxy",
-                "Unrelated Urban Clothes Version 2",
-                "https://jinxxy.com/maker/urban",
-            ),
-            (
-                "local:other",
-                "local",
-                "Local Files",
-                "Futura Meadow",
-                "https://maker.gumroad.com/l/local-copy",
-            ),
-            (
-                "gumroad:bad",
-                "gumroad",
-                "Gumroad",
-                "Futura Meadow",
-                "https://unproved.example/l/futura",
-            ),
-        ] {
-            c.put("product",id,json!({"id":id,"provider":provider,"store":store,"sourceTitle":title,"sourceUrl":url})).unwrap();
-        }
-        let mut snapshot = c.collect_ai_metadata(local).unwrap();
-        let candidates = c.ai_source_candidates(&snapshot.input).unwrap();
-        assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].evidence_ref.starts_with("c-"));
-        assert_eq!(
-            candidates[0].candidate_public_urls,
-            vec!["https://maker.gumroad.com/l/futura-meadow"]
-        );
-        let result:crate::ai_analysis::AnalysisOutput=serde_json::from_value(json!({"category":null,"tags":[],"tagAliases":[],"sourceUrlCandidates":[{"url":candidates[0].candidate_public_urls[0],"evidenceRefs":[candidates[0].evidence_ref],"basis":"Filename matches an existing public title; local origin unverified","confidence":0.99}]})).unwrap();
-        snapshot.input.files.extend(candidates);
-        c.publish_ai_analysis(
-            local,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        let p = c.command("product_details", json!({"id":local})).unwrap();
-        assert_eq!(p["aiSourceUrlCandidates"][0]["status"], "uncertain");
-        assert_eq!(p["provider"], "local");
-        assert!(p["sourceUrl"].is_null());
-        assert!(c.related("entitlement", local).unwrap().is_empty());
-        let mut unrelated = snapshot.input;
-        unrelated.title = "VRChat Outfit Version 2".into();
-        unrelated.files = vec![crate::ai_analysis::FileEvidence {
-            evidence_ref: "e-generic".into(),
-            file_name: "Unity_Avatar_v2.unitypackage".into(),
-            text_excerpt: String::new(),
-            candidate_public_urls: vec![],
-        }];
-        assert!(c.ai_source_candidates(&unrelated).unwrap().is_empty());
-        drop(c);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn ai_overlay_preserves_manual_edits_rejections_and_invalidates_changed_evidence() {
-        let dir =
-            std::env::temp_dir().join(format!("nna-ai-catalogue-synthetic-{}", Uuid::new_v4()));
-        let c = Catalogue::open(&dir).unwrap();
-        let id = "local:synthetic-ai";
-        let mut source = json!({"id":id,"provider":"local","store":"Local Files","custom":true,"title":"Synthetic Hair","sourceTags":["Source Tag"],"sourceCategory":{"name":"Hair"},"sourceDescription":"Authored description"});
-        c.put("product", id, source.clone()).unwrap();
-        let records=(0..140).map(|n| {
-            let file=format!("synthetic-file-{n:03}");
-            ("remote_file".into(),file.clone(),json!({"id":file,"productId":id,"provider":"local","name":format!("Assets/{n:03}.txt"),"revision":"one"}))
-        }).collect();
-        c.put_many(records).unwrap();
-        let mut artifact = json!({"id":"synthetic-artifact","productId":id,"fileId":"synthetic-file-000","revision":"one","hash":"hash-one","relativePath":"managed/000.txt","status":"ready","extractedInventory":[{"relativePath":"docs/readme.txt","hash":"readme-hash","sizeBytes":3,"isDirectory":false}]});
-        c.put("artifact", "synthetic-artifact", artifact.clone())
-            .unwrap();
-        c.command("overlay",json!({"ids":[id],"patch":{"title":"Human Hair","note":"Human note","rejectedTags":["カジュアル"]}})).unwrap();
-        let mut snapshot = c.collect_ai_metadata(id).unwrap();
-        assert_eq!(snapshot.input.files.len(), 64);
-        assert_eq!(snapshot.input.title, "Human Hair");
-        assert!(snapshot
-            .input
-            .files
-            .iter()
-            .any(|f| f.file_name == "docs/readme.txt"));
-        assert!(snapshot
-            .input
-            .files
-            .iter()
-            .all(|f| f.evidence_ref.starts_with("e-") && f.text_excerpt.is_empty()));
-        assert!(serde_json::to_vec(&snapshot.input).unwrap().len() <= 128 * 1024);
-        assert_eq!(
-            snapshot.catalogue_fingerprint,
-            c.collect_ai_metadata(id).unwrap().catalogue_fingerprint
-        );
-        let url = "https://maker.gumroad.com/l/synthetic";
-        assert_eq!(snapshot.input.files[0].file_name, "docs/readme.txt");
-        snapshot.input.files[0].text_excerpt = format!("Product reference: {url}");
-        snapshot.input.files[0]
-            .candidate_public_urls
-            .push(url.into());
-        let result: crate::ai_analysis::AnalysisOutput=serde_json::from_value(json!({
-            "category":{"category":"Clothes","evidenceRefs":["title"],"basis":"Authored garment evidence","confidence":0.8},
-            "tags":[{"label":"AI Tag","evidenceRefs":["title"],"basis":"Authored style","confidence":0.8},{"label":"Casual","evidenceRefs":["title"],"basis":"Rejected style","confidence":0.8}],
-            "tagAliases":[],"sourceUrlCandidates":[{"url":url,"evidenceRefs":[snapshot.input.files[0].evidence_ref],"basis":"Embedded reference only","confidence":0.7}]
-        })).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        let details = |c: &Catalogue| c.command("product_details", json!({"id":id})).unwrap();
-        let p = details(&c);
-        assert_eq!(p["category"], "Clothes");
-        assert_eq!(p["sourceCategory"]["name"], "Hair");
-        assert!(strings(&p["tags"]).contains(&"Source Tag".into()));
-        assert!(strings(&p["tags"]).contains(&"AI Tag".into()));
-        assert!(!strings(&p["tags"]).contains(&"Casual".into()));
-        assert_eq!(p["note"], "Human note");
-        assert_eq!(p["provider"], "local");
-        assert!(p["sourceUrl"].is_null());
-        assert!(strings(&p["accountIds"]).is_empty());
-        assert_eq!(p["aiSourceUrlCandidates"][0]["status"], "supported");
-        let overlay = c.get("overlay", id).unwrap().unwrap();
-        assert!(!overlay["ai"].to_string().contains("textExcerpt"));
-        c.dismiss_ai_source_url_candidate(id, url).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &snapshot.catalogue_fingerprint,
-            &snapshot.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert!(details(&c)["aiSourceUrlCandidates"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        artifact["status"] = json!("verifying");
-        c.put("artifact", "synthetic-artifact", artifact.clone())
-            .unwrap();
-        assert_eq!(details(&c)["category"], "Clothes");
-        artifact["hash"] = json!("hash-two");
-        artifact["extractedInventory"][0]["hash"] = json!("changed-readme-hash");
-        c.put("artifact", "synthetic-artifact", artifact.clone())
-            .unwrap();
-        assert_eq!(details(&c)["aiCurrent"], false);
-        assert_eq!(details(&c)["category"], "Hair");
-        assert_eq!(
-            c.publish_ai_analysis(
-                id,
-                &snapshot.catalogue_fingerprint,
-                &snapshot.input,
-                &result,
-                "synthetic-model"
-            )
-            .unwrap_err()
-            .to_string(),
-            "AI_INPUT_STALE"
-        );
-        let mut fresh = c.collect_ai_metadata(id).unwrap();
-        fresh.input.files[0].candidate_public_urls.push(url.into());
-        c.publish_ai_analysis(
-            id,
-            &fresh.catalogue_fingerprint,
-            &fresh.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        c.command(
-            "overlay",
-            json!({"ids":[id],"patch":{"tags":["Source Tag"],"category":"Tool"}}),
-        )
-        .unwrap();
-        assert!(
-            strings(&c.get("overlay", id).unwrap().unwrap()["rejectedTags"])
-                .contains(&"AI Tag".into())
-        );
-        let fresh = c.collect_ai_metadata(id).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &fresh.catalogue_fingerprint,
-            &fresh.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert_eq!(details(&c)["category"], "Tool");
-        assert_eq!(details(&c)["tags"], json!(["Source Tag"]));
-        c.command(
-            "overlay",
-            json!({"ids":[id],"patch":{},"clearFields":["tags","category"]}),
-        )
-        .unwrap();
-        let fresh = c.collect_ai_metadata(id).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &fresh.catalogue_fingerprint,
-            &fresh.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert!(!strings(&details(&c)["tags"]).contains(&"AI Tag".into()));
-        assert_eq!(details(&c)["category"], "Clothes");
-        source["price"] = json!(7.0);
-        c.put("product", id, source.clone()).unwrap();
-        assert_eq!(details(&c)["aiCurrent"], true);
-        let stale = c.collect_ai_metadata(id).unwrap();
-        c.command(
-            "overlay",
-            json!({"ids":[id],"patch":{"title":"New human title"}}),
-        )
-        .unwrap();
-        assert_eq!(
-            c.publish_ai_analysis(
-                id,
-                &stale.catalogue_fingerprint,
-                &stale.input,
-                &result,
-                "synthetic-model"
-            )
-            .unwrap_err()
-            .to_string(),
-            "AI_INPUT_STALE"
-        );
-        assert_eq!(details(&c)["title"], "New human title");
-        assert!(c
-            .command("overlay", json!({"ids":[id],"patch":{"ai":{}}}))
-            .is_err());
-        let fresh = c.collect_ai_metadata(id).unwrap();
-        c.publish_ai_analysis(
-            id,
-            &fresh.catalogue_fingerprint,
-            &fresh.input,
-            &result,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert_eq!(c.product_ids().unwrap(), [id]);
-        c.prepare_sync_document().unwrap();
-        drop(c);
-        let c = Catalogue::open(&dir).unwrap();
-        assert_eq!(details(&c)["aiCurrent"], true);
-        assert_eq!(details(&c)["category"], "Clothes");
-        assert!(details(&c)["aiSourceUrlCandidates"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        let organized = c.collect_ai_metadata(id).unwrap();
-        let aliases = vec![
-            crate::ai_analysis::TagAliasSuggestion {
-                from: "Source Tag".into(),
-                to: "Organized Tag".into(),
-                evidence_refs: vec!["sourceTags".into()],
-                basis: "Explicit organization".into(),
-                confidence: 0.9,
-            },
-            crate::ai_analysis::TagAliasSuggestion {
-                from: "Not An Existing Tag".into(),
-                to: "Invented".into(),
-                evidence_refs: vec!["sourceTags".into()],
-                basis: "Ineligible".into(),
-                confidence: 0.8,
-            },
-        ];
-        let ownership = details(&c)["ownedAvatarEvidence"].clone();
-        c.publish_ai_tag_organization(
-            id,
-            &organized.catalogue_fingerprint,
-            &aliases,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert_eq!(details(&c)["category"], "Clothes");
-        assert_eq!(details(&c)["sourceTags"], json!(["Source Tag"]));
-        assert!(strings(&details(&c)["tags"]).contains(&"Organized Tag".into()));
-        assert!(!strings(&details(&c)["tags"]).contains(&"Source Tag".into()));
-        assert!(!strings(&details(&c)["tags"]).contains(&"Invented".into()));
-        assert_eq!(details(&c)["ownedAvatarEvidence"], ownership);
-        c.command(
-            "overlay",
-            json!({"ids":[id],"patch":{"tags":["Human Tag"]}}),
-        )
-        .unwrap();
-        let organized = c.collect_ai_metadata(id).unwrap();
-        c.publish_ai_tag_organization(
-            id,
-            &organized.catalogue_fingerprint,
-            &aliases,
-            "synthetic-model",
-        )
-        .unwrap();
-        assert_eq!(details(&c)["tags"], json!(["Human Tag"]));
-        assert!(
-            strings(&c.get("overlay", id).unwrap().unwrap()["rejectedTags"])
-                .contains(&"Organized Tag".into())
-        );
-        source["sourceTags"] = json!(["Next Source"]);
-        c.put("product", id, source).unwrap();
-        assert_eq!(
-            c.publish_ai_tag_organization(
-                id,
-                &organized.catalogue_fingerprint,
-                &aliases,
-                "synthetic-model"
-            )
-            .unwrap_err()
-            .to_string(),
-            "AI_INPUT_STALE"
-        );
-        let prefs = c
-            .command("preferences", json!({"patch":{"aiEnabled":true}}))
-            .unwrap();
-        assert_eq!(prefs["aiEnabled"], true);
-        assert_eq!(prefs["aiScopes"], default_ai_scopes());
-        let mut scopes = default_ai_scopes();
-        scopes["images"] = json!(true);
-        c.command("preferences", json!({"patch":{"aiScopes":scopes.clone()}}))
-            .unwrap();
-        assert_eq!(
-            c.get("preferences", "app").unwrap().unwrap()["aiScopes"]["images"],
-            true
-        );
-        scopes["unrecognizedScope"] = json!(true);
-        assert!(c
-            .command("preferences", json!({"patch":{"aiScopes":scopes}}))
-            .is_err());
-        assert!(c
-            .command("preferences", json!({"patch":{"aiEnabled":"true"}}))
-            .is_err());
-        drop(c);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
 use std::{
@@ -638,6 +59,7 @@ const KINDS: &[&str] = &[
     "source_coverage",
     "device",
     "download_intent",
+    "local_source",
 ];
 /// Saved deltas loaded at once before the history is rewritten as one checkpoint.
 const COMPACT_HISTORY_AFTER: usize = 256;
@@ -668,7 +90,7 @@ const EDITABLE: &[&str] = &[
 ];
 
 pub struct AiMetadataSnapshot {
-    pub input: crate::ai_analysis::AnalysisInput,
+    pub input: crate::ai::analysis::AnalysisInput,
     pub catalogue_fingerprint: String,
     pub preview_fingerprint: String,
 }
@@ -684,7 +106,7 @@ pub struct AiPreviewSource {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AiOverlay {
-    analysis: crate::ai_analysis::AnalysisOutput,
+    analysis: crate::ai::analysis::AnalysisOutput,
     evidence_refs: Vec<String>,
     observed_source_urls: Vec<String>,
     catalogue_fingerprint: String,
@@ -702,7 +124,7 @@ struct AiOverlay {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AiTagOrganization {
-    aliases: Vec<crate::ai_analysis::TagAliasSuggestion>,
+    aliases: Vec<crate::ai::analysis::TagAliasSuggestion>,
     catalogue_fingerprint: String,
     #[serde(default)]
     evidence_fingerprint: Option<String>,
@@ -711,11 +133,11 @@ struct AiTagOrganization {
 }
 
 fn normalize_ai_aliases(
-    aliases: Vec<crate::ai_analysis::TagAliasSuggestion>,
+    aliases: Vec<crate::ai::analysis::TagAliasSuggestion>,
     rejected: &[String],
-) -> Result<Vec<crate::ai_analysis::TagAliasSuggestion>> {
-    let output = crate::ai_analysis::normalize_output(
-        crate::ai_analysis::AnalysisOutput {
+) -> Result<Vec<crate::ai::analysis::TagAliasSuggestion>> {
+    let output = crate::ai::analysis::normalize_output(
+        crate::ai::analysis::AnalysisOutput {
             category: None,
             tags: vec![],
             tag_aliases: aliases,
@@ -1017,7 +439,7 @@ fn ai_match_tokens(value: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn ai_input_refs(input: &crate::ai_analysis::AnalysisInput) -> BTreeSet<String> {
+fn ai_input_refs(input: &crate::ai::analysis::AnalysisInput) -> BTreeSet<String> {
     let mut refs: BTreeSet<_> = input
         .files
         .iter()
@@ -1049,7 +471,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
             .take(128)
             .collect()
     };
-    let mut input = crate::ai_analysis::AnalysisInput {
+    let mut input = crate::ai::analysis::AnalysisInput {
         title: ai_text(
             overlay["title"]
                 .as_str()
@@ -1127,7 +549,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
         .into_iter()
         .take(64)
         .map(
-            |(evidence_ref, file_name)| crate::ai_analysis::FileEvidence {
+            |(evidence_ref, file_name)| crate::ai::analysis::FileEvidence {
                 evidence_ref,
                 file_name,
                 text_excerpt: String::new(),
@@ -1147,7 +569,7 @@ fn ai_snapshot(conn: &Connection, id: &str) -> Result<AiMetadataSnapshot> {
         }
     }
     Ok(AiMetadataSnapshot {
-        input: crate::ai_analysis::normalize_input(input)?,
+        input: crate::ai::analysis::normalize_input(input)?,
         catalogue_fingerprint,
         preview_fingerprint: ai_preview_fingerprint(&source, &overlay)?,
     })
@@ -1210,10 +632,10 @@ fn validate_ai_overlay(value: &Value) -> Result<AiOverlay> {
             && ai
                 .observed_source_urls
                 .iter()
-                .all(|v| crate::ai_analysis::public_product_url(v).as_deref() == Some(v)),
+                .all(|v| crate::ai::analysis::public_product_url(v).as_deref() == Some(v)),
         "AI_INVALID_ANALYSIS"
     );
-    ai.analysis = crate::ai_analysis::normalize_output(
+    ai.analysis = crate::ai::analysis::normalize_output(
         ai.analysis,
         &ai.evidence_refs.iter().cloned().collect(),
         &[],
@@ -1227,7 +649,7 @@ fn validate_ai_dismissals(value: &Value) -> Result<()> {
         values.len() <= 128
             && values.iter().all(|v| v
                 .as_str()
-                .is_some_and(|v| crate::ai_analysis::public_product_url(v).as_deref() == Some(v))),
+                .is_some_and(|v| crate::ai::analysis::public_product_url(v).as_deref() == Some(v))),
         "AI_INVALID_ANALYSIS"
     );
     Ok(())
@@ -1278,13 +700,19 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
                 ensure!(enabled.is_boolean(), "catalogue.invalid_preferences");
             }
             if let Some(aliases) = setting.get("aliases") {
-                ensure!(aliases.as_array().is_some_and(|values| values.iter().all(Value::is_string)), "catalogue.invalid_preferences");
+                ensure!(
+                    aliases
+                        .as_array()
+                        .is_some_and(|values| values.iter().all(Value::is_string)),
+                    "catalogue.invalid_preferences"
+                );
             }
         }
     }
     for key in [
         "aiFeaturesEnabled",
         "hideUnavailable",
+        "hideTermsOnly",
         "hideUnclassified",
         "licenseFilter",
         "nativeSinglePackage",
@@ -1371,7 +799,6 @@ pub struct Catalogue {
     pending_move: Arc<Mutex<Option<(Arc<crate::library_lock::LibraryLock>, CatalogueWorkPermit)>>>,
     document_cache: Arc<Mutex<Option<automerge::AutoCommit>>>,
     document_preparation: Arc<Mutex<()>>,
-    exchange_cache: Arc<Mutex<Option<(PathBuf, u64, Vec<String>)>>>,
     list_snapshot: Arc<Mutex<query::ListSnapshot>>,
     worker: Arc<worker::Worker>,
     is_sync_worker: bool,
@@ -1439,7 +866,11 @@ pub(super) fn rows(conn: &Connection, kind: &str) -> Result<Vec<Value>> {
         .map(|s| serde_json::from_str(&s).map_err(Into::into))
         .collect()
 }
-fn queued_jobs(conn: &Connection, job_type: Option<&str>, store: Option<&str>) -> Result<Vec<Value>> {
+fn queued_jobs(
+    conn: &Connection,
+    job_type: Option<&str>,
+    store: Option<&str>,
+) -> Result<Vec<Value>> {
     // Keep terminal history out of worker polling results and Rust JSON decoding.
     // This deliberately reuses the existing schema; SQLite still filters job rows.
     let mut stmt = conn.prepare("SELECT body FROM entities WHERE kind='job' AND json_extract(body,'$.state')='queued' AND (?1 IS NULL OR json_extract(body,'$.type')=?1) AND (?2 IS NULL OR json_extract(body,'$.store')=?2) ORDER BY id")?;
@@ -1464,6 +895,8 @@ pub(super) fn effective_entitlements(conn: &Connection, product: &str) -> Result
     related(conn, "entitlement", product)
 }
 pub(super) fn set_raw(conn: &Connection, kind: &str, id: &str, value: &Value) -> Result<()> {
+    #[cfg(test)]
+    api::assert_record(kind, value);
     conn.execute("INSERT INTO entities(kind,id,product_id,body) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET product_id=excluded.product_id,body=excluded.body",params![kind,id,text(value,"productId"),serde_json::to_string(value)?])?;
     Ok(())
 }
@@ -1610,7 +1043,10 @@ fn validate_patch(patch: &Value) -> Result<()> {
 }
 /// What a price read from a link belongs to: the listing, not what a browser added to its address.
 pub(crate) fn listing_link(url: &str) -> &str {
-    url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/')
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/')
 }
 pub(super) fn validate_source_url(value: &str) -> Result<()> {
     if !value.is_empty() {
@@ -1625,6 +1061,7 @@ pub(super) fn validate_source_thumbnail_url(value: &str) -> Result<()> {
     Ok(())
 }
 impl Catalogue {
+    #[cfg(test)]
     pub fn open(data_dir: &Path) -> Result<Self> {
         Self::open_at(data_dir, data_dir, None, None)
     }
@@ -1660,16 +1097,23 @@ impl Catalogue {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         ensure!(matches!(version, 0 | 1), "catalogue.newer_schema");
         // Refuse unsupported formats before changing their persistent journal mode.
-        let mode: String = conn.query_row(if library_root.is_some() {
-            "PRAGMA journal_mode=DELETE"
-        } else {
-            "PRAGMA journal_mode=WAL"
-        }, [], |row| row.get(0))?;
-        ensure!(if library_root.is_some() {
-            mode.eq_ignore_ascii_case("delete")
-        } else {
-            mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory")
-        }, "catalogue.journal_mode_unavailable");
+        let mode: String = conn.query_row(
+            if library_root.is_some() {
+                "PRAGMA journal_mode=DELETE"
+            } else {
+                "PRAGMA journal_mode=WAL"
+            },
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            if library_root.is_some() {
+                mode.eq_ignore_ascii_case("delete")
+            } else {
+                mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory")
+            },
+            "catalogue.journal_mode_unavailable"
+        );
         conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
         if version == 0 {
             let tx = conn.transaction()?;
@@ -1729,14 +1173,24 @@ impl Catalogue {
             pending_move: Arc::new(Mutex::new(None)),
             document_cache: Arc::new(Mutex::new(None)),
             document_preparation: Arc::new(Mutex::new(())),
-            exchange_cache: Arc::new(Mutex::new(None)),
             list_snapshot: Arc::new(Mutex::new(query::ListSnapshot::default())),
             worker: Arc::new(worker::Worker::default()),
             is_sync_worker: false,
         };
+        // Rewriting projections and search entries spills the default 2 MB cache, and each
+        // spill syncs the journal: 88 s against 25 s on a cold 2,351-product hard disk.
+        let cache_size = |size: i64| -> Result<()> {
+            this.inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+                .pragma_update(None, "cache_size", size)?;
+            Ok(())
+        };
         // Downloads a store stopped offering before 0.3.5 left Files while their
-        // bytes stayed, and before 0.3.13 a file its store refused stayed listed
-        // with nothing on disk. Refresh those once; later opens find none.
+        // bytes stayed, before 0.3.13 a file its store refused stayed listed with
+        // nothing on disk, and before 0.4.0 a file whose free offer ended had no
+        // mark and one whose last download failed did not show it. Refresh those
+        // once; later opens find none.
         let unlisted: BTreeSet<String> = {
             let conn = this
                 .inner
@@ -1747,12 +1201,15 @@ impl Catalogue {
             ids.into_iter().collect()
         };
         if !unlisted.is_empty() {
-            this.mutate(|tx, projections| {
+            cache_size(-65536)?;
+            let refreshed = this.mutate(|tx, projections| {
                 for id in &unlisted {
                     projections.refresh(tx, id)?;
                 }
                 Ok(())
-            })?;
+            });
+            cache_size(-2000)?;
+            refreshed?;
         }
         // Stored compatibility holds what the rules of the writing build resolved.
         // Re-resolve once per rule version; no store or source record is read.
@@ -1767,15 +1224,6 @@ impl Catalogue {
             )
             .optional()?;
         if resolved.as_deref() != Some(crate::taxonomy::VERSION) {
-            // Rewriting search entries spills the default 2 MB cache, and each spill
-            // syncs the journal: 88 s against 25 s on a cold 2,351-product hard disk.
-            let cache_size = |size: i64| -> Result<()> {
-                this.inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
-                    .pragma_update(None, "cache_size", size)?;
-                Ok(())
-            };
             cache_size(-65536)?;
             let resolved = this.mutate(|tx, projections| {
                 tx.execute("INSERT INTO meta(key,value) VALUES('taxonomy_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[crate::taxonomy::VERSION])?;
@@ -1790,6 +1238,17 @@ impl Catalogue {
     }
     pub fn data_dir(&self) -> PathBuf {
         self.dir.clone()
+    }
+    /// Whether the list leaves this product out as only a listing's terms of use while
+    /// Hide free assets that are only terms of use is on.
+    pub(crate) fn terms_only(&self, id: &str) -> Result<bool> {
+        query::terms_only_product(
+            &*self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+            id,
+        )
     }
     pub(crate) fn begin_catalogue_work(&self) -> Result<CatalogueWorkPermit> {
         self.check_library_access()?;
@@ -1885,7 +1344,7 @@ impl Catalogue {
             .filter(|url| !url.is_empty())
         {
             result.public_url = Some(
-                crate::ai_suggestions::public_thumbnail_url(url)
+                crate::ai::suggestions::public_thumbnail_url(url)
                     .ok_or_else(|| anyhow::anyhow!("preview_url_refused"))?
                     .to_string(),
             );
@@ -1915,7 +1374,9 @@ impl Catalogue {
             .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
         let mut statement = conn.prepare("SELECT id,json_object('provider',json_extract(summary,'$.provider'),'availability',json_extract(summary,'$.publicPageAvailability'),'sourceUrl',json_extract(summary,'$.sourceUrl'),'provenance',json(COALESCE(json_extract(summary,'$.provenance'),'[]'))) FROM products ORDER BY id")?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows
             .into_iter()
@@ -1979,7 +1440,7 @@ impl Catalogue {
                 }
                 .into(),
             };
-            let url = crate::ai_analysis::public_product_url(text(&value, "sourceUrl"));
+            let url = crate::ai::analysis::public_product_url(text(&value, "sourceUrl"));
             value = json!({"productId":id,"title":title,"category":value["category"],"provider":provider,"tags":tags,
                 "ownedAvatars":strings(&value["ownedAvatars"]).into_iter().take(24).map(|label| ai_text(&label,160)).collect::<Vec<_>>(),
                 "listingAvatars":strings(&value["listingAvatars"]).into_iter().take(24).map(|label| ai_text(&label,160)).collect::<Vec<_>>(),"url":url,"free":value["free"]==1});
@@ -1994,9 +1455,9 @@ impl Catalogue {
     /// No accounts, prices, receipts, remote fetch, or ownership conversion.
     pub fn ai_source_candidates(
         &self,
-        input: &crate::ai_analysis::AnalysisInput,
-    ) -> Result<Vec<crate::ai_analysis::FileEvidence>> {
-        let input = crate::ai_analysis::normalize_input(input.clone())?;
+        input: &crate::ai::analysis::AnalysisInput,
+    ) -> Result<Vec<crate::ai::analysis::FileEvidence>> {
+        let input = crate::ai::analysis::normalize_input(input.clone())?;
         let samples: Vec<_> = std::iter::once(input.title.as_str())
             .chain(
                 input
@@ -2033,7 +1494,7 @@ impl Catalogue {
             if !matches!(provider.as_str(), "booth" | "gumroad" | "jinxxy") {
                 continue;
             }
-            let Some(url) = crate::ai_analysis::public_product_url(&url) else {
+            let Some(url) = crate::ai::analysis::public_product_url(&url) else {
                 continue;
             };
             if existing.contains(&url) {
@@ -2064,7 +1525,7 @@ impl Catalogue {
                         return 4;
                     }
                     // Covers unspaced CJK names and filename prefixes/suffixes.
-                    tokens
+                    if tokens
                         .iter()
                         .filter(|word| {
                             word.chars().count() >= 6
@@ -2076,8 +1537,11 @@ impl Catalogue {
                                     || word.contains(s.as_str()) && s.chars().count() >= 6
                             })
                         })
-                        .then_some(3)
-                        .unwrap_or(0)
+                    {
+                        3
+                    } else {
+                        0
+                    }
                 })
                 .max()
                 .unwrap_or(0);
@@ -2091,7 +1555,7 @@ impl Catalogue {
         best.into_iter()
             .enumerate()
             .map(|(index, (_, url, title))| {
-                Ok(crate::ai_analysis::FileEvidence {
+                Ok(crate::ai::analysis::FileEvidence {
                     evidence_ref: format!("c-{}", ai_digest(&url)?),
                     file_name: format!("catalogue-candidate-{}.txt", index + 1),
                     text_excerpt: format!("Possible catalogue match: {title}"),
@@ -2101,12 +1565,13 @@ impl Catalogue {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn publish_ai_analysis(
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        input: &crate::ai_analysis::AnalysisInput,
-        result: &crate::ai_analysis::AnalysisOutput,
+        input: &crate::ai::analysis::AnalysisInput,
+        result: &crate::ai::analysis::AnalysisOutput,
         model: &str,
     ) -> Result<()> {
         self.publish_ai_analysis_with_preview(
@@ -2123,12 +1588,12 @@ impl Catalogue {
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        input: &crate::ai_analysis::AnalysisInput,
-        result: &crate::ai_analysis::AnalysisOutput,
+        input: &crate::ai::analysis::AnalysisInput,
+        result: &crate::ai::analysis::AnalysisOutput,
         model: &str,
         preview_fingerprint: Option<&str>,
     ) -> Result<()> {
-        let input = crate::ai_analysis::normalize_input(input.clone())?;
+        let input = crate::ai::analysis::normalize_input(input.clone())?;
         ensure!(
             !input
                 .files
@@ -2149,7 +1614,7 @@ impl Catalogue {
             );
             let mut overlay = raw(tx, "overlay", product_id)?.unwrap_or(json!({"id":product_id}));
             let known = ai_input_refs(&input);
-            let analysis = crate::ai_analysis::normalize_output(
+            let analysis = crate::ai::analysis::normalize_output(
                 result.clone(),
                 &known,
                 &strings(&overlay["rejectedTags"]),
@@ -2206,7 +1671,7 @@ impl Catalogue {
     }
 
     pub fn dismiss_ai_source_url_candidate(&self, product_id: &str, url: &str) -> Result<()> {
-        let url = crate::ai_analysis::public_product_url(url).context("AI_INVALID_SOURCE_URL")?;
+        let url = crate::ai::analysis::public_product_url(url).context("AI_INVALID_SOURCE_URL")?;
         self.mutate(|tx, projections| {
             ensure!(
                 raw(tx, "product", product_id)?.is_some(),
@@ -2227,7 +1692,7 @@ impl Catalogue {
         &self,
         product_id: &str,
         expected_catalogue_fingerprint: &str,
-        aliases: &[crate::ai_analysis::TagAliasSuggestion],
+        aliases: &[crate::ai::analysis::TagAliasSuggestion],
         model: &str,
     ) -> Result<()> {
         self.mutate(|tx, projections| {
@@ -2291,7 +1756,10 @@ impl Catalogue {
         )
     }
     pub(crate) fn queued_device_job_count(&self, job_type: &str) -> Result<usize> {
-        let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        let conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
         Ok(conn.query_row(
             "SELECT count(*) FROM entities WHERE kind='job' AND json_extract(body,'$.state')='queued' AND json_extract(body,'$.type')=?1 AND json_extract(body,'$.originDeviceId')=?2",
             params![job_type, self.device_id()],
@@ -2512,7 +1980,7 @@ impl Catalogue {
         let checkpoint = if checkpoint {
             let bytes = doc.save();
             let digest = Self::digest(&bytes);
-            Some((bytes, digest, sync::conflicts(&doc)?))
+            Some((bytes, digest))
         } else {
             None
         };
@@ -2530,7 +1998,7 @@ impl Catalogue {
         if &Self::document_version(&conn)? != version {
             return Ok(false);
         }
-        if let Some((bytes, digest, conflicts)) = checkpoint {
+        if let Some((bytes, digest)) = checkpoint {
             // First untrusted load validates every operation exactly once. Persist a
             // complete checkpoint and digests only after successful validation.
             let tx = conn.transaction()?;
@@ -2543,11 +2011,6 @@ impl Catalogue {
                 "INSERT INTO sync_trust(key,digest) VALUES('base',?1)",
                 [digest],
             )?;
-            let previous = self.current_conflicts(&tx)?;
-            Self::save_conflicts(&tx, &conflicts)?;
-            if previous != conflicts {
-                Self::bump_revision(&tx)?;
-            }
             tx.commit()?;
         }
         *cache = Some(doc);
@@ -2659,22 +2122,15 @@ impl Catalogue {
             // and locking. Retry against its unchanged durable history.
         }
     }
-    fn current_conflicts(&self, conn: &Connection) -> Result<Vec<Value>> {
-        if let Some(body) = conn
-            .query_row(
-                "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            return Ok(serde_json::from_str(&body)?);
-        }
-        Ok(vec![])
-    }
-    fn save_conflicts(conn: &Connection, conflicts: &[Value]) -> Result<()> {
-        conn.execute("INSERT INTO meta(key,value) VALUES('conflicts',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(conflicts)?])?;
-        Ok(())
+    /// Accounts, roots, jobs, preferences and coverage, as stored.
+    fn state_snapshot(&self, conn: &Connection) -> Result<api::StateSnapshot> {
+        Ok(api::StateSnapshot {
+            accounts: rows(conn, "account")?,
+            roots: self.display_roots(conn)?,
+            jobs: rows(conn, "job")?,
+            preferences: raw(conn, "preferences", "app")?,
+            source_coverage: rows(conn, "source_coverage")?,
+        })
     }
     fn mutate<T>(
         &self,
@@ -2724,50 +2180,6 @@ impl Catalogue {
         )?;
         Ok(())
     }
-    fn mutate_sync<T>(
-        &self,
-        run: impl FnOnce(
-            &Transaction<'_>,
-            &mut automerge::AutoCommit,
-            &mut projection::ProjectionChanges,
-        ) -> Result<T>,
-    ) -> Result<T> {
-        self.check_library_access()?;
-        let (mut conn, mut cache) = self.lock_document()?;
-        let mut doc = cache.take().unwrap();
-        // Cache entry history is already durable. Save only changes made by
-        // this transaction, without serializing old history to prime a cursor.
-        let before_heads = doc.get_heads();
-        let tx = conn.transaction()?;
-        let before_changes = tx.total_changes();
-        let mut projections = projection::ProjectionChanges::default();
-        let result = run(&tx, &mut doc, &mut projections)?;
-        Self::reconcile_projection(&tx, &projections)?;
-        let bytes = doc.save_after(&before_heads);
-        let changed = before_changes != tx.total_changes() || !bytes.is_empty();
-        if !bytes.is_empty() {
-            let previous: Option<String> = tx
-                .query_row(
-                    "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let previous: Vec<Value> = previous
-                .map(|v| serde_json::from_str(&v))
-                .transpose()?
-                .unwrap_or_default();
-            Self::save_conflicts(&tx, &sync::remaining_conflicts(&doc, &previous)?)?;
-            Self::persist_delta(&tx, &bytes)?;
-            tx.execute("INSERT INTO meta(key,value) VALUES('sync_revision',1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
-        }
-        if changed {
-            Self::bump_revision(&tx)?;
-        }
-        tx.commit()?;
-        *cache = Some(doc);
-        Ok(result)
-    }
     fn bump_revision(conn: &Connection) -> Result<()> {
         Self::bump_revision_scoped(conn, false)
     }
@@ -2782,6 +2194,7 @@ impl Catalogue {
         Ok(())
     }
     /// Global revision and the latest revision requiring a full catalogue refresh.
+    #[cfg(test)]
     pub fn change_revisions(&self) -> Result<(u64, u64)> {
         let conn = self
             .inner
@@ -2801,6 +2214,7 @@ impl Catalogue {
     pub fn prepare_sync_document(&self) -> Result<()> {
         self.on_sync_worker(|catalogue| catalogue.flush_sync_outbox())
     }
+    #[cfg(test)]
     pub fn revision(&self) -> Result<u64> {
         let conn = self
             .inner
@@ -2851,7 +2265,12 @@ impl Catalogue {
         changes: &mut projection::ProjectionChanges,
         affected: &mut BTreeSet<String>,
     ) -> Result<()> {
-        if kind == "job" && before.into_iter().chain(after).any(|job| job["type"] == "storage:import_local") {
+        if kind == "job"
+            && before
+                .into_iter()
+                .chain(after)
+                .any(|job| job["type"] == "storage:import_local")
+        {
             changes.local_import_jobs = None;
         }
         if kind == "job" && projection::job_changes_product(before, after) {
@@ -2990,21 +2409,11 @@ impl Catalogue {
             (portable::manifest(&conn)?, cache.as_ref().unwrap().clone())
         };
         let bytes = doc.save();
-        let mut media: BTreeSet<_> = strings(&manifest["media"]).into_iter().collect();
-        for conflict in sync::conflicts(&doc)? {
-            if conflict["kind"] == "overlay" && conflict["field"] == "thumbnailPath" {
-                for alternative in conflict["values"].as_array().into_iter().flatten() {
-                    if let Some(path) = alternative["value"]["value"].as_str() {
-                        portable::validate_relative(path)?;
-                        media.insert(path.to_owned());
-                    }
-                }
-            }
-        }
-        manifest["media"] = json!(media);
         manifest["syncSnapshot"] = json!({"version":1,"encoding":"hex","sha256":format!("{:x}",Sha256::digest(&bytes)),"data":hex::encode(bytes)});
         Ok(manifest)
     }
+    /// Restores metadata only; tests use it to copy one catalogue into another.
+    #[cfg(test)]
     pub fn restore_manifest(&self, manifest: Value) -> Result<()> {
         self.on_sync_worker(move |catalogue| portable::restore(catalogue, manifest, None, None))
     }
@@ -3025,133 +2434,100 @@ impl Catalogue {
             portable::restore(catalogue, manifest, Some(root_mappings), Some(&job_id))
         })
     }
+    /// Runs one action from its name and JSON arguments, as the UI sends them.
     pub fn command(&self, action: &str, args: Value) -> Result<Value> {
-        let mut result = match action {
-            "spending_summary" => spending::summary(
+        self.execute(api::CatalogueRequest::parse(action, args)?)
+    }
+    pub fn execute(&self, request: api::CatalogueRequest) -> Result<Value> {
+        use api::CatalogueRequest as Request;
+        let mut result = match request {
+            Request::SpendingSummary(request) => spending::summary(
                 &*self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                &args,
+                &request,
             ),
-            "clear_activity" => self.mutate(|tx, projections| {
-                let jobs = rows(tx, "job")?;
-                let mut cleared = 0usize;
-                let mut active = 0usize;
-                for job in jobs {
-                    // This job owns staged folders until deletion or rollback
-                    // finishes; clearing history must not discard its recovery.
-                    if job["type"] == "storage:delete_local_products" && job["state"] != "completed"
-                    {
-                        active += 1;
-                        continue;
-                    }
-                    match text(&job, "state") {
-                        "completed" | "failed" | "needsAction" | "cancelled" => {
-                            Self::write(tx, projections, "job", text(&job, "id"), None)?;
-                            cleared += 1;
-                        }
-                        "queued" | "running" => active += 1,
-                        _ => {}
-                    }
-                }
-                Ok(json!({"cleared":cleared,"remainingActive":active}))
-            }),
-            "account_counts" => query::account_counts(
+            Request::ClearActivity => self.clear_activity(),
+            Request::AccountCounts => query::account_counts(
                 &*self
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-            ),
-            "state" => {
-                let conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(
-                    json!({"accounts":rows(&conn,"account")?,"roots":self.display_roots(&conn)?,"jobs":rows(&conn,"job")?,"preferences":raw(&conn,"preferences","app")?,"sourceCoverage":rows(&conn,"source_coverage")?,"conflicts":self.current_conflicts(&conn)?}),
-                )
-            }
-            "bootstrap" => {
-                let mut conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                // The list snapshot refreshes outside transactions; this lock keeps it consistent.
-                let (total, counts) = query::counts(
-                    &conn,
-                    &mut *self
-                        .list_snapshot
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                )?;
-                let tx = conn.transaction()?;
-                let products = if args["includeProducts"] == false {
-                    vec![]
-                } else {
-                    projection::all(&tx)?
-                        .into_iter()
-                        .filter(|product| product["hidden"] != true)
-                        .collect()
-                };
-                let dictionary = crate::taxonomy::dictionary();
-                let bases = projection::bases(&tx)?;
-                let owned = crate::taxonomy::owned_base_options(&bases);
-                let avatar_options = avatars::options(&tx, &bases, &owned)?;
-                let result = json!({"version":1,"total":total,"counts":counts,"products":products,"accounts":rows(&tx,"account")?,"roots":self.display_roots(&tx)?,"jobs":rows(&tx,"job")?,"preferences":raw(&tx,"preferences","app")?,"collections":rows(&tx,"collection")?,"savedSearches":rows(&tx,"saved_search")?,"customCategories":rows(&tx,"custom_category")?,"sourceCoverage":rows(&tx,"source_coverage")?,"conflicts":self.current_conflicts(&tx)?,"tagOptions":dictionary["tags"],"avatars":dictionary,"avatarOptions":avatar_options,"ownedBaseOptions":owned});
-                tx.commit()?;
-                Ok(result)
-            }
-            "avatar_options" => {
-                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
-            }
-            "job_diagnostics" => {
-                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                let job = raw(&conn, "job", text(&args, "jobId"))?
-                    .context("JOB_UNAVAILABLE")?;
-                // A later account checkpoint can belong to a different attempt.
-                // Export only facts retained by this job; never recollect sources.
-                Ok(json!(crate::support::report(&job, &[], &[])))
-            }
-            "product_details" => {
-                let conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                let body: Option<String> = conn
-                    .query_row(
-                        "SELECT body FROM products WHERE id=?1",
-                        [text(&args, "id")],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                let mut product: Value =
-                    serde_json::from_str(&body.context("catalogue.product_missing")?)?;
-                acquisition::apply_scope(&mut product, args["accountIds"].as_array());
-                Ok(product)
-            }
-            "collections" => {
-                let conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!({"collections": rows(&conn, "collection")?}))
-            }
-            "query" => query::query(
-                &*self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
-                &args,
                 &mut *self
                     .list_snapshot
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),
-            "overlay" => self.edit_overlay(args),
-            "dismiss_attention" => {
-                let ids = strings(&args["productIds"]);
+            Request::State => {
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                Ok(serde_json::to_value(self.state_snapshot(&conn)?)?)
+            }
+            Request::Bootstrap { include_products } => self.bootstrap(include_products),
+            Request::AvatarOptions => {
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let options = avatars::option_snapshot(&conn)?;
+                #[cfg(test)]
+                api::assert_options(&json!([]), &[&options]);
+                Ok(serde_json::to_value(api::AvatarOptions {
+                    avatar_options: options,
+                })?)
+            }
+            Request::JobDiagnostics { job_id } => {
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let job = raw(&conn, "job", &job_id)?.context("JOB_UNAVAILABLE")?;
+                // A later account checkpoint can belong to a different attempt.
+                // Export only facts retained by this job; never recollect sources.
+                Ok(json!(crate::support::report(&job, &[], &[])))
+            }
+            Request::ProductDetails { id, account_ids } => {
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let body: Option<String> = conn
+                    .query_row("SELECT body FROM products WHERE id=?1", [&id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+                let mut product: Value =
+                    serde_json::from_str(&body.context("catalogue.product_missing")?)?;
+                let accounts: Option<Vec<Value>> =
+                    account_ids.map(|ids| ids.into_iter().map(Value::String).collect());
+                acquisition::apply_scope(&mut product, accounts.as_ref());
+                Ok(product)
+            }
+            Request::Collections => {
+                let conn = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                Ok(serde_json::to_value(api::Collections {
+                    collections: rows(&conn, "collection")?,
+                })?)
+            }
+            Request::Query(request) => query::query(
+                &*self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+                &request,
+                &mut *self
+                    .list_snapshot
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+            ),
+            Request::Overlay(request) => self.edit_overlay(request.changes()),
+            Request::DismissAttention { product_ids: ids } => {
                 ensure!(!ids.is_empty(), "catalogue.empty_selection");
                 self.mutate(|tx, projections| {
                     let local_import_jobs = projection::local_import_jobs(tx)?;
@@ -3166,54 +2542,107 @@ impl Catalogue {
                     Ok(json!({}))
                 })
             }
-            "undo" => self.undo(
-                args["token"]
-                    .as_str()
-                    .or(args["undoToken"].as_str())
-                    .unwrap_or(""),
-            ),
-            "collection" | "save_search" | "saved_search" => self.manage(action, args),
-            "custom_category" => self.custom_category(args),
-            "preferences" => self.preferences(args),
-            "conflicts" => {
-                let conn = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-                Ok(json!(self.current_conflicts(&conn)?))
-            }
-            "resolve_conflict" => self.on_sync_worker(move |catalogue| {
-                catalogue.mutate_sync(|tx, doc, projections| {
-                    let heads = doc.get_heads();
-                    sync::resolve(doc, &args)?;
-                    Self::project_document(tx, doc, projections, &heads)?;
-                    Ok(json!({"ok":true}))
-                })
-            }),
-            "exchange" => self.exchange(Path::new(text(&args, "folder"))),
-            "export_csv" => portable::csv(self, args),
-            "manifest" => self.manifest(),
-            "restore_manifest" => {
-                self.restore_manifest(args.get("manifest").cloned().unwrap_or(args))?;
-                Ok(json!({"ok":true}))
-            }
-            _ => bail!("catalogue.unknown_action"),
+            Request::Undo { token } => self.undo(&token),
+            Request::Collection(request) => self.manage("collection", request),
+            Request::SaveSearch(request) => self.manage("saved_search", request),
+            Request::CustomCategory(request) => self.custom_category(request),
+            Request::Preferences { patch } => self.preferences(Value::Object(patch)),
         }?;
         self.resolve_previews(&mut result)?;
         Ok(result)
     }
-    fn edit_overlay(&self, args: Value) -> Result<Value> {
-        let changes = if let Some(changes) = args["changes"].as_array() {
-            changes.clone()
-        } else {
-            strings(&args["ids"]).into_iter().collect::<BTreeSet<_>>().into_iter().map(|id| {
-                let mut change = json!({"id":id,"patch":args.get("patch").cloned().unwrap_or(json!({})),"clearFields":args["clearFields"]});
-                if let Some(delta) = args.get("ownedAvatarsDelta") {
-                    change["ownedAvatarsDelta"] = delta.clone();
+
+    /// Removes finished jobs from the activity history; running ones stay.
+    fn clear_activity(&self) -> Result<Value> {
+        self.mutate(|tx, projections| {
+            let jobs = rows(tx, "job")?;
+            let mut cleared = 0usize;
+            let mut active = 0usize;
+            for mut job in jobs {
+                // This job owns staged folders until deletion or rollback
+                // finishes; clearing history must not discard its recovery.
+                if job["type"] == "storage:delete_local_products" && job["state"] != "completed" {
+                    active += 1;
+                    continue;
                 }
-                change
-            }).collect()
+                // A local import that stopped before adding all its assets keeps the copies
+                // and plan its Retry continues from. It only leaves Activity; Storage keeps it.
+                let products = strings(&job["productIds"]);
+                let completed = strings(&job["completedProductIds"]);
+                if job["type"] == "storage:import_local"
+                    && matches!(text(&job, "state"), "failed" | "needsAction" | "cancelled")
+                    && (products.is_empty() || products.iter().any(|id| !completed.contains(id)))
+                {
+                    if job["activityCleared"] != true {
+                        job["activityCleared"] = json!(true);
+                        let id = text(&job, "id").to_owned();
+                        Self::write(tx, projections, "job", &id, Some(job))?;
+                        cleared += 1;
+                    }
+                    continue;
+                }
+                match text(&job, "state") {
+                    "completed" | "failed" | "needsAction" | "cancelled" => {
+                        Self::write(tx, projections, "job", text(&job, "id"), None)?;
+                        cleared += 1;
+                    }
+                    "queued" | "running" => active += 1,
+                    _ => {}
+                }
+            }
+            Ok(serde_json::to_value(api::ActivityCleared {
+                cleared,
+                remaining_active: active,
+            })?)
+        })
+    }
+
+    /// Everything the App shows when it opens, read in one transaction.
+    fn bootstrap(&self, include_products: Option<bool>) -> Result<Value> {
+        let mut conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        // The list snapshot refreshes outside transactions; this lock keeps it consistent.
+        let (total, counts) = query::counts(
+            &conn,
+            &mut *self
+                .list_snapshot
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+        )?;
+        let tx = conn.transaction()?;
+        let products = if include_products == Some(false) {
+            vec![]
+        } else {
+            projection::all(&tx)?
+                .into_iter()
+                .filter(|product| product["hidden"] != true)
+                .collect()
         };
+        let dictionary = crate::taxonomy::dictionary();
+        let bases = projection::bases(&tx)?;
+        let owned = crate::taxonomy::owned_base_options(&bases);
+        let avatar_options = avatars::options(&tx, &bases, &owned)?;
+        #[cfg(test)]
+        api::assert_options(&dictionary["tags"], &[&avatar_options, &owned]);
+        let result = api::Bootstrap {
+            version: 1,
+            total,
+            counts,
+            products,
+            state: self.state_snapshot(&tx)?,
+            collections: rows(&tx, "collection")?,
+            saved_searches: rows(&tx, "saved_search")?,
+            custom_categories: rows(&tx, "custom_category")?,
+            tag_options: dictionary["tags"].clone(),
+            avatar_options,
+            owned_base_options: owned,
+        };
+        tx.commit()?;
+        Ok(serde_json::to_value(result)?)
+    }
+    fn edit_overlay(&self, changes: Vec<Value>) -> Result<Value> {
         ensure!(!changes.is_empty(), "catalogue.empty_selection");
         let mut seen = BTreeSet::new();
         for change in &changes {
@@ -3223,19 +2652,34 @@ impl Catalogue {
             );
             validate_patch(change.get("patch").unwrap_or(&json!({})))?;
             if let Some(delta) = change.get("ownedAvatarsDelta") {
-                ensure!(delta.is_object() && delta.as_object().unwrap().len() == 2,
-                    "catalogue.invalid_avatar_delta");
+                ensure!(
+                    delta.is_object() && delta.as_object().unwrap().len() == 2,
+                    "catalogue.invalid_avatar_delta"
+                );
                 for field in ["add", "remove"] {
-                    ensure!(delta[field].as_array().is_some_and(|values| values.iter()
-                        .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))),
-                        "catalogue.invalid_avatar_delta");
+                    ensure!(
+                        delta[field]
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(|value| value
+                                .as_str()
+                                .is_some_and(|value| !value.trim().is_empty()))),
+                        "catalogue.invalid_avatar_delta"
+                    );
                 }
                 let add: BTreeSet<_> = strings(&delta["add"]).into_iter().collect();
-                ensure!(!strings(&delta["remove"]).iter().any(|value| add.contains(value)),
-                    "catalogue.invalid_avatar_delta");
-                ensure!(change["patch"].get("ownedAvatars").is_none()
-                    && !strings(&change["clearFields"]).iter().any(|field| field == "ownedAvatars"),
-                    "catalogue.invalid_avatar_delta");
+                ensure!(
+                    !strings(&delta["remove"])
+                        .iter()
+                        .any(|value| add.contains(value)),
+                    "catalogue.invalid_avatar_delta"
+                );
+                ensure!(
+                    change["patch"].get("ownedAvatars").is_none()
+                        && !strings(&change["clearFields"])
+                            .iter()
+                            .any(|field| field == "ownedAvatars"),
+                    "catalogue.invalid_avatar_delta"
+                );
             }
             ensure!(
                 strings(&change["clearFields"])
@@ -3344,7 +2788,14 @@ impl Catalogue {
             }
             projections.prepared_resolver = tag_resolver;
             if entries.is_empty() {
-                return Ok(json!({"ok":true,"changed":0}));
+                return Ok(serde_json::to_value(api::EditResult {
+                    ok: true,
+                    changed: 0,
+                    token: None,
+                    undo_token: None,
+                    conflicts: None,
+                    changed_links: None,
+                })?);
             }
             let token = Uuid::new_v4().to_string();
             tx.execute(
@@ -3352,7 +2803,14 @@ impl Catalogue {
                 params![token, serde_json::to_string(&entries)?],
             )?;
             tx.execute("DELETE FROM undo WHERE rowid NOT IN(SELECT rowid FROM undo ORDER BY rowid DESC LIMIT 100)", [])?;
-            Ok(json!({"ok":true,"token":token,"undoToken":token,"changed":entries.len(),"changedLinks":changed_links}))
+            Ok(serde_json::to_value(api::EditResult {
+                ok: true,
+                changed: entries.len(),
+                undo_token: Some(token.clone()),
+                token: Some(token),
+                conflicts: None,
+                changed_links: Some(changed_links),
+            })?)
         })
     }
     fn undo(&self, token: &str) -> Result<Value> {
@@ -3371,17 +2829,7 @@ impl Catalogue {
                 let id = text(&entry, "id");
                 let current = raw(tx, "overlay", id)?.unwrap_or(json!({"id":id}));
                 let fields = strings(&entry["fields"]);
-                let conflict_keys = fields
-                    .iter()
-                    .map(|field| json!({"kind":"overlay","id":id,"field":field}))
-                    .collect::<Vec<_>>();
-                if self.current_conflicts(tx)?.iter().any(|conflict| {
-                    conflict_keys.iter().any(|key| {
-                        key["kind"] == conflict["kind"]
-                            && key["id"] == conflict["id"]
-                            && key["field"] == conflict["field"]
-                    })
-                }) || fields
+                if fields
                     .iter()
                     .any(|f| current.get(f) != entry["after"].get(f))
                     // A deleted custom category cannot come back through undo.
@@ -3409,25 +2857,25 @@ impl Catalogue {
                 changed += 1;
             }
             tx.execute("DELETE FROM undo WHERE token=?1", [token])?;
-            Ok(json!({"ok":conflicts.is_empty(),"changed":changed,"conflicts":conflicts,"changedLinks":changed_links}))
+            Ok(serde_json::to_value(api::EditResult {
+                ok: conflicts.is_empty(),
+                changed,
+                token: None,
+                undo_token: None,
+                conflicts: Some(conflicts),
+                changed_links: Some(changed_links),
+            })?)
         })
     }
-    fn manage(&self, action: &str, args: Value) -> Result<Value> {
-        let kind = if action == "collection" {
-            "collection"
-        } else {
-            "saved_search"
-        };
-        let op = args["operation"]
-            .as_str()
-            .or(args["op"].as_str())
-            .unwrap_or("create");
+    /// `kind` is `collection` or `saved_search`.
+    fn manage(&self, kind: &str, request: api::MembershipRequest) -> Result<Value> {
+        let op = request.op.as_deref().unwrap_or("create");
         self.mutate_scoped(kind == "collection", |tx, projections| {
             if op == "add" || op == "add_members" {
                 ensure!(kind == "collection", "catalogue.invalid_operation");
-                let ids = strings(&args["ids"]);
-                let mut collections = strings(&args["collectionIds"]);
-                for name in strings(&args["names"]) {
+                let ids = request.ids.clone().unwrap_or_default();
+                let mut collections = request.collection_ids.clone().unwrap_or_default();
+                for name in request.names.clone().unwrap_or_default() {
                     let name = name.trim();
                     ensure!(!name.is_empty(), "catalogue.name_required");
                     let existing: Option<String> = tx.query_row(
@@ -3466,9 +2914,9 @@ impl Catalogue {
                 }
                 return Ok(json!({"ok":true,"collections":rows(tx, "collection")?}));
             }
-            let id = args["id"]
-                .as_str()
-                .map(str::to_owned)
+            let id = request
+                .id
+                .clone()
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
             if op == "delete" {
                 Self::write(tx, projections, kind, &id, None)?;
@@ -3486,7 +2934,7 @@ impl Catalogue {
                 ensure!(before.is_none(), "catalogue.already_exists");
             }
             let mut value = before.unwrap_or(json!({"id":id,"productIds":[]}));
-            let patch = args.get("value").or(args.get("patch")).unwrap_or(&args);
+            let patch = request.record_fields();
             for field in if kind == "collection" {
                 vec!["name", "productIds"]
             } else {
@@ -3512,7 +2960,7 @@ impl Catalogue {
                 }
             }
             if op == "remove_members" {
-                let remove: BTreeSet<_> = strings(&args["ids"]).into_iter().collect();
+                let remove: BTreeSet<_> = request.ids.clone().unwrap_or_default().into_iter().collect();
                 value["productIds"] = json!(strings(&value["productIds"])
                     .into_iter()
                     .filter(|i| !remove.contains(i))
@@ -3532,18 +2980,17 @@ impl Catalogue {
             Ok(value)
         })
     }
-    fn preferences(&self, args: Value) -> Result<Value> {
-        self.mutate(|tx, projections| self.apply_preferences(tx, projections, &args))
+    fn preferences(&self, patch: Value) -> Result<Value> {
+        self.mutate(|tx, projections| self.apply_preferences(tx, projections, &patch))
     }
     fn apply_preferences(
         &self,
         tx: &Transaction<'_>,
         projections: &mut projection::ProjectionChanges,
-        args: &Value,
+        patch: &Value,
     ) -> Result<Value> {
         let mut value = raw(tx, "preferences", "app")?.unwrap_or(json!({"id":"app"}));
         let was_complete = value["setupComplete"] == true;
-        let patch = args.get("patch").unwrap_or(&args);
         ensure!(patch.is_object(), "catalogue.invalid_preferences");
         validate_ui_preferences(patch)?;
         for (k, v) in patch.as_object().unwrap() {
@@ -3611,213 +3058,11 @@ impl Catalogue {
                 validate("account", id, &account)?;
                 Self::write(tx, projections, "account", id, Some(account.clone()))?;
             }
-            let preferences = self.apply_preferences(tx, projections, &json!({"patch":patch}))?;
+            let preferences = self.apply_preferences(tx, projections, &patch)?;
             // Locator failure rolls back the same SQL transaction, including
             // newly attached accounts. No initial sync starts before restart.
             select()?;
             Ok(preferences)
         })
-    }
-    fn project_document(
-        tx: &Connection,
-        doc: &mut automerge::AutoCommit,
-        projections: &mut projection::ProjectionChanges,
-        heads: &[automerge::ChangeHash],
-    ) -> Result<()> {
-        let fields = sync::changed_fields(doc, heads)?;
-        Self::project_fields(tx, doc, projections, fields)
-    }
-    fn project_fields(
-        tx: &Connection,
-        doc: &automerge::AutoCommit,
-        projections: &mut projection::ProjectionChanges,
-        fields: Vec<(String, String, String)>,
-    ) -> Result<()> {
-        let mut changes = std::collections::BTreeMap::<(String, String), Vec<String>>::new();
-        for (kind, id, field) in fields {
-            changes.entry((kind, id)).or_default().push(field);
-        }
-        let mut affected = BTreeSet::new();
-        for ((kind, id), fields) in changes {
-            ensure!(
-                SYNC_KINDS.contains(&kind.as_str()),
-                "catalogue.invalid_sync_kind"
-            );
-            let before = raw(tx, &kind, &id)?;
-            let after = sync::project_entity(doc, &kind, &id, before.clone(), &fields)?;
-            if before == after {
-                continue;
-            }
-            Self::collect_projection_dependencies(
-                tx,
-                &kind,
-                &id,
-                before.as_ref(),
-                after.as_ref(),
-                projections,
-                &mut affected,
-            )?;
-            if kind == "product" || kind == "overlay" {
-                affected.insert(id.clone());
-            }
-            for value in before.iter().chain(after.iter()) {
-                if let Some(p) = value["productId"].as_str() {
-                    affected.insert(p.to_owned());
-                }
-            }
-            match after {
-                Some(value) => {
-                    validate(&kind, &id, &value)?;
-                    set_raw(tx, &kind, &id, &value)?;
-                }
-                None => {
-                    tx.execute(
-                        "DELETE FROM entities WHERE kind=?1 AND id=?2",
-                        params![kind, id],
-                    )?;
-                }
-            }
-        }
-        for id in affected {
-            projections.refresh(tx, &id)?;
-        }
-        Ok(())
-    }
-    fn exchange(&self, folder: &Path) -> Result<Value> {
-        let folder = folder.to_path_buf();
-        self.on_sync_worker(move |catalogue| catalogue.exchange_on_worker(&folder))
-    }
-    fn exchange_on_worker(&self, folder: &Path) -> Result<Value> {
-        self.exchange_with_hook(folder, |_| Ok(()))
-    }
-    fn exchange_with_hook(
-        &self,
-        folder: &Path,
-        after_transfer: impl FnOnce(&Self) -> Result<()>,
-    ) -> Result<Value> {
-        self.flush_sync_outbox()?;
-        ensure!(folder.is_absolute(), "catalogue.absolute_folder_required");
-        let fingerprint = Self::folder_fingerprint(folder)?;
-        let generation = {
-            let conn = self
-                .inner
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-            conn.query_row(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='sync_revision'",
-                [],
-                |r| r.get::<_, u64>(0),
-            )
-            .optional()?
-            .unwrap_or(0)
-        };
-        {
-            let cache = self
-                .exchange_cache
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
-            if cache.as_ref().is_some_and(|(path, rev, files)| {
-                path == folder && *rev == generation && *files == fingerprint
-            }) {
-                return Ok(json!({"ok":true,"unchanged":true}));
-            }
-        }
-        // Snapshot the already validated history. Folder IO, incoming operation
-        // validation, batch application and conflict discovery happen unlocked.
-        let (mut outgoing, snapshot_generation, previous_conflicts) = {
-            let (conn, cache) = self.lock_document()?;
-            let previous = conn
-                .query_row(
-                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key='sync_revision'",
-                    [],
-                    |r| r.get::<_, u64>(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            let conflicts: Option<String> = conn
-                .query_row(
-                    "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let conflicts: Vec<Value> = conflicts
-                .map(|v| serde_json::from_str(&v))
-                .transpose()?
-                .unwrap_or_default();
-            (cache.as_ref().unwrap().clone(), previous, conflicts)
-        };
-        let snapshot_heads = outgoing.get_heads();
-        let transfer = sync::exchange_validated(&mut outgoing, folder)?;
-        let fields = sync::changed_fields(&mut outgoing, &snapshot_heads)?;
-        let conflicts = sync::changed_conflicts(&outgoing, &previous_conflicts, &fields)?;
-        let remote_changed = snapshot_heads != outgoing.get_heads();
-        after_transfer(self)?;
-        self.mutate_sync(|tx, doc, projections| {
-            let heads = doc.get_heads();
-            if heads == snapshot_heads {
-                if remote_changed {
-                    *doc = outgoing;
-                    Self::project_fields(tx, doc, projections, fields)?;
-                    Self::save_conflicts(tx, &conflicts)?;
-                }
-            } else {
-                // Concurrent local writes remain authoritative inputs to merge.
-                doc.merge(&mut outgoing)?;
-                if heads != doc.get_heads() {
-                    let fields = sync::changed_fields(doc, &heads)?;
-                    let previous: Option<String> = tx
-                        .query_row(
-                            "SELECT CAST(value AS TEXT) FROM meta WHERE key='conflicts'",
-                            [],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    let previous: Vec<Value> = previous
-                        .map(|v| serde_json::from_str(&v))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let conflicts = sync::changed_conflicts(doc, &previous, &fields)?;
-                    Self::project_fields(tx, doc, projections, fields)?;
-                    Self::save_conflicts(tx, &conflicts)?;
-                }
-            }
-            Ok(())
-        })?;
-        // A concurrent local edit was not exported; retaining the captured
-        // generation forces the next poll to publish it rather than skip it.
-        let exported_generation = snapshot_generation + u64::from(remote_changed);
-        let after = Self::folder_fingerprint(folder)?;
-        if fingerprint == after {
-            *self
-                .exchange_cache
-                .lock()
-                .map_err(|_| anyhow::anyhow!("catalogue.lock"))? =
-                Some((folder.to_path_buf(), exported_generation, after));
-        }
-        Ok(
-            json!({"ok":true,"read":{"imported":transfer["imported"],"pendingDependencies":transfer["pendingDependencies"],"ignoredFiles":transfer["ignoredFiles"]},"write":{"exported":transfer["exported"],"pendingDependencies":transfer["pendingDependencies"]}}),
-        )
-    }
-    fn folder_fingerprint(folder: &Path) -> Result<Vec<String>> {
-        if !folder.exists() {
-            return Ok(vec![]);
-        }
-        let mut result = vec![];
-        for entry in std::fs::read_dir(folder)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|s| s.to_str()) != Some("amchange") {
-                continue;
-            }
-            let meta = entry.metadata()?;
-            result.push(format!(
-                "{}:{}:{:?}",
-                entry.file_name().to_string_lossy(),
-                meta.len(),
-                meta.modified()?
-            ));
-        }
-        result.sort();
-        Ok(result)
     }
 }

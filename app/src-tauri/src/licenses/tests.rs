@@ -44,11 +44,29 @@ fn vn3_items_read_only_exact_generator_answers() {
     let parsed = parse::vn3(&document(&full())).unwrap();
     assert!(parsed.complete());
     assert_eq!(parsed.version.as_deref(), Some("1.10"));
-    for (letter, code) in [("A", "noncommercial"), ("B", "ask"), ("E", "allow_limited"), ("F", "allow_segregated"), ("G", "deny_except_private"), ("L", "users_only"), ("N", "free_only_bound"), ("P", "allow_if_modified"), ("Q", "ask"), ("S", "private_only"), ("T", "not_applicable"), ("U", "commercial"), ("V", "credit_optional_welcome"), ("X", "none")] {
+    for (letter, code) in [
+        ("A", "noncommercial"),
+        ("B", "ask"),
+        ("E", "allow_limited"),
+        ("F", "allow_segregated"),
+        ("G", "deny_except_private"),
+        ("L", "users_only"),
+        ("N", "free_only_bound"),
+        ("P", "allow_if_modified"),
+        ("Q", "ask"),
+        ("S", "private_only"),
+        ("T", "not_applicable"),
+        ("U", "commercial"),
+        ("V", "credit_optional_welcome"),
+        ("X", "none"),
+    ] {
         assert_eq!(parsed.answers[letter], code, "{letter}");
     }
     // Zero-width characters and spaced-out letters from PDF extraction read the same.
-    let spaced: String = document(&full()).chars().flat_map(|c| [c, '\u{200b}', ' ']).collect();
+    let spaced: String = document(&full())
+        .chars()
+        .flat_map(|c| [c, '\u{200b}', ' '])
+        .collect();
     assert_eq!(parse::vn3(&spaced).unwrap().answers, parsed.answers);
 
     // Seller text after an answer, a missing item and an empty note leave those unknown.
@@ -58,13 +76,19 @@ fn vn3_items_read_only_exact_generator_answers() {
     items[22].2 = "";
     let parsed = parse::vn3(&document(&items)).unwrap();
     assert!(!parsed.answers.contains_key("C"));
-    assert!(!parsed.answers.contains_key("I"), "the item before a gap could hold the next answer");
+    assert!(
+        !parsed.answers.contains_key("I"),
+        "the item before a gap could hold the next answer"
+    );
     assert!(!parsed.answers.contains_key("J"));
     assert_eq!(parsed.answers["K"], "allow");
     assert!(!parsed.answers.contains_key("X"));
     let mut noted = full();
     noted[23].2 = "商用利用時はご連絡ください";
-    assert_eq!(parse::vn3(&document(&noted)).unwrap().answers["X"], "present");
+    assert_eq!(
+        parse::vn3(&document(&noted)).unwrap().answers["X"],
+        "present"
+    );
 
     // Not VN3, or not the Japanese document: nothing.
     assert!(parse::vn3("利用規約\nA. 個人による利用\n許可します").is_none());
@@ -75,13 +99,40 @@ fn vn3_items_read_only_exact_generator_answers() {
 fn cells_follow_the_agreed_reading() {
     let parsed = parse::vn3(&document(&full())).unwrap();
     let vn3 = cells("vn3", &json!(parsed.answers));
-    for (letter, value) in [("A", "allow"), ("B", "deny"), ("C", "allow"), ("D", "deny"), ("E", "allow"), ("F", "allow"), ("G", "deny"), ("L", "allow"), ("N", "allow"), ("P", "allow"), ("Q", "deny"), ("S", "deny"), ("U", "allow"), ("V", "notRequired"), ("X", "no")] {
+    for (letter, value) in [
+        ("A", "allow"),
+        ("B", "deny"),
+        ("C", "allow"),
+        ("D", "deny"),
+        ("E", "allow"),
+        ("F", "allow"),
+        ("G", "deny"),
+        ("L", "allow"),
+        ("N", "allow"),
+        ("P", "allow"),
+        ("Q", "deny"),
+        ("S", "deny"),
+        ("U", "allow"),
+        ("V", "notRequired"),
+        ("X", "no"),
+    ] {
         assert_eq!(vn3[letter], value, "{letter}");
     }
     assert!(!vn3.contains_key("T"), "not applicable stays unknown");
 
     let uv = cells("uv", &json!(parse::uv_terms("https://uv-license.com/ja/license?utf8=%E2%9C%93&pcu=true&ccu=false&ccu=true&ddw=true&seu=1&remarks=true")));
-    for (letter, value) in [("A", "allow"), ("B", "allow"), ("F", "deny"), ("G", "deny"), ("M", "deny"), ("N", "allow"), ("S", "deny"), ("U", "allow"), ("V", "required"), ("X", "yes")] {
+    for (letter, value) in [
+        ("A", "allow"),
+        ("B", "allow"),
+        ("F", "deny"),
+        ("G", "deny"),
+        ("M", "deny"),
+        ("N", "allow"),
+        ("S", "deny"),
+        ("U", "allow"),
+        ("V", "required"),
+        ("X", "yes"),
+    ] {
         assert_eq!(uv[letter], value, "{letter}");
     }
     for letter in ["D", "E", "O", "P", "Q", "R", "T", "W"] {
@@ -90,13 +141,31 @@ fn cells_follow_the_agreed_reading() {
 
     let cc0 = cells("cc0", &json!({}));
     assert_eq!(cc0.len(), 24);
-    assert_eq!((cc0["A"].as_str(), cc0["M"].as_str(), cc0["V"].as_str(), cc0["X"].as_str()), ("allow", "allow", "notRequired", "no"));
+    assert_eq!(
+        (
+            cc0["A"].as_str(),
+            cc0["M"].as_str(),
+            cc0["V"].as_str(),
+            cc0["X"].as_str()
+        ),
+        ("allow", "allow", "notRequired", "no")
+    );
 
-    assert_eq!(valid_cells(&json!({"A":"allow","V":"allow","X":"yes","Y":"allow","B":"maybe","C":1})), BTreeMap::from([("A".into(), "allow".into()), ("X".into(), "yes".into())]));
+    assert_eq!(
+        valid_cells(&json!({"A":"allow","V":"allow","X":"yes","Y":"allow","B":"maybe","C":1})),
+        BTreeMap::from([("A".into(), "allow".into()), ("X".into(), "yes".into())])
+    );
 }
 
 fn page_with(description: &str, sections: &[(&str, &str)], variations: &str) -> String {
-    let sections: String = sections.iter().map(|(h, p)| format!("<section class='shop__text'><h2>{h}</h2><p class='js-autolink'>{p}</p></section>")).collect();
+    let sections: String = sections
+        .iter()
+        .map(|(h, p)| {
+            format!(
+                "<section class='shop__text'><h2>{h}</h2><p class='js-autolink'>{p}</p></section>"
+            )
+        })
+        .collect();
     format!("<html><body><div class='js-market-item-detail-description description'><p>{description}</p></div>{sections}<ul>{variations}</ul></body></html>")
 }
 
@@ -112,24 +181,59 @@ fn page_links_rank_license_documents_first() {
     );
     let page = parse::page(&html);
     let links: Vec<_> = page.candidates.iter().map(|c| c.link.clone()).collect();
-    assert_eq!(links[0], parse::Link::DriveFile { id: "japaneseterm1".into(), resource_key: None });
+    assert_eq!(
+        links[0],
+        parse::Link::DriveFile {
+            id: "japaneseterm1".into(),
+            resource_key: None
+        }
+    );
     assert_eq!(links[1], parse::Link::Document("termsdocument1".into()));
-    assert_eq!(links[2], parse::Link::DriveFile { id: "englishterms01".into(), resource_key: None });
+    assert_eq!(
+        links[2],
+        parse::Link::DriveFile {
+            id: "englishterms01".into(),
+            resource_key: None
+        }
+    );
     // Links outside license wording come after every license-labelled one.
     assert_eq!(links[3..].len(), 2);
-    assert!(links[3..].contains(&parse::Link::DriveFolder { id: "sharedfolder01".into(), resource_key: Some("0-abc".into()) }));
-    assert!(links[3..].contains(&parse::Link::DriveFile { id: "manualmanual01".into(), resource_key: None }));
+    assert!(links[3..].contains(&parse::Link::DriveFolder {
+        id: "sharedfolder01".into(),
+        resource_key: Some("0-abc".into())
+    }));
+    assert!(links[3..].contains(&parse::Link::DriveFile {
+        id: "manualmanual01".into(),
+        resource_key: None
+    }));
     assert!(page.uv.is_none());
-    assert_eq!(page.free_licenses.iter().map(|f| f.route.as_str()).collect::<Vec<_>>(), ["https://booth.pm/downloadables/700001?variation_id=800001"]);
+    assert_eq!(
+        page.free_licenses
+            .iter()
+            .map(|f| f.route.as_str())
+            .collect::<Vec<_>>(),
+        ["https://booth.pm/downloadables/700001?variation_id=800001"]
+    );
 
     let uv = parse::page(&page_with("ライセンス\nhttps://uv-license.com/ja/license?utf8=✓&pcu=true&remarks= も見てください\nhttps://uv-license.com/ja/", &[], ""));
     assert!(uv.uv.as_deref().is_some_and(|u| u.contains("pcu=true")));
-    assert!(parse::page(&page_with("UVライセンス https://uv-license.com/ja/license", &[], "")).uv.is_none(), "a bare link names no terms");
+    assert!(
+        parse::page(&page_with(
+            "UVライセンス https://uv-license.com/ja/license",
+            &[],
+            ""
+        ))
+        .uv
+        .is_none(),
+        "a bare link names no terms"
+    );
 }
 
 #[test]
 fn cc0_needs_a_declaration_about_the_asset() {
-    let judge = |description: &str, sections: &[(&str, &str)]| parse::cc0(&parse::page(&page_with(description, sections, "")).blocks);
+    let judge = |description: &str, sections: &[(&str, &str)]| {
+        parse::cc0(&parse::page(&page_with(description, sections, "")).blocks)
+    };
     for declared in [
         "本商品はCC0で配布します。",
         "ライセンス：CC0",
@@ -162,58 +266,117 @@ fn cc0_needs_a_declaration_about_the_asset() {
         assert!(!judge(not, &[]), "{not}");
     }
     // One carve-out anywhere on the page outweighs every declaration.
-    assert!(!judge("本商品はCC0で配布します。\n同梱のフォントはCC0ではありません", &[]));
-    assert!(!judge("ライセンス：CC0", &[("注意", "サンプル画像はCC0の対象外です")]));
+    assert!(!judge(
+        "本商品はCC0で配布します。\n同梱のフォントはCC0ではありません",
+        &[]
+    ));
+    assert!(!judge(
+        "ライセンス：CC0",
+        &[("注意", "サンプル画像はCC0の対象外です")]
+    ));
 }
 
 #[test]
 fn zip_and_text_documents_are_read_and_others_ignored() {
     let text = document(&full());
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    zip.start_file("license/vn3license_ja.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.start_file(
+        "license/vn3license_ja.txt",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
     std::io::Write::write_all(&mut zip, format!("\u{feff}{text}").as_bytes()).unwrap();
-    zip.start_file("model.fbx", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.start_file("model.fbx", zip::write::SimpleFileOptions::default())
+        .unwrap();
     std::io::Write::write_all(&mut zip, b"binary").unwrap();
     let bytes = zip.finish().unwrap().into_inner();
     let texts = fetch::file_texts(&bytes);
     assert_eq!(texts.len(), 1);
     assert!(parse::vn3(&texts[0]).unwrap().complete());
     assert_eq!(fetch::file_texts(text.as_bytes()).len(), 1);
-    assert!(fetch::file_texts(b"<!DOCTYPE html><html><body>Only the owner can download</body></html>").is_empty());
+    assert!(fetch::file_texts(
+        b"<!DOCTYPE html><html><body>Only the owner can download</body></html>"
+    )
+    .is_empty());
     assert!(fetch::file_texts(b"%PDF-1.4 broken").is_empty());
 }
 
 #[test]
 fn booth_links_name_one_item() {
-    assert_eq!(booth_item("https://booth.pm/ja/items/1234567").as_deref(), Some("1234567"));
-    assert_eq!(booth_item("https://shop.booth.pm/items/1234567").as_deref(), Some("1234567"));
-    for other in ["http://booth.pm/ja/items/1", "https://booth.pm/ja/items/1/reviews", "https://example.com/items/1", "https://booth.pm/ja/items/abc"] {
+    assert_eq!(
+        booth_item("https://booth.pm/ja/items/1234567").as_deref(),
+        Some("1234567")
+    );
+    assert_eq!(
+        booth_item("https://shop.booth.pm/items/1234567").as_deref(),
+        Some("1234567")
+    );
+    for other in [
+        "http://booth.pm/ja/items/1",
+        "https://booth.pm/ja/items/1/reviews",
+        "https://example.com/items/1",
+        "https://booth.pm/ja/items/abc",
+    ] {
         assert!(booth_item(other).is_none(), "{other}");
     }
 }
 
 #[test]
 fn a_failed_read_never_replaces_a_result_and_edits_win() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("licenses-{}", uuid::Uuid::new_v4()));
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("licenses-{}", uuid::Uuid::new_v4()));
     let catalogue = Catalogue::open(&dir).unwrap();
     let service = LicenseService::new(catalogue.clone(), BoothService::new(catalogue).unwrap());
-    assert_eq!(service.matching(&json!({"A":"allow"})).unwrap(), Some(vec![]));
-    assert!(!service.inner.path.exists(), "a filter alone creates nothing");
-    let found = |kind: &'static str, answers: Value| fetch::Outcome::Found(fetch::Found { kind, version: None, source: String::new(), answers });
-    service.record("vn3", found("vn3", json!({"A":"commercial","B":"ask"}))).unwrap();
+    assert_eq!(
+        service.matching(&json!({"A":"allow"})).unwrap(),
+        Some(vec![])
+    );
+    assert!(
+        !service.inner.path.exists(),
+        "a filter alone creates nothing"
+    );
+    let found = |kind: &'static str, answers: Value| {
+        fetch::Outcome::Found(fetch::Found {
+            kind,
+            version: None,
+            source: String::new(),
+            answers,
+        })
+    };
+    service
+        .record("vn3", found("vn3", json!({"A":"commercial","B":"ask"})))
+        .unwrap();
     service.record("cc0", found("cc0", json!({}))).unwrap();
     service.record("none", fetch::Outcome::Missing).unwrap();
-    service.record("vn3", fetch::Outcome::Failed("NETWORK_UNAVAILABLE".into())).unwrap();
+    service
+        .record("vn3", fetch::Outcome::Failed("NETWORK_UNAVAILABLE".into()))
+        .unwrap();
     service.record("cc0", fetch::Outcome::Missing).unwrap();
-    assert_eq!(service.matching(&json!({"A":"allow"})).unwrap(), Some(vec!["cc0".to_owned(), "vn3".to_owned()]));
-    assert_eq!(service.matching(&json!({"A":"allow","B":"deny"})).unwrap(), Some(vec!["vn3".to_owned()]));
+    assert_eq!(
+        service.matching(&json!({"A":"allow"})).unwrap(),
+        Some(vec!["cc0".to_owned(), "vn3".to_owned()])
+    );
+    assert_eq!(
+        service.matching(&json!({"A":"allow","B":"deny"})).unwrap(),
+        Some(vec!["vn3".to_owned()])
+    );
     assert_eq!(service.matching(&json!({"Z":"allow"})).unwrap(), None);
-    assert_eq!(service.settled("state IN('found','none')").unwrap(), BTreeSet::from(["cc0".into(), "none".into(), "vn3".into()]));
+    assert_eq!(
+        service.settled("state IN('found','none')").unwrap(),
+        BTreeSet::from(["cc0".into(), "none".into(), "vn3".into()])
+    );
 
     // A user's table replaces the synced one until it is cleared.
     service.with_db(true, |conn| Ok(conn.execute("INSERT INTO edits(product_id,cells,edited_at) VALUES('cc0','{\"A\":\"deny\"}','now')", [])?)).unwrap();
-    assert_eq!(service.matching(&json!({"A":"allow"})).unwrap(), Some(vec!["vn3".to_owned()]));
-    assert_eq!(service.matching(&json!({"M":"allow"})).unwrap(), Some(vec![]));
+    assert_eq!(
+        service.matching(&json!({"A":"allow"})).unwrap(),
+        Some(vec!["vn3".to_owned()])
+    );
+    assert_eq!(
+        service.matching(&json!({"M":"allow"})).unwrap(),
+        Some(vec![])
+    );
     drop(service);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -52,12 +52,7 @@ fn product(c: &Catalogue, id: &str, provider: &str) {
     if provider == "gumroad" {
         source["sourceDescription"] = json!("Authored hair for VRChat.");
     }
-    c.put(
-        "product",
-        id,
-        source,
-    )
-    .unwrap();
+    c.put("product", id, source).unwrap();
 }
 
 fn hide(c: &Catalogue, ids: &[&str], hidden: bool) -> Value {
@@ -173,7 +168,8 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     product(&c, "b", "booth");
     product(&c, "c", "local");
     let query = |extra: Value| {
-        let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list","allSummaries":true});
+        let mut args =
+            json!({"sort":"title","includeFiles":false,"presentation":"list","allSummaries":true});
         for (key, value) in extra.as_object().unwrap() {
             args[key] = value.clone();
         }
@@ -186,7 +182,10 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     let known = first["fingerprints"].clone();
     assert_eq!(first["matchedIds"], json!(["a", "b", "c"]));
     assert_eq!(known.as_object().unwrap().len(), 3);
-    assert_eq!((&first["counts"]["all"], &first["counts"]["hidden"]), (&json!(3), &json!(0)));
+    assert_eq!(
+        (&first["counts"]["all"], &first["counts"]["hidden"]),
+        (&json!(3), &json!(0))
+    );
     let unchanged = query(json!({"knownSummaries":known}));
     assert_eq!(unchanged["matchedIds"], json!(["a", "b", "c"]));
     assert_eq!(unchanged["products"], json!([]));
@@ -197,7 +196,10 @@ fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
     let visible = query(json!({"knownSummaries":known}));
     assert_eq!(visible["matchedIds"], json!(["b", "c"]));
     assert_eq!(visible["products"], json!([]));
-    assert_eq!((&visible["counts"]["all"], &visible["counts"]["hidden"]), (&json!(2), &json!(1)));
+    assert_eq!(
+        (&visible["counts"]["all"], &visible["counts"]["hidden"]),
+        (&json!(2), &json!(1))
+    );
     let hidden = query(json!({"hiddenOnly":true,"knownSummaries":known}));
     assert_eq!(hidden["matchedIds"], json!(["a"]));
     assert_eq!(hidden["products"][0]["hidden"], true);
@@ -221,7 +223,7 @@ fn hidden_choice_survives_three_store_refresh_ai_reopen_and_restore() {
         product(&c, provider, provider);
         let snapshot = c.collect_ai_metadata(provider).unwrap();
         hide(&c, &[provider], true);
-        let result: crate::ai_analysis::AnalysisOutput = serde_json::from_value(json!({
+        let result: crate::ai::analysis::AnalysisOutput = serde_json::from_value(json!({
             "category":null,"tags":[{"label":"Authored AI tag","evidenceRefs":["title"],"basis":"Authored input","confidence":0.8}],"tagAliases":[],"sourceUrlCandidates":[]
         })).unwrap();
         // An already-running AI result preserves the later user visibility edit.
@@ -356,8 +358,12 @@ fn library_recommendations_exclude_hidden_even_as_explicit_context() {
 fn unavailable_store_products_follow_the_list_preference_and_keep_their_records() {
     let fixture = Fixture::new();
     let c = fixture.open();
-    c.put("account", "account", json!({"id":"account","provider":"booth"}))
-        .unwrap();
+    c.put(
+        "account",
+        "account",
+        json!({"id":"account","provider":"booth"}),
+    )
+    .unwrap();
     for id in ["a-file", "b-empty", "c-kept", "e-hidden-empty"] {
         product(&c, id, "booth");
     }
@@ -433,27 +439,207 @@ fn unavailable_store_products_follow_the_list_preference_and_keep_their_records(
 }
 
 #[test]
+fn a_store_product_whose_free_offers_all_ended_is_unavailable_and_needs_no_attention() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put(
+        "account",
+        "account",
+        json!({"id":"account","provider":"booth"}),
+    )
+    .unwrap();
+    for id in ["f-ended", "g-mixed", "h-ended-kept"] {
+        product(&c, id, "booth");
+    }
+    let mut records = vec![];
+    for (product, files) in [
+        ("f-ended", &["f-1"][..]),
+        ("g-mixed", &["g-1", "g-2"]),
+        ("h-ended-kept", &["h-1"]),
+    ] {
+        for id in files {
+            records.push(("remote_file".into(), (*id).to_owned(), json!({"id":id,"productId":product,"accountId":"account","name":format!("{id}.zip"),"revision":"r1"})));
+        }
+        records.push(("entitlement".into(), product.to_owned(), json!({"id":product,"productId":product,"accountId":"account","fileIds":files,"manifestComplete":true})));
+    }
+    // The record a download leaves when the item page says the free offer ended.
+    for (product, file) in [
+        ("f-ended", "f-1"),
+        ("g-mixed", "g-1"),
+        ("h-ended-kept", "h-1"),
+    ] {
+        records.push(("artifact".into(), format!("pending-{file}"), json!({"id":format!("pending-{file}"),"productId":product,"fileId":file,"revision":null,"status":"notDownloaded","errorCode":"free_offer_unavailable","originalAvailable":false})));
+    }
+    // Bytes an earlier download left on disk keep a product available.
+    records.push(("artifact".into(), "h-old".into(), json!({"id":"h-old","productId":"h-ended-kept","fileId":"h-old-file","revision":"r0","status":"ready","originalAvailable":true,"relativePath":"assets/h/old.zip"})));
+    c.put_many(records).unwrap();
+    let details = c
+        .command("product_details", json!({"id":"f-ended"}))
+        .unwrap();
+    assert_eq!(details["status"], "notDownloaded");
+    assert_eq!(details["files"][0]["offerEnded"], true);
+    assert_eq!(details["files"][0]["status"], "notDownloaded");
+    let query = |hide: bool| {
+        c.command(
+            "query",
+            json!({"sort":"title","hideUnavailable":hide,"includeFiles":false,"presentation":"list"}),
+        )
+        .unwrap()["matchedIds"]
+            .clone()
+    };
+    assert_eq!(query(false), json!(["f-ended", "g-mixed", "h-ended-kept"]));
+    assert_eq!(query(true), json!(["g-mixed", "h-ended-kept"]));
+}
+
+#[test]
+fn free_downloads_of_only_a_listings_terms_follow_their_preference() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put(
+        "account",
+        "account",
+        json!({"id":"account","provider":"booth"}),
+    )
+    .unwrap();
+    // A paid listing whose 0-yen variation holds only its terms.
+    let paid = json!([
+        {"id":"800001","name":"利用規約","type":"digital","price":0},
+        {"id":"800002","name":"本体","type":"digital","price":1500}
+    ]);
+    let free_only = json!([{"id":"800001","name":"利用規約","type":"digital","price":0}]);
+    for (id, variants) in [
+        ("a-terms", &paid),
+        ("b-bought", &paid),
+        ("c-free-document", &free_only),
+        ("d-asset", &paid),
+        ("e-hidden-terms", &paid),
+    ] {
+        c.put("product", id, json!({"id":id,"provider":"booth","sourceTitle":id,"sourceCategory":{"name":"Hair"},"publicVariants":variants})).unwrap();
+    }
+    let mut records = vec![];
+    for (product, files) in [
+        ("a-terms", &["利用規約.pdf"][..]),
+        ("b-bought", &["利用規約.pdf"]),
+        ("c-free-document", &["利用規約.pdf"]),
+        ("d-asset", &["利用規約.pdf", "Authored.unitypackage"]),
+        ("e-hidden-terms", &["Terms_of_Use.txt"]),
+    ] {
+        let ids: Vec<_> = (0..files.len()).map(|n| format!("{product}-{n}")).collect();
+        for (id, name) in ids.iter().zip(files) {
+            records.push(("remote_file".into(), id.clone(), json!({"id":id,"productId":product,"accountId":"account","name":name,"variantId":"800001","revision":"unknown"})));
+        }
+        records.push(("entitlement".into(), format!("account:free:{product}"), json!({"id":format!("account:free:{product}"),"productId":product,"accountId":"account","source":"free","fileIds":ids,"manifestComplete":true})));
+        records.push(("acquisition".into(), format!("account:free-row:{product}"), json!({"id":format!("account:free-row:{product}"),"productId":product,"accountId":"account","source":"free"})));
+    }
+    // The account bought this one too, so its free terms belong to a bought asset.
+    records.push(("acquisition".into(), "account:library:b-bought".into(), json!({"id":"account:library:b-bought","productId":"b-bought","accountId":"account","source":"library"})));
+    c.put_many(records).unwrap();
+    hide(&c, &["e-hidden-terms"], true);
+    let query = |hide: bool| {
+        c.command(
+            "query",
+            json!({"sort":"title","hideTermsOnly":hide,"hideUnclassified":false,"includeFiles":false,"presentation":"list"}),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        query(false)["matchedIds"],
+        json!(["a-terms", "b-bought", "c-free-document", "d-asset"])
+    );
+    let hidden = query(true);
+    assert_eq!(
+        hidden["matchedIds"],
+        json!(["b-bought", "c-free-document", "d-asset"])
+    );
+    assert_eq!(hidden["counts"]["all"], 3);
+    assert_eq!(hidden["total"], 5);
+    // A free import asks the same of a listing the account holds already.
+    for (id, terms) in [
+        ("a-terms", true),
+        ("b-bought", false),
+        ("c-free-document", false),
+        ("d-asset", false),
+        ("e-hidden-terms", true),
+    ] {
+        assert_eq!(c.terms_only(id).unwrap(), terms, "{id}");
+    }
+    // The Hidden scope still lists every product the user hid.
+    assert_eq!(
+        c.command("query", json!({"hiddenOnly":true,"hideTermsOnly":true}))
+            .unwrap()["matchedIds"],
+        json!(["e-hidden-terms"])
+    );
+    // Bootstrap and account totals follow the saved preference, on by default.
+    let totals = |c: &Catalogue| {
+        (
+            c.command("bootstrap", json!({"includeProducts":false}))
+                .unwrap()["counts"]["all"]
+                .clone(),
+            c.command("account_counts", json!({})).unwrap()["accounts"]["account"].clone(),
+        )
+    };
+    assert_eq!(totals(&c), (json!(3), json!(3)));
+    c.command("preferences", json!({"patch":{"hideTermsOnly":false}}))
+        .unwrap();
+    assert_eq!(totals(&c), (json!(4), json!(4)));
+    assert!(c
+        .command("preferences", json!({"patch":{"hideTermsOnly":"no"}}))
+        .is_err());
+    // Nothing is removed: once the free variation offers the asset itself, it returns.
+    c.put_many(vec![
+        ("remote_file".into(), "a-terms-1".into(), json!({"id":"a-terms-1","productId":"a-terms","accountId":"account","name":"Authored.zip","variantId":"800001","revision":"unknown"})),
+        ("entitlement".into(), "account:free:a-terms".into(), json!({"id":"account:free:a-terms","productId":"a-terms","accountId":"account","source":"free","fileIds":["a-terms-0","a-terms-1"],"manifestComplete":true})),
+    ])
+    .unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-terms", "b-bought", "c-free-document", "d-asset"])
+    );
+    // A listing that starts selling a paid variation leaves its free terms only terms, and
+    // one that stops selling it shows them again, while the list stays open.
+    let listing = |variants: &Value| json!({"id":"c-free-document","provider":"booth","sourceTitle":"c-free-document","sourceCategory":{"name":"Hair"},"publicVariants":variants});
+    c.put("product", "c-free-document", listing(&paid)).unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-terms", "b-bought", "d-asset"])
+    );
+    assert!(c.terms_only("c-free-document").unwrap());
+    c.put("product", "c-free-document", listing(&free_only))
+        .unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-terms", "b-bought", "c-free-document", "d-asset"])
+    );
+    assert!(!c.terms_only("c-free-document").unwrap());
+}
+
+#[test]
 fn all_hides_unclassified_products_unless_the_user_lists_them_there() {
     let fixture = Fixture::new();
     let c = fixture.open();
     product(&c, "a-hair", "local");
-    c.put("product", "b-print", json!({"id":"b-print","title":"Authored unrelated print"}))
-        .unwrap();
+    c.put(
+        "product",
+        "b-print",
+        json!({"id":"b-print","title":"Authored unrelated print"}),
+    )
+    .unwrap();
     let all = |hide: Option<bool>| {
         let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list"});
         if let Some(hide) = hide {
             args["hideUnclassified"] = json!(hide);
         }
         let result = c.command("query", args).unwrap();
-        (result["matchedIds"].clone(), result["counts"]["all"].clone())
+        (
+            result["matchedIds"].clone(),
+            result["counts"]["all"].clone(),
+        )
     };
     assert_eq!(all(None), (json!(["a-hair"]), json!(1)));
     assert_eq!(all(Some(true)), all(None));
     assert_eq!(all(Some(false)), (json!(["a-hair", "b-print"]), json!(2)));
     // Unclassified itself keeps its products either way.
-    let unclassified = c
-        .command("query", json!({"category":"NonVRChat"}))
-        .unwrap();
+    let unclassified = c.command("query", json!({"category":"NonVRChat"})).unwrap();
     assert_eq!(unclassified["matchedIds"], json!(["b-print"]));
     assert_eq!(unclassified["counts"]["categories"]["NonVRChat"], 1);
     // Bootstrap counts follow the saved preference, on by default.

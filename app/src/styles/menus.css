@@ -1,0 +1,141 @@
+.check-row {
+  display: flex;
+  align-items: center;
+  margin: 9px 0;
+}
+.popup-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  width: max-content;
+  max-width: min(320px, 75vw);
+  min-width: 170px;
+  max-height: 55vh;
+  overflow: auto;
+  z-index: 30;
+}
+.popup-menu .check-row {
+  display: flex;
+  align-items: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.avatar-shop-group > summary > span,
+.avatar-shop-options .check-row > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-context {
+  position: fixed;
+  z-index: 1100;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.library-context button {
+  white-space: nowrap;
+}
+.library-context button:disabled {
+  opacity: 0.4;
+}
+.app .check-row {
+  gap: 9px;
+}
+
+/* ---------- popups and menus ---------- */
+.app .popup-menu {
+  padding: 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--raised);
+  box-shadow: var(--sh-3);
+  transform-origin: top right;
+  animation: calm-pop-in 0.2s var(--ease) both;
+}
+.app .popup-menu > button,
+.app .library-context button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  justify-content: flex-start;
+  text-align: left;
+}
+.app .popup-menu > button:hover,
+.app .popup-menu > button:focus-visible,
+.app .library-context button:hover,
+.app .library-context button:focus {
+  background: var(--hover);
+  outline: none;
+}
+.app .popup-menu > button:active:not(:disabled),
+.app .library-context button:active:not(:disabled) {
+  transform: none;
+}
+.app .library-context button svg {
+  color: var(--muted);
+}
+.app .popup-menu > button.danger,
+.app .library-context button.danger,
+.app .library-context button.danger svg {
+  color: var(--negative);
+  border-color: transparent;
+}
+.app .popup-menu > button.danger:hover,
+.app .library-context button.danger:hover {
+  background: var(--bad-1);
+}
+.app .popup-menu .check-row {
+  min-height: 32px;
+  margin: 0;
+  padding: 0 10px;
+  gap: 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+.app .popup-menu .check-row:hover {
+  background: var(--hover);
+}
+.app .library-context {
+  min-width: 216px;
+  padding: 5px;
+  border-color: var(--line-2);
+  border-radius: 12px;
+  background: var(--raised);
+}
+.app .action-menu > summary {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--control);
+  color: var(--text);
+  transition: background-color 0.16s;
+}
+.app .action-menu > summary:hover {
+  background: color-mix(in oklab, var(--control) 84%, var(--text));
+}
+.app .action-menu .popup-menu {
+  top: calc(100% + 6px);
+  min-width: 200px;
+}

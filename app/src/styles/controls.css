@@ -1,0 +1,603 @@
+/* ---------- base ---------- */
+.app ::selection {
+  background: var(--acc-2);
+}
+.app :focus-visible {
+  outline: 2px solid var(--acc-ring);
+  outline-offset: 2px;
+}
+.app ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.app ::-webkit-scrollbar-track,
+.app ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+:where(.app) h1,
+:where(.app) h2,
+:where(.app) h3 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+:where(.app) hr {
+  border-top-color: var(--line);
+}
+:where(.app) a {
+  color: var(--accent);
+}
+:where(.app) summary {
+  cursor: pointer;
+}
+:where(.app) small {
+  font-size: 11.5px;
+}
+
+/* buttons */
+:where(.app) button,
+:where(.app) .button {
+  min-height: 30px;
+  padding: 4px 11px;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--control);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  transition:
+    background-color 0.16s,
+    color 0.16s,
+    border-color 0.16s,
+    box-shadow 0.16s,
+    transform 0.14s var(--ease),
+    opacity 0.16s;
+}
+:where(.app) button:hover,
+:where(.app) .button:hover {
+  background: color-mix(in oklab, var(--control) 84%, var(--text));
+  border-color: transparent;
+}
+:where(.app) button:active:not(:disabled),
+:where(.app) .button:active {
+  transform: scale(0.97);
+}
+:where(.app) button:disabled,
+:where(.app) .button:disabled {
+  opacity: 0.4;
+  transform: none;
+}
+:where(.app) button svg,
+:where(.app) .button svg {
+  width: 15px;
+  height: 15px;
+}
+:where(.app) button.primary,
+:where(.app) .button.primary {
+  background: var(--accent);
+  color: var(--on-acc);
+  border-color: transparent;
+  font-weight: 650;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.16),
+    var(--sh-1);
+}
+:where(.app) button.primary:hover,
+:where(.app) .button.primary:hover {
+  background: color-mix(in oklab, var(--accent) 86%, var(--text));
+  filter: none;
+}
+:where(.app) button.danger,
+:where(.app) .button.danger {
+  background: transparent;
+  color: var(--negative);
+  border-color: color-mix(in oklab, var(--negative) 42%, transparent);
+}
+:where(.app) button.danger:hover,
+:where(.app) .button.danger:hover {
+  background: var(--bad-1);
+  border-color: color-mix(in oklab, var(--negative) 42%, transparent);
+}
+:where(.app) button.subtle,
+:where(.app) .button.subtle {
+  background: transparent;
+}
+:where(.app) button.subtle:hover {
+  background: var(--hover);
+}
+:where(.app) button.icon-button {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+/* fields */
+:where(.app)
+  :is(input, select, textarea):where(
+    :not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])
+  ) {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--text);
+  font-size: 13px;
+  transition:
+    border-color 0.16s,
+    box-shadow 0.16s,
+    background-color 0.3s;
+}
+:where(.app)
+  :is(input, select, textarea):where(
+    :not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])
+  ):hover {
+  border-color: var(--line-2);
+}
+:where(.app)
+  :is(input, select, textarea):where(
+    :not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])
+  ):focus {
+  outline: none;
+  border-color: var(--acc-ring);
+  box-shadow: 0 0 0 3px var(--acc-1);
+}
+.app
+  :is(input, select, textarea):not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="color"],
+    [type="file"]
+  ):focus-visible {
+  outline: none;
+}
+:where(.app) :is(input, textarea)::placeholder {
+  color: var(--faint);
+  opacity: 1;
+}
+:where(.app) :is(input, select, textarea):disabled {
+  opacity: 0.5;
+}
+:where(.app) input[readonly] {
+  color: var(--muted);
+}
+:where(.app) textarea {
+  line-height: 1.55;
+}
+:where(.app) select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 14px;
+  cursor: pointer;
+}
+:where(.app) select option {
+  background: var(--panel);
+  color: var(--text);
+}
+:where(.app) input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 1.5px solid color-mix(in oklab, var(--text) 34%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  transition:
+    background-color 0.16s,
+    border-color 0.16s,
+    box-shadow 0.16s;
+}
+:where(.app) input[type="checkbox"]::after {
+  content: "";
+  width: 8px;
+  height: 4.5px;
+  border-left: 2px solid var(--on-acc);
+  border-bottom: 2px solid var(--on-acc);
+  transform: translateY(-1px) rotate(-45deg) scale(0.6);
+  opacity: 0;
+  transition:
+    transform 0.18s var(--ease),
+    opacity 0.12s var(--ease);
+}
+:where(.app) input[type="checkbox"]:hover {
+  border-color: color-mix(in oklab, var(--text) 55%, transparent);
+}
+:where(.app) input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+:where(.app) input[type="checkbox"]:checked::after {
+  transform: translateY(-1px) rotate(-45deg) scale(1);
+  opacity: 1;
+}
+:where(.app) input[type="checkbox"]:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+:where(.app) input[type="checkbox"]:indeterminate::after {
+  width: 8px;
+  height: 2px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--on-acc);
+  transform: none;
+  opacity: 1;
+}
+:where(.app) input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+:where(.app) input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 1.5px solid color-mix(in oklab, var(--text) 34%, transparent);
+  border-radius: 50%;
+  background: transparent;
+  transition: border-color 0.2s;
+}
+:where(.app) input[type="radio"]::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.25s var(--spring);
+}
+:where(.app) input[type="radio"]:checked {
+  border-color: var(--accent);
+}
+:where(.app) input[type="radio"]:checked::after {
+  transform: scale(1);
+}
+:where(.app) input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+:where(.app) input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) 0 0 / var(--fill, 0%) 100% no-repeat,
+    color-mix(in oklab, var(--text) 15%, transparent);
+}
+:where(.app) input[type="range"]:focus-visible {
+  outline-offset: 4px;
+}
+:where(.app) progress {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border: 0;
+  border-radius: 99px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--text) 12%, transparent);
+}
+:where(.app) progress::-webkit-progress-bar {
+  background: transparent;
+}
+:where(.app) progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width 0.35s var(--ease);
+}
+:where(.app) progress:indeterminate {
+  background:
+    linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat,
+    color-mix(in oklab, var(--text) 12%, transparent);
+  background-size: calc(100% / 3) 100%;
+  animation: calm-indeterminate 2s linear infinite;
+}
+:where(.app) kbd {
+  font: 600 10.5px var(--font-ui);
+  color: var(--faint);
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  white-space: nowrap;
+}
+
+/* shared vocabulary */
+.app .field {
+  gap: 7px;
+}
+.app .field small,
+.app .muted {
+  color: var(--muted);
+}
+.app .badge {
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--hover);
+  color: var(--muted);
+}
+.app .callout {
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--warn-1);
+  color: var(--text);
+}
+.app .callout.error {
+  background: var(--bad-1);
+}
+.app .data-list {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+}
+.app .data-row + .data-row,
+.app button.data-row + button.data-row {
+  border-top-color: var(--line);
+}
+.app button.data-row {
+  border-radius: 0;
+}
+.app button.data-row:hover {
+  background: var(--hover);
+}
+.app .segmented {
+  gap: 3px;
+  padding: 3px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.app .segmented button {
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+.app .segmented button:hover {
+  background: transparent;
+  color: var(--text);
+}
+.app .segmented button.active,
+.app .segmented button[aria-pressed="true"] {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow:
+    var(--sh-1),
+    inset 0 0 0 1px color-mix(in oklab, var(--text) 7%, transparent);
+}
+.app .nna-toggle {
+  gap: 12px;
+  font-size: 12.5px;
+}
+.app .nna-toggle > button {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 21px;
+  min-height: 21px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: color-mix(in oklab, var(--text) 18%, transparent);
+  transition: background-color 0.22s;
+}
+.app .nna-toggle > button:hover {
+  background: color-mix(in oklab, var(--text) 26%, transparent);
+}
+.app .nna-toggle > button:active:not(:disabled) {
+  transform: none;
+}
+.app .nna-toggle > button > span {
+  left: 2.5px;
+  top: 2.5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition:
+    transform 0.32s var(--spring),
+    background-color 0.2s;
+}
+.app .nna-toggle > button[aria-checked="true"] {
+  background: var(--accent);
+}
+.app .nna-toggle > button[aria-checked="true"]:hover {
+  background: color-mix(in oklab, var(--accent) 86%, var(--text));
+}
+.app .nna-toggle > button[aria-checked="true"] > span {
+  transform: translateX(15px);
+  background: var(--on-acc);
+}
+.app.app .shell {
+  padding: 0 8px 0 0;
+  min-height: 0;
+}
+.app .drag-divider {
+  position: relative;
+  flex: 0 0 8px;
+  width: 8px;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+.app .drag-divider::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 18px;
+  bottom: 18px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleY(0.5);
+  transition:
+    opacity 0.2s,
+    transform 0.35s var(--ease);
+}
+.app .drag-divider:hover,
+.app .drag-divider:focus-visible {
+  background: transparent;
+}
+.app .drag-divider:hover::after,
+.app .drag-divider:focus-visible::after,
+.app .drag-divider:active::after {
+  opacity: 0.8;
+  transform: none;
+}
+.app .empty-state.results-loading > svg {
+  color: var(--muted);
+}
+/* Appearance › One-handed drag: the selection box and the dragged count float above the panes and ignore the pointer. */
+.app .selection-box {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 30;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+.app .drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--on-acc);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  box-shadow:
+    3px 3px 0 -1px color-mix(in oklab, var(--accent) 45%, var(--panel)),
+    var(--sh-2);
+  pointer-events: none;
+}
+html.box-selecting,
+html.box-selecting * {
+  user-select: none !important;
+}
+html.dragging-products,
+html.dragging-products * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.app .ui-scale-control {
+  gap: 12px;
+}
+.app .ui-scale-control output {
+  width: 44px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.app .feature-settings {
+  padding: 16px 14px 24px;
+}
+.app .feature-settings h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--faint);
+}
+/* Four modes in a row while each keeps 70px for the longest label, otherwise two rows of two; never three. */
+.app .sensitive-modes {
+  display: grid;
+  grid-template-columns: repeat(
+      auto-fit,
+      minmax(max(25% - 2.5px, min(50% - 2px, (289px - 100%) * 999)), 1fr)
+    );
+  width: 100%;
+}
+.app .sensitive-modes > button {
+  min-width: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app .sensitive-modes > button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .sensitive-modes > button:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+.app .feature-actions {
+  gap: 2px 12px;
+}
+.app .feature-actions label {
+  min-height: 30px;
+  gap: 9px;
+  font-size: 12.5px;
+}
+.app .avatar-shop-group > summary {
+  border-radius: 8px;
+  padding: 0 6px;
+  transition: background-color 0.15s;
+}
+.app .avatar-shop-group > summary:hover {
+  background: var(--hover);
+}
+.app .avatar-shop-group > summary::before,
+.app .avatar-shop-group[open] > summary::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: none;
+  background: var(--muted);
+  -webkit-mask: var(--chevron) center / contain no-repeat;
+  mask: var(--chevron) center / contain no-repeat;
+  transform: rotate(-90deg);
+  transition: transform 0.28s var(--ease);
+}
+.app .avatar-shop-group[open] > summary::before {
+  transform: none;
+}
+.app .update-notes {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+}
+.app .library-opening {
+  color: var(--muted);
+}
+.app .library-opening progress {
+  width: 120px;
+}

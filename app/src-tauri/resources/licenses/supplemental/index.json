@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "scope": "Exact Cargo.lock packages lacking recursively discoverable standalone legal files in the published public crate cache. This index does not claim target inclusion.",
   "generatedDate": "2026-10-09",
-  "cargoLockSha256": "f9f99e38d85cd763a8cebbe553c6b29977ebeb07d2598ac4da5471c00e287bbd",
+  "cargoLockSha256": "8fb61d3bbf9239ed0a9e61450e604e2cc6d133f007c04d21b9081fdef2f3b902",
   "packages": [
     {
       "name": "alloc-stdlib",
@@ -1757,6 +1757,54 @@
       "notes": [],
       "crateArchiveUrl": "https://static.crates.io/crates/rustls-platform-verifier-android/rustls-platform-verifier-android-0.2.0.crate",
       "crateArchiveSha256": "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
+    },
+    {
+      "name": "ts-rs",
+      "version": "12.0.1",
+      "declaredLicense": "MIT",
+      "repository": "https://github.com/Aleph-Alpha/ts-rs",
+      "repositoryEvidence": "published Cargo.toml",
+      "publishedGitSha": "7182ad8289596097235406b715fa04506443b4ad",
+      "pathInVcs": "ts-rs",
+      "documents": [
+        {
+          "file": "upstream/Aleph-Alpha_ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "sourceUrl": "https://raw.githubusercontent.com/Aleph-Alpha/ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "sourceGitBlobSha": "c23d24d809bbcd4328c2b753a88a171500b6a760",
+          "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1",
+          "bytes": 1073,
+          "kind": "original-upstream-root-legal-file-at-published-commit",
+          "originalBytesPreserved": true
+        }
+      ],
+      "status": "published-commit-upstream-legal-files-preserved",
+      "notes": [],
+      "crateArchiveUrl": "https://static.crates.io/crates/ts-rs/ts-rs-12.0.1.crate",
+      "crateArchiveSha256": "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+    },
+    {
+      "name": "ts-rs-macros",
+      "version": "12.0.1",
+      "declaredLicense": "MIT",
+      "repository": "https://github.com/Aleph-Alpha/ts-rs",
+      "repositoryEvidence": "published Cargo.toml",
+      "publishedGitSha": "7182ad8289596097235406b715fa04506443b4ad",
+      "pathInVcs": "macros",
+      "documents": [
+        {
+          "file": "upstream/Aleph-Alpha_ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "sourceUrl": "https://raw.githubusercontent.com/Aleph-Alpha/ts-rs/7182ad8289596097235406b715fa04506443b4ad/LICENSE",
+          "sourceGitBlobSha": "c23d24d809bbcd4328c2b753a88a171500b6a760",
+          "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1",
+          "bytes": 1073,
+          "kind": "original-upstream-root-legal-file-at-published-commit",
+          "originalBytesPreserved": true
+        }
+      ],
+      "status": "published-commit-upstream-legal-files-preserved",
+      "notes": [],
+      "crateArchiveUrl": "https://static.crates.io/crates/ts-rs-macros/ts-rs-macros-12.0.1.crate",
+      "crateArchiveSha256": "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
     }
   ],
   "publicationCommitUnavailableCount": 4,

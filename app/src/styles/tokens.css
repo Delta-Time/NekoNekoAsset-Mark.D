@@ -1,0 +1,119 @@
+/* Calm Studio: the visual layer for the existing shell.
+   Themes still carry only the 13 exported tokens; every other value derives from them.
+   Loaded last (main.tsx). Generic element rules use :where(.app) so component rules keep precedence. */
+
+/* ---------- tokens ---------- */
+/* Derived tokens are redeclared wherever a subtree carries its own theme tokens (theme editor preview). */
+.app,
+.app [style*="--bg"] {
+  --line: color-mix(in oklab, var(--border) 74%, transparent);
+  --line-2: var(--border);
+  --hover: color-mix(in oklab, var(--text) 6%, transparent);
+  --field: color-mix(in oklab, var(--bg) 62%, var(--panel));
+  --faint: color-mix(in oklab, var(--muted) 90%, var(--panel));
+  --acc-1: color-mix(in oklab, var(--accent) 13%, transparent);
+  --acc-2: color-mix(in oklab, var(--accent) 24%, transparent);
+  --acc-ring: color-mix(in oklab, var(--accent) 62%, transparent);
+  --on-acc: var(--bg);
+  --uni-1: color-mix(in oklab, var(--secondary-accent) 15%, transparent);
+  --ok-1: color-mix(in oklab, var(--positive) 12%, transparent);
+  --warn-1: color-mix(in oklab, var(--warning) 12%, transparent);
+  --bad-1: color-mix(in oklab, var(--negative) 12%, transparent);
+}
+.app {
+  --ok-ink: var(--positive);
+  --warn-ink: var(--warning);
+  --acc-ink: var(--accent);
+  --uni-ink: var(--secondary-accent);
+  --sh-1: 0 1px 2px rgb(0 0 0 / 0.3);
+  --sh-2: 0 14px 30px -14px rgb(0 0 0 / 0.65), 0 2px 6px rgb(0 0 0 / 0.24);
+  --sh-3: 0 30px 70px -20px rgb(0 0 0 / 0.72), 0 8px 22px rgb(0 0 0 / 0.34);
+  --shadow: var(--sh-3);
+  --radius: 8px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a1a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  /* Latin stays on Segoe UI Variable; CJK uses the bundled Noto Sans faces (fonts.css), UI language first. */
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Noto Sans JP", "Noto Sans TC", "Noto Sans SC", "Noto Sans KR", "Yu Gothic UI", "Meiryo", "Microsoft JhengHei UI", "Microsoft YaHei UI", "Malgun Gothic", system-ui, sans-serif;
+  --font-ja:
+    "Segoe UI Variable Text", "Segoe UI", "Noto Sans JP", "Noto Sans TC", "Noto Sans SC",
+    "Noto Sans KR", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  position: relative;
+  color-scheme: dark;
+  interpolate-size: allow-keywords;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+  transition:
+    background-color 0.45s var(--ease),
+    color 0.45s var(--ease);
+}
+.app[data-theme="light"] {
+  /* Status text on tinted pills is nudged toward the text color so small labels keep 4.5:1. */
+  --ok-ink: color-mix(in oklab, var(--positive) 88%, var(--text));
+  --warn-ink: color-mix(in oklab, var(--warning) 88%, var(--text));
+  --acc-ink: color-mix(in oklab, var(--accent) 88%, var(--text));
+  --uni-ink: color-mix(in oklab, var(--secondary-accent) 85%, var(--text));
+  --field: color-mix(in oklab, var(--bg) 72%, var(--panel));
+  --faint: var(--muted);
+  --acc-1: color-mix(in oklab, var(--accent) 10%, transparent);
+  --acc-2: color-mix(in oklab, var(--accent) 20%, transparent);
+  --sh-1: 0 1px 2px rgb(0 0 0 / 0.06);
+  --sh-2: 0 14px 30px -16px rgb(0 0 0 / 0.22), 0 2px 6px rgb(0 0 0 / 0.06);
+  --sh-3: 0 30px 70px -22px rgb(0 0 0 / 0.32), 0 8px 22px rgb(0 0 0 / 0.1);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23696969' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  color-scheme: light;
+}
+.app:lang(zh-Hant) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Noto Sans TC", "Noto Sans JP", "Noto Sans SC",
+    "Noto Sans KR", "Microsoft JhengHei UI", "Microsoft JhengHei", "Yu Gothic UI", system-ui,
+    sans-serif;
+}
+.app:lang(zh-Hans) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Noto Sans SC", "Noto Sans JP", "Noto Sans TC",
+    "Noto Sans KR", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", system-ui, sans-serif;
+}
+.app:lang(ko) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Noto Sans KR", "Noto Sans JP", "Noto Sans TC",
+    "Noto Sans SC", "Malgun Gothic", "Yu Gothic UI", system-ui, sans-serif;
+}
+/* Appearance > Built-in fonts off: the previous Windows system stacks. */
+.app.system-fonts {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Yu Gothic UI", "Meiryo", "Microsoft JhengHei UI",
+    "Microsoft YaHei UI", "Malgun Gothic", "Noto Sans CJK JP", system-ui, sans-serif;
+  --font-ja:
+    "Segoe UI Variable Text", "Segoe UI", "Yu Gothic UI", "Meiryo", "Microsoft JhengHei UI",
+    "Microsoft YaHei UI", "Malgun Gothic", "Noto Sans CJK JP", system-ui, sans-serif;
+}
+.app.system-fonts:lang(zh-Hant) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", "Microsoft JhengHei",
+    "Yu Gothic UI", "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif;
+}
+.app.system-fonts:lang(zh-Hans) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI",
+    "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+}
+.app.system-fonts:lang(ko) {
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", "Yu Gothic UI", "Apple SD Gothic Neo",
+    "Noto Sans CJK KR", system-ui, sans-serif;
+}
+/* Japanese product text (kana, content-lang.ts) keeps Japanese glyph forms in every UI language. */
+.app [lang="ja"] {
+  font-family: var(--font-ja);
+}
+/* Japanese UI text wraps between phrases, not inside words; clamped titles and notices keep more text per line. */
+.app:lang(ja) {
+  word-break: auto-phrase;
+}

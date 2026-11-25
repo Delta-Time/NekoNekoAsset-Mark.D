@@ -55,6 +55,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 			public string Path;
 			public bool IsFolder;
 			public bool FromProject;
+			// An earlier selected package of this request matched it exactly, so a later one never
+			// replaces it as a plain project update.
+			public bool Claimed;
 			public bool ContentKnown;
 			public bool HasAsset;
 			public bool HasMeta;
@@ -176,6 +179,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 				if (ContentMatches(guidHolder, entry))
 				{
 					item.Action = ImportPlanAction.SkipIdentical;
+					guidHolder.Claimed = true;
 					item.Conflict = new ImportConflict
 					{
 						Kind = ImportConflictKind.Duplicate,
@@ -198,7 +202,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 					IncomingPath = incomingPath,
 					TargetPath = normalizedTarget,
 					ExistingGuid = identityGuid,
-					RequiresDecision = policy == ConflictPolicy.Ask
+					// A plain update of a project asset (same GUID, same path, new content) never asks, like
+					// Unity's importer; selected packages that share a GUID still ask between themselves.
+					RequiresDecision = policy == ConflictPolicy.Ask && !(kind == ImportConflictKind.Update && guidHolder.FromProject && !guidHolder.Claimed)
 				};
 
 				if (!ShouldOverwrite(item, policy, askOverwrite))
@@ -250,6 +256,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 			if (ContentMatches(pathHolder, entry))
 			{
 				item.Action = ImportPlanAction.SkipIdentical;
+				pathHolder.Claimed = true;
 				item.Conflict = new ImportConflict
 				{
 					Kind = ImportConflictKind.Duplicate,
@@ -274,7 +281,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 				IncomingPath = incomingPath,
 				TargetPath = incomingPath,
 				ExistingGuid = pathHolder.Guid,
-				RequiresDecision = policy == ConflictPolicy.Ask
+				// Path-managed project files (ProjectSettings, package roots) and other selected packages still ask.
+				RequiresDecision = policy == ConflictPolicy.Ask && !(pathKind == ImportConflictKind.Update && sameIdentity && pathHolder.FromProject && !pathHolder.Claimed)
 			};
 
 			if (!ShouldOverwrite(item, policy, askOverwrite))
@@ -310,6 +318,11 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 				return true;
 			if (policy == ConflictPolicy.Skip)
 				return false;
+			if (!item.Conflict.RequiresDecision)
+			{
+				item.DecisionResolved = true;
+				return true;
+			}
 			// Preview builds do not show modal dialogs and assume overwrite so later
 			// package conflicts can still be displayed. Apply supplies the decision callback.
 			return askOverwrite == null || askOverwrite(item);
@@ -358,7 +371,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 			item.Action = ImportPlanAction.Blocked;
 			item.Conflict = new ImportConflict
 			{
-				Kind = ImportConflictKind.PathConflict,
+				Kind = ImportConflictKind.Blocked,
 				IncomingPath = item.IncomingPath,
 				TargetPath = item.TargetPath,
 				Message = message

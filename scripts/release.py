@@ -29,7 +29,7 @@ BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_b
                   "scripts/", ".github/workflows/", "rust-toolchain.toml", "release/config.json",
                   ".gitattributes", "changelog.md")
 FORBIDDEN_PREFIXES = ("AgentDocs/", ".tools/", ".local/", "work/", "tools/",
-                      "unity/verification/", "app/verification/", "app/checks/", "app/portable/")
+                      "unity/verification/", "app/verification/", "app/portable/")
 FORBIDDEN_FILES = {"AGENTS.md", "app/scripts/test-native.ps1", "app/scripts/package-portable.ps1"}
 MARKER = "release/verification.json"
 # Landing page languages and their Pages paths; the site never writes under app/ or bridge/.
@@ -80,21 +80,26 @@ def numeric(value: str) -> tuple[int, ...]:
 
 
 def bridge_version(current: str) -> str:
-    # The Bridge keeps the version of the release that last changed it; a changed Bridge takes the App's.
+    # The Bridge keeps the version of the App release that last changed it.
     bridge = read_json(f"unity/Packages/{PACKAGE}/package.json")["version"]
-    if not VERSION.fullmatch(bridge) or numeric(bridge) > numeric(current.partition("+")[0]):
-        raise ValueError("The Bridge version must be numeric SemVer and no newer than the App")
+    bridge_core, _, bridge_revision = bridge.partition("+D")
+    app_core, _, app_revision = current.partition("+D")
+    if not re.fullmatch(APP_VERSION, bridge) or (
+        numeric(bridge_core), int(bridge_revision or 0)
+    ) > (numeric(app_core), int(app_revision or 0)):
+        raise ValueError("The Bridge version must be a supported SemVer and no newer than the App")
     return bridge
 
 
 def check_bridge_unchanged(bridge: str) -> None:
     # Unity caches packages by version, so changed Bridge sources must not reuse a published version.
-    result = subprocess.run(["git", "diff", "--quiet", f"refs/tags/v{bridge}", "--", f"unity/Packages/{PACKAGE}"],
+    tag = f"v{bridge}"
+    result = subprocess.run(["git", "diff", "--quiet", f"refs/tags/{tag}", "--", f"unity/Packages/{PACKAGE}"],
                             cwd=ROOT, capture_output=True)
     if result.returncode == 1:
-        raise ValueError(f"Bridge sources changed since v{bridge}; give the Bridge this release's version")
+        raise ValueError(f"Bridge sources changed since {tag}; give the Bridge this release's version")
     if result.returncode:
-        raise ValueError(f"The v{bridge} tag that published this Bridge is unavailable")
+        raise ValueError(f"The {tag} tag that published this Bridge is unavailable")
 
 
 def release_config() -> dict:

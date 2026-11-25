@@ -73,11 +73,23 @@ pub fn profile_path(data_dir: &Path, provider: StoreProvider, account: &str) -> 
 }
 
 /// Build request cookies without widening the native browser's host-only scope.
-pub(crate) fn cookies_for_request(window: &WebviewWindow, url: &Url) -> Result<Vec<tauri::webview::Cookie<'static>>> {
+pub(crate) fn cookies_for_request(
+    window: &WebviewWindow,
+    url: &Url,
+) -> Result<Vec<tauri::webview::Cookie<'static>>> {
     #[cfg(windows)]
-    { Ok(native_cookies::for_url(window, url.as_str())?.into_iter().map(super::session_cache::ScopedCookie::request_cookie).collect()) }
+    {
+        Ok(native_cookies::for_url(window, url.as_str())?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::request_cookie)
+            .collect())
+    }
     #[cfg(not(windows))]
-    { window.cookies_for_url(url.clone()).map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED")) }
+    {
+        window
+            .cookies_for_url(url.clone())
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))
+    }
 }
 
 /// Save only verified first-party cookies, outside catalogue, IPC and backups.
@@ -93,13 +105,18 @@ pub async fn remember(
         #[cfg(windows)]
         let cookies = native_cookies::list(&window)?;
         #[cfg(not(windows))]
-        let cookies = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
-            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
+        let cookies = window
+            .cookies()
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::from)
+            .collect::<Vec<_>>();
         let cookies = cookies
             .into_iter()
             .filter(|scoped| {
                 scoped
-                    .domain.as_deref()
+                    .domain
+                    .as_deref()
                     .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
             })
             .collect();
@@ -119,22 +136,31 @@ pub async fn restore(
     let profile = profile_path(data_dir, provider, account)?;
     let account = account_id(account)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let saved = super::session_cache::load_scoped(&profile, provider, &account).unwrap_or_default();
+        let saved =
+            super::session_cache::load_scoped(&profile, provider, &account).unwrap_or_default();
         #[cfg(windows)]
         let current = native_cookies::list(&window)?;
         #[cfg(not(windows))]
-        let current = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
-            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
-        let missing = saved.into_iter().filter(|scoped| {
-            scoped
-                .domain.as_deref()
-                .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
-                && !current.iter().any(|existing| {
-                    existing.cookie.name() == scoped.cookie.name()
-                        && existing.domain == scoped.domain
-                        && existing.cookie.path() == scoped.cookie.path()
-                })
-        }).collect::<Vec<_>>();
+        let current = window
+            .cookies()
+            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter()
+            .map(super::session_cache::ScopedCookie::from)
+            .collect::<Vec<_>>();
+        let missing = saved
+            .into_iter()
+            .filter(|scoped| {
+                scoped
+                    .domain
+                    .as_deref()
+                    .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
+                    && !current.iter().any(|existing| {
+                        existing.cookie.name() == scoped.cookie.name()
+                            && existing.domain == scoped.domain
+                            && existing.cookie.path() == scoped.cookie.path()
+                    })
+            })
+            .collect::<Vec<_>>();
         #[cfg(windows)]
         native_cookies::set(&window, missing)?;
         #[cfg(not(windows))]
@@ -160,9 +186,15 @@ pub fn mark_signed_out(data_dir: &Path, provider: StoreProvider, account: &str) 
 
 /// Only a confirmed discarded draft loses its account-scoped snapshot. Other
 /// libraries' profiles and established accounts are never inferred as obsolete.
-pub(crate) fn discard_unverified_account(catalogue: &crate::catalogue::Catalogue, provider: StoreProvider, account: &str) -> Result<bool> {
+pub(crate) fn discard_unverified_account(
+    catalogue: &crate::catalogue::Catalogue,
+    provider: StoreProvider,
+    account: &str,
+) -> Result<bool> {
     let discarded = catalogue.discard_unverified_account(account)?;
-    if discarded { forget(&catalogue.device_dir(), provider, account)?; }
+    if discarded {
+        forget(&catalogue.device_dir(), provider, account)?;
+    }
     Ok(discarded)
 }
 
@@ -399,7 +431,7 @@ pub async fn jinxxy_english(window: WebviewWindow) -> Result<()> {
         for attempt in 0..20 {
             if attempt % 5 == 0 {
                 window
-                    .eval(&format!(
+                    .eval(format!(
                         "document.cookie = {};",
                         serde_json::to_string(JINXXY_ENGLISH_PREFERENCE).unwrap()
                     ))
@@ -461,139 +493,5 @@ pub async fn disconnect(window: WebviewWindow) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn discarded_draft_clears_only_its_snapshot_and_retains_established_profiles() {
-        let root = std::env::temp_dir().join(format!("nna-authored-draft-cleanup-{}", uuid::Uuid::new_v4()));
-        let catalogue = crate::catalogue::Catalogue::open(&root).unwrap();
-        let draft = "10000000-0000-4000-8000-000000000001";
-        let established = "10000000-0000-4000-8000-000000000002";
-        catalogue.put("account", draft, serde_json::json!({"id":draft,"store":"BOOTH"})).unwrap();
-        catalogue.put("account", established, serde_json::json!({"id":established,"store":"BOOTH","identityVerified":true})).unwrap();
-        let draft_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, draft).unwrap();
-        let established_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, established).unwrap();
-        let other_provider = profile_path(&catalogue.device_dir(), StoreProvider::Gumroad, draft).unwrap();
-        for profile in [&draft_profile, &established_profile, &other_provider] {
-            std::fs::create_dir_all(profile).unwrap();
-            std::fs::write(profile.join("session.bin"), b"authored snapshot marker").unwrap();
-            std::fs::write(profile.join("browser-profile-marker"), b"preserve profile bytes").unwrap();
-        }
-        assert!(discard_unverified_account(&catalogue, StoreProvider::Booth, draft).unwrap());
-        assert!(!draft_profile.join("session.bin").exists());
-        assert!(draft_profile.join("browser-profile-marker").exists());
-        assert!(!discard_unverified_account(&catalogue, StoreProvider::Booth, established).unwrap());
-        assert!(established_profile.join("session.bin").exists());
-        assert!(other_provider.join("session.bin").exists());
-        drop(catalogue);
-        crate::storage::validate_library_path(&root).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn jinxxy_hosts_cover_its_subdomains_and_set_only_the_language_preference() {
-        for host in JINXXY_HOSTS
-            .iter()
-            .copied()
-            .chain(["other.jinxxy.com", "jx.jinxxy.com"])
-        {
-            assert!(navigation_allowed(
-                StoreProvider::Jinxxy,
-                &Url::parse(&format!("https://{host}/my/inventory")).unwrap()
-            ));
-            assert!(jinxxy_host(host) && cookie_host(StoreProvider::Jinxxy, host));
-        }
-        assert!(cookie_host(StoreProvider::Jinxxy, "api.jinxxy.com"));
-        for host in [
-            "ja.jinxxy.com.evil.test",
-            "evil-jinxxy.com",
-            "jinxxy.co",
-            "discord.com",
-        ] {
-            assert!(!jinxxy_host(host) && !cookie_host(StoreProvider::Jinxxy, host));
-        }
-        let cookie = tauri::webview::Cookie::parse(JINXXY_ENGLISH_PREFERENCE).unwrap();
-        assert_eq!((cookie.name(), cookie.value()), ("jx_locale", "en"));
-        assert_eq!(cookie.domain(), Some("jinxxy.com"));
-        assert_eq!(cookie.path(), Some("/"));
-        assert_eq!(cookie.max_age().unwrap().whole_seconds(), 31536000);
-        assert_eq!(cookie.secure(), Some(true));
-        assert_eq!(
-            cookie.same_site(),
-            Some(tauri::webview::cookie::SameSite::Lax)
-        );
-    }
-
-    #[test]
-    fn native_profiles_separate_provider_and_account_and_reject_path_injection() {
-        let root = Path::new("authored-root");
-        let first = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-        let second = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-        assert_ne!(
-            profile_path(root, StoreProvider::Gumroad, first).unwrap(),
-            profile_path(root, StoreProvider::Jinxxy, first).unwrap()
-        );
-        assert_ne!(
-            profile_path(root, StoreProvider::Gumroad, first).unwrap(),
-            profile_path(root, StoreProvider::Gumroad, second).unwrap()
-        );
-        assert!(profile_path(root, StoreProvider::Gumroad, "../other").is_err());
-    }
-
-    #[test]
-    fn native_sign_in_follows_provider_hops_but_not_store_purchases_or_downloads() {
-        let allowed = |provider, value| navigation_allowed(provider, &Url::parse(value).unwrap());
-        // The stores' provider choices and the hops they were observed or reported to take.
-        for value in [
-            "https://gumroad.com/login",
-            "https://accounts.google.com/v3/signin/identifier",
-            "https://accounts.youtube.com/accounts/SetSID",
-            "https://accounts.google.co.jp/accounts/SetSID",
-            "https://api.x.com/oauth/authenticate",
-            "https://connect.stripe.com/oauth/v2/authorize",
-            "https://gumroad.com/users/auth/google_oauth2/callback",
-        ] {
-            assert!(allowed(StoreProvider::Gumroad, value), "{value}");
-        }
-        for value in [
-            "https://zh.jinxxy.com/login",
-            "https://discord.com/oauth2/authorize",
-            "https://jinxxy.com/connect/discord/callback",
-        ] {
-            assert!(allowed(StoreProvider::Jinxxy, value), "{value}");
-        }
-        // Only the store's own cookies are ever read from its window.
-        for host in ["accounts.google.com", "api.x.com", "zh.jinxxy.com"] {
-            assert!(!cookie_host(StoreProvider::Gumroad, host), "{host}");
-        }
-        for host in ["discord.com", "gumroad.com"] {
-            assert!(!cookie_host(StoreProvider::Jinxxy, host), "{host}");
-        }
-        for value in [
-            "http://gumroad.com/login",
-            "https://user:secret@gumroad.com/login",
-            "https://gumroad.com:8443/login",
-            "https://gumroad.com/checkout",
-            "https://gumroad.com/r/authored-token",
-            "https://gumroad.com/d/authored-capability",
-            "https://app.gumroad.com/download/fixture.zip",
-            "http://accounts.google.com/o/oauth2/auth",
-            "https://user:secret@accounts.google.com/o/oauth2/auth",
-            "https://accounts.google.com:8443/o/oauth2/auth",
-            "https://127.0.0.1/login",
-            "https://10.0.0.1/login",
-        ] {
-            assert!(!allowed(StoreProvider::Gumroad, value), "{value}");
-        }
-        for value in [
-            "https://api.jinxxy.com/login",
-            "https://zh.jinxxy.com/download/fixture.zip",
-            "https://secret@zh.jinxxy.com/login",
-            "http://zh.jinxxy.com/login",
-            "https://zh.jinxxy.com:8443/login",
-            "discord://-/channels/@me",
-        ] {
-            assert!(!allowed(StoreProvider::Jinxxy, value), "{value}");
-        }
-    }
-}
+#[path = "session_tests.rs"]
+mod tests;

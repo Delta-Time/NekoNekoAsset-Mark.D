@@ -29,7 +29,10 @@ pub enum Outcome {
 
 /// Downloads a 0-yen license file with an account that holds the product.
 pub trait FreeDownload: Sync {
-    fn download<'a>(&'a self, route: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>>;
+    fn download<'a>(
+        &'a self,
+        route: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>>;
 }
 
 /// A document's texts, or why there are none. Only `Retry` is worth another attempt.
@@ -51,8 +54,10 @@ pub struct Reader {
 fn google_host(url: &url::Url) -> bool {
     url.scheme() == "https"
         && url.host_str().is_some_and(|h| {
-            matches!(h, "drive.google.com" | "drive.usercontent.google.com" | "docs.google.com")
-                || h.ends_with(".googleusercontent.com")
+            matches!(
+                h,
+                "drive.google.com" | "drive.usercontent.google.com" | "docs.google.com"
+            ) || h.ends_with(".googleusercontent.com")
         })
 }
 
@@ -73,7 +78,11 @@ impl Reader {
             .referer(false)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(90))
-            .user_agent(concat!("NekoNekoAsset/", env!("CARGO_PKG_VERSION"), " (Windows; private asset manager)"))
+            .user_agent(concat!(
+                "NekoNekoAsset/",
+                env!("CARGO_PKG_VERSION"),
+                " (Windows; private asset manager)"
+            ))
             .build()
             .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))?;
         Ok(Self {
@@ -101,7 +110,12 @@ impl Reader {
         let item_url = format!("https://booth.pm/ja/items/{item}");
         if let Some(uv) = page.uv {
             let answers = json!(parse::uv_terms(&uv));
-            return Outcome::Found(Found { kind: "uv", version: None, source: uv, answers });
+            return Outcome::Found(Found {
+                kind: "uv",
+                version: None,
+                source: uv,
+                answers,
+            });
         }
         let mut best: Option<(Vn3, String)> = None;
         let mut retry = false;
@@ -109,7 +123,9 @@ impl Reader {
         let mut refused: Option<String> = None;
         let mut tries = 0;
         let better = |v: &Vn3, best: &Option<(Vn3, String)>| {
-            best.as_ref().is_none_or(|(b, _)| (v.complete(), v.answers.len()) > (b.complete(), b.answers.len()))
+            best.as_ref().is_none_or(|(b, _)| {
+                (v.complete(), v.answers.len()) > (b.complete(), b.answers.len())
+            })
         };
         for candidate in page.candidates.iter().take(6) {
             if tries >= TRIES || best.as_ref().is_some_and(|(v, _)| v.complete()) {
@@ -135,7 +151,10 @@ impl Reader {
             for free in page.free_licenses.iter().take(2) {
                 match holder.download(&free.route).await {
                     Ok(bytes) => {
-                        let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&bytes)).await.unwrap_or_default();
+                        let (texts, timed_out) =
+                            tokio::task::spawn_blocking(move || read_file(&bytes))
+                                .await
+                                .unwrap_or_default();
                         let found = best_vn3(&texts);
                         // A PDF that ran out of time may hold what this file still lacks.
                         retry |= timed_out && !found.as_ref().is_some_and(Vn3::complete);
@@ -147,7 +166,10 @@ impl Reader {
                         // Only a file that is gone or too large is an answer. A sign-in, a
                         // refusal or a dropped connection is read again by the next sync.
                         let code = crate::booth::error_code(&error);
-                        if !matches!(code.as_str(), "FILE_UNAVAILABLE" | "LICENSE_DOCUMENT_TOO_LARGE" | "INVALID_RESOLVER") {
+                        if !matches!(
+                            code.as_str(),
+                            "FILE_UNAVAILABLE" | "LICENSE_DOCUMENT_TOO_LARGE" | "INVALID_RESOLVER"
+                        ) {
                             refused.get_or_insert(code);
                         }
                     }
@@ -158,8 +180,15 @@ impl Reader {
             }
         }
         // A document that could not be read may hold the license: no partial VN3, CC0 or none.
-        if let Some((vn3, source)) = best.filter(|(v, _)| v.complete() || (refused.is_none() && !retry)) {
-            return Outcome::Found(Found { kind: "vn3", version: vn3.version, source, answers: json!(vn3.answers) });
+        if let Some((vn3, source)) =
+            best.filter(|(v, _)| v.complete() || (refused.is_none() && !retry))
+        {
+            return Outcome::Found(Found {
+                kind: "vn3",
+                version: vn3.version,
+                source,
+                answers: json!(vn3.answers),
+            });
         }
         if let Some(code) = refused {
             return Outcome::Failed(code);
@@ -168,7 +197,12 @@ impl Reader {
             return Outcome::Failed("LICENSE_DOCUMENT_FAILED".into());
         }
         if parse::cc0(&page.blocks) {
-            return Outcome::Found(Found { kind: "cc0", version: None, source: item_url, answers: json!({}) });
+            return Outcome::Found(Found {
+                kind: "cc0",
+                version: None,
+                source: item_url,
+                answers: json!({}),
+            });
         }
         Outcome::Missing
     }
@@ -187,7 +221,8 @@ impl Reader {
             }
             Link::DriveFolder { id, resource_key } => {
                 *tries += 1;
-                let mut url = url::Url::parse("https://drive.google.com/embeddedfolderview").unwrap();
+                let mut url =
+                    url::Url::parse("https://drive.google.com/embeddedfolderview").unwrap();
                 url.query_pairs_mut().append_pair("id", id);
                 if let Some(key) = resource_key {
                     url.query_pairs_mut().append_pair("resourcekey", key);
@@ -234,11 +269,15 @@ impl Reader {
             Link::Document(id) | Link::Presentation(id) => {
                 *tries += 1;
                 let url = match link {
-                    Link::Document(_) => format!("https://docs.google.com/document/d/{id}/export?format=txt"),
+                    Link::Document(_) => {
+                        format!("https://docs.google.com/document/d/{id}/export?format=txt")
+                    }
                     _ => format!("https://docs.google.com/presentation/d/{id}/export/txt"),
                 };
                 match self.google_get(url::Url::parse(&url).unwrap()).await {
-                    Ok((200, body)) if !html(&body) => Texts::Read(vec![String::from_utf8_lossy(&body).into_owned()]),
+                    Ok((200, body)) if !html(&body) => {
+                        Texts::Read(vec![String::from_utf8_lossy(&body).into_owned()])
+                    }
                     Ok((status, _)) if status == 429 || status >= 500 => Texts::Retry,
                     Ok(_) => Texts::Unreadable,
                     Err(_) => Texts::Retry,
@@ -260,7 +299,9 @@ impl Reader {
         match self.google_get(url).await {
             // An HTML answer is a sign-in, a confirmation or "only the owner can download".
             Ok((200, body)) if !html(&body) => {
-                let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&body)).await.unwrap_or_default();
+                let (texts, timed_out) = tokio::task::spawn_blocking(move || read_file(&body))
+                    .await
+                    .unwrap_or_default();
                 // A PDF that ran out of time may still hold the license.
                 if timed_out && !best_vn3(&texts).is_some_and(|v| v.complete()) {
                     Texts::Retry
@@ -289,7 +330,10 @@ impl Reader {
         if !google_host(response.url()) || status.is_redirection() {
             return Ok((StatusCode::FORBIDDEN.as_u16(), vec![]));
         }
-        if response.content_length().is_some_and(|n| n > DOCUMENT_LIMIT) {
+        if response
+            .content_length()
+            .is_some_and(|n| n > DOCUMENT_LIMIT)
+        {
             return Ok((StatusCode::PAYLOAD_TOO_LARGE.as_u16(), vec![]));
         }
         let mut body = vec![];
@@ -318,8 +362,14 @@ fn link_url(link: &Link) -> String {
         _ => base,
     };
     match link {
-        Link::DriveFile { id, resource_key } => keyed(format!("https://drive.google.com/file/d/{id}/view"), resource_key),
-        Link::DriveFolder { id, resource_key } => keyed(format!("https://drive.google.com/drive/folders/{id}"), resource_key),
+        Link::DriveFile { id, resource_key } => keyed(
+            format!("https://drive.google.com/file/d/{id}/view"),
+            resource_key,
+        ),
+        Link::DriveFolder { id, resource_key } => keyed(
+            format!("https://drive.google.com/drive/folders/{id}"),
+            resource_key,
+        ),
         Link::Document(id) => format!("https://docs.google.com/document/d/{id}"),
         Link::Presentation(id) => format!("https://docs.google.com/presentation/d/{id}"),
     }
@@ -333,7 +383,13 @@ fn folder_files(html: &str) -> Vec<(String, String)> {
         .select(&entry)
         .filter_map(|e| {
             let id = e.value().id()?.strip_prefix("entry-")?.to_owned();
-            let name = e.select(&title).next()?.text().collect::<String>().trim().to_owned();
+            let name = e
+                .select(&title)
+                .next()?
+                .text()
+                .collect::<String>()
+                .trim()
+                .to_owned();
             let lower = name.to_lowercase();
             (lower.ends_with(".pdf") || lower.ends_with(".zip")).then_some((id, name))
         })
@@ -342,16 +398,25 @@ fn folder_files(html: &str) -> Vec<(String, String)> {
 
 /// The most complete document; on a tie the first, which the page ranked higher.
 fn best_vn3(texts: &[String]) -> Option<Vn3> {
-    texts.iter().filter_map(|text| parse::vn3(text)).fold(None, |best, v| match best {
-        Some(b) if (b.complete(), b.answers.len()) >= (v.complete(), v.answers.len()) => Some(b),
-        _ => Some(v),
-    })
+    texts
+        .iter()
+        .filter_map(|text| parse::vn3(text))
+        .fold(None, |best, v| match best {
+            Some(b) if (b.complete(), b.answers.len()) >= (v.complete(), v.answers.len()) => {
+                Some(b)
+            }
+            _ => Some(v),
+        })
 }
 
 /// Japanese and license-named documents first, other languages last.
 fn document_rank(name: &str) -> u8 {
     let lower = name.to_lowercase();
-    if lower.contains("_ja.") || lower.contains("jp") || name.contains("日本語") || name.contains("規約") {
+    if lower.contains("_ja.")
+        || lower.contains("jp")
+        || name.contains("日本語")
+        || name.contains("規約")
+    {
         0
     } else if parse::other_language(name) {
         2
@@ -361,6 +426,7 @@ fn document_rank(name: &str) -> u8 {
 }
 
 /// Text of a PDF, a plain-text file, or the PDFs and text files inside a ZIP.
+#[cfg(test)]
 pub fn file_texts(bytes: &[u8]) -> Vec<String> {
     read_file(bytes).0
 }
@@ -379,20 +445,33 @@ fn read_file(bytes: &[u8]) -> (Vec<String>, bool) {
         let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
             return (vec![], false);
         };
-        let mut names: Vec<(usize, String)> = (0..archive.len().min(200)).filter_map(|index| Some((index, archive.by_index(index).ok()?.name().to_owned()))).collect();
+        let mut names: Vec<(usize, String)> = (0..archive.len().min(200))
+            .filter_map(|index| Some((index, archive.by_index(index).ok()?.name().to_owned())))
+            .collect();
         names.sort_by_key(|(index, name)| (document_rank(name), *index));
         let (mut texts, mut pdfs, mut timed_out) = (vec![], 0, false);
         for (index, name) in names {
-            let Ok(mut entry) = archive.by_index(index) else { continue };
+            let Ok(mut entry) = archive.by_index(index) else {
+                continue;
+            };
             let lower = name.to_lowercase();
             let pdf = lower.ends_with(".pdf");
             // A few PDFs at most: each may take up to the parser's whole time limit.
-            if !(pdf || lower.ends_with(".txt")) || entry.size() > DOCUMENT_LIMIT || texts.len() >= 8 || (pdf && pdfs >= 4) {
+            if !(pdf || lower.ends_with(".txt"))
+                || entry.size() > DOCUMENT_LIMIT
+                || texts.len() >= 8
+                || (pdf && pdfs >= 4)
+            {
                 continue;
             }
             pdfs += usize::from(pdf);
             let mut data = vec![];
-            if entry.by_ref().take(DOCUMENT_LIMIT).read_to_end(&mut data).is_err() {
+            if entry
+                .by_ref()
+                .take(DOCUMENT_LIMIT)
+                .read_to_end(&mut data)
+                .is_err()
+            {
                 continue;
             }
             if pdf {
@@ -427,16 +506,18 @@ enum Pdf {
 /// PDFs take well under a second.
 fn pdf_text(bytes: Vec<u8>) -> Pdf {
     let (sender, receiver) = std::sync::mpsc::channel();
-    let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
-        let text = std::panic::catch_unwind(|| {
-            let document = lopdf::Document::load_mem(&bytes).ok()?;
-            let pages: Vec<u32> = document.get_pages().keys().copied().collect();
-            document.extract_text(&pages).ok()
-        })
-        .ok()
-        .flatten();
-        let _ = sender.send(text);
-    });
+    let spawned = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let text = std::panic::catch_unwind(|| {
+                let document = lopdf::Document::load_mem(&bytes).ok()?;
+                let pages: Vec<u32> = document.get_pages().keys().copied().collect();
+                document.extract_text(&pages).ok()
+            })
+            .ok()
+            .flatten();
+            let _ = sender.send(text);
+        });
     if spawned.is_err() {
         return Pdf::Unreadable;
     }

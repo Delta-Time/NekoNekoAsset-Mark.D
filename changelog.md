@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0+D1 Beta - 2026-11-24
+
+### Added
+
+- Import adds BOOTH: free assets. Paste links to free BOOTH items, and Import adds what each item offers as a free download to the chosen BOOTH account's free downloads, then downloads it. An item that offers nothing free, only its terms of use, or can't be read is named in Activity with the reason. The local modes are now Local: one asset and Local: several assets.
+- Settings › Features adds Hide free assets that are only terms of use, on by default. It leaves out a free download that holds nothing but the terms of use of a paid BOOTH asset.
+- Settings › Storage offers Discard beside Retry for a local import that stopped before adding all its assets. It deletes the copies of the assets it never added, its partial files and its saved progress; your originals and the assets it added stay.
+
+### Changed
+
+- Clearing Activity history no longer changes what the App does. Opening a library after a Clear no longer queues downloaded assets again or reads their files again, a failed or cancelled download still waits for you to retry it, the Sync panel keeps its count of assets a sync could not fully read, a file keeps its note that its free offer ended, and a local asset can still restore a missing copy from where it was imported.
+- An automatic download whose files are all ready finishes without reading them again.
+- Download of several assets leaves out a local asset whose files must be added again instead of failing the whole request, and says so when nothing else could download.
+- Under acquisition date, free BOOTH items without a date follow the dated assets in the order of each account's free download history, and with several accounts they interleave instead of grouping by account. Existing libraries pick this up on their next sync.
+- Assets added by one import keep the order they were added in.
+- When a store no longer offers a file because its author replaced it, the asset stays in progress while the App reads the store's new list and downloads the new files, instead of showing Downloaded first. Automatic downloads do this too, and files the download had just checked are not downloaded again.
+- File sizes in the inspector read as GB and MB, like Storage and the Unity window.
+- Your selection stays when you switch category, collection, search or filters, so you can select assets from several categories and import, download or edit them together. Esc or Clear selection clears it.
+- With Hide unavailable assets on, a free asset whose free offer ended before you downloaded it is hidden too, and an ended free offer no longer shows Attention. If a sync later finds the offer open again, the asset shows again and can be downloaded.
+- Installing over an existing copy no longer asks whether to uninstall it first.
+- Unity Bridge 0.4.0 imports much faster: in a test with a 1,231-file package, Unity was busy for about 10 seconds instead of about a minute, and the App followed the import throughout instead of showing Result unconfirmed.
+- The Bridge's review stays smooth with thousands of files and tells an update of a file apart from a GUID conflict or a path another file took. With Conflicts set to Ask, a plain update no longer asks, as in Unity's own importer.
+- The Bridge shows its preparation in Unity's background tasks, where you can cancel it. A successful import opens no result window; when something fails, the window lists only the files that failed and why. Results say Imported instead of Applied, its messages appear in your language, and Enter imports once you have clicked, scrolled or used an arrow key in the review.
+
+### Fixed
+
+- A library on a NAS or network share (UNC path) no longer stops with a database access error when it is selected or opened at startup, reported in [#1](https://github.com/Yan-K/NekoNekoAsset-Public/issues/1) and fixed in [#2](https://github.com/Yan-K/NekoNekoAsset-Public/pull/2) by @Delta-Time.
+- Jinxxy downloads work again; they stopped before the first byte with a storage error.
+- A BOOTH file the seller removed, or replaced with a newer version, counts as removed from the store instead of asking you to sign in again and retry.
+- Clearing Activity history while a cancelled BOOTH or Gumroad sync is still stopping no longer leaves the account syncing.
+- A BOOTH Update or free import that meets a sign-in challenge marks the account as needing sign-in.
+- A file a sync asked to check again right after a download had checked it no longer stays Unknown.
+- A download whose bytes matched an extraction already in place no longer keeps a second copy of the archive beside it.
+- A unitypackage that Unity 2022.3's own importer would silently import nothing from now goes through the Bridge instead.
+- The Bridge no longer keeps every transferred package in the project's Library folder.
+- In dark themes the library's loading spinner has its usual color again, and error messages show text instead of codes such as operationFailed.
+
+### Release notes
+
+- This release includes Unity Bridge Mark.D 0.4.0+D1. If Unity or the computer stops in the middle of an import, a few files the import had already written can stay in the project without being listed as imported; cleanup never removes them.
+- Most of the App's code was reorganized to make it easier to maintain; apart from the changes above it behaves as 0.3.13. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- The first start of 0.4.0 records, from the jobs Activity still lists, where existing local assets were imported from and which file list each earlier download asked for.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.13+D1 Beta - 2026-11-20
 
 ### Changed

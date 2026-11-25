@@ -165,11 +165,25 @@ mod tests {
             .secure(true)
             .build();
         // The login window can return the two copies in either order.
-        for order in [[current.clone(), stale.clone()], [stale.clone(), current.clone()]] {
-            let jar = request_jar(order.into_iter().map(|cookie| (apex.clone(), cookie)).collect());
-            for url in ["https://accounts.booth.pm/library?page=1", "https://booth.pm/downloadables/1"] {
+        for order in [
+            [current.clone(), stale.clone()],
+            [stale.clone(), current.clone()],
+        ] {
+            let jar = request_jar(
+                order
+                    .into_iter()
+                    .map(|cookie| (apex.clone(), cookie))
+                    .collect(),
+            );
+            for url in [
+                "https://accounts.booth.pm/library?page=1",
+                "https://booth.pm/downloadables/1",
+            ] {
                 let header = jar.cookies(&url::Url::parse(url).unwrap());
-                assert_eq!(header.as_ref().and_then(|v| v.to_str().ok()), Some("authored_session=CURRENT"));
+                assert_eq!(
+                    header.as_ref().and_then(|v| v.to_str().ok()),
+                    Some("authored_session=CURRENT")
+                );
             }
         }
     }

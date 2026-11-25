@@ -1,13 +1,14 @@
 //! Selected-file Unity bridge. No catalogue or credentials are exposed to Editors.
+pub mod api;
 pub mod discovery;
 pub mod jobs;
 pub mod wire;
 
 use crate::{catalogue::Catalogue, storage::StorageService};
 use anyhow::{bail, ensure, Result};
+use api::UnityRequest;
 use jobs::{RequestRecord, RequestStore};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -33,36 +34,30 @@ pub struct UnityService {
     connections: Mutex<HashMap<String, wire::Registry>>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Products {
-    product_ids: Vec<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// The arguments of a submit request.
 struct Submit {
-    #[serde(default)]
     locale: Option<String>,
     product_ids: Vec<String>,
     leaf_refs: Vec<String>,
     instance_id: String,
     session_id: String,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Job {
-    job_id: String,
-}
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 fn emit(app: &tauri::AppHandle) {
-    let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+    let _ = app.emit("nna:changed", crate::ipc::Change::scope("jobs"));
 }
+/// The code a job records for a failure.
 fn error_code(error: anyhow::Error) -> String {
     let text = error.to_string();
     let code = text.split(':').next().unwrap_or("");
+    // A listener that closed unanswered reads as a timeout: the request may still run, and
+    // UNITY_NO_RESPONSE's text asks to retry the native-import click.
+    if code == "UNITY_NO_RESPONSE" {
+        return "UNITY_TIMEOUT".into();
+    }
     if code.len() <= 80
         && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && (code.starts_with("UNITY_")
@@ -78,6 +73,15 @@ fn error_code(error: anyhow::Error) -> String {
 }
 fn terminal(phase: &str) -> bool {
     matches!(phase, "completed" | "cancelled" | "failed" | "interrupted")
+}
+/// Whether Unity's own importer reads this package; anything unreadable takes the Bridge.
+async fn native_header(path: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let mut header = Vec::with_capacity(1024);
+    file.take(1024).read_to_end(&mut header).await.is_ok() && wire::native_import_reads(&header)
 }
 /// Unity's importer takes an ordinary path, not the verbatim form of canonical roots.
 fn plain_path(path: &str) -> String {
@@ -164,226 +168,270 @@ impl UnityService {
     pub async fn command(
         self: &Arc<Self>,
         app: &tauri::AppHandle,
-        action: &str,
-        args: Value,
+        request: UnityRequest,
     ) -> Result<Value> {
         self.start(app).await?;
-        match action {
-            "list_editors" => Ok(
-                json!({"editors":discovery::discover(&self.registry_dir).await?.iter().map(|e|e.summary().clone()).collect::<Vec<_>>()}),
-            ),
-            "inventory" => {
-                let args: Products = serde_json::from_value(args)
-                    .map_err(|_| anyhow::anyhow!("UNITY_INVALID_REQUEST"))?;
-                Ok(json!({"files":self.storage.list_unity_inventory(&args.product_ids).await?}))
-            }
-            "submit" => {
-                let work = self.requests.begin_catalogue_work()?;
-                let args: Submit = serde_json::from_value(args)
-                    .map_err(|_| anyhow::anyhow!("UNITY_INVALID_REQUEST"))?;
-                ensure!(
-                    !args.product_ids.is_empty() && !args.leaf_refs.is_empty(),
-                    "UNITY_SELECTION_EMPTY"
-                );
-                ensure!(
-                    args.locale.as_deref().is_none_or(|locale| matches!(
-                        locale,
-                        "en" | "ja" | "ko" | "zh-Hans" | "zh-Hant"
-                    )),
-                    "UNITY_INVALID_REQUEST"
-                );
-                let editors = discovery::discover(&self.registry_dir).await?;
-                let editor = editors
-                    .into_iter()
-                    .find(|e| {
-                        e.summary().instance_id == args.instance_id
-                            && e.summary().session_id == args.session_id
-                    })
-                    .ok_or_else(|| anyhow::anyhow!("UNITY_UNAVAILABLE"))?;
-                ensure!(!editor.summary().busy, "UNITY_BUSY");
-                // One package opens in Unity's own importer, which reads the managed file in
-                // place, unless Features turns that off. An older Bridge, or a package Unity's
-                // importer cannot open, uses the transfer.
-                if let [leaf] = args.leaf_refs.as_slice() {
-                    let path = if self.requests.native_single_package()? {
-                        self.storage
-                            .unity_package_path(&args.product_ids, leaf)
-                            .await?
-                            .and_then(|path| path.to_str().map(plain_path))
-                    } else {
-                        None
-                    };
-                    if let Some(path) = path {
-                        // The App holds the foreground after the click; let Unity show its window.
-                        #[cfg(windows)]
-                        let _ = unsafe {
-                            windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
-                                editor.registry().process_id,
-                            )
-                        };
-                        let response = wire::native_import(editor.registry(), &path)
-                            .await
-                            .map_err(|_| anyhow::anyhow!("UNITY_NO_RESPONSE"))?;
-                        match response.code.as_str() {
-                            "accepted" => return Ok(json!({"native":true})),
-                            "busy" => bail!("UNITY_BUSY"),
-                            "disabled" => bail!("UNITY_DISABLED"),
-                            _ => {}
-                        }
-                    }
-                }
-                let request_id = uuid::Uuid::new_v4().to_string();
-                let stamp = now();
-                let record = RequestRecord {
-                    request_id: request_id.clone(),
-                    origin_device_id: self.requests.device_id().to_owned(),
-                    fingerprint: hex::encode(Sha256::digest(b"")),
-                    instance_id: args.instance_id,
-                    session_id: args.session_id,
-                    project_name: editor.summary().project_name.clone(),
-                    project_root: editor.summary().project_root.clone(),
-                    unity_version: editor.summary().unity_version.clone(),
-                    product_ids: args.product_ids.clone(),
-                    manifest_json: String::new(),
-                    phase: "preparing".into(),
-                    bytes_started: false,
-                    payload_rejected: false,
-                    snapshot_ready: false,
-                    snapshot_removed: false,
-                    receipt: None,
-                    created_at: stamp.clone(),
-                    updated_at: stamp,
-                    error_code: None,
-                };
-                self.requests.create(&record)?;
-                self.connections
-                    .lock()
-                    .await
-                    .insert(request_id.clone(), editor.registry().clone());
-                let cancel = Arc::new(AtomicBool::new(false));
-                self.cancellations
-                    .lock()
-                    .await
-                    .insert(request_id.clone(), cancel.clone());
-                let response_id = request_id.clone();
-                let service = self.clone();
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _work = work;
-                    let result = service
-                        .prepare_and_send(
-                            &handle,
-                            record,
-                            args.leaf_refs,
-                            args.locale,
-                            cancel,
-                            editor,
-                        )
-                        .await;
-                    if let Err(error) = result {
-                        let _ = service.record_failure(&handle, &request_id, error).await;
-                    }
-                    if let Ok(Some(record)) = service.requests.get(&request_id) {
-                        if !terminal(&record.phase) && record.bytes_started {
-                            service.spawn_query(handle, request_id.clone()).await;
-                        }
-                    }
-                    if service
-                        .requests
-                        .get(&request_id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|record| terminal(&record.phase))
-                    {
-                        service.cancellations.lock().await.remove(&request_id);
-                    }
-                });
-                emit(app);
-                Ok(json!({"jobId":response_id}))
-            }
-            "details" => {
-                let args: Job = serde_json::from_value(args)?;
-                let record = self
-                    .requests
-                    .get(&args.job_id)?
-                    .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
-                Ok(details(&record))
-            }
-            "status" | "cancel" => {
-                let _work = self.requests.begin_catalogue_work()?;
-                let args: Job = serde_json::from_value(args)?;
-                let record = self
-                    .requests
-                    .get(&args.job_id)?
-                    .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
-                ensure!(self.requests.is_local(&record), "UNITY_OTHER_DEVICE");
-                if action == "cancel" {
-                    if !terminal(&record.phase) {
-                        self.cancellations
-                            .lock()
-                            .await
-                            .entry(args.job_id.clone())
-                            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
-                            .store(true, Ordering::Release);
-                    }
-                }
-                if !record.bytes_started {
-                    return Ok(details(&record));
-                }
-                self.query_once(app, &args.job_id, action == "cancel")
-                    .await?;
-                Ok(details(
-                    &self
-                        .requests
-                        .get(&args.job_id)?
-                        .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?,
-                ))
-            }
-            "retry_inventory" => {
-                let args: Job = serde_json::from_value(args)?;
-                let record = self
-                    .requests
-                    .get(&args.job_id)?
-                    .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
-                ensure!(terminal(&record.phase), "UNITY_RESULT_UNRESOLVED");
-                if !record.bytes_started || record.payload_rejected {
-                    return Ok(json!({"productIds":record.product_ids,"leafRefs":[]}));
-                }
-                let manifest: Manifest = serde_json::from_str(&record.manifest_json)
-                    .map_err(|_| anyhow::anyhow!("UNITY_RETRY_UNAVAILABLE"))?;
-                let receipt = record
-                    .receipt
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("UNITY_RESULT_UNRESOLVED"))?;
-                let inventory = self
-                    .storage
-                    .list_unity_inventory(&record.product_ids)
-                    .await?;
-                let refs: Vec<String> = inventory
+        let cancel = matches!(request, UnityRequest::Cancel { .. });
+        match request {
+            UnityRequest::ListEditors => Ok(serde_json::to_value(api::Editors {
+                editors: discovery::discover(&self.registry_dir)
+                    .await?
                     .iter()
-                    .filter(|leaf| {
-                        manifest.entries.iter().any(|entry| {
-                            entry.product_id == leaf.product_id
-                                && entry.file_id == leaf.file_id
-                                && entry.member_path == leaf.member_path
-                                && !receipt["results"].as_array().into_iter().flatten().any(
-                                    |result| {
-                                        result["entryId"] == entry.entry_id
-                                            && matches!(
-                                                result["state"].as_str(),
-                                                Some("applied" | "skipped")
-                                            )
-                                    },
-                                )
-                        })
-                    })
-                    .map(|leaf| leaf.leaf_ref.clone())
-                    .collect();
-                ensure!(!refs.is_empty(), "UNITY_RETRY_UNAVAILABLE");
-                Ok(json!({"productIds":record.product_ids,"leafRefs":refs}))
+                    .map(|e| e.summary().clone())
+                    .collect(),
+            })?),
+            UnityRequest::Inventory { product_ids } => Ok(serde_json::to_value(api::Inventory {
+                files: self.storage.list_unity_inventory(&product_ids).await?,
+            })?),
+            UnityRequest::Submit {
+                locale,
+                product_ids,
+                leaf_refs,
+                instance_id,
+                session_id,
+            } => {
+                self.submit(app, locale, product_ids, leaf_refs, instance_id, session_id)
+                    .await
             }
-            _ => bail!("UNITY_INVALID_REQUEST"),
+            UnityRequest::Details { job_id } => {
+                let record = self
+                    .requests
+                    .get(&job_id)?
+                    .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
+                details(&record)
+            }
+            UnityRequest::Status { job_id } | UnityRequest::Cancel { job_id } => {
+                self.status(app, job_id, cancel).await
+            }
+            UnityRequest::RetryInventory { job_id } => self.retry_inventory(job_id).await,
         }
+    }
+
+    /// Opens one package in Unity's own importer, or starts a Bridge request.
+    async fn submit(
+        self: &Arc<Self>,
+        app: &tauri::AppHandle,
+        locale: Option<String>,
+        product_ids: Vec<String>,
+        leaf_refs: Vec<String>,
+        instance_id: String,
+        session_id: String,
+    ) -> Result<Value> {
+        let work = self.requests.begin_catalogue_work()?;
+        let args = Submit {
+            locale,
+            product_ids,
+            leaf_refs,
+            instance_id,
+            session_id,
+        };
+        ensure!(
+            !args.product_ids.is_empty() && !args.leaf_refs.is_empty(),
+            "UNITY_SELECTION_EMPTY"
+        );
+        ensure!(
+            args.locale
+                .as_deref()
+                .is_none_or(|locale| matches!(locale, "en" | "ja" | "ko" | "zh-Hans" | "zh-Hant")),
+            "UNITY_INVALID_REQUEST"
+        );
+        let editors = discovery::discover(&self.registry_dir).await?;
+        let editor = editors
+            .into_iter()
+            .find(|e| {
+                e.summary().instance_id == args.instance_id
+                    && e.summary().session_id == args.session_id
+            })
+            .ok_or_else(|| anyhow::anyhow!("UNITY_UNAVAILABLE"))?;
+        ensure!(!editor.summary().busy, "UNITY_BUSY");
+        // One package opens in Unity's own importer, which reads the managed file in
+        // place, unless Features turns that off. An older Bridge, or a package Unity's
+        // importer cannot open, uses the transfer.
+        if let [leaf] = args.leaf_refs.as_slice() {
+            let path = if self.requests.native_single_package()? {
+                self.storage
+                    .unity_package_path(&args.product_ids, leaf)
+                    .await?
+                    .and_then(|path| path.to_str().map(plain_path))
+            } else {
+                None
+            };
+            let path = match path {
+                Some(path) if native_header(&path).await => Some(path),
+                _ => None,
+            };
+            if let Some(path) = path {
+                // The App holds the foreground after the click; let Unity show its window.
+                #[cfg(windows)]
+                let _ = unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                        editor.registry().process_id,
+                    )
+                };
+                let response = wire::native_import(editor.registry(), &path)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("UNITY_NO_RESPONSE"))?;
+                match response.code.as_str() {
+                    "accepted" => {
+                        return Ok(serde_json::to_value(api::Submitted {
+                            job_id: None,
+                            native: Some(true),
+                        })?)
+                    }
+                    "busy" => bail!("UNITY_BUSY"),
+                    "disabled" => bail!("UNITY_DISABLED"),
+                    _ => {}
+                }
+            }
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let stamp = now();
+        let record = RequestRecord {
+            request_id: request_id.clone(),
+            origin_device_id: self.requests.device_id().to_owned(),
+            fingerprint: hex::encode(Sha256::digest(b"")),
+            instance_id: args.instance_id,
+            session_id: args.session_id,
+            project_name: editor.summary().project_name.clone(),
+            project_root: editor.summary().project_root.clone(),
+            unity_version: editor.summary().unity_version.clone(),
+            product_ids: args.product_ids.clone(),
+            manifest_json: String::new(),
+            phase: "preparing".into(),
+            bytes_started: false,
+            payload_rejected: false,
+            snapshot_ready: false,
+            snapshot_removed: false,
+            receipt: None,
+            created_at: stamp.clone(),
+            updated_at: stamp,
+            error_code: None,
+        };
+        self.requests.create(&record)?;
+        self.connections
+            .lock()
+            .await
+            .insert(request_id.clone(), editor.registry().clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancellations
+            .lock()
+            .await
+            .insert(request_id.clone(), cancel.clone());
+        let response_id = request_id.clone();
+        let service = self.clone();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _work = work;
+            let result = service
+                .prepare_and_send(&handle, record, args.leaf_refs, args.locale, cancel, editor)
+                .await;
+            if let Err(error) = result {
+                let _ = service.record_failure(&handle, &request_id, error).await;
+            }
+            if let Ok(Some(record)) = service.requests.get(&request_id) {
+                if !terminal(&record.phase) && record.bytes_started {
+                    service.spawn_query(handle, request_id.clone()).await;
+                }
+            }
+            if service
+                .requests
+                .get(&request_id)
+                .ok()
+                .flatten()
+                .is_some_and(|record| terminal(&record.phase))
+            {
+                service.cancellations.lock().await.remove(&request_id);
+            }
+        });
+        emit(app);
+        Ok(serde_json::to_value(api::Submitted {
+            job_id: Some(response_id),
+            native: None,
+        })?)
+    }
+
+    /// Asks the Editor where a request stands, cancelling it first when asked to.
+    async fn status(&self, app: &tauri::AppHandle, job_id: String, cancel: bool) -> Result<Value> {
+        let _work = self.requests.begin_catalogue_work()?;
+        let record = self
+            .requests
+            .get(&job_id)?
+            .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
+        ensure!(self.requests.is_local(&record), "UNITY_OTHER_DEVICE");
+        if cancel && !terminal(&record.phase) {
+            self.cancellations
+                .lock()
+                .await
+                .entry(job_id.clone())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+                .store(true, Ordering::Release);
+        }
+        if !record.bytes_started {
+            return details(&record);
+        }
+        if let Err(error) = self.query_once(app, &job_id, cancel).await {
+            if !record.keeps_stage_without_answer(&error.to_string()) {
+                return Err(error);
+            }
+        }
+        details(
+            &self
+                .requests
+                .get(&job_id)?
+                .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?,
+        )
+    }
+
+    /// What a finished request did not import, to select again.
+    async fn retry_inventory(&self, job_id: String) -> Result<Value> {
+        let record = self
+            .requests
+            .get(&job_id)?
+            .ok_or_else(|| anyhow::anyhow!("UNITY_REQUEST_MISSING"))?;
+        ensure!(terminal(&record.phase), "UNITY_RESULT_UNRESOLVED");
+        if !record.bytes_started || record.payload_rejected {
+            return Ok(serde_json::to_value(api::RetrySelection {
+                product_ids: record.product_ids,
+                leaf_refs: vec![],
+            })?);
+        }
+        let manifest: Manifest = serde_json::from_str(&record.manifest_json)
+            .map_err(|_| anyhow::anyhow!("UNITY_RETRY_UNAVAILABLE"))?;
+        let receipt = record
+            .receipt
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("UNITY_RESULT_UNRESOLVED"))?;
+        let inventory = self
+            .storage
+            .list_unity_inventory(&record.product_ids)
+            .await?;
+        let refs: Vec<String> = inventory
+            .iter()
+            .filter(|leaf| {
+                manifest.entries.iter().any(|entry| {
+                    entry.product_id == leaf.product_id
+                        && entry.file_id == leaf.file_id
+                        && entry.member_path == leaf.member_path
+                        && !receipt["results"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|result| {
+                                result["entryId"] == entry.entry_id
+                                    && matches!(
+                                        result["state"].as_str(),
+                                        Some("applied" | "skipped")
+                                    )
+                            })
+                })
+            })
+            .map(|leaf| leaf.leaf_ref.clone())
+            .collect();
+        ensure!(!refs.is_empty(), "UNITY_RETRY_UNAVAILABLE");
+        Ok(serde_json::to_value(api::RetrySelection {
+            product_ids: record.product_ids,
+            leaf_refs: refs,
+        })?)
     }
 
     async fn prepare_and_send(
@@ -596,10 +644,15 @@ impl UnityService {
             } else {
                 wire::status(&registry, &identity(&record)).await
             };
-            if let Ok(response) = response {
-                if response.receipt.is_some() {
+            match response {
+                Ok(response) if response.receipt.is_some() => {
                     return self.apply_response(app, id, response).await;
                 }
+                // Connected but unanswered: the Editor is busy, and its stale heartbeat would
+                // only make discovery report it gone. Any reply that is not this request's,
+                // as from another Editor on a reused port, goes through discovery.
+                Err(error) if jobs::no_answer(&error.to_string()) => return Err(error),
+                _ => {}
             }
         }
         let editors = discovery::discover(&self.registry_dir).await?;
@@ -650,7 +703,9 @@ impl UnityService {
                     .get(&id)
                     .is_some_and(|flag| flag.load(Ordering::Acquire));
                 if let Err(error) = service.query_once(&app, &id, cancel).await {
-                    let _ = service.record_failure(&app, &id, error).await;
+                    if !record.keeps_stage_without_answer(&error.to_string()) {
+                        let _ = service.record_failure(&app, &id, error).await;
+                    }
                 }
                 drop(work);
                 tokio::time::sleep(Duration::from_secs(if record.phase == "unresolved" {
@@ -664,8 +719,16 @@ impl UnityService {
         });
     }
 }
-fn details(record: &RequestRecord) -> Value {
-    json!({"jobId":record.request_id,"projectName":record.project_name,"projectRoot":record.project_root,"unityVersion":record.unity_version,"stage":record.presented_phase(),"errorCode":record.presented_error_code(),"receipt":record.presented_receipt()})
+fn details(record: &RequestRecord) -> Result<Value> {
+    Ok(serde_json::to_value(api::UnityDetails {
+        job_id: record.request_id.clone(),
+        project_name: record.project_name.clone(),
+        project_root: record.project_root.clone(),
+        unity_version: record.unity_version.clone(),
+        stage: record.presented_phase().to_owned(),
+        error_code: record.presented_error_code().map(str::to_owned),
+        receipt: record.presented_receipt(),
+    })?)
 }
 
 fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Result<()> {
@@ -688,12 +751,19 @@ fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn unity_receives_ordinary_paths_for_verbatim_roots() {
         for (verbatim, plain) in [
-            (r"\\?\E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
-            (r"\\?\UNC\nas\share\A.unitypackage", r"\\nas\share\A.unitypackage"),
+            (
+                r"\\?\E:\Library\A.unitypackage",
+                r"E:\Library\A.unitypackage",
+            ),
+            (
+                r"\\?\UNC\nas\share\A.unitypackage",
+                r"\\nas\share\A.unitypackage",
+            ),
             (r"E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
         ] {
             assert_eq!(plain_path(verbatim), plain);
@@ -722,5 +792,17 @@ mod tests {
         );
         receipt.results.clear();
         validate_result_entries(&manifest, &receipt).unwrap();
+    }
+
+    #[test]
+    fn a_job_records_an_unanswered_query_as_a_timeout() {
+        assert_eq!(
+            error_code(anyhow::anyhow!("UNITY_NO_RESPONSE")),
+            "UNITY_TIMEOUT"
+        );
+        assert_eq!(
+            error_code(anyhow::anyhow!("UNITY_INVALID_RESPONSE")),
+            "UNITY_INVALID_RESPONSE"
+        );
     }
 }

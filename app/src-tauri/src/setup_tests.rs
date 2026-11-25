@@ -756,11 +756,23 @@ fn staged_session_cleanup_rearms_proven_rollback_but_retains_committed_accounts(
         let staged = account("BOOTH", "Authored Setup ownership fixture");
         let id = staged["id"].as_str().unwrap();
         setup.catalogue.put("account", id, staged.clone()).unwrap();
-        setup.sessions.arm(stores::StoreProvider::Booth, id).unwrap();
-        let profile = stores::session::profile_path(&fixture.host.device_dir, stores::StoreProvider::Booth, id).unwrap();
+        setup
+            .sessions
+            .arm(stores::StoreProvider::Booth, id)
+            .unwrap();
+        let profile = stores::session::profile_path(
+            &fixture.host.device_dir,
+            stores::StoreProvider::Booth,
+            id,
+        )
+        .unwrap();
         std::fs::create_dir_all(profile.join("WebView/Cache")).unwrap();
         std::fs::write(profile.join("session.bin"), b"authored protected bytes").unwrap();
-        std::fs::write(profile.join("WebView/Cache/authored"), b"authored browser bytes").unwrap();
+        std::fs::write(
+            profile.join("WebView/Cache/authored"),
+            b"authored browser bytes",
+        )
+        .unwrap();
         let patch = setup_finish_patch(&setup, &finish_args()).unwrap();
         if fail {
             std::fs::create_dir(fixture.host.device_dir.join("library.json.pending")).unwrap();
@@ -778,7 +790,12 @@ fn staged_session_cleanup_rearms_proven_rollback_but_retains_committed_accounts(
         drop(setup); // Model a closed/crashed Setup: release every lifetime lease.
         setup_sessions::cleanup_abandoned(&fixture.host.device_dir).unwrap();
         assert_eq!(profile.exists(), !fail);
-        if !fail { assert_eq!(std::fs::read(profile.join("session.bin")).unwrap(), b"authored protected bytes"); }
+        if !fail {
+            assert_eq!(
+                std::fs::read(profile.join("session.bin")).unwrap(),
+                b"authored protected bytes"
+            );
+        }
         fixture.finish();
     }
 }

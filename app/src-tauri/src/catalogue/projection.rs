@@ -313,16 +313,33 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
-/// Store products whose projection predates refused files counting as dropped: a
-/// file the store refused as no longer offered is still an ordinary row.
+/// Store products whose projection predates what a failed download shows: a file the
+/// store refused as no longer offered is still an ordinary row, a file whose free offer
+/// ended has no mark, shows as failed or is not counted, or a file without bytes does not
+/// show how its last attempt failed.
 pub(super) fn listed_refused_files(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT a.product_id FROM entities a
          JOIN products p ON p.id=a.product_id, json_each(p.body,'$.files') f
          WHERE a.kind='artifact'
-           AND json_extract(a.body,'$.errorCode')='store_file_unavailable'
+           AND COALESCE(json_extract(a.body,'$.errorCode'),'') NOT IN ('','cancelled','interrupted')
            AND json_extract(f.value,'$.id')=json_extract(a.body,'$.fileId')
-           AND COALESCE(json_extract(f.value,'$.kept'),0)=0",
+           AND COALESCE(json_extract(f.value,'$.kept'),0)=0
+           AND (json_extract(a.body,'$.errorCode')='store_file_unavailable'
+             OR (json_extract(a.body,'$.errorCode')='free_offer_unavailable'
+               AND (json_extract(f.value,'$.offerEnded') IS NULL
+                 OR json_extract(f.value,'$.status')='failed'
+                 OR json_extract(p.summary,'$.endedFiles') IS NULL))
+             OR (a.id GLOB 'pending-*'
+               AND json_extract(a.body,'$.errorCode')<>'free_offer_unavailable'
+               AND json_extract(a.body,'$.status') NOT IN
+                 ('ready','queued','downloading','extracting','processing','cancelled')
+               AND json_extract(f.value,'$.status')<>'failed'
+               AND NOT EXISTS(SELECT 1 FROM entities r
+                 WHERE r.kind='artifact' AND r.product_id=a.product_id
+                   AND json_extract(r.body,'$.fileId')=json_extract(a.body,'$.fileId')
+                   AND json_extract(r.body,'$.revision')=json_extract(f.value,'$.revision')
+                   AND json_extract(f.value,'$.revision') NOT IN ('','unknown'))))",
     )?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -352,7 +369,10 @@ fn kept_status(user_added: bool, status: &str) -> Option<&str> {
 }
 /// The account and source downloadable a store descriptor names.
 fn source_key(file: &Value) -> (String, String) {
-    (text(file, "accountId").to_owned(), text(file, "sourceFileId").to_owned())
+    (
+        text(file, "accountId").to_owned(),
+        text(file, "sourceFileId").to_owned(),
+    )
 }
 /// Source downloadables the given descriptors offer; local files offer none.
 fn offered_sources(
@@ -368,6 +388,46 @@ fn offered_sources(
 /// The store refused this file as no longer offered on its last download.
 fn refused_download(artifact: &Value) -> bool {
     text(artifact, "errorCode") == "store_file_unavailable"
+}
+/// The file's free offer had ended on its last download, so product downloads leave it
+/// out until its product is downloaded alone.
+fn offer_ended(artifact: &Value) -> bool {
+    text(artifact, "errorCode") == "free_offer_unavailable"
+}
+/// The record a file's last download attempt left, when that attempt failed. Closing the
+/// App interrupts an attempt without fault: its download job resumes at the next start.
+/// An ended free offer is no fault either: nothing can be retried, and the row says the
+/// offer ended.
+fn failed_attempt(artifact: &Value) -> bool {
+    text(artifact, "id").starts_with("pending-")
+        && !matches!(
+            text(artifact, "errorCode"),
+            "interrupted" | "free_offer_unavailable"
+        )
+        && artifact_failed(artifact)
+}
+/// What a failed last attempt adds to its file's row, until a new attempt replaces that
+/// record (Clear history leaves it): with no bytes at the file's revision the row shows
+/// that failure, and a dismissed earlier failure never hides a later one.
+fn apply_attempt(file: &mut Value, attempt: Option<&Value>, artifact: Option<&Value>) {
+    let Some(attempt) = attempt else {
+        return;
+    };
+    match artifact {
+        None => {
+            file["status"] = json!("failed");
+            file["errorCode"] = attempt["errorCode"].clone();
+            if attempt["attentionDismissed"] == true {
+                file["attentionDismissed"] = json!(true);
+            }
+        }
+        Some(artifact) if artifact_failed(artifact) && attempt["attentionDismissed"] != true => {
+            if let Some(fields) = file.as_object_mut() {
+                fields.remove("attentionDismissed");
+            }
+        }
+        Some(_) => {}
+    }
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     artifact["attentionDismissed"] != true && artifact_failed(artifact)
@@ -436,45 +496,37 @@ pub(super) fn job_changes_product(before: Option<&Value>, after: Option<&Value>)
     if !before.is_some_and(file_job) && !after.is_some_and(file_job) {
         return false;
     }
-    match (before, after) {
-        (Some(before), Some(after))
-            if [
-                "productId",
-                "productIds",
-                "completedProductIds",
-                "type",
-                "state",
-                "errorCode",
-            ]
-            .iter()
-            .all(|field| before[*field] == after[*field])
-                && matches!(text(after, "state"), "queued" | "running") =>
-        {
-            false
-        }
-        _ => true,
-    }
+    let (Some(before), Some(after)) = (before, after) else {
+        return true;
+    };
+    let unchanged = [
+        "productId",
+        "productIds",
+        "completedProductIds",
+        "type",
+        "state",
+        "errorCode",
+    ]
+    .iter()
+    .all(|field| before[*field] == after[*field]);
+    !(unchanged && matches!(text(after, "state"), "queued" | "running"))
 }
 
-fn latest_file_job(jobs: &[Value]) -> Option<&Value> {
+/// The product's latest local import, whose failure raises Attention until it is retried
+/// or dismissed. A download's failure is its file's own fact instead, so neither depends
+/// on finished downloads that Clear history removes.
+fn latest_import(jobs: &[Value]) -> Option<&Value> {
     jobs.iter()
-        .filter(|job| file_job(job))
+        .filter(|job| job["type"] == "storage:import_local")
         .max_by_key(|job| text(job, "updatedAt"))
 }
 
 fn job_needs_attention(job: &Value, product: &str) -> bool {
     matches!(text(job, "state"), "failed" | "needsAction")
         && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
-        && !strings(&job["attentionDismissed"]).iter().any(|id| id == product)
-        && !only_refused(job)
-}
-
-/// A download that failed only on files its store no longer offers leaves nothing
-/// to retry: a product download never asks for them again.
-fn only_refused(job: &Value) -> bool {
-    job["failures"].as_object().is_some_and(|failures| {
-        !failures.is_empty() && failures.values().all(refused_download)
-    })
+        && !strings(&job["attentionDismissed"])
+            .iter()
+            .any(|id| id == product)
 }
 
 /// Records to rewrite so one product's current failures stop raising Attention. No
@@ -492,9 +544,13 @@ pub(super) fn dismissed_attention(
         }
     }
     let jobs = product_jobs(conn, id, local_import_jobs)?;
-    let failed = latest_file_job(&jobs).filter(|job| job_needs_attention(job, id));
+    let failed = latest_import(&jobs).filter(|job| job_needs_attention(job, id));
     // Local import summaries are partial, and one import can hold several products.
-    if let Some(mut job) = failed.map(|job| raw(conn, "job", text(job, "id"))).transpose()?.flatten() {
+    if let Some(mut job) = failed
+        .map(|job| raw(conn, "job", text(job, "id")))
+        .transpose()?
+        .flatten()
+    {
         let mut products = strings(&job["attentionDismissed"]);
         products.push(id.to_owned());
         job["attentionDismissed"] = json!(products);
@@ -506,7 +562,7 @@ pub(super) fn dismissed_attention(
 fn update_status(product: &mut Value, jobs: &[Value]) {
     let empty = vec![];
     let files = product["files"].as_array().unwrap_or(&empty);
-    let latest = latest_file_job(jobs);
+    let latest = latest_import(jobs);
     let downloaded = files.iter().filter(|file| byte_complete(file)).count();
     let all_ready = !files.is_empty() && files.iter().all(|file| text(file, "status") == "ready");
     let status = if jobs.iter().any(|job| {
@@ -534,9 +590,19 @@ fn update_status(product: &mut Value, jobs: &[Value]) {
     // Downloaded describes the files currently attached to this product. Store
     // discovery may still be running; a later observed file makes it Partial.
     let fully_downloaded = !files.is_empty() && downloaded == files.len();
+    // The list reads summaries, so a free offer ending or opening again reaches it here.
+    let ended = files
+        .iter()
+        .filter(|file| file["offerEnded"] == true)
+        .count();
     product["status"] = json!(status);
     product["downloaded"] = json!(downloaded);
     product["fullyDownloaded"] = json!(fully_downloaded);
+    if ended > 0 {
+        product["endedFiles"] = json!(ended);
+    } else if let Some(product) = product.as_object_mut() {
+        product.remove("endedFiles");
+    }
 }
 
 /// Local state never changes taxonomy, filename search or compatibility evidence.
@@ -579,9 +645,10 @@ fn refresh_local(
                 .flatten()
                 .map(|file| text(file, "id"))
                 .collect();
-            rows.into_iter().flatten().any(|file| {
-                file["kept"] == true && changed_files.contains(text(file, "id"))
-            }) || remote.iter().any(|file| !listed.contains(text(file, "id")))
+            rows.into_iter()
+                .flatten()
+                .any(|file| file["kept"] == true && changed_files.contains(text(file, "id")))
+                || remote.iter().any(|file| !listed.contains(text(file, "id")))
                 || artifacts.iter().any(|artifact| {
                     !listed.contains(text(artifact, "fileId")) || refused_download(artifact)
                 })
@@ -620,6 +687,12 @@ fn refresh_local(
                 by_revision.get(&(fid, revision)).copied()
             };
             let failed = artifact.is_some_and(artifact_failed);
+            let ended = artifacts
+                .iter()
+                .any(|artifact| text(artifact, "fileId") == fid && offer_ended(artifact));
+            let attempt = artifacts
+                .iter()
+                .find(|artifact| text(artifact, "fileId") == fid && failed_attempt(artifact));
             let state =
                 artifact
                     .map(|artifact| text(artifact, "status"))
@@ -656,10 +729,14 @@ fn refresh_local(
                 "attentionDismissed",
                 "verifiedHash",
                 "rootStatus",
+                "offerEnded",
             ] {
                 file.as_object_mut().unwrap().remove(field);
             }
             file["originalAvailable"] = json!(false);
+            if ended {
+                file["offerEnded"] = json!(true);
+            }
             if let Some(artifact) = artifact {
                 for field in [
                     "rootId",
@@ -679,6 +756,7 @@ fn refresh_local(
                     file["rootStatus"] = root["status"].clone();
                 }
             }
+            apply_attempt(file, attempt, artifact);
         }
     }
     if roots_changed {
@@ -815,6 +893,16 @@ fn effective_with_jobs(
         .filter(|artifact| refused_download(artifact))
         .map(|artifact| text(artifact, "fileId"))
         .collect();
+    let ended: BTreeSet<&str> = artifacts
+        .iter()
+        .filter(|artifact| offer_ended(artifact))
+        .map(|artifact| text(artifact, "fileId"))
+        .collect();
+    let attempts: BTreeMap<&str, &Value> = artifacts
+        .iter()
+        .filter(|artifact| failed_attempt(artifact))
+        .map(|artifact| (text(artifact, "fileId"), artifact))
+        .collect();
     let mut roots = BTreeMap::new();
     for root in artifacts
         .iter()
@@ -824,12 +912,83 @@ fn effective_with_jobs(
         roots.insert(root, raw(conn, "root", root)?.unwrap_or(Value::Null));
     }
     let jobs = product_jobs(conn, id, local_import_jobs)?;
-    let inference = category(&source);
+    let (mut p, provider) = base_projection(&source);
+    let ai = overlay.get("ai").map(validate_ai_overlay).transpose()?;
+    let organization = overlay
+        .get("aiTagOrganization")
+        .map(validate_ai_organization)
+        .transpose()?;
+    let ai_current = ai_matches_evidence(&source, &overlay, &remote, &artifacts, &ai)?;
+    let organization_current =
+        organization_matches_evidence(&source, &overlay, &remote, &artifacts, &organization)?;
+    apply_overlay(conn, &mut p, &source, &overlay, &ai, ai_current)?;
+    apply_prices(&mut p, &source, provider);
+    if !p["sensitive"].is_boolean() {
+        p["sensitive"] = json!(false);
+    }
+    // No procedural mock art/kind is assigned to real records.
+    p.as_object_mut().unwrap().remove("kind");
+    let accounts = unique(
+        acquisitions
+            .iter()
+            .chain(entitlements.iter())
+            .chain(remote.iter())
+            .filter_map(|v| v["accountId"].as_str())
+            .map(str::to_owned),
+    );
+    p["accountIds"] = json!(accounts);
+    p["provenance"] = json!(acquisition::normalize_provenance(&acquisitions));
+    p["sources"] = json!(source_rows(
+        conn,
+        &source,
+        &acquisitions,
+        &entitlements,
+        &remote
+    )?);
+    let source_acquired = text(&p, "acquired").to_owned();
+    // Only a local import records its own time; a store's dates come from its acquisitions.
+    let source_acquired_at = (provider == "local")
+        .then(|| source["acquiredAt"].as_str())
+        .flatten();
+    acquisition::apply_default(&mut p, &source_acquired, source_acquired_at);
+    acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
+    let (remote_map, file_ids, kept) =
+        file_selection(&mut p, provider, &source, &entitlements, remote);
+    let evidence = apply_files(
+        &mut p,
+        id,
+        &source,
+        file_ids,
+        kept,
+        remote_map,
+        &refused,
+        &ended,
+        &attempts,
+        &artifact_map,
+        &roots,
+    );
+    update_status(&mut p, &jobs);
+    p["ownedAvatarEvidence"] = json!(evidence);
+    apply_tag_inputs(
+        &mut p,
+        &source,
+        &overlay,
+        &ai,
+        ai_current,
+        &organization,
+        organization_current,
+    )?;
+    Ok(Some(p))
+}
+
+/// The source record with its display fields, and the store it came from.
+fn base_projection(source: &Value) -> (Value, &'static str) {
+    let inference = category(source);
     let mut p = source.clone();
-    let provider = match normalized(if text(&source, "provider").is_empty() {
-        text(&source, "store")
+    let provider = match normalized(if text(source, "provider").is_empty() {
+        text(source, "store")
     } else {
-        text(&source, "provider")
+        text(source, "provider")
     })
     .as_str()
     {
@@ -859,45 +1018,72 @@ fn effective_with_jobs(
     p["sourceTags"] = source.get("sourceTags").unwrap_or(&source["tags"]).clone();
     p["categoryInference"] = inference.clone();
     p["category"] = inference["category"].clone();
-    let ai = overlay.get("ai").map(validate_ai_overlay).transpose()?;
-    let organization = overlay
-        .get("aiTagOrganization")
-        .map(validate_ai_organization)
-        .transpose()?;
-    let mut ai_current = match &ai {
+    (p, provider)
+}
+
+/// Whether the saved AI analysis was made from the evidence the product has now.
+fn ai_matches_evidence(
+    source: &Value,
+    overlay: &Value,
+    remote: &[Value],
+    artifacts: &[Value],
+    ai: &Option<AiOverlay>,
+) -> Result<bool> {
+    let mut ai_current = match ai {
         Some(ai) => match &ai.evidence_fingerprint {
             Some(expected) => {
                 ai_evidence_fingerprint(
-                    &source,
-                    &overlay,
-                    &remote,
-                    &artifacts,
+                    source,
+                    overlay,
+                    remote,
+                    artifacts,
                     &ai.evidence_refs,
                     &ai.content_evidence_refs,
                 )? == *expected
             }
-            None => {
-                ai_fingerprint(&source, &overlay, &remote, &artifacts)? == ai.catalogue_fingerprint
-            }
+            None => ai_fingerprint(source, overlay, remote, artifacts)? == ai.catalogue_fingerprint,
         },
         None => false,
     };
     if let Some(expected) = ai.as_ref().and_then(|ai| ai.preview_fingerprint.as_ref()) {
-        ai_current &= ai_preview_fingerprint(&source, &overlay)? == *expected;
+        ai_current &= ai_preview_fingerprint(source, overlay)? == *expected;
     }
-    let organization_current = match &organization {
+    Ok(ai_current)
+}
+
+/// Whether the saved AI tag organization was made from the evidence the product has now.
+fn organization_matches_evidence(
+    source: &Value,
+    overlay: &Value,
+    remote: &[Value],
+    artifacts: &[Value],
+    organization: &Option<AiTagOrganization>,
+) -> Result<bool> {
+    let organization_current = match organization {
         Some(organization) => match &organization.evidence_fingerprint {
             Some(expected) => {
-                ai_evidence_fingerprint(&source, &overlay, &[], &[], &["sourceTags".into()], &[])?
+                ai_evidence_fingerprint(source, overlay, &[], &[], &["sourceTags".into()], &[])?
                     == *expected
             }
             None => {
-                ai_fingerprint(&source, &overlay, &remote, &artifacts)?
+                ai_fingerprint(source, overlay, remote, artifacts)?
                     == organization.catalogue_fingerprint
             }
         },
         None => false,
     };
+    Ok(organization_current)
+}
+
+/// The user's overlay, the AI category and source URLs, and the preview to show.
+fn apply_overlay(
+    conn: &Connection,
+    p: &mut Value,
+    source: &Value,
+    overlay: &Value,
+    ai: &Option<AiOverlay>,
+    ai_current: bool,
+) -> Result<()> {
     p["aiCurrent"] = json!(ai_current);
     p["aiCategoryApplied"] = json!(false);
     if ai_current && overlay.get("category").is_none() {
@@ -928,11 +1114,11 @@ fn effective_with_jobs(
     p["categoryOverride"] = json!(overlay.get("category").is_some());
     p["sourceOriginUrl"] = source["sourceUrl"].clone();
     p["sourceUrlOverride"] = json!(overlay.get("sourceUrl").is_some());
-    let page_availability = crate::booth::effective_public_page_availability(&source);
+    let page_availability = crate::booth::effective_public_page_availability(source);
     p["publicPageAvailability"] = json!(page_availability);
-    let source_url = text(&p, "sourceUrl");
+    let source_url = text(p, "sourceUrl");
     let overridden_url = overlay.get("sourceUrl").is_some()
-        && text(&overlay, "sourceUrl") != text(&source, "sourceUrl");
+        && text(overlay, "sourceUrl") != text(source, "sourceUrl");
     p["sourceUrlAvailable"] = json!(
         !source_url.is_empty()
             && validate_source_url(source_url).is_ok()
@@ -960,16 +1146,21 @@ fn effective_with_jobs(
             p[f] = json!("");
         }
     }
+    Ok(())
+}
+
+/// The current price: the store's own for Gumroad, Jinxxy and local links, BOOTH's listing.
+fn apply_prices(p: &mut Value, source: &Value, provider: &str) {
     let priced_link = source["priceSourceUrl"]
         .as_str()
-        .unwrap_or(text(&source, "sourceUrl"));
-    if provider == "local" && listing_link(text(&p, "sourceUrl")) != listing_link(priced_link) {
+        .unwrap_or(text(source, "sourceUrl"));
+    if provider == "local" && listing_link(text(p, "sourceUrl")) != listing_link(priced_link) {
         // That price was read from another listing than the one the user links now.
         p["price"] = Value::Null;
         p["priceCurrency"] = Value::Null;
         p["currentPriceText"] = Value::Null;
     } else if matches!(provider, "gumroad" | "jinxxy" | "local") {
-        let currency = text(&source, "priceCurrency");
+        let currency = text(source, "priceCurrency");
         let amount = acquisition::money_amount(&source["price"], currency);
         p["price"] = json!(amount);
         let formatted = source["priceFormatted"]
@@ -986,6 +1177,7 @@ fn effective_with_jobs(
             .or_else(|| formatted.map(str::to_owned)));
     } else {
         // Read the BOOTH listing evidence; owned variant pricing is applied below.
+        p["listingSellsPaid"] = json!(super::terms_only::sells_paid(&source["publicVariants"]));
         p["listingStartingPrice"] = json!(crate::booth::listing_starting_price(
             &source["listingPriceText"]
         )
@@ -996,31 +1188,16 @@ fn effective_with_jobs(
             .or_else(|| crate::booth::listing_price_display(&source["listingPriceText"])));
         p["priceCurrency"] = json!(p["currentPriceText"].is_string().then_some("JPY"));
     }
-    if !p["sensitive"].is_boolean() {
-        p["sensitive"] = json!(false);
-    }
-    // No procedural mock art/kind is assigned to real records.
-    p.as_object_mut().unwrap().remove("kind");
-    let accounts = unique(
-        acquisitions
-            .iter()
-            .chain(entitlements.iter())
-            .chain(remote.iter())
-            .filter_map(|v| v["accountId"].as_str())
-            .map(str::to_owned),
-    );
-    p["accountIds"] = json!(accounts);
-    p["provenance"] = json!(acquisition::normalize_provenance(&acquisitions));
-    p["sources"] = json!(source_rows(
-        conn,
-        &source,
-        &acquisitions,
-        &entitlements,
-        &remote
-    )?);
-    let source_acquired = text(&p, "acquired").to_owned();
-    acquisition::apply_default(&mut p, &source_acquired);
-    acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
+}
+
+/// Which files the product lists: the store's current grants and the files kept beside them.
+fn file_selection(
+    p: &mut Value,
+    provider: &str,
+    source: &Value,
+    entitlements: &[Value],
+    remote: Vec<Value>,
+) -> (BTreeMap<String, Value>, BTreeSet<String>, Vec<String>) {
     let required: BTreeSet<_> = if provider == "local" {
         strings(&source["localManifest"]["fileIds"])
             .into_iter()
@@ -1050,7 +1227,7 @@ fn effective_with_jobs(
             !entitlements.is_empty() && entitlements.iter().all(|e| e["manifestComplete"] == true)
         };
     p["manifestComplete"] = json!(manifest_complete);
-    let mut remote_map: BTreeMap<String, Value> = remote
+    let remote_map: BTreeMap<String, Value> = remote
         .into_iter()
         .map(|v| (text(&v, "id").to_owned(), v))
         .collect();
@@ -1077,6 +1254,23 @@ fn effective_with_jobs(
             .map(|(fid, _)| fid.clone())
             .collect()
     };
+    (remote_map, file_ids, kept)
+}
+
+/// Each listed file with its download state; returns the owned-avatar evidence the files give.
+fn apply_files(
+    p: &mut Value,
+    id: &str,
+    source: &Value,
+    file_ids: BTreeSet<String>,
+    kept: Vec<String>,
+    mut remote_map: BTreeMap<String, Value>,
+    refused: &BTreeSet<&str>,
+    ended: &BTreeSet<&str>,
+    attempts: &BTreeMap<&str, &Value>,
+    artifact_map: &BTreeMap<(&str, &str), &Value>,
+    roots: &BTreeMap<&str, Value>,
+) -> Vec<Value> {
     let mut files = vec![];
     let mut evidence = vec![];
     let mut known_file_count = 0;
@@ -1134,6 +1328,9 @@ fn effective_with_jobs(
         } else {
             status
         };
+        let attempt = (!retained)
+            .then(|| attempts.get(fid.as_str()).copied())
+            .flatten();
         known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {
@@ -1146,6 +1343,8 @@ fn effective_with_jobs(
             }
             // Counted like `downloaded`, so the rest are downloads the store offers again.
             kept_count += usize::from(byte_complete(&file));
+        } else if ended.contains(fid.as_str()) {
+            file["offerEnded"] = json!(true);
         }
         if let Some(a) = artifact {
             for key in [
@@ -1170,9 +1369,10 @@ fn effective_with_jobs(
                 file.as_object_mut().unwrap().remove("errorCode");
             }
         }
+        apply_attempt(&mut file, attempt, artifact);
         if known && !text(&f, "accountId").is_empty() {
             for avatar in crate::taxonomy::account_variant_avatars(
-                &source,
+                source,
                 f["variantId"].as_str(),
                 text(&f, "variantName"),
             ) {
@@ -1190,11 +1390,22 @@ fn effective_with_jobs(
         p["keptFiles"] = json!(kept_count);
     }
     p["files"] = json!(files);
-    update_status(&mut p, &jobs);
-    p["ownedAvatarEvidence"] = json!(evidence);
+    evidence
+}
+
+/// What the tag resolver reads, compatibility, and tag suggestions.
+fn apply_tag_inputs(
+    p: &mut Value,
+    source: &Value,
+    overlay: &Value,
+    ai: &Option<AiOverlay>,
+    ai_current: bool,
+    organization: &Option<AiTagOrganization>,
+    organization_current: bool,
+) -> Result<()> {
     let source_tags = strings(&p["sourceTags"]);
     let listing = unique(
-        crate::taxonomy::listing_avatar_evidence(&source)
+        crate::taxonomy::listing_avatar_evidence(source)
             .into_iter()
             .filter_map(|v| {
                 v["displayName"]
@@ -1226,7 +1437,7 @@ fn effective_with_jobs(
         }
     }
     compatibility(
-        &mut p,
+        p,
         crate::taxonomy::exact_avatar_tag,
         crate::taxonomy::canonical_tag,
         crate::taxonomy::exact_avatar_tag,
@@ -1234,12 +1445,12 @@ fn effective_with_jobs(
     p["tagSuggestions"] = json!(crate::taxonomy::tag_suggestions(
         &format!(
             "{} {}",
-            text(&p, "sourceTitle"),
+            text(p, "sourceTitle"),
             strings(&p["sourceTags"]).join(" ")
         ),
         &strings(&p["rejectedTags"])
     ));
-    Ok(Some(p))
+    Ok(())
 }
 
 /// Recompute release-check components using the same read-only source and resolver.
@@ -1354,6 +1565,8 @@ fn refresh_with_jobs(
         }
         changes.record_source_aliases(&p);
     }
+    #[cfg(test)]
+    api::assert_product(&p);
     store_projection(conn, &p)?;
     Ok(changes)
 }
@@ -1440,11 +1653,11 @@ fn store_projection(conn: &Connection, p: &Value) -> Result<()> {
         return Ok(());
     }
     let mut terms = vec![
-        text(&p, "id").to_owned(),
-        text(&p, "title").to_owned(),
-        text(&p, "sourceTitle").to_owned(),
-        text(&p, "shop").to_owned(),
-        text(&p, "note").to_owned(),
+        text(p, "id").to_owned(),
+        text(p, "title").to_owned(),
+        text(p, "sourceTitle").to_owned(),
+        text(p, "shop").to_owned(),
+        text(p, "note").to_owned(),
     ];
     terms.extend(strings(&p["tags"]));
     terms.extend(strings(&p["ownedAvatars"]));
@@ -1458,11 +1671,11 @@ fn store_projection(conn: &Connection, p: &Value) -> Result<()> {
     let search = normalized(&expanded.join(" "));
     let scope = text(&p["categoryInference"], "scope");
     let in_all = if p["categoryOverride"] == true || p["aiCategoryApplied"] == true {
-        text(&p, "category") != "NonVRChat"
+        text(p, "category") != "NonVRChat"
     } else {
-        scope != "other" && (text(&p, "category") != "NonVRChat" || scope == "vrchat")
+        scope != "other" && (text(p, "category") != "NonVRChat" || scope == "vrchat")
     };
-    conn.execute("INSERT INTO products(id,body,summary,category,status,sensitive,downloaded,title,acquired,price,search,in_all) VALUES(?1,?2,?12,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET body=excluded.body,summary=excluded.summary,category=excluded.category,status=excluded.status,sensitive=excluded.sensitive,downloaded=excluded.downloaded,title=excluded.title,acquired=excluded.acquired,price=excluded.price,search=excluded.search,in_all=excluded.in_all",params![id,body,text(&p,"category"),text(&p,"status"),p["sensitive"]==true,p["fullyDownloaded"]==true,normalized(text(&p,"title")),p["acquiredSortKey"].as_str(),p["price"].as_f64(),search,in_all,serde_json::to_string(&summary(p))?])?;
+    conn.execute("INSERT INTO products(id,body,summary,category,status,sensitive,downloaded,title,acquired,price,search,in_all) VALUES(?1,?2,?12,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET body=excluded.body,summary=excluded.summary,category=excluded.category,status=excluded.status,sensitive=excluded.sensitive,downloaded=excluded.downloaded,title=excluded.title,acquired=excluded.acquired,price=excluded.price,search=excluded.search,in_all=excluded.in_all",params![id,body,text(p,"category"),text(p,"status"),p["sensitive"]==true,p["fullyDownloaded"]==true,normalized(text(p,"title")),p["acquiredSortKey"].as_str(),p["price"].as_f64(),search,in_all,serde_json::to_string(&summary(p))?])?;
     if previous.as_ref().is_some_and(|(_, old)| *old == search) {
         return Ok(());
     }
@@ -1514,6 +1727,7 @@ pub(super) fn summary(product: &Value) -> Value {
         "priceCurrency",
         "currentPriceText",
         "listingStartingPrice",
+        "listingSellsPaid",
         "ownedCurrentPrices",
         "ownedPaidPrices",
         "paidPrice",
@@ -1527,6 +1741,7 @@ pub(super) fn summary(product: &Value) -> Value {
         "manifestComplete",
         "knownFileCount",
         "keptFiles",
+        "endedFiles",
         "fullyDownloaded",
         "previewUrl",
         "sourcePreviewUrl",

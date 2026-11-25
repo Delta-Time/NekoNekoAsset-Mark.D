@@ -1,6 +1,6 @@
 [package]
 name = "nekonekoasset"
-version = "0.3.13+D1"
+version = "0.4.0+D1"
 description = "Local digital asset manager"
 authors = ["Yan-K"]
 edition = "2021"
@@ -46,6 +46,17 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 regex = "1"
 # License filter: text of VN3 generator PDFs, through its own ToUnicode maps. Pure Rust, MIT.
 lopdf = { version = "0.36", default-features = false }
+# TypeScript declarations of what the UI sends and reads, written by `pnpm bindings`. MIT.
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+[lints.clippy]
+# Long signatures and nested types are left until the largest functions are split.
+too_many_arguments = "allow"
+type_complexity = "allow"
+# `&[id.clone()]` reads more plainly than `std::slice::from_ref(&id)`.
+cloned_ref_to_slice_refs = "allow"
+# Read-only flags are cleared only on Windows, where that grants no wider access.
+permissions_set_readonly_false = "allow"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
