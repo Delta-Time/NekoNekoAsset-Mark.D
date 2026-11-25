@@ -527,6 +527,7 @@
   "localImport.dropFiles": "拖放文件或文件夹到这里",
   "localImport.extracting": "正在解压归档",
   "localImport.fetch": "抓取",
+  "localImport.finalizing": "正在添加到资产库",
   "localImport.importQueued": "已加入导入队列",
   "localImport.importQueuedCount": "已接受导入请求 · {count} 项待处理",
   "localImport.local_batch_requires_folder_or_zip": "批量导入仅接受文件夹和 ZIP",

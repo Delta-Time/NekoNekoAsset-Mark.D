@@ -821,10 +821,6 @@ impl StorageService {
     }
 
     pub(super) async fn retry_local_import(&self, id: &str) -> Result<Value> {
-        let _operation = self
-            .operations
-            .try_read()
-            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
         let _gate = self.queue_gate.lock().await;
         ensure!(
             !self.closing_local_imports.load(Ordering::Acquire),
@@ -922,11 +918,6 @@ impl StorageService {
                     Some("failed" | "needsAction" | "cancelled")
                 ),
             "invalid_job"
-        );
-        ensure!(
-            self.catalogue.library_root().is_none()
-                || job["originDeviceId"] == self.catalogue.device_id(),
-            "local_other_device"
         );
         if job["localPlan"].is_object() {
             let service = self.clone();
@@ -1310,12 +1301,14 @@ impl StorageService {
         if let Some(record) = recorded.as_ref() {
             ensure!(record["relativePath"] == relative, "file_integrity_failed");
             if target.try_exists()? {
-                io::verify(
+                report(None);
+                io::verify_cancel(
                     &target,
                     io::required_string(record, "hash")?,
                     record["sizeBytes"]
                         .as_u64()
                         .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?,
+                    cancel,
                 )?;
                 return Ok(record.clone());
             }
@@ -1334,7 +1327,8 @@ impl StorageService {
                         let size = artifact["sizeBytes"]
                             .as_u64()
                             .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?;
-                        io::verify(&target, hash, size)?;
+                        report(None);
+                        io::verify_cancel(&target, hash, size, cancel)?;
                         let record = json!({"id":checkpoint,"kind":"localImportCopy","relativePath":relative,"hash":hash,"sizeBytes":size});
                         self.catalogue
                             .put("checkpoint", &checkpoint, record.clone())?;
@@ -1455,13 +1449,16 @@ impl StorageService {
             .flat_map(|group| &group.files)
             .fold(0u64, |sum, file| sum.saturating_add(file.size));
         let mut processed = 0u64;
-        let mut last_event = None::<Instant>;
-        let mut report = |phase: &str, bytes: Option<u64>, immediate: bool| {
+        let mut last_event = None::<(&'static str, Instant)>;
+        let mut report = |phase: &'static str, bytes: Option<u64>, immediate: bool| {
             if let Some(app) = app {
                 if immediate
-                    || last_event.is_none_or(|last| last.elapsed() >= Duration::from_millis(350))
+                    || last_event.is_none_or(|(previous_phase, time)| {
+                        (phase != "copying" && phase != previous_phase)
+                            || time.elapsed() >= Duration::from_millis(350)
+                    })
                 {
-                    last_event = Some(Instant::now());
+                    last_event = Some((phase, Instant::now()));
                     emit_local_progress(app, &job_id, phase, bytes, bytes.map(|_| total));
                 }
             }
@@ -1478,7 +1475,7 @@ impl StorageService {
                 processed = group_end;
                 continue;
             }
-            let mut report_group = |phase: &str, bytes: Option<u64>, immediate: bool| {
+            let mut report_group = |phase: &'static str, bytes: Option<u64>, immediate: bool| {
                 report(
                     phase,
                     bytes.map(|done| processed.saturating_add(done)),
@@ -1530,7 +1527,7 @@ impl StorageService {
         seven_zip: &Path,
         cancel: &AtomicBool,
         app: Option<&tauri::AppHandle>,
-        report: &mut impl FnMut(&str, Option<u64>, bool),
+        report: &mut impl FnMut(&'static str, Option<u64>, bool),
     ) -> Result<()> {
         if let Some(product) = self.catalogue.get("product", &group.product_id)? {
             let current = product["localManifest"]["lastMutationId"].as_str();
@@ -1577,7 +1574,7 @@ impl StorageService {
             copies.push(checkpoint);
             copied = copied.saturating_add(file.size);
         }
-        report("verifying", None, true);
+        report("finalizing", None, true);
         let facts: Vec<_> = group
             .files
             .iter()
@@ -1606,7 +1603,6 @@ impl StorageService {
         let product_id = if let Some(existing) = duplicate {
             existing
         } else {
-            let mut extracting = false;
             self.record_local_group(
                 group,
                 plan,
@@ -1620,12 +1616,11 @@ impl StorageService {
                 &mut error,
                 seven_zip,
                 cancel,
-                &mut || {
-                    report("extracting", None, !extracting);
-                    extracting = true;
-                },
+                &mut |phase| report(phase, None, false),
             )?
         };
+        io::check_cancel(cancel)?;
+        report("finalizing", None, false);
         let mut next_job = job.clone();
         next_job["productIds"][index] = json!(product_id);
         if error.is_none() {
@@ -1728,7 +1723,7 @@ impl StorageService {
         error: &mut Option<&'static str>,
         seven_zip: &Path,
         cancel: &AtomicBool,
-        on_extracting: &mut impl FnMut(),
+        report_archive_phase: &mut impl FnMut(&'static str),
     ) -> Result<String> {
         let file_ids: Vec<_> = group
             .files
@@ -1808,7 +1803,7 @@ impl StorageService {
             seven_zip,
             cancel,
             error,
-            on_extracting,
+            report_archive_phase,
         )?;
         writes.extend(
             artifacts
@@ -1831,7 +1826,7 @@ impl StorageService {
         seven_zip: &Path,
         cancel: &AtomicBool,
         error: &mut Option<&'static str>,
-        on_extracting: &mut impl FnMut(),
+        report_archive_phase: &mut impl FnMut(&'static str),
     ) -> Result<()> {
         // Expand only supplied managed archive files, never nested extraction output.
         let mut extracted = HashSet::new();
@@ -1860,12 +1855,13 @@ impl StorageService {
             let prior = prior.as_ref().filter(|a| {
                 a["rootId"] == root["id"] && a["relativePath"] == artifacts[n]["relativePath"]
             });
-            on_extracting();
+            report_archive_phase("extracting");
             let result = self.extract_local_archive(
                 root_path, group, &path, &available, prior, artifacts, seven_zip, cancel,
             );
             match result {
                 Ok((relative, inventory, volumes)) => {
+                    report_archive_phase("verifying");
                     let unchanged = artifacts
                         .iter()
                         .filter(|a| {
@@ -1875,13 +1871,13 @@ impl StorageService {
                                 .is_some_and(|p| volumes.contains(&p))
                         })
                         .try_for_each(|a| {
-                            io::check_cancel(cancel)?;
-                            io::verify(
+                            io::verify_cancel(
                                 &io::safe_join(root_path, io::required_string(a, "relativePath")?)?,
                                 io::required_string(a, "hash")?,
                                 a["sizeBytes"]
                                     .as_u64()
                                     .ok_or_else(|| anyhow::anyhow!("file_integrity_failed"))?,
+                                cancel,
                             )
                         });
                     if let Err(e) = unchanged {

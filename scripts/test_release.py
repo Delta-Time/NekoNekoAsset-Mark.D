@@ -100,6 +100,12 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(release.version(), version)
         self.assertEqual(release.bridge_version(version), "0.3.13")
         self.assertEqual(release.release_notes(version), expected)
+        self.write_bridge_version("0.3.13-D.1")
+        self.assertEqual(release.bridge_version(version), release.bridge_release_version(version))
+        self.assertIn(f"{release.PACKAGE}-0.3.13-D.1.tgz", release.asset_names(version, True))
+        self.write_bridge_version("0.3.13-D.2")
+        with self.assertRaises(ValueError):
+            release.bridge_version(version)
 
     def test_unbumped_bridge_must_match_the_release_that_published_it(self):
         source = self.root / f"unity/Packages/{release.PACKAGE}/Editor/Bridge.cs"

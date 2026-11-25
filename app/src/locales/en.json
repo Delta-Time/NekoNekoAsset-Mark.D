@@ -527,6 +527,7 @@
   "localImport.dropFiles": "Drag files or folders here",
   "localImport.extracting": "Extracting archives",
   "localImport.fetch": "Fetch",
+  "localImport.finalizing": "Saving to the library",
   "localImport.importQueued": "Import queued",
   "localImport.importQueuedCount": "Import accepted · {count} waiting",
   "localImport.local_batch_requires_folder_or_zip": "Batch import accepts folders and ZIP files",

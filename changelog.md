@@ -39,7 +39,7 @@
 
 ### Release notes
 
-- This release includes Unity Bridge 0.4.0. If Unity or the computer stops in the middle of an import, a few files the import had already written can stay in the project without being listed as imported; cleanup never removes them.
+- This release includes Unity Bridge Mark.D 0.4.0-D.1. If Unity or the computer stops in the middle of an import, a few files the import had already written can stay in the project without being listed as imported; cleanup never removes them.
 - Most of the App's code was reorganized to make it easier to maintain; apart from the changes above it behaves as 0.3.13. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
 - The first start of 0.4.0 records, from the jobs Activity still lists, where existing local assets were imported from and which file list each earlier download asked for.
 - Bounded source verification does not establish full-library throughput or complete uncapped source coverage.

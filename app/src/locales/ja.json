@@ -527,6 +527,7 @@
   "localImport.dropFiles": "ファイル・フォルダーをここにドロップ",
   "localImport.extracting": "圧縮ファイルを解凍中",
   "localImport.fetch": "情報を取得",
+  "localImport.finalizing": "ライブラリに登録中",
   "localImport.importQueued": "アセットの追加を受け付けました",
   "localImport.importQueuedCount": "アセットの追加を受け付けました（待機中 {count} 件）",
   "localImport.local_batch_requires_folder_or_zip": "この方法で追加できるのはフォルダーとZIPのみです",

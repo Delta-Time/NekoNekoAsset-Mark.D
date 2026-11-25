@@ -1,7 +1,8 @@
 # Releasing NekoNekoAsset
 
-This is the maintainer's process. Contributors need only
-[CONTRIBUTING.md](CONTRIBUTING.md).
+This document records the upstream maintainer's release process.
+Mark.D builds locally and uses a `-D.1` suffix for a Bridge paired with an App
+version ending in `+D1`. Contributors need [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Each release has one numeric App version (`0.3.5`) and tag (`v0.3.5`). Keep
 `app/package.json`, Cargo and Tauri config in agreement. The Bridge keeps the

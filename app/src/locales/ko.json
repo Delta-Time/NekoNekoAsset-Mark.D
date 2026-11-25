@@ -527,6 +527,7 @@
   "localImport.dropFiles": "파일이나 폴더를 여기에 놓으세요",
   "localImport.extracting": "압축 해제 중",
   "localImport.fetch": "가져오기",
+  "localImport.finalizing": "라이브러리에 등록 중",
   "localImport.importQueued": "가져오기를 대기열에 추가했습니다",
   "localImport.importQueuedCount": "가져오기를 접수했습니다 · 대기 중 {count}건",
   "localImport.local_batch_requires_folder_or_zip": "일괄 가져오기는 폴더와 ZIP 파일을 지원합니다",

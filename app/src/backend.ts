@@ -261,7 +261,7 @@ export async function subscribeUpdateProgress(
 }
 export type LocalImportProgress = {
   jobId: string;
-  phase: 'preparing' | 'copying' | 'verifying' | 'extracting';
+  phase: 'preparing' | 'copying' | 'verifying' | 'extracting' | 'finalizing';
   bytes: number | null;
   totalBytes: number | null;
 };

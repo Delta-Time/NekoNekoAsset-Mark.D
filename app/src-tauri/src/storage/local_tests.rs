@@ -693,7 +693,10 @@ async fn local_requests_can_be_retried_after_planning_failure_or_queue_cancellat
     let load = || service.catalogue.get("job", id).unwrap().unwrap();
     assert_eq!(service.cancel_job(id).unwrap()["cancelRequested"], true);
     assert_eq!(load()["state"], "cancelled");
+    let active_import = service.operations.write().await;
     service.retry_local_import(id).await.unwrap();
+    assert_eq!(load()["state"], "queued");
+    drop(active_import);
     assert!(service.claim_local_job(id, None).await.unwrap().is_none());
     let failed = load();
     assert_eq!(failed["state"], "needsAction");
@@ -747,8 +750,61 @@ fn local_copy_reports_streamed_bytes_and_cleans_up_on_cancellation() {
         .unwrap_err();
     assert_eq!(local_error(&error), "cancelled");
     assert!((1..bytes.len() as u64).contains(&reported));
-    assert!(!root.join(&group.prefix).join(&file.relative).exists());
+    let target = root.join(&group.prefix).join(&file.relative);
+    assert!(!target.exists());
     assert!(service.catalogue.list("checkpoint").unwrap().is_empty());
+
+    cancel.store(false, Ordering::Release);
+    let checkpoint = service
+        .copy_local_file(&root, &plan.draft_id, group, file, &cancel, |_| {})
+        .unwrap();
+    let retry = service.copy_local_file(&root, &plan.draft_id, group, file, &cancel, |progress| {
+        if progress.is_none() {
+            cancel.store(true, Ordering::Release);
+        }
+    });
+    assert_eq!(local_error(&retry.unwrap_err()), "cancelled");
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    assert_eq!(service.catalogue.list("checkpoint").unwrap(), [checkpoint]);
     drop(service);
+    fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn stopped_local_import_can_be_discarded_from_another_device() {
+    let path = std::env::temp_dir().join(format!("nna-discard-shared-{}", uuid::Uuid::new_v4()));
+    let library = path.join("library");
+    fs::create_dir_all(&library).unwrap();
+    let catalogue = Catalogue::open_bound(&library, &path.join("device")).unwrap();
+    let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
+    let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
+    let service = StorageService::new(catalogue.clone(), stores).unwrap();
+    let root = service.root(None).unwrap();
+    let draft = uuid::Uuid::new_v4().to_string();
+    let partials = service
+        .root_path(&root)
+        .unwrap()
+        .join(".nna-import-partials")
+        .join(&draft);
+    fs::create_dir_all(&partials).unwrap();
+    fs::write(partials.join("copy.part"), b"partial copy").unwrap();
+    let plan = LocalPlan {
+        draft_id: draft,
+        groups: Vec::new(),
+        metadata: json!({}),
+    };
+    catalogue.put("job", "foreign-import", json!({
+        "id":"foreign-import","type":JOB_TYPE,"state":"needsAction","originDeviceId":"previous-device",
+        "rootId":root["id"],"localPlan":plan
+    })).unwrap();
+
+    service
+        .discard_local_import("foreign-import")
+        .await
+        .unwrap();
+    assert!(!partials.exists());
+    assert!(catalogue.get("job", "foreign-import").unwrap().is_none());
+    drop(service);
+    drop(catalogue);
     fs::remove_dir_all(path).unwrap();
 }

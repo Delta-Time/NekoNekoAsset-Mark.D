@@ -527,6 +527,7 @@
   "localImport.dropFiles": "拖放檔案或資料夾到這裡",
   "localImport.extracting": "正在解壓縮封存檔",
   "localImport.fetch": "抓取",
+  "localImport.finalizing": "正在加入資產庫",
   "localImport.importQueued": "已加入匯入佇列",
   "localImport.importQueuedCount": "已接受匯入要求 · {count} 項待處理",
   "localImport.local_batch_requires_folder_or_zip": "批次匯入僅接受資料夾與 ZIP",

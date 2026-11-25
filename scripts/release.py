@@ -24,6 +24,7 @@ REPOSITORY = "Yan-K/NekoNekoAsset-Public"
 PAGES = "https://yan-k.github.io/NekoNekoAsset-Public"
 CORE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 APP_VERSION = CORE_VERSION + r"(?:\+D[1-9][0-9]*)?"
+BRIDGE_VERSION = CORE_VERSION + r"(?:-D\.[1-9][0-9]*)?"
 VERSION = re.compile(CORE_VERSION)
 BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_bridge.py",
                   "scripts/", ".github/workflows/", "rust-toolchain.toml", "release/config.json",
@@ -79,22 +80,32 @@ def numeric(value: str) -> tuple[int, ...]:
     return tuple(map(int, value.split(".")))
 
 
+def bridge_release_version(current: str) -> str:
+    # Unity needs the Mark.D revision in the ordered part of the package version.
+    return current.replace("+D", "-D.")
+
+
 def bridge_version(current: str) -> str:
-    # The Bridge keeps the version of the release that last changed it; a changed Bridge takes the App's.
+    # The Bridge keeps the version of the App release that last changed it.
     bridge = read_json(f"unity/Packages/{PACKAGE}/package.json")["version"]
-    if not VERSION.fullmatch(bridge) or numeric(bridge) > numeric(current.partition("+")[0]):
-        raise ValueError("The Bridge version must be numeric SemVer and no newer than the App")
+    bridge_core, _, bridge_revision = bridge.partition("-D.")
+    app_core, _, app_revision = current.partition("+D")
+    if not re.fullmatch(BRIDGE_VERSION, bridge) or (
+        numeric(bridge_core), int(bridge_revision or 0)
+    ) > (numeric(app_core), int(app_revision or 0)):
+        raise ValueError("The Bridge version must be a supported SemVer and no newer than the App")
     return bridge
 
 
 def check_bridge_unchanged(bridge: str) -> None:
     # Unity caches packages by version, so changed Bridge sources must not reuse a published version.
-    result = subprocess.run(["git", "diff", "--quiet", f"refs/tags/v{bridge}", "--", f"unity/Packages/{PACKAGE}"],
+    tag = f"v{bridge.replace('-D.', '+D')}"
+    result = subprocess.run(["git", "diff", "--quiet", f"refs/tags/{tag}", "--", f"unity/Packages/{PACKAGE}"],
                             cwd=ROOT, capture_output=True)
     if result.returncode == 1:
-        raise ValueError(f"Bridge sources changed since v{bridge}; give the Bridge this release's version")
+        raise ValueError(f"Bridge sources changed since {tag}; give the Bridge this release's version")
     if result.returncode:
-        raise ValueError(f"The v{bridge} tag that published this Bridge is unavailable")
+        raise ValueError(f"The {tag} tag that published this Bridge is unavailable")
 
 
 def release_config() -> dict:
@@ -166,7 +177,7 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
     bridge = bridge_version(current)
     if tag and tag != f"v{current}":
         raise ValueError("Release tag must equal the App version")
-    if tag and bridge != current:
+    if tag and bridge != bridge_release_version(current):
         check_bridge_unchanged(bridge)
     config = read_json("app/src-tauri/tauri.conf.json")
     updater = config.get("plugins", {}).get("updater", {})
@@ -196,7 +207,8 @@ def asset_names(current: str, bridge: bool) -> set[str]:
     app = f"NekoNekoAsset_{current}_x64-setup.exe"
     names = {app, app + ".sig", "SHA256SUMS.txt"}
     if bridge:
-        names |= {f"{PACKAGE}-{current}{suffix}" for suffix in (".unitypackage", ".tgz", ".zip", ".inventory.json")}
+        version = bridge_release_version(current)
+        names |= {f"{PACKAGE}-{version}{suffix}" for suffix in (".unitypackage", ".tgz", ".zip", ".inventory.json")}
     return names
 
 
@@ -246,8 +258,9 @@ def check_artifacts(directory: Path, current: str, with_checksums: bool, bridge:
                     read_json("app/src-tauri/tauri.conf.json")["plugins"]["updater"]["pubkey"])
     if not bridge:
         return files
-    inventory = json.loads((directory / f"{PACKAGE}-{current}.inventory.json").read_text(encoding="utf-8"))
-    if inventory["packageName"] != PACKAGE or inventory["version"] != current:
+    version = bridge_release_version(current)
+    inventory = json.loads((directory / f"{PACKAGE}-{version}.inventory.json").read_text(encoding="utf-8"))
+    if inventory["packageName"] != PACKAGE or inventory["version"] != version:
         raise ValueError("Bridge inventory version or identity does not match")
     if set(inventory["archives"]) != {"unitypackage", "upm", "vpm"}:
         raise ValueError("All three Bridge archives need verified inventory records")
@@ -348,7 +361,7 @@ def prepare(tag: str) -> None:
     else:
         api.request("releases", "POST", details)
     # App-only releases skip the Bridge build; publish still requires exactly the matching assets.
-    set_output(published="false", version=current, bridge=str(bridge_version(current) == current).lower())
+    set_output(published="false", version=current, bridge=str(bridge_version(current) == bridge_release_version(current)).lower())
     print("Draft release ready; nothing is public until every build job passes.")
 
 
@@ -363,7 +376,7 @@ def publish(tag: str, directory: Path) -> None:
         print("Published release is immutable; no artifacts changed.")
         return
     notes = release_notes(current)
-    bridge = bridge_version(current) == current
+    bridge = bridge_version(current) == bridge_release_version(current)
     files = check_artifacts(directory, current, False, bridge)
     checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in files)
     (directory / "SHA256SUMS.txt").write_text(checksums, encoding="ascii", newline="\n")
