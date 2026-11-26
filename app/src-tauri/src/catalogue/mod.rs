@@ -1755,6 +1755,18 @@ impl Catalogue {
             store,
         )
     }
+    /// Whether a job of this store is running now.
+    pub(crate) fn store_job_running(&self, store: &str) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='job' AND json_extract(body,'$.state')='running' AND json_extract(body,'$.store')=?1)",
+                [store],
+                |row| row.get(0),
+            )?)
+    }
     pub fn related(&self, kind: &str, product_id: &str) -> Result<Vec<Value>> {
         kind_valid(kind)?;
         related(

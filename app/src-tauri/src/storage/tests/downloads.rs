@@ -1401,21 +1401,38 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
         .unwrap());
     // A single refused file waits on the same update.
     c.put("job","a-single",json!({"id":"a-single","type":"download","productId":"42","state":"queued","stage":"storeUpdate","storeUpdated":true,"selectedFileIds":["test-file-0"],"fileIds":["test-file-0"],"updateJobIds":["update"]})).unwrap();
-    c.put(
-        "job",
-        "update",
-        json!({"id":"update","type":"boothUpdate","state":"running"}),
-    )
-    .unwrap();
+    let update = |state: &str| {
+        c.put(
+            "job",
+            "update",
+            json!({"id":"update","type":"boothUpdate","store":"BOOTH","state":state}),
+        )
+        .unwrap()
+    };
+    let sync = |kind: &str, store: &str| {
+        c.put(
+            "job",
+            "sync",
+            json!({"id":"sync","type":kind,"store":store,"state":"running"}),
+        )
+        .unwrap()
+    };
+    // Queued with nothing ahead of it, or behind another store's sync, it is about to read.
+    update("queued");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    sync("gumroadSync", "Gumroad");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    // Queued behind its store's sync, which may take long, it lets other assets go.
+    sync("boothSync", "BOOTH");
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "0-other"
+    );
+    update("running");
     assert!(f.service.queued_download().unwrap().0.is_none());
     assert_eq!(status(), "processing");
     // Once it ends, the single file's refusal stands and the product download goes on.
-    c.put(
-        "job",
-        "update",
-        json!({"id":"update","type":"boothUpdate","state":"completed"}),
-    )
-    .unwrap();
+    update("completed");
     let (next, changed) = f.service.queued_download().unwrap();
     assert!(changed);
     let next = next.unwrap();

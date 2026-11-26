@@ -35,8 +35,8 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
 /// local import only its uncopied ones, so an App update need not wait for them.
 pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
 /// A queued download whose store refused a file, waiting for that store's list to be read
-/// again; its product stays in progress meanwhile, and no other download starts before it
-/// ends.
+/// again; its product stays in progress meanwhile. No other download starts before the wait
+/// ends, except while the update waits behind another job of its store, such as a sync.
 const STORE_UPDATE: &str = "storeUpdate";
 
 use crate::{catalogue::Catalogue, stores::StoreService};
@@ -697,7 +697,20 @@ impl StorageService {
         for mut job in jobs {
             let mut before = job.clone();
             if job["stage"] == STORE_UPDATE {
-                if !job["updateJobIds"].is_array() || self.store_update_active(&job)? {
+                if !job["updateJobIds"].is_array() {
+                    return Ok((None, changed));
+                }
+                let updates = self.active_store_updates(&job)?;
+                if let Some(update) = updates.first() {
+                    // Queued behind another job of its store, such as its account's sync, an
+                    // update may wait long, so other downloads go on until it reads.
+                    if updates.iter().all(|update| update["state"] == "queued")
+                        && self
+                            .catalogue
+                            .store_job_running(update["store"].as_str().unwrap_or(""))?
+                    {
+                        continue;
+                    }
                     return Ok((None, changed));
                 }
                 let fields = job.as_object_mut().unwrap();
@@ -742,15 +755,17 @@ impl StorageService {
         }
         Ok((None, changed))
     }
-    fn store_update_active(&self, job: &Value) -> Result<bool> {
+    /// The store updates a download waits for that have not ended.
+    fn active_store_updates(&self, job: &Value) -> Result<Vec<Value>> {
+        let mut active = Vec::new();
         for id in strings(&job["updateJobIds"]) {
-            if self.catalogue.get("job", &id)?.is_some_and(|update| {
-                matches!(update["state"].as_str(), Some("queued" | "running"))
-            }) {
-                return Ok(true);
-            }
+            active.extend(
+                self.catalogue.get("job", &id)?.filter(|update| {
+                    matches!(update["state"].as_str(), Some("queued" | "running"))
+                }),
+            );
         }
-        Ok(false)
+        Ok(active)
     }
     /// A file its store refused may have been replaced, so the download goes back to the
     /// queue, once, until its store's list has been read again. A cancel requested
