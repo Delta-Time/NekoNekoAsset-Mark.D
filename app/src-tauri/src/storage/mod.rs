@@ -35,7 +35,8 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
 /// local import only its uncopied ones, so an App update need not wait for them.
 pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
 /// A queued download whose store refused a file, waiting for that store's list to be read
-/// again; its product stays in progress meanwhile.
+/// again; its product stays in progress meanwhile, and no other download starts before it
+/// ends.
 const STORE_UPDATE: &str = "storeUpdate";
 
 use crate::{catalogue::Catalogue, stores::StoreService};
@@ -684,17 +685,20 @@ impl StorageService {
         )
     }
     fn queued_download(&self) -> Result<(Option<Value>, bool)> {
-        let jobs = self.catalogue.queued_jobs(Some("download"), None)?;
+        let mut jobs = self.catalogue.queued_jobs(Some("download"), None)?;
         if jobs.is_empty() {
             return Ok((None, false));
         }
+        // A download that waits for its store's list goes on first, so its asset is done before
+        // any other starts.
+        jobs.sort_by_key(|job| job["stage"] != STORE_UPDATE);
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
             let mut before = job.clone();
             if job["stage"] == STORE_UPDATE {
                 if !job["updateJobIds"].is_array() || self.store_update_active(&job)? {
-                    continue;
+                    return Ok((None, changed));
                 }
                 let fields = job.as_object_mut().unwrap();
                 fields.remove("stage");
@@ -780,15 +784,17 @@ impl StorageService {
         job["storeUpdated"] = json!(true);
         job["state"] = json!("queued");
         job["errorCode"] = Value::Null;
+        // Its bar has no share to show until the update ends.
+        job["progress"] = Value::Null;
         job["updatedAt"] = json!(now());
         self.catalogue.put_many_if_unchanged(
             vec![("job".into(), id.clone(), job.clone())],
             vec![("job".into(), id, Some(before))],
         )
     }
-    /// Once nothing else can download, one update per store reads again the lists of the
-    /// products waiting for one: an update slows its store's transfers to one, and one
-    /// store's busy or signed-out account must not fail another's.
+    /// One update per store reads again the lists of the products waiting for one, as soon
+    /// as the queue holds for them: one store's busy or signed-out account must not fail
+    /// another's.
     async fn start_store_updates(&self, app: &tauri::AppHandle) -> Result<bool> {
         let waiting: Vec<_> = self
             .catalogue
@@ -932,6 +938,10 @@ impl StorageService {
                     if job["cancelRequested"] == true {
                         cancel.store(true, Ordering::Release);
                     }
+                    // What an earlier run was doing, and the per-file shares earlier versions kept.
+                    let fields = job.as_object_mut().unwrap();
+                    fields.remove("transfer");
+                    fields.remove("fileProgress");
                     if service
                         .put_queued_download(&before, &mut job, "running", None)
                         .unwrap_or(false)

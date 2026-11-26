@@ -412,6 +412,7 @@ fn bundled_extract(name: &str, zip: &[u8]) -> Vec<(String, Vec<u8>)> {
         &[],
         &root.join("staging"),
         &AtomicBool::new(false),
+        &ExtractionProgress::default(),
     )
     .unwrap();
     let files = extracted
@@ -545,11 +546,19 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         args.extend(extra.iter().map(OsString::from));
         args.push(target.as_os_str().to_owned());
         args.push(source.join("衣装").as_os_str().to_owned());
-        run_7zip(&executable, &args, &cancelled, false).unwrap();
+        run_7zip(&executable, &args, &cancelled, false, None).unwrap();
     };
     let zip = root.join("complete.zip");
     create(&zip, &[]);
-    let result = extract_archive(&executable, &zip, &[], &staging, &cancelled).unwrap();
+    let result = extract_archive(
+        &executable,
+        &zip,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert!(!result
         .staging_path
         .parent()
@@ -587,24 +596,48 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         ],
         &cancelled,
         false,
+        None,
     )
     .unwrap();
-    let seven_result =
-        extract_archive(&executable, &seven_archive, &[], &staging, &cancelled).unwrap();
+    let seven_result = extract_archive(
+        &executable,
+        &seven_archive,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert_eq!(
         fs::read(seven_result.staging_path.join("衣装/content.bin")).unwrap(),
         bytes
     );
     let rar = root.join("complete.rar");
     fs::write(&rar, tiny_rar_fixture("衣装/synthetic.txt", None)).unwrap();
-    let rar_result = extract_archive(&executable, &rar, &[], &staging, &cancelled).unwrap();
+    let rar_result = extract_archive(
+        &executable,
+        &rar,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert_eq!(
         fs::read(rar_result.staging_path.join("衣装/synthetic.txt")).unwrap(),
         b"abc"
     );
     let unsafe_rar = root.join("unsafe.rar");
     fs::write(&unsafe_rar, tiny_rar_fixture("../escape.txt", None)).unwrap();
-    assert!(extract_archive(&executable, &unsafe_rar, &[], &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &unsafe_rar,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert!(!root.join("escape.txt").exists());
     assert!(unsafe_rar.is_file());
     let ambiguous_rar = root.join("ambiguous.rar");
@@ -613,7 +646,15 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         tiny_rar_fixture("safe\nMode = /../../escape.txt", None),
     )
     .unwrap();
-    assert!(extract_archive(&executable, &ambiguous_rar, &[], &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &ambiguous_rar,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert!(!staging.join("escape.txt").exists());
     assert!(!root.join("escape.txt").exists());
     let rar_parts = vec![
@@ -627,8 +668,15 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         )
         .unwrap();
     }
-    let rar_split_result =
-        extract_archive(&executable, &rar_parts[1], &rar_parts, &staging, &cancelled).unwrap();
+    let rar_split_result = extract_archive(
+        &executable,
+        &rar_parts[1],
+        &rar_parts,
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert_eq!(
         fs::read(rar_split_result.staging_path.join("衣装/synthetic.txt")).unwrap(),
         b"abc"
@@ -654,7 +702,15 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
     let moved = other.join(parts[1].file_name().unwrap());
     fs::rename(&parts[1], &moved).unwrap();
     parts[1] = moved;
-    let result = extract_archive(&executable, &parts[0], &parts, &staging, &cancelled).unwrap();
+    let result = extract_archive(
+        &executable,
+        &parts[0],
+        &parts,
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert_eq!(
         fs::read(result.staging_path.join("衣装/content.bin")).unwrap(),
         bytes
@@ -666,8 +722,15 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
     let mut permissions = fs::metadata(readonly_part).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(readonly_part, permissions).unwrap();
-    let readonly_result =
-        extract_archive(&executable, &parts[0], &parts, &staging, &cancelled).unwrap();
+    let readonly_result = extract_archive(
+        &executable,
+        &parts[0],
+        &parts,
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default(),
+    )
+    .unwrap();
     assert_eq!(
         fs::read(readonly_result.staging_path.join("衣装/content.bin")).unwrap(),
         bytes
@@ -682,7 +745,15 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
     fs::set_permissions(readonly_part, permissions).unwrap();
     let completed_staging_count = fs::read_dir(&staging).unwrap().count();
     let incomplete = parts[..parts.len() - 1].to_vec();
-    assert!(extract_archive(&executable, &parts[0], &incomplete, &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &parts[0],
+        &incomplete,
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert_eq!(
         fs::read_dir(&staging).unwrap().count(),
         completed_staging_count
@@ -690,18 +761,73 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
 
     let password = root.join("password.zip");
     create(&password, &["-pSyntheticOnlyPassword"]);
-    assert!(extract_archive(&executable, &password, &[], &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &password,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert!(password.is_file());
     let damaged = root.join("damaged.zip");
     fs::write(&damaged, b"independently authored invalid archive").unwrap();
-    assert!(extract_archive(&executable, &damaged, &[], &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &damaged,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert!(damaged.is_file());
     assert_eq!(
         fs::read_dir(&staging).unwrap().count(),
         completed_staging_count
     );
     cancelled.store(true, Ordering::Relaxed);
-    assert!(extract_archive(&executable, &zip, &[], &staging, &cancelled).is_err());
+    assert!(extract_archive(
+        &executable,
+        &zip,
+        &[],
+        &staging,
+        &cancelled,
+        &ExtractionProgress::default()
+    )
+    .is_err());
     assert!(zip.is_file());
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn extraction_output_reads_progress_and_keeps_only_messages() {
+    // 7-Zip's own shape: each progress line after a carriage return, then a blank one
+    // clearing it.
+    let output = b"\r\n7-Zip (x64)\r\n\r\nScanning the drive for archives:\r\n  0M Scan C:\\authored\\\r          \r1 file, 30 bytes\r\n  0%\r    \r 58% 1 - wrong password.txt\r                          \r 97% 2 - authored.bin\r                 \rEverything is Ok\r\n\r\nFiles: 3\r\n";
+    let overflow = Arc::new(AtomicBool::new(false));
+    let percent = AtomicU64::new(0);
+    let kept = read_extraction_output(&output[..], 1024, overflow.clone(), &percent).unwrap();
+    let kept = String::from_utf8(kept).unwrap();
+    assert_eq!(percent.load(Ordering::Relaxed), 97);
+    assert!([
+        "7-Zip (x64)",
+        "1 file, 30 bytes",
+        "Everything is Ok",
+        "Files: 3"
+    ]
+    .iter()
+    .all(|message| kept.contains(message)));
+    // No progress line stays, so no file name it carries can read as an error.
+    assert!(!kept.contains("password") && !kept.contains("authored") && !kept.contains('%'));
+    // Hours of progress never fill what is kept.
+    let long: Vec<u8> = (0..100_000)
+        .flat_map(|step| {
+            format!("{:3}% 1 - authored.bin\r                    \r", step % 100).into_bytes()
+        })
+        .collect();
+    let kept = read_extraction_output(&long[..], 1024, overflow.clone(), &percent).unwrap();
+    assert!(kept.is_empty() && !overflow.load(Ordering::Relaxed));
+    assert_eq!(percent.load(Ordering::Relaxed), 99);
 }

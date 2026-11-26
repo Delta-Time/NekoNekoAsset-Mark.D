@@ -445,6 +445,7 @@ async fn extraction_group_does_not_hash_unrelated_corrupt_originals() {
             &mut artifact,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -517,7 +518,7 @@ async fn verified_downloads_real_extraction_certification_and_reopen_preserve_re
     for artifact in [&mut archive_a, &mut archive_b] {
         let files = f.service.remote_files("42").unwrap().0;
         f.service
-            .extract_for_download(&tool, &root, artifact, &files, &cancel)
+            .extract_for_download(&tool, &root, artifact, &files, &cancel, &Default::default())
             .await
             .unwrap();
         assert_eq!(artifact["status"], "ready");
@@ -694,6 +695,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut failed,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap_err();
@@ -748,6 +750,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut repaired,
             &files,
             &Arc::new(AtomicBool::new(true)),
+            &Default::default(),
         )
         .await
         .unwrap_err();
@@ -788,6 +791,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut repaired,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap();

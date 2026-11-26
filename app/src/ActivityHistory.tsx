@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
-import type { Account, AssetFile, Locale, Product } from './model';
+import { byteLabel, type Account, type AssetFile, type Locale, type Product } from './model';
 import { errorCode, invokeAction, nativeFileAction, progressPercent, type Job } from './backend';
 import {
   isStoreJob,
@@ -209,6 +209,28 @@ export default function ActivityHistory({
                               ? 'exportZip'
                               : 'storage',
                 );
+  // Waiting for its store's list, or running: the files it is receiving with their bytes, or
+  // the archive it is extracting.
+  function downloadState(job: Job) {
+    if (job.state === 'queued' && job.stage === 'storeUpdate') return label('updating');
+    const transfer = job.state === 'running' ? job.transfer : undefined;
+    if (!transfer) return label(job.state);
+    const count = (value: number) => value.toLocaleString(locale);
+    const place = `${
+      transfer.first === transfer.last
+        ? count(transfer.first)
+        : `${count(transfer.first)}–${count(transfer.last)}`
+    }/${count(transfer.total)}`;
+    if (transfer.phase === 'extract')
+      return `${label('extracting')} · ${place} · ${count(transfer.percent ?? 0)}%`;
+    const bytes =
+      transfer.received === undefined
+        ? ''
+        : transfer.size === undefined
+          ? byteLabel(locale, transfer.received)
+          : `${byteLabel(locale, transfer.received)} / ${byteLabel(locale, transfer.size)}`;
+    return [place, bytes].filter(Boolean).join(' · ');
+  }
   function failures(job: ActivityJob) {
     const result: { key: string; name: string; reason: string }[] = [];
     const ids = productIds(job),
@@ -383,7 +405,8 @@ export default function ActivityHistory({
                         .filter(Boolean)
                         .join(' · ')
                     : names[0];
-            const errors = failures(job),
+            // A download's failures are its last pass's, which a running or waiting one redoes.
+            const errors = job.type === 'download' && active(job) ? [] : failures(job),
               percent = progressPercent(job),
               date = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? '');
             const canRetry =
@@ -412,7 +435,9 @@ export default function ActivityHistory({
                         ? unityProgressLabel(locale, { ...job, stage: job.stage ?? job.state })
                         : isStoreSyncJob(job.type)
                           ? syncProgressLabel(locale, job)
-                          : label(job.state)}
+                          : job.type === 'download'
+                            ? downloadState(job)
+                            : label(job.state)}
                     </span>
                   </div>
                   {isStoreJob(job.type) && names.length === 1 && (

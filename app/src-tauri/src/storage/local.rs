@@ -1803,7 +1803,14 @@ impl StorageService {
         let _empty_staging_parent =
             io::EmptyDirectoryGuard(staging.parent().unwrap().to_path_buf());
         let _empty_staging = io::EmptyDirectoryGuard(staging.clone());
-        let extraction = archive::extract_archive(tool, source, available, &staging, cancel)?;
+        let extraction = archive::extract_archive(
+            tool,
+            source,
+            available,
+            &staging,
+            cancel,
+            &archive::ExtractionProgress::default(),
+        )?;
         io::check_cancel(cancel)?;
         let inventory = serde_json::to_value(&extraction.inventory)?;
         if target.exists() {

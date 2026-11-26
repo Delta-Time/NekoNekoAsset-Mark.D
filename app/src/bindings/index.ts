@@ -177,6 +177,7 @@ export type { TagOption } from './TagOption';
 export type { TagSuggestion } from './TagSuggestion';
 export type { TextFile } from './TextFile';
 export type { ThemePreset } from './ThemePreset';
+export type { Transfer } from './Transfer';
 export type { UnityDetails } from './UnityDetails';
 export type { UnityEditor } from './UnityEditor';
 export type { UnityEditors } from './UnityEditors';

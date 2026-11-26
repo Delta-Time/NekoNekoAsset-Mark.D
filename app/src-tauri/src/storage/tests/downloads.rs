@@ -1386,9 +1386,11 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
         .unwrap());
     assert_eq!(stored("b-product")["state"], "queued");
     assert_eq!(stored("b-product")["stage"], "storeUpdate");
-    // Its product stays in progress, and nothing runs before its update even starts.
+    // Its product stays in progress, and nothing runs before its update even starts: not
+    // another asset queued meanwhile, whatever its place in the queue.
     let status = || c.command("product_details", json!({"id":"42"})).unwrap()["status"].clone();
     assert_eq!(status(), "processing");
+    c.put("job","0-other",json!({"id":"0-other","type":"download","productId":"43","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
     assert!(f.service.queued_download().unwrap().0.is_none());
     let before = stored("b-product");
     let mut started = before.clone();
@@ -1421,10 +1423,15 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
     assert!(next.get("stage").is_none() && next.get("updateJobIds").is_none());
     assert_eq!(stored("a-single")["state"], "needsAction");
     assert_eq!(stored("a-single")["errorCode"], "store_file_unavailable");
-    // Refused again on its second pass, or cancelled, it ends as before.
+    // Refused again on its second pass, or cancelled, it ends as before. The other asset
+    // goes once it runs.
     let mut again = next.clone();
     again["state"] = json!("running");
     c.put("job", "b-product", again.clone()).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "0-other"
+    );
     assert!(!f
         .service
         .wait_for_store_list(&mut again, &refused, &cancel)

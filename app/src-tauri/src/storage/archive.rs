@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -68,6 +68,29 @@ pub struct ArchiveExtraction {
     // Prepared content remains helper-owned until the caller moves it into
     // durable storage. Any publication/verification failure cleans staging.
     _workspace: WorkspaceGuard,
+}
+
+/// How far an extraction is, for another thread to show while it runs: 7-Zip's own percent
+/// is the first half, and checking what it wrote the second.
+#[derive(Debug, Default)]
+pub struct ExtractionProgress {
+    written: AtomicU64,
+    checked: AtomicU64,
+    size: AtomicU64,
+}
+
+impl ExtractionProgress {
+    pub fn percent(&self) -> u64 {
+        let size = self.size.load(Ordering::Relaxed);
+        let checked = match size {
+            0 => 0,
+            size => {
+                let checked = self.checked.load(Ordering::Relaxed).min(size);
+                (u128::from(checked) * 100 / u128::from(size)) as u64
+            }
+        };
+        (self.written.load(Ordering::Relaxed).min(100) + checked) / 2
+    }
 }
 
 #[derive(Debug)]
@@ -691,11 +714,69 @@ fn read_bounded(mut reader: impl Read, limit: usize, overflow: Arc<AtomicBool>) 
     Ok(result)
 }
 
+/// Reads 7-Zip's output while it extracts. A progress line (`" 45% 3 - name"` between
+/// carriage returns) only sets `percent`, and the blank ones that clear it are dropped, so a
+/// long extraction cannot fill what is kept for classifying an error.
+fn read_extraction_output(
+    mut reader: impl Read,
+    limit: usize,
+    overflow: Arc<AtomicBool>,
+    percent: &AtomicU64,
+) -> Result<Vec<u8>> {
+    let mut kept = Vec::new();
+    let mut line = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer).context("archive_process_io")?;
+        for &byte in &buffer[..count] {
+            line.push(byte);
+            if matches!(byte, b'\r' | b'\n') {
+                keep_output_line(&mut kept, &mut line, limit, &overflow, percent);
+            } else if line.len() > limit {
+                overflow.store(true, Ordering::Relaxed);
+                line.clear();
+            }
+        }
+        if count == 0 {
+            keep_output_line(&mut kept, &mut line, limit, &overflow, percent);
+            return Ok(kept);
+        }
+    }
+}
+
+fn keep_output_line(
+    kept: &mut Vec<u8>,
+    line: &mut Vec<u8>,
+    limit: usize,
+    overflow: &AtomicBool,
+    percent: &AtomicU64,
+) {
+    let text = line.trim_ascii();
+    let digits = text.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    match text.get(digits) {
+        Some(b'%') if digits > 0 => {
+            if let Some(value) = std::str::from_utf8(&text[..digits])
+                .ok()
+                .and_then(|digits| digits.parse::<u64>().ok())
+            {
+                percent.store(value.min(100), Ordering::Relaxed);
+            }
+        }
+        // MiB done, which 7-Zip prints when it knows no total.
+        Some(b'M') if digits > 0 => {}
+        _ if text.is_empty() => {}
+        _ if kept.len() + line.len() > limit => overflow.store(true, Ordering::Relaxed),
+        _ => kept.extend_from_slice(line),
+    }
+    line.clear();
+}
+
 fn run_7zip(
     executable: &Path,
     args: &[OsString],
     cancelled: &AtomicBool,
     listing: bool,
+    progress: Option<&ExtractionProgress>,
 ) -> Result<Vec<u8>> {
     check_cancel(cancelled)?;
     let mut command = Command::new(executable);
@@ -725,16 +806,14 @@ fn run_7zip(
     let err_pipe = child.stderr.take().context("archive_process_io")?;
     let out_overflow = overflow.clone();
     let err_overflow = overflow.clone();
+    let written = Arc::new(AtomicU64::new(0));
+    let out_written = written.clone();
     let out = thread::spawn(move || {
-        read_bounded(
-            out_pipe,
-            if listing {
-                MAX_LISTING_BYTES
-            } else {
-                1024 * 1024
-            },
-            out_overflow,
-        )
+        if listing {
+            read_bounded(out_pipe, MAX_LISTING_BYTES, out_overflow)
+        } else {
+            read_extraction_output(out_pipe, 1024 * 1024, out_overflow, &out_written)
+        }
     });
     let err = thread::spawn(move || read_bounded(err_pipe, 1024 * 1024, err_overflow));
     let mut interrupted = None;
@@ -745,6 +824,11 @@ fn run_7zip(
         Duration::from_secs(60 * 60)
     };
     let status = loop {
+        if let Some(progress) = progress {
+            progress
+                .written
+                .store(written.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         if cancelled.load(Ordering::Relaxed)
             || overflow.load(Ordering::Relaxed)
             || started.elapsed() >= timeout
@@ -867,7 +951,7 @@ fn list_archive(
     let list = |code_page| -> Result<Vec<u8>> {
         let mut args = cli_args("l", first, code_page);
         args.insert(1, "-slt".into());
-        run_7zip(seven_zip, &args, cancelled, true)
+        run_7zip(seven_zip, &args, cancelled, true, None)
     };
     let parse = |listing: &[u8]| {
         parse_listing(std::str::from_utf8(listing).context("archive_listing_invalid")?)
@@ -885,7 +969,12 @@ fn list_archive(
     Ok((932, parse(&list(932)?)?))
 }
 
-fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> {
+/// Also adds each read's bytes to `checked`.
+fn hash_file(
+    path: &Path,
+    cancelled: &AtomicBool,
+    checked: &AtomicU64,
+) -> Result<(u64, String, u32)> {
     let mut file = File::open(path).context("storage_read_failed")?;
     let mut digest = Sha256::new();
     let mut crc = !0u32;
@@ -897,6 +986,7 @@ fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> 
         if count == 0 {
             break;
         }
+        checked.fetch_add(count as u64, Ordering::Relaxed);
         digest.update(&buffer[..count]);
         for byte in &buffer[..count] {
             crc = (crc >> 8) ^ CRC_TABLE[((crc ^ u32::from(*byte)) & 0xff) as usize];
@@ -938,7 +1028,7 @@ fn copy_source(source: &Path, destination: &Path, cancelled: &AtomicBool) -> Res
     output.sync_all().context("storage_write_failed")?;
     drop(output);
     ensure!(
-        hex::encode(hash.finalize()) == hash_file(destination, cancelled)?.1,
+        hex::encode(hash.finalize()) == hash_file(destination, cancelled, &AtomicU64::new(0))?.1,
         "storage_copy_verification_failed"
     );
     Ok(())
@@ -1000,6 +1090,16 @@ pub fn verify_extracted_inventory(
     expected: &[ArchiveEntry],
     cancelled: &AtomicBool,
 ) -> Result<Vec<VerifiedEntry>> {
+    verify_inventory(root, expected, cancelled, &AtomicU64::new(0))
+}
+
+/// As `verify_extracted_inventory`, adding the bytes it reads to `checked`.
+fn verify_inventory(
+    root: &Path,
+    expected: &[ArchiveEntry],
+    cancelled: &AtomicBool,
+    checked: &AtomicU64,
+) -> Result<Vec<VerifiedEntry>> {
     validate_no_links(root)?;
     let mut remaining = validate_inventory_paths(expected)?;
     let expected_files: BTreeMap<_, _> = expected
@@ -1059,7 +1159,7 @@ pub fn verify_extracted_inventory(
             #[cfg(not(windows))]
             let _ = original_permissions;
             flushed.context("storage_write_failed")?;
-            let (size, hash, crc) = hash_file(&path, cancelled)?;
+            let (size, hash, crc) = hash_file(&path, cancelled, checked)?;
             let expected_file = expected_files
                 .get(relative.as_str())
                 .context("archive_inventory_mismatch")?;
@@ -1094,6 +1194,7 @@ pub fn extract_archive(
     available_volumes: &[PathBuf],
     staging_parent: &Path,
     cancelled: &AtomicBool,
+    progress: &ExtractionProgress,
 ) -> Result<ArchiveExtraction> {
     check_cancel(cancelled)?;
     validate_no_links(staging_parent)?;
@@ -1156,6 +1257,7 @@ pub fn extract_archive(
             >= expanded_size.saturating_add(16 * 1024 * 1024),
         "storage_low_space"
     );
+    progress.size.store(expanded_size, Ordering::Relaxed);
     // Bind writes to literal validated file names. Technical listings are text:
     // a malicious name containing a newline must never smuggle an unlisted
     // member into extraction. Never select a directory recursively.
@@ -1190,6 +1292,12 @@ pub fn extract_archive(
     drop(names);
     if file_count > 0 {
         let mut extraction_args = cli_args("x", &first, code_page);
+        for arg in extraction_args
+            .iter_mut()
+            .filter(|arg| arg.as_os_str() == "-bd")
+        {
+            *arg = "-bsp1".into();
+        }
         let mut output_arg = OsString::from("-o");
         output_arg.push(&content);
         let mut include_arg = OsString::from("-i@");
@@ -1206,9 +1314,16 @@ pub fn extract_archive(
                 "-aou".into(),
             ],
         );
-        run_7zip(seven_zip, &extraction_args, cancelled, false)?;
+        run_7zip(
+            seven_zip,
+            &extraction_args,
+            cancelled,
+            false,
+            Some(progress),
+        )?;
     }
-    let mut inventory = verify_extracted_inventory(&content, &plan.outputs, cancelled)?;
+    progress.written.store(100, Ordering::Relaxed);
+    let mut inventory = verify_inventory(&content, &plan.outputs, cancelled, &progress.checked)?;
     // Keep one of identical copies; a CRC match must also be a content match.
     for (copy, kept) in &plan.identical {
         let hash = |path: &String| {

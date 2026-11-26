@@ -195,6 +195,10 @@ pub struct Job {
     )]
     #[ts(optional)]
     pub stage: Option<Option<String>>,
+    /// What a running download is doing now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transfer: Option<Transfer>,
     /// What went wrong per product (AI analysis) or per file (download).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, unknown>")]
@@ -258,6 +262,30 @@ pub struct Job {
     #[serde(flatten)]
     #[ts(skip)]
     pub rest: Map<String, Value>,
+}
+
+/// The files a running download is receiving, or the archive it is extracting, by their
+/// 1-based places among the `total` its phase covers.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Transfer {
+    /// `download` or `extract`.
+    pub phase: String,
+    pub first: u64,
+    pub last: u64,
+    pub total: u64,
+    /// Bytes the files in progress have received, and expect once every size is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub received: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub size: Option<u64>,
+    /// How far the archive being extracted is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub percent: Option<u64>,
 }
 
 /// A percentage, or a store sync's stages and counts.
