@@ -38,6 +38,12 @@ pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_lo
 /// again; its product stays in progress meanwhile. No other download starts before the wait
 /// ends, except while the update waits behind another job of its store, such as a sync.
 const STORE_UPDATE: &str = "storeUpdate";
+/// A queued download its store refused or limited, waiting until `retryAt` to try again. No
+/// other download of that store starts meanwhile; other stores' go on.
+const STORE_WAIT: &str = "storeWait";
+/// The waits in minutes while a store refuses or limits downloads and serves none, an hour
+/// in all; past them a refusal ends the download.
+const STORE_WAIT_MINUTES: [i64; 6] = [1, 2, 4, 8, 15, 30];
 
 use crate::{catalogue::Catalogue, stores::StoreService};
 use anyhow::{bail, ensure, Result};
@@ -73,6 +79,8 @@ pub struct StorageService {
     deleting: Arc<Mutex<HashSet<String>>>,
     process_lock: Arc<Mutex<Option<File>>>,
     automatic_pending: Arc<Mutex<AutomaticPending>>,
+    /// Waits in a row per store since it last served a download; a restart starts over.
+    store_waits: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 #[derive(Default)]
@@ -236,6 +244,15 @@ fn ensure_files(job: &Value, files: &[Value]) -> Result<()> {
     }
     bail!("manifest_incomplete")
 }
+/// The store of a product: its ID's prefix. BOOTH's IDs are bare numbers.
+fn product_store(product: &str) -> &str {
+    product.split_once(':').map_or("booth", |(store, _)| store)
+}
+/// A download failure a store's limit may explain: past many downloads BOOTH refuses them as
+/// it refuses a file, and any store may answer 429.
+fn store_limit(store: &str, code: &str) -> bool {
+    code == "rate_limited" || (store == "booth" && code == "store_access_denied")
+}
 #[cfg(test)]
 fn native_seven_zip_test_tool() -> PathBuf {
     let path = std::env::var_os("NNA_7ZIP")
@@ -262,6 +279,7 @@ impl StorageService {
             deleting: Arc::new(Mutex::new(HashSet::new())),
             process_lock: Arc::new(Mutex::new(None)),
             automatic_pending: Arc::new(Mutex::new(AutomaticPending::default())),
+            store_waits: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     fn changed(&self, app: &tauri::AppHandle, id: Option<&str>) {
@@ -690,8 +708,21 @@ impl StorageService {
             return Ok((None, false));
         }
         // A download that waits for its store's list goes on first, so its asset is done before
-        // any other starts.
-        jobs.sort_by_key(|job| job["stage"] != STORE_UPDATE);
+        // any other starts. One that waited out its store's limit goes after that store's
+        // others, which try the store first.
+        jobs.sort_by_key(|job| (job["stage"] != STORE_UPDATE, job["stage"] == STORE_WAIT));
+        let now = chrono::Utc::now();
+        let held: HashSet<String> = jobs
+            .iter()
+            .filter(|job| {
+                job["stage"] == STORE_WAIT
+                    && job["retryAt"]
+                        .as_str()
+                        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                        .is_some_and(|at| at > now)
+            })
+            .map(|job| product_store(job["productId"].as_str().unwrap_or("")).to_owned())
+            .collect();
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
@@ -726,6 +757,19 @@ impl StorageService {
                     )?;
                     continue;
                 }
+                if !self.put_queued_download(&before, &mut job, "queued", None)? {
+                    continue;
+                }
+                changed = true;
+                before = job.clone();
+            }
+            if held.contains(product_store(job["productId"].as_str().unwrap_or(""))) {
+                continue;
+            }
+            if job["stage"] == STORE_WAIT {
+                let fields = job.as_object_mut().unwrap();
+                fields.remove("stage");
+                fields.remove("retryAt");
                 if !self.put_queued_download(&before, &mut job, "queued", None)? {
                     continue;
                 }
@@ -807,6 +851,61 @@ impl StorageService {
             vec![("job".into(), id, Some(before))],
         )
     }
+    /// A download its store refused or limited (`store_limit`, which `run_download` makes its
+    /// outcome) goes back to the queue until a wait ends, and no other download of that store
+    /// starts before then. Each wait in a row is longer; once the store has served none for an
+    /// hour of waits, a refusal ends the download as before. A cancel requested meanwhile ends
+    /// it instead.
+    fn wait_for_store_limit(
+        &self,
+        job: &mut Value,
+        result: &Result<()>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        let store = product_store(job["productId"].as_str().unwrap_or("")).to_owned();
+        let limited = result
+            .as_ref()
+            .is_err_and(|error| store_limit(&store, io::stable_error(error)));
+        if !limited || cancel.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let waits = self
+            .store_waits
+            .lock()
+            .unwrap()
+            .get(&store)
+            .copied()
+            .unwrap_or(0);
+        let Some(minutes) = STORE_WAIT_MINUTES.get(waits) else {
+            return Ok(false);
+        };
+        let id = io::required_string(job, "id")?.to_owned();
+        let Some(before) = self
+            .catalogue
+            .get("job", &id)?
+            .filter(|stored| stored["state"] == "running" && stored["cancelRequested"] != true)
+        else {
+            return Ok(false);
+        };
+        job["stage"] = json!(STORE_WAIT);
+        job["retryAt"] =
+            json!((chrono::Utc::now() + chrono::Duration::minutes(*minutes)).to_rfc3339());
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        if !self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.clone(), job.clone())],
+            vec![("job".into(), id, Some(before))],
+        )? {
+            return Ok(false);
+        }
+        self.store_waits.lock().unwrap().insert(store, waits + 1);
+        Ok(true)
+    }
+    /// A store that serves a download again starts its next refusal's waits from the first.
+    fn store_served(&self, store: &str) {
+        self.store_waits.lock().unwrap().remove(store);
+    }
     /// One update per store reads again the lists of the products waiting for one, as soon
     /// as the queue holds for them: one store's busy or signed-out account must not fail
     /// another's.
@@ -823,9 +922,10 @@ impl StorageService {
         let mut stores: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for job in &waiting {
             let product = job["productId"].as_str().unwrap_or("");
-            // Store product IDs carry their store; BOOTH's are bare numbers.
-            let store = product.split_once(':').map_or("booth", |(store, _)| store);
-            stores.entry(store).or_default().insert(product);
+            stores
+                .entry(product_store(product))
+                .or_default()
+                .insert(product);
         }
         let mut updates = HashMap::new();
         for products in stores.values() {
@@ -966,6 +1066,9 @@ impl StorageService {
                         if service
                             .wait_for_store_list(&mut job, &result, &cancel)
                             .unwrap_or(false)
+                            || service
+                                .wait_for_store_limit(&mut job, &result, &cancel)
+                                .unwrap_or(false)
                         {
                             service.changed(&app, Some(&id));
                             service.cancellations.lock().unwrap().remove(&id);

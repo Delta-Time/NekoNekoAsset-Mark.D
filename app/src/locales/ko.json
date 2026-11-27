@@ -859,6 +859,7 @@
   "ux.oneHandedDrag": "한 손 드래그 조작",
   "ux.permission_denied": "이 위치에 쓸 수 없습니다.",
   "ux.reduceMotion": "모션 줄이기",
+  "ux.retryingAt": "{time}에 다시 시도",
   "ux.root_offline": "라이브러리 위치에 접근할 수 없습니다.",
   "ux.roundedCorners": "둥근 모서리",
   "ux.searchFilter": "검색",

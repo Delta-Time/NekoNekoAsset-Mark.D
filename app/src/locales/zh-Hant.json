@@ -859,6 +859,7 @@
   "ux.oneHandedDrag": "單手拖移操作",
   "ux.permission_denied": "程式無法寫入此位置。",
   "ux.reduceMotion": "減少動畫",
+  "ux.retryingAt": "將於 {time} 重試",
   "ux.root_offline": "資產庫位置無法存取。",
   "ux.roundedCorners": "圓角",
   "ux.searchFilter": "搜尋",

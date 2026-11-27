@@ -190,6 +190,9 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - A refused page proves nothing about the session. Only an account-level page on
   the store's own host (BOOTH's lists, Gumroad's library, Jinxxy's inventory) can
   ask the user to sign in again; a refused product or file fails only that asset.
+  A refusal a store's limit on downloads may explain (BOOTH refusing a file it still
+  lists, any store's 429) holds that store's downloads for a wait instead, an hour of
+  waits at most, while other stores' go on.
 
 ### Code
 

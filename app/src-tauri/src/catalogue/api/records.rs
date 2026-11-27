@@ -199,6 +199,14 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub transfer: Option<Transfer>,
+    /// When a download waiting out its store's limit tries again.
+    #[serde(
+        default,
+        deserialize_with = "crate::ipc::nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub retry_at: Option<Option<String>>,
     /// What went wrong per product (AI analysis) or per file (download).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, unknown>")]

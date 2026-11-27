@@ -663,6 +663,15 @@ impl StorageService {
         let mut next = waiting.next();
         let mut in_flight = FuturesUnordered::new();
         let mut results = Vec::new();
+        // A store that refused or limited one file would the next: the files in flight finish
+        // and no other starts, so the job can wait out the limit.
+        let store = product_store(&product);
+        let limit = |result: &Result<()>| {
+            result
+                .as_ref()
+                .is_err_and(|error| store_limit(store, io::stable_error(error)))
+        };
+        let mut limited = false;
         while next.is_some() || !in_flight.is_empty() {
             let concurrency = adaptive_download_count(
                 &self.preferences()?["downloadConcurrency"],
@@ -671,7 +680,10 @@ impl StorageService {
             );
             // Sync reduces new launches for the same provider. Existing transfers
             // finish normally; each completion rechecks sync and saved preferences.
-            while next.is_some() && in_flight.len() < concurrency && !cancel.load(Ordering::Acquire)
+            while next.is_some()
+                && !limited
+                && in_flight.len() < concurrency
+                && !cancel.load(Ordering::Acquire)
             {
                 let file = next.take().unwrap();
                 let cancel = cancel.clone();
@@ -698,12 +710,15 @@ impl StorageService {
                 next = waiting.next();
             }
             if let Some(result) = in_flight.next().await {
+                limited |= limit(&result.1);
                 results.push(result);
             } else {
                 break;
             }
         }
         io::check_cancel(cancel)?;
+        // The store's limit is the pass's outcome, so the job waits it out (`wait_for_store_limit`).
+        results.sort_by_key(|(_, result)| !limit(result));
         // A failed sibling never discards completed bytes. Extract only after all volumes have arrived.
         let mut error = None;
         let mut verified = HashSet::new();
@@ -1720,6 +1735,7 @@ impl StorageService {
                 ticket.expected_origin.as_ref(),
             )?;
             ensure!(status.is_success(), "download_http_failed");
+            self.store_served(ticket.provider.key());
             let response_revision = response
                 .headers()
                 .get(reqwest::header::ETAG)

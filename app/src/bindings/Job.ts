@@ -49,6 +49,10 @@ export type Job = {
    */
   transfer?: Transfer;
   /**
+   * When a download waiting out its store's limit tries again.
+   */
+  retryAt?: string | null;
+  /**
    * What went wrong per product (AI analysis) or per file (download).
    */
   failures?: Record<string, unknown>;

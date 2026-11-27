@@ -859,6 +859,7 @@
   "ux.oneHandedDrag": "片手ドラッグ操作",
   "ux.permission_denied": "この場所に書き込めません。",
   "ux.reduceMotion": "アニメーションを減らす",
+  "ux.retryingAt": "{time} に再試行",
   "ux.root_offline": "ライブラリの場所にアクセスできません。",
   "ux.roundedCorners": "角丸",
   "ux.searchFilter": "検索",

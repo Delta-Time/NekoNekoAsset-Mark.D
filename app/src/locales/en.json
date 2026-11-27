@@ -859,6 +859,7 @@
   "ux.oneHandedDrag": "One-handed drag actions",
   "ux.permission_denied": "The app cannot write to this location.",
   "ux.reduceMotion": "Reduce motion",
+  "ux.retryingAt": "Retrying at {time}",
   "ux.root_offline": "The library location is unavailable.",
   "ux.roundedCorners": "Rounded corners",
   "ux.searchFilter": "Search",

@@ -209,10 +209,16 @@ export default function ActivityHistory({
                               ? 'exportZip'
                               : 'storage',
                 );
-  // Waiting for its store's list, or running: the files it is receiving with their bytes, or
-  // the archive it is extracting.
+  // Waiting for its store's list or out its store's limit, or running: the files it is
+  // receiving with their bytes, or the archive it is extracting.
   function downloadState(job: Job) {
     if (job.state === 'queued' && job.stage === 'storeUpdate') return label('updating');
+    const retryAt = Date.parse(job.retryAt ?? '');
+    if (job.state === 'queued' && job.stage === 'storeWait' && retryAt > Date.now())
+      return label('retryingAt').replace(
+        '{time}',
+        new Date(retryAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
+      );
     const transfer = job.state === 'running' ? job.transfer : undefined;
     if (!transfer) return label(job.state);
     const count = (value: number) => value.toLocaleString(locale);
