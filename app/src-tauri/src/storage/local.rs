@@ -145,13 +145,32 @@ fn source_error(error: std::io::Error) -> anyhow::Error {
         error.into()
     }
 }
+/// The name an item's copy gets: a name Windows cannot store, such as `aux.png`, gets the
+/// name 7-Zip would give it, as members of an archive do. One still unsafe is refused.
 fn path_name(path: &Path) -> Result<String> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?;
-    archive::validate_relative_path(name)?;
-    Ok(name.to_owned())
+    let name = archive::written_name(name);
+    archive::validate_relative_path(&name)?;
+    Ok(name)
+}
+/// Windows and portable archives must not alias distinct source entries, nor may two names
+/// that map to the same copy.
+fn ensure_distinct(group: &LocalGroup) -> Result<()> {
+    let mut names = HashSet::new();
+    for relative in group
+        .directories
+        .iter()
+        .chain(group.files.iter().map(|f| &f.relative))
+    {
+        ensure!(
+            names.insert(relative.to_lowercase()),
+            "archive_path_collision"
+        );
+    }
+    Ok(())
 }
 fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup) -> Result<()> {
     // Parents inside the selection were checked on the way down.
@@ -483,6 +502,7 @@ impl StorageService {
             names.insert(relative.to_lowercase());
             enumerate(&path, &relative, &mut group)?;
         }
+        ensure_distinct(&group)?;
         let plan = LocalPlan {
             draft_id: draft,
             groups: vec![group],
@@ -690,18 +710,7 @@ impl StorageService {
                 enumerate(source, &relative, &mut group)?;
             }
             ensure!(!group.files.is_empty(), "no_import_files");
-            // Windows and portable archives must not alias distinct source entries.
-            let mut names = HashSet::new();
-            for relative in group
-                .directories
-                .iter()
-                .chain(group.files.iter().map(|f| &f.relative))
-            {
-                ensure!(
-                    names.insert(relative.to_lowercase()),
-                    "archive_path_collision"
-                );
-            }
+            ensure_distinct(&group)?;
             group.directories.sort();
             groups.push(group);
         }

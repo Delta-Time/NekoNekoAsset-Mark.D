@@ -44,6 +44,7 @@ const CRC_TABLE: [u32; 256] = {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveEntry {
+    /// `/`-separated: the member's own path in a listing, and where it lands in a plan.
     pub relative_path: String,
     pub size_bytes: u64,
     pub is_directory: bool,
@@ -299,6 +300,91 @@ pub(super) fn reserved_device(component: &str) -> bool {
         ))
 }
 
+/// A member's own path in a listing, `/`-separated. It must stay below the extraction folder
+/// and hold no control character, which a technical listing or a list file cannot carry
+/// safely. A name Windows cannot store is kept here; `written_path` says where it lands.
+fn member_path(value: &str) -> Result<String> {
+    ensure!(
+        !value.is_empty() && value.len() <= 32_000,
+        "archive_unsafe_path"
+    );
+    ensure!(!value.starts_with(['/', '\\']), "archive_unsafe_path");
+    let path = value.replace('\\', "/");
+    // A drive prefix (C:x) would read as absolute to anything less careful than 7-Zip.
+    let bytes = path.as_bytes();
+    ensure!(
+        !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'),
+        "archive_unsafe_path"
+    );
+    for component in path.split('/') {
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "archive_unsafe_path"
+        );
+        ensure!(
+            !component.chars().any(char::is_control),
+            "archive_unsafe_path"
+        );
+    }
+    Ok(path)
+}
+
+/// The name the bundled 7-Zip (26.04, `Correct_FsPath`) writes on Windows for a member
+/// named `name`: `: * ? " < > |` and control characters become `_`, so does each trailing
+/// dot or space, and a device name (CON, PRN, AUX, NUL, or COM or LPT and a digit, alone or
+/// before a dot, in any case) gains a leading `_`. Any other name is unchanged.
+pub(super) fn written_name(name: &str) -> String {
+    let mut chars: Vec<char> = name
+        .chars()
+        .map(|c| match c {
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c < ' ' => '_',
+            c => c,
+        })
+        .collect();
+    for c in chars.iter_mut().rev() {
+        if !matches!(c, '.' | ' ') {
+            break;
+        }
+        *c = '_';
+    }
+    let name: String = chars.into_iter().collect();
+    let bytes = name.as_bytes();
+    let device = bytes.get(..3).is_some_and(|stem| {
+        let rest = if ["CON", "PRN", "AUX", "NUL"]
+            .iter()
+            .any(|device| stem.eq_ignore_ascii_case(device.as_bytes()))
+        {
+            &bytes[3..]
+        } else if (stem.eq_ignore_ascii_case(b"COM") || stem.eq_ignore_ascii_case(b"LPT"))
+            && bytes.get(3).is_some_and(u8::is_ascii_digit)
+        {
+            &bytes[4..]
+        } else {
+            return false;
+        };
+        matches!(rest.iter().find(|byte| **byte != b' '), None | Some(&b'.'))
+    });
+    if device {
+        format!("_{name}")
+    } else {
+        name
+    }
+}
+
+/// Where a member lands below the extraction folder: each name as 7-Zip writes it. A path
+/// still unsafe after that, such as a superscript device name 7-Zip leaves alone, is refused
+/// before anything is extracted.
+fn written_path(member: &str) -> Result<String> {
+    let path = member
+        .split('/')
+        .map(written_name)
+        .collect::<Vec<_>>()
+        .join("/");
+    validate_relative_path(&path)?;
+    Ok(path)
+}
+
 fn portable_path(path: &Path) -> Result<String> {
     Ok(path
         .to_str()
@@ -492,7 +578,7 @@ pub fn parse_listing(listing: &str, password: bool) -> Result<Vec<ArchiveEntry>>
             );
         }
         let raw_path = fields.get("Path").context("archive_listing_invalid")?;
-        let path = portable_path(&validate_relative_path(raw_path)?)?;
+        let path = member_path(raw_path)?;
         for key in [
             "Symbolic Link",
             "Hard Link",
@@ -584,8 +670,18 @@ struct ExtractionPlan {
 /// Folders that differ only by letter case merge into the first-seen spelling, as Windows
 /// does. Folders are created before extraction, so a file whose path is taken by a folder
 /// or an earlier file is kept too: 7-Zip's -aou writes it as `name_1.ext`, `name_2.ext`…
-/// and never overwrites. This predicts those names so the result can be verified exactly.
-fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
+/// and never overwrites. A name Windows cannot store lands under the name 7-Zip gives it
+/// (`written_path`). This predicts every path so the result can be verified exactly.
+fn plan_extraction(entries: &[ArchiveEntry]) -> Result<ExtractionPlan> {
+    let entries = entries
+        .iter()
+        .map(|entry| {
+            Ok(ArchiveEntry {
+                relative_path: written_path(&entry.relative_path)?,
+                ..entry.clone()
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut folders: BTreeMap<String, String> = BTreeMap::new();
     let mut spell = |path: &str| {
         let mut spelling = String::new();
@@ -602,7 +698,7 @@ fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
     let mut outputs: Vec<ArchiveEntry> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut files = Vec::new();
-    for entry in entries {
+    for entry in &entries {
         if entry.is_directory {
             let path = spell(&entry.relative_path);
             if explicit.insert(fold_case(&path)) {
@@ -647,7 +743,7 @@ fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
             ..entry.clone()
         });
     }
-    ExtractionPlan { outputs, identical }
+    Ok(ExtractionPlan { outputs, identical })
 }
 
 /// 7-Zip's -aou name: `name_N.ext` (the last dot not leading the name starts the
@@ -1272,7 +1368,7 @@ pub fn extract_archive(
     fs::create_dir(&content).context("storage_write_failed")?;
     let first = first_volume(&sources, &inputs, &workspace, cancelled)?;
     let (code_page, entries) = list_archive(seven_zip, &first, cancelled, password)?;
-    let plan = plan_extraction(&entries);
+    let plan = plan_extraction(&entries)?;
     let expanded_size = entries.iter().try_fold(0u64, |total, entry| {
         total
             .checked_add(entry.size_bytes)
@@ -1309,8 +1405,8 @@ pub fn extract_archive(
     }
     let mut file_count = 0usize;
     for entry in entries.iter().filter(|entry| !entry.is_directory) {
-        // 7-Zip trims unquoted listfile lines. Quotes retain a leading
-        // space in a literal member name; validated paths cannot contain quotes.
+        // The archive's own names select members. 7-Zip trims each line and then drops one
+        // enclosing pair of quotes, so a leading space or a quote in a name survives.
         writeln!(names, "\"{}\"", entry.relative_path).context("storage_write_failed")?;
         file_count += 1;
     }

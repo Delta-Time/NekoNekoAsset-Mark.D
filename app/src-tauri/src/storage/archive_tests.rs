@@ -104,6 +104,102 @@ fn portable_paths_reject_escape_and_windows_aliases() {
     );
 }
 
+#[test]
+fn written_names_follow_the_bundled_7zip() {
+    // Each pair was checked against what 7-Zip 26.04 writes on Windows 11.
+    for (name, written) in [
+        ("a:b.png", "a_b.png"),
+        ("quote\"<|>*?.txt", "quote______.txt"),
+        ("名前:日本語?.png", "名前_日本語_.png"),
+        ("tab\there", "tab_here"),
+        ("trail..", "trail__"),
+        ("trail .", "trail__"),
+        ("...", "___"),
+        ("x .txt", "x .txt"),
+        (" lead.png", " lead.png"),
+        ("\u{3000}end\u{3000}", "\u{3000}end\u{3000}"),
+        ("con", "_con"),
+        ("CON.txt", "_CON.txt"),
+        ("con .txt", "_con .txt"),
+        ("Con.tar.gz", "_Con.tar.gz"),
+        ("aux. txt", "_aux. txt"),
+        ("nul.", "nul_"),
+        ("COM1", "_COM1"),
+        ("com9.prefab", "_com9.prefab"),
+        ("COM0.txt", "_COM0.txt"),
+        ("LPT0", "_LPT0"),
+        ("COM10.txt", "COM10.txt"),
+        ("COM", "COM"),
+        ("AUX_x.png", "AUX_x.png"),
+        ("CONIN$.txt", "CONIN$.txt"),
+        ("LPT¹.txt", "LPT¹.txt"),
+    ] {
+        assert_eq!(written_name(name), written, "{name:?}");
+    }
+}
+
+#[test]
+fn member_paths_stay_inside_and_land_where_7zip_writes_them() {
+    for path in [
+        "",
+        "/x",
+        "\\x",
+        "C:x",
+        "c:/x",
+        "a//b",
+        "a/./b",
+        "a/../b",
+        "..",
+        "a\nPath = evil",
+        "a\u{7f}b",
+    ] {
+        assert!(member_path(path).is_err(), "{path:?}");
+    }
+    assert_eq!(member_path("Ver1.0.\\a:b.png").unwrap(), "Ver1.0./a:b.png");
+    assert_eq!(
+        written_path("Ver1.0./Materials /aux.png").unwrap(),
+        "Ver1.0_/Materials_/_aux.png"
+    );
+    // 7-Zip leaves these alone, and Windows 10 still reads them as devices.
+    for path in ["LPT¹.txt", "x/CONIN$.txt", "CLOCK$"] {
+        assert!(written_path(path).is_err(), "{path}");
+    }
+    let entries = parse_listing(
+        &listing(
+            "Path = Mac\nFolder = +\nSize = 0\n\n\
+             Path = Mac/a:b.png\nSize = 1\nCRC = 1\n\n\
+             Path = Mac/a_b.png\nSize = 1\nCRC = 2\n\n\
+             Path = dir.\nFolder = +\nSize = 0\n\n\
+             Path = dir./x.txt\nSize = 1\nCRC = 3\n\n\
+             Path = dir_/y.txt\nSize = 1\nCRC = 4",
+        ),
+        false,
+    )
+    .unwrap();
+    // A listing keeps the archive's own names, which select members for 7-Zip.
+    assert_eq!(entries[1].relative_path, "Mac/a:b.png");
+    let plan = plan_extraction(&entries).unwrap();
+    let paths: Vec<_> = plan
+        .outputs
+        .iter()
+        .map(|entry| entry.relative_path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "Mac",
+            "dir_",
+            "Mac/a_b.png",
+            "Mac/a_b_1.png",
+            "dir_/x.txt",
+            "dir_/y.txt"
+        ]
+    );
+    validate_inventory_paths(&plan.outputs).unwrap();
+    let unsafe_member = parse_listing(&listing("Path = LPT¹.txt\nSize = 1\nCRC = 1"), false);
+    assert!(plan_extraction(&unsafe_member.unwrap()).is_err());
+}
+
 fn listing(records: &str) -> String {
     format!("7-Zip\n\nPath = source.zip\nType = zip\n\n----------\n{records}\n")
 }
@@ -209,7 +305,7 @@ fn plan_merges_folder_case_and_keeps_every_clashing_file() {
         false,
     )
     .unwrap();
-    let plan = plan_extraction(&entries);
+    let plan = plan_extraction(&entries).unwrap();
     let paths: Vec<_> = plan
         .outputs
         .iter()
@@ -497,6 +593,47 @@ fn bundled_zip_merges_folder_case_and_keeps_clashing_members() {
     .into_iter()
     .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
     .collect();
+    assert_eq!(files, expected);
+}
+
+#[cfg(windows)]
+#[test]
+fn bundled_zip_writes_names_windows_cannot_store_as_7zip_does() {
+    // Names a macOS or Linux packer can write. Each lands under 7-Zip's own name for it,
+    // a clash with a name already there still gets `_N`, and the rest extract as usual.
+    let files = bundled_extract(
+        "authored-zip-unsafe-names",
+        &authored_zip(&[
+            (b"Mac/a:b?.png", false, b"colon"),
+            (b"Mac/a_b_.png", false, b"taken"),
+            (b"Mac/quote\"<|>*.txt", false, b"marks"),
+            (b"Ver1.0./readme.txt", false, b"dot"),
+            (b"Materials /x.mat", false, b"space"),
+            (b"aux.png", false, b"device"),
+            (b"COM1", false, b"port"),
+            (b"con .txt", false, b"spaced"),
+            (b"...", false, b"dots"),
+            (b"COM10.txt", false, b"fine"),
+            ("名前:日本語?.png".as_bytes(), true, b"cjk"),
+        ]),
+    );
+    let mut expected: Vec<_> = [
+        ("Mac/a_b_.png", &b"colon"[..]),
+        ("Mac/a_b__1.png", b"taken"),
+        ("Mac/quote_____.txt", b"marks"),
+        ("Ver1.0_/readme.txt", b"dot"),
+        ("Materials_/x.mat", b"space"),
+        ("_aux.png", b"device"),
+        ("_COM1", b"port"),
+        ("_con .txt", b"spaced"),
+        ("___", b"dots"),
+        ("COM10.txt", b"fine"),
+        ("名前_日本語_.png", b"cjk"),
+    ]
+    .into_iter()
+    .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+    .collect();
+    expected.sort();
     assert_eq!(files, expected);
 }
 

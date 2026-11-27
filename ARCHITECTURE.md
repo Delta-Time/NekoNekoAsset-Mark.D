@@ -185,7 +185,10 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - A product is Ready when every attached file is usable. Source coverage is a
   separate fact.
 - Managed paths are readable and stable, and editing metadata never moves files.
-  Extraction keeps the original on failure, keeps `.unitypackage` files and cleans
+  Each path is recorded when it is made and only ever read back, so a new naming
+  rule changes only folders made after it. Extraction predicts every path 7-Zip
+  writes, including its names for names Windows cannot store, and verifies the
+  result; it keeps the original on failure, keeps `.unitypackage` files and cleans
   up only what it wrote. An archive that asks for a password extracts with the one
   the user types on its row, which stays in memory for that one extraction.
 - A refused page proves nothing about the session. Only an account-level page on

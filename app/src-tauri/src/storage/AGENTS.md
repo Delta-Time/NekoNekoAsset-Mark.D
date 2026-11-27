@@ -8,9 +8,12 @@
   refused as no longer offered counts as dropped); source membership coverage stays
   a separate fact.
 - Auto-extract supported archives, preserve internal names and structure, and keep
-  originals on failure. Delete eligible originals only after validated durable
+  originals on failure. A name Windows cannot store (`a:b`, `Folder.`, `aux.png`)
+  lands under the name 7-Zip writes for it, in archives and local imports alike, and
+  the rest extract as usual. Delete eligible originals only after validated durable
   extraction; keep unitypackages. Use readable stable paths; metadata edits do not
-  move files. Clean only outputs owned by the operation.
+  move files. A new folder name keeps 32 characters of its title; recorded paths
+  never change. Clean only outputs owned by the operation.
 - An archive password the user types serves only that file's next extraction. It
   reaches 7-Zip on its input, never the command line, and never enters a job, the
   catalogue or a log.

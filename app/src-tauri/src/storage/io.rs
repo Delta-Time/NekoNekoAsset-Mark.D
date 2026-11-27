@@ -30,10 +30,13 @@ pub fn hash_file(path: &Path) -> Result<(String, u64)> {
 pub fn key(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
+/// How much of a title or file name a new managed folder name keeps, in UTF-16 units, before
+/// `--` and 12 characters of its identity. Folders already made keep their recorded names.
+pub const READABLE_UNITS: usize = 32;
 pub fn readable_component(label: &str, identity: &str) -> String {
     let mut name = String::new();
     for ch in label.chars() {
-        if name.encode_utf16().count() + ch.len_utf16() > 64 {
+        if name.encode_utf16().count() + ch.len_utf16() > READABLE_UNITS {
             break;
         }
         name.push(if ch.is_control() || "<>:\"/\\|?*".contains(ch) {

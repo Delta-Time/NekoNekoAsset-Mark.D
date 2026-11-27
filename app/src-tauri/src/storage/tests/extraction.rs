@@ -312,6 +312,10 @@ fn readable_managed_paths_are_contained_collision_safe_and_partial_cleanup_is_ow
         archive::validate_relative_path(&component).unwrap();
         assert!(!component.contains('/'));
     }
+    // A long title keeps its first 32 UTF-16 units, then `--` and 12 of its identity.
+    let long = io::readable_component(&"衣".repeat(40), "synthetic-product");
+    assert_eq!(long.encode_utf16().count(), io::READABLE_UNITS + 14);
+    assert!(long.starts_with(&format!("{}--", "衣".repeat(io::READABLE_UNITS))));
     let directory = format!(
         "assets/{}",
         io::readable_component("Synthetic outfit", "42")
