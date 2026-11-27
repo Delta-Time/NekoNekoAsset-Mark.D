@@ -1,5 +1,5 @@
 //! Exact catalogue leaf selection and verified, App-owned Bridge payload copies.
-use super::{archive, artifact_id, io, StorageService};
+use super::{archive, artifact_id, io, strings, StorageService};
 use anyhow::{anyhow, ensure, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -189,7 +189,16 @@ impl StorageService {
                 .into_iter()
                 .find(|entry| entry.leaf.leaf_ref == leaf_ref)
                 .ok_or_else(|| anyhow!("unity_leaf_stale"))?;
-            Ok((selected.leaf.kind == "unitypackage").then_some(selected.source))
+            // A local import of the asset may remove that very file while Unity holds it
+            // open; meanwhile the transfer, which reads a copy, is used instead.
+            let importing = service.catalogue.list("job")?.iter().any(|job| {
+                job["type"] == "storage:import_local"
+                    && matches!(job["state"].as_str(), Some("queued" | "running"))
+                    && strings(&job["productIds"])
+                        .iter()
+                        .any(|id| products.contains(id))
+            });
+            Ok((selected.leaf.kind == "unitypackage" && !importing).then_some(selected.source))
         })
         .await?
     }

@@ -242,6 +242,8 @@ export default function InspectorFiles({
         const openable = !!onFileOpen && openableFileIds.includes(file.id),
           sources = provenanceLines(locale, file.provenance ?? [], sourceAccounts),
           busy = busyFileIds.includes(file.id),
+          // While its download waits or runs again, an earlier failure is no longer news.
+          status = busy && file.status === 'failed' ? 'notDownloaded' : file.status,
           // The archive asked for a password, or the one given was wrong.
           locked =
             file.status === 'extractionFailed' &&
@@ -281,31 +283,30 @@ export default function InspectorFiles({
               <small>
                 {[
                   typeof file.sizeBytes === 'number' && byteLabel(locale, file.sizeBytes),
-                  L(file.status),
+                  L(status),
                   file.kept && L(file.userAdded ? 'fileAddedByYou' : 'fileRemovedFromStore'),
                 ]
                   .filter(Boolean)
                   .join(' · ')}
               </small>
-              {['failed', 'extractionFailed', 'missing'].includes(file.status) &&
-                !(locked && busy) && (
-                  <small className="asset-inspector-file-error">
-                    {L(
-                      file.status === 'extractionFailed'
-                        ? locked
-                          ? file.errorCode === 'archive_password_wrong'
-                            ? 'archivePasswordWrong'
-                            : 'archivePasswordRequired'
-                          : 'failedExtraction'
-                        : file.status === 'failed'
-                          ? file.offerEnded || file.errorCode === 'store_file_unavailable'
-                            ? 'fileUnavailable'
-                            : 'failedTransfer'
-                          : 'fileMissing',
-                    )}
-                  </small>
-                )}
-              {file.offerEnded && file.status !== 'failed' && (
+              {['failed', 'extractionFailed', 'missing'].includes(status) && !(locked && busy) && (
+                <small className="asset-inspector-file-error">
+                  {L(
+                    file.status === 'extractionFailed'
+                      ? locked
+                        ? file.errorCode === 'archive_password_wrong'
+                          ? 'archivePasswordWrong'
+                          : 'archivePasswordRequired'
+                        : 'failedExtraction'
+                      : status === 'failed'
+                        ? file.offerEnded || file.errorCode === 'store_file_unavailable'
+                          ? 'fileUnavailable'
+                          : 'failedTransfer'
+                        : 'fileMissing',
+                  )}
+                </small>
+              )}
+              {file.offerEnded && status !== 'failed' && !busy && (
                 <small className="asset-inspector-file-error">{L('fileUnavailable')}</small>
               )}
               {sources.length > 0 && (

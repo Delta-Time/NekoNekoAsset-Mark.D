@@ -436,6 +436,26 @@ async fn removals_wait_their_turn_and_hold_their_products_meanwhile() {
             .unwrap()["jobIds"],
         json!([])
     );
+    // Several products at once go on without them, and are busy with nothing else to do.
+    f.product("gamma", &["Tail.unitypackage"]);
+    let others = f
+        .service
+        .enqueue(&json!({"productIds":["alpha","gamma"]}))
+        .await
+        .unwrap()["jobIds"]
+        .clone();
+    let gamma = others[0].as_str().unwrap();
+    assert_eq!(others.as_array().unwrap().len(), 1);
+    assert_eq!(c.get("job", gamma).unwrap().unwrap()["productId"], "gamma");
+    c.delete("job", gamma).unwrap();
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":["alpha","beta"]}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "storage_busy"
+    );
     // The oldest goes first, unless a Unity transfer holds its product's files.
     c.put(
         "job",

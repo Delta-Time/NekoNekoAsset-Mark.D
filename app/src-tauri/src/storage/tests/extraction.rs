@@ -1058,6 +1058,16 @@ async fn a_locked_archive_extracts_once_with_the_password_given_and_never_record
     let refused = f.service.extract_with_password(&missing).await;
     assert_eq!(refused.unwrap_err().to_string(), "file_missing");
     assert!(f.service.archive_passwords.lock().unwrap().is_empty());
+    // A download cancelled before it runs takes its password with it.
+    let cancelled = f
+        .service
+        .extract_with_password(&ask("authored cancelled"))
+        .await
+        .unwrap();
+    f.service
+        .cancel_job(cancelled["jobIds"][0].as_str().unwrap())
+        .unwrap();
+    assert!(f.service.archive_passwords.lock().unwrap().is_empty());
     // A password queues that file's download, which reuses the original and extracts once.
     let queued = f
         .service

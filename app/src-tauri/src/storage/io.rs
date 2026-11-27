@@ -33,10 +33,15 @@ pub fn key(value: &str) -> String {
 /// How much of a title or file name a new managed folder name keeps, in UTF-16 units, before
 /// `--` and 12 characters of its identity. Folders already made keep their recorded names.
 pub const READABLE_UNITS: usize = 32;
+/// What 0.4.0 and earlier kept, for an extraction an update interrupted before recording it.
+pub const EARLIER_READABLE_UNITS: usize = 64;
 pub fn readable_component(label: &str, identity: &str) -> String {
+    readable_component_of(label, identity, READABLE_UNITS)
+}
+pub fn readable_component_of(label: &str, identity: &str, units: usize) -> String {
     let mut name = String::new();
     for ch in label.chars() {
-        if name.encode_utf16().count() + ch.len_utf16() > READABLE_UNITS {
+        if name.encode_utf16().count() + ch.len_utf16() > units {
             break;
         }
         name.push(if ch.is_control() || "<>:\"/\\|?*".contains(ch) {

@@ -386,6 +386,17 @@ impl StorageService {
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
     }
+    /// A password serves the download it was given for. Once that job ends, even without
+    /// reaching the extraction, or is cancelled before it runs, nothing extracts with it.
+    fn forget_passwords(&self, job: &Value) {
+        let mut passwords = self.archive_passwords.lock().unwrap();
+        for id in strings(&job["selectedFileIds"])
+            .into_iter()
+            .chain(strings(&job["fileIds"]))
+        {
+            passwords.remove(&id);
+        }
+    }
     fn cancel_job(&self, id: &str) -> Result<Value> {
         loop {
             let before = self
@@ -411,10 +422,14 @@ impl StorageService {
                 job["state"] = json!("cancelled");
                 job["errorCode"] = Value::Null;
             }
+            let queued = job["state"] == "cancelled" && before["type"] == "download";
             if self.catalogue.put_many_if_unchanged(
                 vec![("job".into(), id.to_owned(), job)],
-                vec![("job".into(), id.to_owned(), Some(before))],
+                vec![("job".into(), id.to_owned(), Some(before.clone()))],
             )? {
+                if queued {
+                    self.forget_passwords(&before);
+                }
                 self.cancellation(id).store(true, Ordering::Release);
                 return api::answer(api::CancelRequested {
                     cancel_requested: true,
@@ -456,9 +471,13 @@ impl StorageService {
                 expected.push(("job".into(), id, Some(before.clone())));
             }
             if active.is_empty() || self.catalogue.put_many_if_unchanged(records, expected)? {
-                for job in active.iter().filter(|job| job["state"] == "running") {
-                    self.cancellation(job["id"].as_str().unwrap_or(""))
-                        .store(true, Ordering::Release);
+                for job in &active {
+                    if job["state"] == "running" {
+                        self.cancellation(job["id"].as_str().unwrap_or(""))
+                            .store(true, Ordering::Release);
+                    } else {
+                        self.forget_passwords(job);
+                    }
                 }
                 return api::answer(api::DownloadsCancelled {
                     cancelled: active.len(),
@@ -764,6 +783,7 @@ impl StorageService {
                         "needsAction",
                         Some("store_file_unavailable"),
                     )?;
+                    self.forget_passwords(&job);
                     continue;
                 }
                 if !self.put_queued_download(&before, &mut job, "queued", None)? {
@@ -1121,6 +1141,7 @@ impl StorageService {
                         // Before the job ends, so a delete of its files cannot start in between.
                         let _ = service.remember_attempt(&job);
                         let _ = service.put_job(&mut job, state, error);
+                        service.forget_passwords(&job);
                         service.changed(&app, Some(&id));
                         if let Some(product) = job["productId"].as_str() {
                             // A source update received while this job was active
@@ -1291,6 +1312,7 @@ impl StorageService {
         let deleting = download_delete::deleting(&jobs);
         let mut writes = Vec::new();
         let mut source_required = false;
+        let mut removing = false;
         for id in ids.into_iter().collect::<HashSet<_>>() {
             let Some(product) = self.catalogue.get("product", &id)? else {
                 if automatic {
@@ -1299,7 +1321,10 @@ impl StorageService {
                 bail!("product_missing");
             };
             if deleting.contains(id.as_str()) {
-                if automatic {
+                // Several products at once go on without one whose files wait to be removed;
+                // asked for alone, or with nothing else to do, it is busy.
+                if automatic || bulk {
+                    removing = true;
                     continue;
                 }
                 bail!("storage_busy");
@@ -1381,6 +1406,9 @@ impl StorageService {
         }
         if source_required && result.is_empty() && !automatic {
             bail!("local_source_required");
+        }
+        if removing && result.is_empty() && !automatic {
+            bail!("storage_busy");
         }
         self.catalogue.put_many(writes)?;
         api::answer(api::DownloadJobs {

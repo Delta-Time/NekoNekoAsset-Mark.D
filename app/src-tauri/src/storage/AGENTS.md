@@ -27,4 +27,6 @@
   never matches message text.
 - A request that removes or copies files only queues a job and answers at once. The
   storage worker runs one job at a time: removals of downloaded files, then local
-  imports, go after the download in progress and before queued downloads.
+  imports, go after the download in progress and before queued downloads. A local
+  import holds storage shared, as a download does, so requests made while it copies
+  queue too; moves, backups and deleting local assets wait for it or answer busy.
