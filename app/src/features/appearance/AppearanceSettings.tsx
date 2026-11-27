@@ -72,9 +72,9 @@ export default function AppearanceSettings({
       </label>
       <div className="appearance-toggles">
         <Toggle label={q('roundedCorners')} checked={roundedCorners} onChange={setRoundedCorners} />
-        <Toggle label={q('reduceMotion')} checked={reduceMotion} onChange={setReduceMotion} />
         <Toggle label={q('oneHandedDrag')} checked={oneHandedDrag} onChange={setOneHandedDrag} />
         <Toggle label={q('bundledFonts')} checked={bundledFonts} onChange={setBundledFonts} />
+        <Toggle label={q('reduceMotion')} checked={reduceMotion} onChange={setReduceMotion} />
       </div>
       <label className="field">
         <span>{q('themePreset')}</span>

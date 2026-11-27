@@ -37,7 +37,7 @@ export function useUiPreferences() {
   const [roundedCorners, setRoundedCorners] = useState(true),
     [reduceMotion, setReduceMotion] = useState(false),
     [bundledFonts, setBundledFonts] = useState(true),
-    [oneHandedDrag, setOneHandedDrag] = useState(false);
+    [oneHandedDrag, setOneHandedDrag] = useState(true);
   /** Applies the preferences stored in the library; its first load calls this once. */
   const hydrate = (p: Preferences) => {
     if (Object.hasOwn(localeNames, String(p.locale))) setLocale(p.locale as Locale);
