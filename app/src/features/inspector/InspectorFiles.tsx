@@ -4,11 +4,13 @@ import {
   FileArchive,
   FileBox,
   FolderOpen,
+  KeyRound,
   Plus,
   RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
+import { useState } from 'react';
 import type { Locale, Product } from '../../model';
 import { byteLabel, fileCountLabel, isFileDownloaded, isProductDownloaded } from '../../model';
 import { table } from '../../messages';
@@ -16,8 +18,77 @@ import { hasLocalCopy, provenanceLines } from './inspector-facts';
 import type { InspectorPanes } from './useInspectorPanes';
 import type { InspectorFacts } from './useInspectorFacts';
 
+/** A password for a file's archive: Enter extracts with it, Escape closes. */
+function ArchivePassword({
+  fileName,
+  L,
+  onExtract,
+  onClose,
+}: {
+  fileName: string;
+  L: (key: string) => string;
+  onExtract: (password: string) => void;
+  onClose: () => void;
+}) {
+  const [password, setPassword] = useState('');
+  const extract = () => {
+    if (password) onExtract(password);
+  };
+  // Focus goes back to the row's key, which stays when the field closes unsent.
+  const close = (from: HTMLElement) => {
+    from
+      .closest('.asset-inspector-file')
+      ?.querySelector<HTMLButtonElement>('.asset-inspector-file-unlock')
+      ?.focus();
+    onClose();
+  };
+  return (
+    <div className="asset-inspector-file-password">
+      <input
+        type="password"
+        autoFocus
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={256}
+        placeholder={L('enterArchivePassword')}
+        aria-label={L('enterArchivePassword') + ' ' + fileName}
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            close(event.currentTarget);
+          } else if (event.key === 'Enter') {
+            event.preventDefault();
+            extract();
+          }
+        }}
+      />
+      <button
+        type="button"
+        title={L('extractArchive')}
+        aria-label={L('extractArchive') + ' ' + fileName}
+        disabled={!password}
+        onClick={extract}
+      >
+        <Check size={13} />
+      </button>
+      <button
+        type="button"
+        title={L('cancel')}
+        aria-label={L('cancel')}
+        onClick={(event) => close(event.currentTarget)}
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
 /** The files pane: count, Download all, cancel, open folder and delete, then each file with its
- * status and its own open, retry, cancel and delete. */
+ * status and its own open, retry, cancel and delete, and a password for an archive that asks. */
 export default function InspectorFiles({
   panes,
   facts,
@@ -41,6 +112,7 @@ export default function InspectorFiles({
   cancellableFileIds,
   onFileDelete,
   onLocalFileRemove,
+  onArchivePassword,
 }: {
   panes: InspectorPanes;
   facts: InspectorFacts;
@@ -64,8 +136,9 @@ export default function InspectorFiles({
   cancellableFileIds: readonly string[];
   onFileDelete: ((fileId: string) => void) | undefined;
   onLocalFileRemove: ((fileId: string) => void) | undefined;
+  onArchivePassword: ((fileId: string, password: string) => void) | undefined;
 }) {
-  const { fileScroll, removingFile, setRemovingFile } = panes;
+  const { fileScroll, removingFile, setRemovingFile, unlockingFile, setUnlockingFile } = panes;
   const { L, sourceAccounts } = facts;
   return (
     <div className="asset-inspector-files" ref={fileScroll}>
@@ -167,7 +240,19 @@ export default function InspectorFiles({
       </div>
       {p.files.map((file) => {
         const openable = !!onFileOpen && openableFileIds.includes(file.id),
-          sources = provenanceLines(locale, file.provenance ?? [], sourceAccounts);
+          sources = provenanceLines(locale, file.provenance ?? [], sourceAccounts),
+          busy = busyFileIds.includes(file.id),
+          // The archive asked for a password, or the one given was wrong.
+          locked =
+            file.status === 'extractionFailed' &&
+            ['archive_password_required', 'archive_password_wrong'].includes(file.errorCode ?? ''),
+          unlockable =
+            !!onArchivePassword &&
+            locked &&
+            file.originalAvailable &&
+            p.provider !== 'local' &&
+            !file.kept &&
+            !busy;
         return (
           <div className="asset-inspector-file" key={file.id}>
             <span className="asset-inspector-file-icon">
@@ -202,19 +287,24 @@ export default function InspectorFiles({
                   .filter(Boolean)
                   .join(' · ')}
               </small>
-              {['failed', 'extractionFailed', 'missing'].includes(file.status) && (
-                <small className="asset-inspector-file-error">
-                  {L(
-                    file.status === 'extractionFailed'
-                      ? 'failedExtraction'
-                      : file.status === 'failed'
-                        ? file.offerEnded || file.errorCode === 'store_file_unavailable'
-                          ? 'fileUnavailable'
-                          : 'failedTransfer'
-                        : 'fileMissing',
-                  )}
-                </small>
-              )}
+              {['failed', 'extractionFailed', 'missing'].includes(file.status) &&
+                !(locked && busy) && (
+                  <small className="asset-inspector-file-error">
+                    {L(
+                      file.status === 'extractionFailed'
+                        ? locked
+                          ? file.errorCode === 'archive_password_wrong'
+                            ? 'archivePasswordWrong'
+                            : 'archivePasswordRequired'
+                          : 'failedExtraction'
+                        : file.status === 'failed'
+                          ? file.offerEnded || file.errorCode === 'store_file_unavailable'
+                            ? 'fileUnavailable'
+                            : 'failedTransfer'
+                          : 'fileMissing',
+                    )}
+                  </small>
+                )}
               {file.offerEnded && file.status !== 'failed' && (
                 <small className="asset-inspector-file-error">{L('fileUnavailable')}</small>
               )}
@@ -227,6 +317,18 @@ export default function InspectorFiles({
                 </details>
               )}
             </div>
+            {unlockable && removingFile !== file.id && (
+              <button
+                type="button"
+                className="asset-inspector-file-unlock"
+                aria-label={L('enterArchivePassword') + ' ' + file.name}
+                aria-expanded={unlockingFile === file.id}
+                title={L('enterArchivePassword')}
+                onClick={() => setUnlockingFile(unlockingFile === file.id ? null : file.id)}
+              >
+                <KeyRound size={13} />
+              </button>
+            )}
             {onFileRetry &&
               p.provider !== 'local' &&
               !file.kept &&
@@ -291,7 +393,10 @@ export default function InspectorFiles({
                         file.name
                       }
                       disabled={deleteDisabled}
-                      onClick={() => setRemovingFile(file.id)}
+                      onClick={() => {
+                        setRemovingFile(file.id);
+                        setUnlockingFile(null);
+                      }}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -336,6 +441,17 @@ export default function InspectorFiles({
                   </button>
                 )}
               </span>
+            )}
+            {unlockable && unlockingFile === file.id && (
+              <ArchivePassword
+                fileName={file.name}
+                L={L}
+                onExtract={(password) => {
+                  onArchivePassword?.(file.id, password);
+                  setUnlockingFile(null);
+                }}
+                onClose={() => setUnlockingFile(null)}
+              />
             )}
           </div>
         );

@@ -155,13 +155,13 @@ fn tiny_rar_fixture(name: &str, part: Option<u8>) -> Vec<u8> {
 #[test]
 fn listing_accepts_warning_counts_but_never_error_or_malformed_summaries() {
     let members = "Path = normal.txt\nSize = 3\nCRC = 352441C2";
-    let normal = parse_listing(&listing(members)).unwrap();
+    let normal = parse_listing(&listing(members), false).unwrap();
     assert_eq!(
-        parse_listing(&listing(&format!("{members}\n\n\nWarnings: 1"))).unwrap(),
+        parse_listing(&listing(&format!("{members}\n\n\nWarnings: 1")), false).unwrap(),
         normal
     );
     for summary in ["Errors: 1", "Warnings: unknown", "Warnings: 1\nErrors: 1"] {
-        assert!(parse_listing(&listing(&format!("{members}\n\n{summary}"))).is_err());
+        assert!(parse_listing(&listing(&format!("{members}\n\n{summary}")), false).is_err());
     }
 }
 
@@ -174,11 +174,16 @@ fn listing_rejects_links_and_ambiguous_records() {
         "Path = a\nSize = 0\nEncrypted = +",
         "Path = a\nSize = 0\nPath = b",
     ] {
-        assert!(parse_listing(&listing(records)).is_err(), "{records}");
+        assert!(
+            parse_listing(&listing(records), false).is_err(),
+            "{records}"
+        );
     }
+    // An encrypted member is fine once its password is given.
+    assert!(parse_listing(&listing("Path = a\nSize = 0\nEncrypted = +"), true).is_ok());
     let entries = parse_listing(&listing(
         "Path = 衣装\nFolder = +\nSize = 0\n\nPath = 衣装/a.unitypackage\nSize = 3\nCRC = 352441C2",
-    ))
+    ), false)
     .unwrap();
     assert_eq!(entries.len(), 2);
     assert!(!is_supported_archive(Path::new("a.unitypackage")));
@@ -186,8 +191,9 @@ fn listing_rejects_links_and_ambiguous_records() {
 
 #[test]
 fn plan_merges_folder_case_and_keeps_every_clashing_file() {
-    let entries = parse_listing(&listing(
-        "Path = Dir/a.txt\nSize = 1\nCRC = 1\n\n\
+    let entries = parse_listing(
+        &listing(
+            "Path = Dir/a.txt\nSize = 1\nCRC = 1\n\n\
              Path = dir/b.txt\nSize = 1\nCRC = 2\n\n\
              Path = DIR\nFolder = +\nSize = 0\n\n\
              Path = b.txt\nSize = 3\nCRC = A\n\n\
@@ -199,7 +205,9 @@ fn plan_merges_folder_case_and_keeps_every_clashing_file() {
              Path = .hidden\nSize = 1\nCRC = F\n\n\
              Path = x.tar.gz\nSize = 1\nCRC = 1\n\n\
              Path = x.tar.gz\nSize = 2\nCRC = 1",
-    ))
+        ),
+        false,
+    )
     .unwrap();
     let plan = plan_extraction(&entries);
     let paths: Vec<_> = plan
@@ -285,9 +293,10 @@ fn inventory_checks_missing_extra_size_crc_and_cancel() {
     fs::create_dir(&root).unwrap();
     fs::create_dir(root.join("衣装")).unwrap();
     fs::write(root.join("衣装/a.unitypackage"), b"abc").unwrap();
-    let mut entries = parse_listing(&listing(
-        "Path = 衣装/a.unitypackage\nSize = 3\nCRC = 352441C2",
-    ))
+    let mut entries = parse_listing(
+        &listing("Path = 衣装/a.unitypackage\nSize = 3\nCRC = 352441C2"),
+        false,
+    )
     .unwrap();
     let cancelled = AtomicBool::new(false);
     let result = verify_extracted_inventory(&root, &entries, &cancelled).unwrap();
@@ -321,9 +330,10 @@ fn inventory_rejects_hard_links() {
     fs::create_dir(&root).unwrap();
     fs::write(root.join("first"), b"abc").unwrap();
     fs::hard_link(root.join("first"), root.join("second")).unwrap();
-    let entries = parse_listing(&listing(
-        "Path = first\nSize = 3\n\nPath = second\nSize = 3",
-    ))
+    let entries = parse_listing(
+        &listing("Path = first\nSize = 3\n\nPath = second\nSize = 3"),
+        false,
+    )
     .unwrap();
     assert!(verify_extracted_inventory(&root, &entries, &AtomicBool::new(false)).is_err());
     fs::remove_dir_all(&root).unwrap();
@@ -334,12 +344,12 @@ fn zip_cli_uses_japanese_legacy_names_for_listing_and_extraction_only() {
     for operation in ["l", "x"] {
         for archive in ["source.zip", "source.ZIP", "source.zip.001"] {
             for code_page in [932, 65001] {
-                assert!(cli_args(operation, Path::new(archive), code_page)
+                assert!(cli_args(operation, Path::new(archive), code_page, false)
                     .contains(&OsString::from(format!("-mcp={code_page}"))));
             }
         }
         for archive in ["source.7z", "source.rar", "source.7z.001"] {
-            assert!(!cli_args(operation, Path::new(archive), 932)
+            assert!(!cli_args(operation, Path::new(archive), 932, false)
                 .iter()
                 .any(|arg| arg.to_string_lossy().starts_with("-mcp")));
         }
@@ -413,6 +423,7 @@ fn bundled_extract(name: &str, zip: &[u8]) -> Vec<(String, Vec<u8>)> {
         &root.join("staging"),
         &AtomicBool::new(false),
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     let files = extracted
@@ -513,6 +524,82 @@ fn bundled_zip_roundtrip_preserves_cp932_utf8_and_ascii_names() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn bundled_locked_archives_open_only_with_their_password() {
+    let executable = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
+    let root = crate::test_dir::TestDir::new("archive-password");
+    let source = root.join("source/衣装");
+    let staging = root.join("staging");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir(&staging).unwrap();
+    fs::write(source.join("readme.txt"), b"authored readme").unwrap();
+    fs::write(source.join("model.unitypackage"), b"authored package").unwrap();
+    let cancelled = AtomicBool::new(false);
+    // 7-Zip's command line cannot carry a quote; its input can. ZIP passwords are ASCII only,
+    // while 7z takes any text and, with -mhe, hides even the names without it.
+    for (name, kind, password) in [
+        ("locked.zip", &["-tzip"][..], r#"Authored "quoted" pass \"#),
+        (
+            "locked.7z",
+            &["-t7z", "-mhe=on"][..],
+            "合成パスワード \"密碼\"",
+        ),
+    ] {
+        let archive = root.join(name);
+        let mut args: Vec<OsString> = ["a", "-p", "-y", "-bd", "-sccUTF-8"]
+            .iter()
+            .chain(kind)
+            .map(OsString::from)
+            .collect();
+        args.extend([
+            archive.as_os_str().to_owned(),
+            source.as_os_str().to_owned(),
+        ]);
+        run_7zip(&executable, &args, &cancelled, false, None, Some(password)).unwrap();
+        let bytes = fs::read(&archive).unwrap();
+        let extract = |password| {
+            extract_archive(
+                &executable,
+                &archive,
+                &[],
+                &staging,
+                &cancelled,
+                &ExtractionProgress::default(),
+                password,
+            )
+        };
+        let code = |result: Result<ArchiveExtraction>| result.unwrap_err().to_string();
+        assert_eq!(code(extract(None)), "archive_password_required", "{name}");
+        assert_eq!(
+            code(extract(Some("authored wrong"))),
+            "archive_password_wrong",
+            "{name}"
+        );
+        let extracted = extract(Some(password)).unwrap();
+        let files: Vec<_> = extracted
+            .inventory
+            .iter()
+            .filter(|entry| !entry.is_directory)
+            .map(|entry| {
+                let bytes = fs::read(extracted.staging_path.join(&entry.relative_path)).unwrap();
+                (entry.relative_path.as_str(), bytes)
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("衣装/model.unitypackage", b"authored package".to_vec()),
+                ("衣装/readme.txt", b"authored readme".to_vec())
+            ],
+            "{name}"
+        );
+        drop(extracted);
+        assert_eq!(fs::read(&archive).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 0);
+    }
+}
+
 #[test]
 #[ignore = "requires explicit NNA_7ZIP pointing to the lead-supplied runtime"]
 fn real_7zip_roundtrip_split_password_corruption_and_retention() {
@@ -546,7 +633,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         args.extend(extra.iter().map(OsString::from));
         args.push(target.as_os_str().to_owned());
         args.push(source.join("衣装").as_os_str().to_owned());
-        run_7zip(&executable, &args, &cancelled, false, None).unwrap();
+        run_7zip(&executable, &args, &cancelled, false, None, None).unwrap();
     };
     let zip = root.join("complete.zip");
     create(&zip, &[]);
@@ -557,6 +644,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert!(!result
@@ -597,6 +685,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &cancelled,
         false,
         None,
+        None,
     )
     .unwrap();
     let seven_result = extract_archive(
@@ -606,6 +695,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -621,6 +711,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -635,7 +726,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &[],
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert!(!root.join("escape.txt").exists());
@@ -652,7 +744,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &[],
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert!(!staging.join("escape.txt").exists());
@@ -675,6 +768,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -709,6 +803,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -729,6 +824,7 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &staging,
         &cancelled,
         &ExtractionProgress::default(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -751,7 +847,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &incomplete,
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert_eq!(
@@ -767,7 +864,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &[],
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert!(password.is_file());
@@ -779,7 +877,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &[],
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert!(damaged.is_file());
@@ -794,7 +893,8 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
         &[],
         &staging,
         &cancelled,
-        &ExtractionProgress::default()
+        &ExtractionProgress::default(),
+        None
     )
     .is_err());
     assert!(zip.is_file());

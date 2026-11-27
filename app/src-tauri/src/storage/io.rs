@@ -375,7 +375,7 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
 }
 
 /// The codes storage records as they were raised.
-const CODES: [&str; 40] = [
+const CODES: [&str; 41] = [
     "cancelled",
     "storage_busy",
     "download_delete_incomplete",
@@ -398,6 +398,7 @@ const CODES: [&str; 40] = [
     "file_missing",
     "file_integrity_failed",
     "archive_password_required",
+    "archive_password_wrong",
     "archive_missing_volume",
     "archive_corrupt",
     "archive_listing_invalid",

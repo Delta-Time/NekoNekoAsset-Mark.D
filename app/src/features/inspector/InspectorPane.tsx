@@ -72,6 +72,7 @@ export default function InspectorPane({
   const {
     dismissAttention,
     downloadFile,
+    extractWithPassword,
     download,
     cancelDownloads,
     activeDownloads,
@@ -213,6 +214,7 @@ export default function InspectorPane({
             }}
             onDeleteDownloads={() => requestDeleteDownloads([active.id])}
             onFileDelete={(fileId) => run(deleteDownloads({ fileId }, [active.id]))}
+            onArchivePassword={extractWithPassword}
             deleteDisabled={
               deletingDownloads.has(active.id) || activeDownloads(active.id).length > 0
             }

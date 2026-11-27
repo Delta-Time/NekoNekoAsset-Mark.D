@@ -1810,6 +1810,7 @@ impl StorageService {
             &staging,
             cancel,
             &archive::ExtractionProgress::default(),
+            None,
         )?;
         io::check_cancel(cancel)?;
         let inventory = serde_json::to_value(&extraction.inventory)?;

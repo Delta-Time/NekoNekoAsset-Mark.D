@@ -91,6 +91,9 @@ export function useProductActions({
   };
   const downloadFile = (fileId: string, redownload: boolean) =>
     run(onNative('storage', 'enqueue_file', { fileId, redownload }));
+  /** Extracts a downloaded archive that asked for a password; the App keeps it only in memory. */
+  const extractWithPassword = (fileId: string, password: string) =>
+    run(onNative('storage', 'extract_with_password', { fileId, password }));
   const update = (ids: string[]) => {
     if (ids.length) run(onNative('booth', 'update_products', { productIds: ids }));
   };
@@ -133,6 +136,7 @@ export function useProductActions({
     deleteDownloads,
     download,
     downloadFile,
+    extractWithPassword,
     update,
     syncLicenses,
     needsAttention,

@@ -465,8 +465,9 @@ pub fn validate_volume_group(archive: &Path, available: &[PathBuf]) -> Result<Ve
     Ok(members.into_values().collect())
 }
 
-/// Parse only the member section after 7-Zip's technical-list separator.
-pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
+/// Parse only the member section after 7-Zip's technical-list separator. An encrypted
+/// member needs `password`.
+pub fn parse_listing(listing: &str, password: bool) -> Result<Vec<ArchiveEntry>> {
     let normalized = listing.replace("\r\n", "\n");
     let (_, members) = normalized
         .split_once("\n----------\n")
@@ -506,7 +507,7 @@ pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
             );
         }
         ensure!(
-            fields.get("Encrypted") != Some(&"+"),
+            password || fields.get("Encrypted") != Some(&"+"),
             "archive_password_required"
         );
         for key in ["Alternate Stream", "Anti", "Deleted"] {
@@ -771,18 +772,25 @@ fn keep_output_line(
     line.clear();
 }
 
+/// Runs 7-Zip with `args`. A `password` reaches it on its input, never on the command line:
+/// 7-Zip's own parser cannot carry every character there, and other programs can read it.
 fn run_7zip(
     executable: &Path,
     args: &[OsString],
     cancelled: &AtomicBool,
     listing: bool,
     progress: Option<&ExtractionProgress>,
+    password: Option<&str>,
 ) -> Result<Vec<u8>> {
     check_cancel(cancelled)?;
     let mut command = Command::new(executable);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if password.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -800,6 +808,11 @@ fn run_7zip(
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);
+    }
+    if let (Some(password), Some(mut input)) = (password, child.stdin.take()) {
+        // 7-Zip reads it as one line when it first needs it, or never. The short line waits
+        // in the pipe either way; closing the input ends any further question.
+        let _ = input.write_all(format!("{password}\n").as_bytes());
     }
     let overflow = Arc::new(AtomicBool::new(false));
     let out_pipe = child.stdout.take().context("archive_process_io")?;
@@ -866,7 +879,12 @@ fn run_7zip(
     // Only fixed classifications leave this boundary, never private CLI output.
     let status = status.context("archive_process_io")?;
     if !status.success() {
-        bail!(classify_process_error(status.code(), &output, &stderr));
+        let code = classify_process_error(status.code(), &output, &stderr);
+        // Asked for a password it was given, 7-Zip found that password wrong.
+        bail!(match code {
+            "archive_password_required" if password.is_some() => "archive_password_wrong",
+            code => code,
+        });
     }
     Ok(output)
 }
@@ -921,19 +939,21 @@ fn is_zip(archive: &Path) -> bool {
 
 /// `code_page` decodes ZIP names that carry no UTF-8 marker; 7-Zip honors explicit
 /// UTF-8/Unicode name metadata either way. Listing and extraction use the same one.
-fn cli_args(operation: &str, archive: &Path, code_page: u32) -> Vec<OsString> {
+/// `-sccUTF-8` also reads a given `password` from the input as UTF-8.
+fn cli_args(operation: &str, archive: &Path, code_page: u32, password: bool) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         OsString::from(operation),
         "-y".into(),
         "-bd".into(),
         "-bb0".into(),
         "-sccUTF-8".into(),
-        // Never prompt for credentials. Encrypted members are rejected by preflight.
-        "-pNNA-no-password-supplied".into(),
-        "--".into(),
-        archive.as_os_str().to_owned(),
     ]
     .into();
+    if !password {
+        // Never prompt for credentials. Encrypted members are rejected by preflight.
+        args.push("-pNNA-no-password-supplied".into());
+    }
+    args.extend(["--".into(), archive.as_os_str().to_owned()]);
     if is_zip(archive) {
         args.insert(1, format!("-mcp={code_page}").into());
     }
@@ -947,14 +967,18 @@ fn list_archive(
     seven_zip: &Path,
     first: &Path,
     cancelled: &AtomicBool,
+    password: Option<&str>,
 ) -> Result<(u32, Vec<ArchiveEntry>)> {
     let list = |code_page| -> Result<Vec<u8>> {
-        let mut args = cli_args("l", first, code_page);
+        let mut args = cli_args("l", first, code_page, password.is_some());
         args.insert(1, "-slt".into());
-        run_7zip(seven_zip, &args, cancelled, true, None)
+        run_7zip(seven_zip, &args, cancelled, true, None, password)
     };
     let parse = |listing: &[u8]| {
-        parse_listing(std::str::from_utf8(listing).context("archive_listing_invalid")?)
+        parse_listing(
+            std::str::from_utf8(listing).context("archive_listing_invalid")?,
+            password.is_some(),
+        )
     };
     if is_zip(first) {
         // A tool failure does not depend on name decoding; a name the listing rejects may.
@@ -1188,6 +1212,7 @@ fn verify_inventory(
 
 /// Produces a verified staging directory without expanding nested archives.
 /// Failure/cancellation removes only this invocation's private staging tree.
+/// An encrypted archive needs its `password`.
 pub fn extract_archive(
     seven_zip: &Path,
     archive: &Path,
@@ -1195,6 +1220,7 @@ pub fn extract_archive(
     staging_parent: &Path,
     cancelled: &AtomicBool,
     progress: &ExtractionProgress,
+    password: Option<&str>,
 ) -> Result<ArchiveExtraction> {
     check_cancel(cancelled)?;
     validate_no_links(staging_parent)?;
@@ -1245,7 +1271,7 @@ pub fn extract_archive(
     let content = workspace.join("content");
     fs::create_dir(&content).context("storage_write_failed")?;
     let first = first_volume(&sources, &inputs, &workspace, cancelled)?;
-    let (code_page, entries) = list_archive(seven_zip, &first, cancelled)?;
+    let (code_page, entries) = list_archive(seven_zip, &first, cancelled, password)?;
     let plan = plan_extraction(&entries);
     let expanded_size = entries.iter().try_fold(0u64, |total, entry| {
         total
@@ -1291,7 +1317,7 @@ pub fn extract_archive(
     names.flush().context("storage_write_failed")?;
     drop(names);
     if file_count > 0 {
-        let mut extraction_args = cli_args("x", &first, code_page);
+        let mut extraction_args = cli_args("x", &first, code_page, password.is_some());
         for arg in extraction_args
             .iter_mut()
             .filter(|arg| arg.as_os_str() == "-bd")
@@ -1320,6 +1346,7 @@ pub fn extract_archive(
             cancelled,
             false,
             Some(progress),
+            password,
         )?;
     }
     progress.written.store(100, Ordering::Relaxed);

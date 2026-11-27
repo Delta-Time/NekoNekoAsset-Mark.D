@@ -59,6 +59,7 @@ export type { AiWire } from './AiWire';
 export type { AiWorkspace } from './AiWorkspace';
 export type { AppCheck } from './AppCheck';
 export type { AppRelease } from './AppRelease';
+export type { ArchivePassword } from './ArchivePassword';
 export type { AssetFile } from './AssetFile';
 export type { AvatarDelta } from './AvatarDelta';
 export type { AvatarEvidence } from './AvatarEvidence';

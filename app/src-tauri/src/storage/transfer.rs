@@ -1981,8 +1981,22 @@ impl StorageService {
         let tool = seven_zip.to_owned();
         let cancel2 = cancel.clone();
         let progress = progress.clone();
+        // A password the user gave for this file serves this one attempt.
+        let password = self
+            .archive_passwords
+            .lock()
+            .unwrap()
+            .remove(io::required_string(artifact, "fileId")?);
         let extracted = tokio::task::spawn_blocking(move || {
-            archive::extract_archive(&tool, &source, &volumes, &staging, &cancel2, &progress)
+            archive::extract_archive(
+                &tool,
+                &source,
+                &volumes,
+                &staging,
+                &cancel2,
+                &progress,
+                password.as_deref(),
+            )
         })
         .await??;
         io::check_cancel(cancel)?;

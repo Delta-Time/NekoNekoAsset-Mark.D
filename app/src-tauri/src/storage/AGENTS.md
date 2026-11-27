@@ -11,6 +11,9 @@
   originals on failure. Delete eligible originals only after validated durable
   extraction; keep unitypackages. Use readable stable paths; metadata edits do not
   move files. Clean only outputs owned by the operation.
+- An archive password the user types serves only that file's next extraction. It
+  reaches 7-Zip on its input, never the command line, and never enters a job, the
+  catalogue or a log.
 - Local files, folders and ZIPs are copied into managed storage without changing
   the originals. The default one-product mode accepts many inputs; batch mode has
   independent folder and ZIP product drafts. Loose files share a product directory.

@@ -23,6 +23,7 @@ export type StorageResponses = {
   delete_local_products: DeletedProducts;
   enqueue_products: DownloadJobs;
   enqueue_file: DownloadJobs;
+  extract_with_password: DownloadJobs;
   cancel_job: CancelRequested;
   cancel_downloads: DownloadsCancelled;
   delete_downloads: DownloadJobs;

@@ -79,6 +79,9 @@ pub struct StorageService {
     queue_gate: Arc<AsyncMutex<()>>,
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
+    /// Archive passwords the user gave, by file, kept only in memory until that file's next
+    /// extraction uses one.
+    archive_passwords: Arc<Mutex<HashMap<String, String>>>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     process_lock: Arc<Mutex<Option<File>>>,
     automatic_pending: Arc<Mutex<AutomaticPending>>,
@@ -278,6 +281,7 @@ impl StorageService {
             queue_gate: Arc::new(AsyncMutex::new(())),
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
+            archive_passwords: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             process_lock: Arc::new(Mutex::new(None)),
             automatic_pending: Arc::new(Mutex::new(AutomaticPending::default())),
@@ -1102,6 +1106,7 @@ impl StorageService {
                                             | "store_file_unavailable"
                                             | "free_offer_unavailable"
                                             | "archive_password_required"
+                                            | "archive_password_wrong"
                                             | "archive_missing_volume"
                                             | "source_tree_incomplete"
                                     ) {
@@ -1402,6 +1407,40 @@ impl StorageService {
             .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
         self.enqueue(&json!({"productIds":[file["productId"]],"selectedFileIds":[id],"rootId":args["rootId"],"redownload":args["redownload"]==true})).await
     }
+    /// Extracts a downloaded archive that failed for want of a password with `password`: a
+    /// download of that file alone, which reuses the original kept on disk. The password stays
+    /// in memory until that extraction and never enters the job, the catalogue or a log.
+    async fn extract_with_password(&self, args: &Value) -> Result<Value> {
+        let id = io::required_string(args, "fileId")?;
+        let password = io::required_string(args, "password")?;
+        ensure!(
+            !password.is_empty()
+                && password.chars().count() <= 256
+                && !password.chars().any(char::is_control),
+            "invalid_arguments"
+        );
+        let file = self
+            .catalogue
+            .get("remote_file", id)?
+            .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
+        ensure!(
+            self.catalogue
+                .get("artifact", &artifact_id(&file))?
+                .is_some_and(
+                    |a| a["status"] == "extractionFailed" && a["originalAvailable"] == true
+                ),
+            "file_not_usable"
+        );
+        self.archive_passwords
+            .lock()
+            .unwrap()
+            .insert(id.to_owned(), password.to_owned());
+        let queued = self.enqueue_file(&json!({ "fileId": id })).await;
+        if queued.is_err() {
+            self.archive_passwords.lock().unwrap().remove(id);
+        }
+        queued
+    }
     pub async fn command(
         &self,
         app: &tauri::AppHandle,
@@ -1444,6 +1483,7 @@ impl StorageService {
             "delete_local_products" => self.delete_local_products(&args, None).await,
             "enqueue_products" => self.enqueue(&args).await,
             "enqueue_file" => self.enqueue_file(&args).await,
+            "extract_with_password" => self.extract_with_password(&args).await,
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
                 self.cancel_job(id)
