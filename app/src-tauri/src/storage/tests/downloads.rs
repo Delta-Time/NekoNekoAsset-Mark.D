@@ -1645,3 +1645,42 @@ fn a_download_left_with_nothing_says_why() {
         "store_file_unavailable"
     );
 }
+
+#[tokio::test]
+async fn a_free_import_download_goes_ahead_of_the_queued_ones_once() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let c = &f.service.catalogue;
+    c.put("job","0-queued",json!({"id":"0-queued","type":"download","productId":"43","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
+    // The import asked for the item's files: their download goes first, and the intent the
+    // download writes no longer says so.
+    c.put(
+        "download_intent",
+        "42",
+        json!({"id":"42","wantDownload":true,"priority":true}),
+    )
+    .unwrap();
+    let answer = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
+    let imported = answer["jobIds"][0].as_str().unwrap();
+    assert_eq!(c.get("job", imported).unwrap().unwrap()["priority"], true);
+    assert!(c
+        .get("download_intent", "42")
+        .unwrap()
+        .unwrap()
+        .get("priority")
+        .is_none());
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        imported
+    );
+    // A download waiting for its store's list still goes before it.
+    c.put("job","1-update",json!({"id":"1-update","type":"download","productId":"44","state":"queued","stage":"storeUpdate","updateJobIds":[],"selectedFileIds":null,"fileIds":[]})).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "1-update"
+    );
+}

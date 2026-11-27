@@ -4,7 +4,7 @@ import type { DownloadJobs } from './DownloadJobs';
 import type { LocalJob } from './LocalJob';
 
 /**
- * What a retry answers: downloads for a download or file, the import job for an import,
- * and the deletion for a local product deletion.
+ * What a retry answers: the jobs for a download, file or removal of downloaded files, the
+ * import job for an import, and the deletion for a local product deletion.
  */
 export type Retried = DownloadJobs | LocalJob | DeletedProducts;

@@ -192,7 +192,7 @@ pub struct StorageJob {
     pub rest: Map<String, Value>,
 }
 
-/// Deletes the downloaded files of `productIds`, or one file.
+/// Queues the removal of the downloaded files of `productIds`, or of one file.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadRemoval {
@@ -305,7 +305,8 @@ pub struct LocalJob {
     pub state: Option<String>,
 }
 
-/// The download jobs that cover the request, new or already queued.
+/// The jobs that cover the request, new or already queued: downloads, or removals of
+/// downloaded files.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -318,13 +319,6 @@ pub struct DownloadJobs {
 #[ts(export)]
 pub struct DeletedProducts {
     pub deleted_product_ids: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct DeletedFiles {
-    pub deleted_file_ids: Vec<String>,
 }
 
 /// Whether the job was still running and is now asked to stop.
@@ -400,8 +394,8 @@ pub struct RestartRequired {
     pub restart_required: bool,
 }
 
-/// What a retry answers: downloads for a download or file, the import job for an import,
-/// and the deletion for a local product deletion.
+/// What a retry answers: the jobs for a download, file or removal of downloaded files, the
+/// import job for an import, and the deletion for a local product deletion.
 #[cfg(test)]
 #[derive(Serialize, TS)]
 #[serde(untagged)]
@@ -434,7 +428,7 @@ struct StorageResponses {
     enqueue_file: DownloadJobs,
     cancel_job: CancelRequested,
     cancel_downloads: DownloadsCancelled,
-    delete_downloads: DeletedFiles,
+    delete_downloads: DownloadJobs,
     retry_job: Retried,
     discard_import: ImportDiscarded,
     configure_root: crate::catalogue::api::Root,

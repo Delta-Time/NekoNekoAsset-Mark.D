@@ -927,6 +927,7 @@ async fn storage_action(
         request,
         Request::EnqueueProducts(_)
             | Request::EnqueueFile(_)
+            | Request::DeleteDownloads(_)
             | Request::CancelJob(_)
             | Request::RetryJob(_)
             | Request::DiscardImport(_)

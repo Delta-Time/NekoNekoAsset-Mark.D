@@ -375,8 +375,10 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
 }
 
 /// The codes storage records as they were raised.
-const CODES: [&str; 38] = [
+const CODES: [&str; 40] = [
     "cancelled",
+    "storage_busy",
+    "download_delete_incomplete",
     "root_offline",
     "low_space",
     "auth_required",

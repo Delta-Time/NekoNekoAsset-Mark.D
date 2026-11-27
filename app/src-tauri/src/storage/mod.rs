@@ -31,9 +31,14 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
     archive::validate_no_links(path)
 }
 
-/// Startup queues these again: a download restarts only its unfinished file and a
-/// local import only its uncopied ones, so an App update need not wait for them.
-pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
+/// Startup queues these again: a download restarts only its unfinished file, a local
+/// import only its uncopied ones and a removal only what is left, so an App update need not
+/// wait for them.
+pub(crate) const RESUMED_AT_STARTUP: [&str; 3] = [
+    "download",
+    "storage:import_local",
+    download_delete::DELETE_JOB,
+];
 /// A queued download whose store refused a file, waiting for that store's list to be read
 /// again; its product stays in progress meanwhile. No other download starts before the wait
 /// ends, except while the update waits behind another job of its store, such as a sync.
@@ -75,8 +80,6 @@ pub struct StorageService {
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Products whose downloaded files are being removed.
-    deleting: Arc<Mutex<HashSet<String>>>,
     process_lock: Arc<Mutex<Option<File>>>,
     automatic_pending: Arc<Mutex<AutomaticPending>>,
     /// Waits in a row per store since it last served a download; a restart starts over.
@@ -276,7 +279,6 @@ impl StorageService {
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
-            deleting: Arc::new(Mutex::new(HashSet::new())),
             process_lock: Arc::new(Mutex::new(None)),
             automatic_pending: Arc::new(Mutex::new(AutomaticPending::default())),
             store_waits: Arc::new(Mutex::new(HashMap::new())),
@@ -704,6 +706,9 @@ impl StorageService {
     }
     fn queued_download(&self) -> Result<(Option<Value>, bool)> {
         let mut jobs = self.catalogue.queued_jobs(Some("download"), None)?;
+        // A free import's download goes ahead of the others; the store waits below still go
+        // first or last.
+        jobs.sort_by_key(|job| job["priority"] != true);
         if jobs.is_empty() {
             return Ok((None, false));
         }
@@ -1027,6 +1032,12 @@ impl StorageService {
                         continue;
                     }
                 };
+                // Removals of downloaded files, then local imports, go before every queued
+                // download: each waits only for the download in progress.
+                if let Ok(Some(job)) = service.queued_delete() {
+                    service.process_delete_job(&app, job).await;
+                    continue;
+                }
                 let local = service
                     .catalogue
                     .queued_jobs(Some("storage:import_local"), None)
@@ -1272,6 +1283,7 @@ impl StorageService {
                     && matches!(j["state"].as_str(), Some("queued" | "running"))
             })
             .collect();
+        let deleting = download_delete::deleting(&jobs);
         let mut writes = Vec::new();
         let mut source_required = false;
         for id in ids.into_iter().collect::<HashSet<_>>() {
@@ -1281,7 +1293,7 @@ impl StorageService {
                 }
                 bail!("product_missing");
             };
-            if self.deleting.lock().unwrap().contains(&id) {
+            if deleting.contains(id.as_str()) {
                 if automatic {
                     continue;
                 }
@@ -1348,7 +1360,17 @@ impl StorageService {
                 continue;
             }
             let job_id = uuid::Uuid::new_v4().to_string();
-            let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
+            let mut job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
+            // What a free import asked for goes ahead of the queued downloads, once: the
+            // intent written above no longer says so.
+            if selected.is_null()
+                && self
+                    .catalogue
+                    .get("download_intent", &id)?
+                    .is_some_and(|intent| intent["priority"] == true)
+            {
+                job["priority"] = json!(true);
+            }
             writes.push(("job".into(), job_id.clone(), job));
             result.push(json!(job_id));
         }
@@ -1442,6 +1464,11 @@ impl StorageService {
                     }
                     if job["type"] == "storage:import_local" {
                         let result = self.retry_local_import(id).await;
+                        self.changed(app, Some(id));
+                        return result;
+                    }
+                    if job["type"] == download_delete::DELETE_JOB {
+                        let result = self.retry_delete(id).await;
                         self.changed(app, Some(id));
                         return result;
                     }

@@ -20,7 +20,7 @@ const jobBlockers: Record<string, string> = {
 const active = (job: { state: string }) => job.state === 'queued' || job.state === 'running';
 export const resumesAfterRestart = (job: { type: string; state: string }) =>
   active(job) &&
-  /^((booth|gumroad|jinxxy)(Sync|Update)|download|storage:import_local|licenses:sync)$/.test(
+  /^((booth|gumroad|jinxxy)(Sync|Update)|download|storage:(import_local|delete_downloads)|licenses:sync)$/.test(
     job.type,
   );
 export function updateJobBlocker(jobs: { type: string; state: string }[]): string {

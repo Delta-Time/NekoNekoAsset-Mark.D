@@ -81,7 +81,6 @@ export type { CopiedText } from './CopiedText';
 export type { CustomCategories } from './CustomCategories';
 export type { CustomCategory } from './CustomCategory';
 export type { CustomCategoryRequest } from './CustomCategoryRequest';
-export type { DeletedFiles } from './DeletedFiles';
 export type { DeletedProducts } from './DeletedProducts';
 export type { DialogFilter } from './DialogFilter';
 export type { DialogKind } from './DialogKind';

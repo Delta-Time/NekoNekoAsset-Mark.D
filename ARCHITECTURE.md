@@ -237,8 +237,10 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - **Jobs and concurrency.** Store, download, import, AI and Unity work
   hold a `catalogue::CatalogueWorkPermit` while queued or running; a restore takes
   the exclusive one. Different stores sync at the same time, while accounts of one
-  store queue. Database locks are never held across network waits or long file
-  work.
+  store queue. Storage work runs one job at a time: removing downloaded files, then a
+  local import, goes after the download in progress and before queued ones, and the
+  UI never waits for either to run. Database locks are never held across network
+  waits or long file work.
 - **Errors.** Every error the UI sees is a stable code, translated through
   `error-i18n.ts` and the locale files.
 - **Privacy.** Cookies, tokens, order details, page bodies and downloaded files

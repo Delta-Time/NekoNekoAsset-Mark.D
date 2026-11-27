@@ -19,3 +19,6 @@
   any failure stays unknown, and a price shows only beside the listing it came from.
 - Store errors arrive classified (`stores::StoreError`); `io.rs`'s `stable_error`
   never matches message text.
+- A request that removes or copies files only queues a job and answers at once. The
+  storage worker runs one job at a time: removals of downloaded files, then local
+  imports, go after the download in progress and before queued downloads.

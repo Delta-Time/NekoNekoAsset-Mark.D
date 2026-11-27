@@ -4,19 +4,36 @@ use super::local_delete::{checked_tree, contains, product_directory, remove_chec
 use super::*;
 use std::{collections::BTreeSet, fs};
 
-/// While a product's bytes are removed, no download for it can be queued.
-pub(super) struct DeleteClaim {
-    claimed: Arc<Mutex<HashSet<String>>>,
-    ids: Vec<String>,
+/// One product's removal, or one file's. The storage worker runs it after the download in
+/// progress and before any queued one; while it waits or runs, no download of its product
+/// can be queued.
+pub(super) const DELETE_JOB: &str = "storage:delete_downloads";
+
+fn active(job: &Value) -> bool {
+    matches!(job["state"].as_str(), Some("queued" | "running"))
 }
-impl Drop for DeleteClaim {
-    fn drop(&mut self) {
-        if let Ok(mut claimed) = self.claimed.lock() {
-            for id in &self.ids {
-                claimed.remove(id);
-            }
-        }
-    }
+
+/// Whether other work holds the product's files: a download, a Unity transfer or a local
+/// import.
+fn files_in_use(jobs: &[Value], product: &str) -> bool {
+    jobs.iter().any(|job| {
+        active(job)
+            && matches!(
+                job["type"].as_str(),
+                Some("download" | "unity:import" | "storage:import_local")
+            )
+            && std::iter::once(&job["productId"])
+                .chain(job["productIds"].as_array().into_iter().flatten())
+                .any(|id| id == product)
+    })
+}
+
+/// The products whose removal waits or runs.
+pub(super) fn deleting(jobs: &[Value]) -> HashSet<&str> {
+    jobs.iter()
+        .filter(|job| job["type"] == DELETE_JOB && active(job))
+        .filter_map(|job| job["productId"].as_str())
+        .collect()
 }
 
 /// Bytes an artifact owns: its retained original and its extraction.
@@ -37,6 +54,7 @@ fn product_top(path: &str) -> Option<String> {
 }
 
 impl StorageService {
+    /// Queues the removal of these products' downloads, or of one file, and answers its jobs.
     pub(super) async fn delete_downloads(&self, args: &Value) -> Result<Value> {
         let (products, file) = if let Some(id) = args["fileId"].as_str() {
             ensure!(args.get("productIds").is_none(), "invalid_arguments");
@@ -67,46 +85,141 @@ impl StorageService {
             // Offline products hold their only copy; they use Remove or Delete instead.
             ensure!(product["provider"] != "local", "invalid_arguments");
         }
-        let work = self.catalogue.begin_catalogue_work()?;
-        let operation = self
-            .operations
-            .clone()
-            .try_read_owned()
-            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
-        let claim = {
-            let _gate = self.queue_gate.lock().await;
-            let busy = self.catalogue.list("job")?.iter().any(|job| {
-                matches!(job["state"].as_str(), Some("queued" | "running"))
-                    && (job["type"] == "download"
-                        || job["type"] == "unity:import"
-                        || job["type"] == "storage:import_local")
-                    && std::iter::once(&job["productId"])
-                        .chain(job["productIds"].as_array().into_iter().flatten())
-                        .filter_map(Value::as_str)
-                        .any(|id| products.iter().any(|product| product == id))
-            });
-            let mut claimed = self.deleting.lock().unwrap();
-            ensure!(
-                !busy && products.iter().all(|id| !claimed.contains(id)),
-                "storage_busy"
-            );
-            claimed.extend(products.iter().cloned());
-            DeleteClaim {
-                claimed: self.deleting.clone(),
-                ids: products.clone(),
+        // Only the jobs are written here, which no download or busy disk holds up for long.
+        let _work = self.catalogue.begin_catalogue_work()?;
+        let _gate = self.queue_gate.lock().await;
+        let jobs = self.catalogue.list("job")?;
+        ensure!(
+            !products.iter().any(|id| files_in_use(&jobs, id)),
+            "storage_busy"
+        );
+        let mut writes = Vec::new();
+        let mut ids = Vec::new();
+        for product in &products {
+            // A removal already waiting answers for the same request, and one of the whole
+            // product for any of its files.
+            if let Some(job) = jobs.iter().find(|job| {
+                job["type"] == DELETE_JOB
+                    && active(job)
+                    && job["productId"] == product.as_str()
+                    && (job["fileId"].is_null() || job["fileId"].as_str() == file.as_deref())
+            }) {
+                ids.push(io::required_string(job, "id")?.to_owned());
+                continue;
             }
-        };
-        let service = self.clone();
-        tokio::task::spawn_blocking(move || {
-            // Dropping the IPC future must not release these while files are removed.
-            let _guards = (work, operation, claim);
-            service.remove_downloads(&products, file.as_deref())
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("storage_failed"))?
+            let id = uuid::Uuid::new_v4().to_string();
+            // An empty bar while it waits, as a queued download shows.
+            let mut job = json!({"id":id,"type":DELETE_JOB,"productId":product,"state":"queued","progress":0,"createdAt":now(),"updatedAt":now()});
+            if let Some(file) = &file {
+                job["fileId"] = json!(file);
+            }
+            writes.push(("job".to_owned(), id.clone(), job));
+            ids.push(id);
+        }
+        self.catalogue.put_many(writes)?;
+        super::api::answer(super::api::DownloadJobs { job_ids: ids })
     }
 
-    fn remove_downloads(&self, products: &[String], file: Option<&str>) -> Result<Value> {
+    /// Queues a removal that failed or was cancelled again, as it was asked for.
+    pub(super) async fn retry_delete(&self, id: &str) -> Result<Value> {
+        let _work = self.catalogue.begin_catalogue_work()?;
+        let _gate = self.queue_gate.lock().await;
+        let mut job = self
+            .catalogue
+            .get("job", id)?
+            .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
+        ensure!(job["type"] == DELETE_JOB, "invalid_job");
+        if !active(&job) {
+            let product = io::required_string(&job, "productId")?;
+            ensure!(
+                self.catalogue.get("product", product)?.is_some(),
+                "product_missing"
+            );
+            ensure!(
+                !files_in_use(&self.catalogue.list("job")?, product),
+                "storage_busy"
+            );
+            job.as_object_mut().unwrap().remove("cancelRequested");
+            job["progress"] = json!(0);
+            self.put_job(&mut job, "queued", None)?;
+        }
+        super::api::answer(super::api::DownloadJobs {
+            job_ids: vec![id.to_owned()],
+        })
+    }
+
+    /// The oldest queued removal whose files no other work holds. One waiting for a Unity
+    /// transfer of its product runs once that ends.
+    pub(super) fn queued_delete(&self) -> Result<Option<Value>> {
+        let mut queued = self.catalogue.queued_jobs(Some(DELETE_JOB), None)?;
+        if queued.is_empty() {
+            return Ok(None);
+        }
+        queued.sort_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
+        let jobs = self.catalogue.list("job")?;
+        Ok(queued
+            .into_iter()
+            .find(|job| !files_in_use(&jobs, job["productId"].as_str().unwrap_or(""))))
+    }
+
+    /// Runs a queued removal; the storage worker waits for it.
+    pub(super) async fn process_delete_job(&self, app: &tauri::AppHandle, job: Value) {
+        let _operation = self.operations.read().await;
+        let id = job["id"].as_str().unwrap_or("").to_owned();
+        let (service, events, worker) = (self.clone(), app.clone(), id.clone());
+        let ran = tokio::task::spawn_blocking(move || {
+            service.run_delete_job(&worker, || service.jobs_changed(&events, &worker))
+        })
+        .await;
+        if ran.is_err() {
+            if let Ok(Some(mut job)) = self.catalogue.get("job", &id) {
+                let _ = self.put_job(&mut job, "failed", Some("storage_failed"));
+            }
+        }
+        self.changed(app, Some(&id));
+    }
+
+    /// Runs the removal if it still waits, which a cancel may have ended, and records how it
+    /// ended; `started` follows its start. Answers the files whose bytes are gone.
+    pub(super) fn run_delete_job(&self, id: &str, started: impl FnOnce()) -> Result<Vec<String>> {
+        let Some(before) = self
+            .catalogue
+            .get("job", id)?
+            .filter(|job| job["state"] == "queued")
+        else {
+            return Ok(Vec::new());
+        };
+        // Running, its bar moves without a percent.
+        let mut job = before.clone();
+        job.as_object_mut().unwrap().remove("progress");
+        job["state"] = json!("running");
+        job["updatedAt"] = json!(now());
+        if !self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.to_owned(), job.clone())],
+            vec![("job".into(), id.to_owned(), Some(before))],
+        )? {
+            return Ok(Vec::new());
+        }
+        started();
+        let result = self.remove_asked(&job);
+        let (state, error) = match &result {
+            Ok(_) => ("completed", None),
+            Err(error) => ("needsAction", Some(io::stable_error(error))),
+        };
+        self.put_job(&mut job, state, error)?;
+        result
+    }
+
+    /// A product removed from the library meanwhile left nothing to remove.
+    fn remove_asked(&self, job: &Value) -> Result<Vec<String>> {
+        let product = io::required_string(job, "productId")?;
+        if self.catalogue.get("product", product)?.is_none() {
+            return Ok(Vec::new());
+        }
+        self.remove_downloads(&[product.to_owned()], job["fileId"].as_str())
+    }
+
+    fn remove_downloads(&self, products: &[String], file: Option<&str>) -> Result<Vec<String>> {
         // Removing a product's downloads leaves every file outside the store's
         // current download list, shown or not, and every file the store refused:
         // the store cannot provide it again. Each kept file's own delete still removes it.
@@ -289,9 +402,7 @@ impl StorageService {
             .filter_map(|artifact| artifact["fileId"].as_str())
             .filter(|id| !incomplete.contains(id))
             .collect();
-        super::api::answer(super::api::DeletedFiles {
-            deleted_file_ids: deleted.into_iter().map(str::to_owned).collect(),
-        })
+        Ok(deleted.into_iter().map(str::to_owned).collect())
     }
 }
 

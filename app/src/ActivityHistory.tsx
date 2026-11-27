@@ -185,30 +185,32 @@ export default function ActivityHistory({
         ? licenseText(locale, 'licenseSync')!
         : job.type === 'storage:delete_local_products'
           ? shellText(locale, 'deleteLocalProducts')!
-          : job.type === 'unity:import'
-            ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
-            : job.type.startsWith('ai:')
-              ? shellText(locale, 'aiTags')!
-              : label(
-                  isStoreJob(job.type)
-                    ? /login$/i.test(job.type)
-                      ? 'signIn'
-                      : /update$/i.test(job.type)
-                        ? 'update'
-                        : 'sync'
-                    : job.type === 'download'
-                      ? 'download'
-                      : job.type === 'storage:migrate_root'
-                        ? 'move'
-                        : job.type === 'storage:export_backup'
-                          ? 'export'
-                          : job.type === 'storage:restore_backup' ||
-                              job.type === 'storage:import_local'
-                            ? 'import'
-                            : job.type === 'storage:export_zip'
-                              ? 'exportZip'
-                              : 'storage',
-                );
+          : job.type === 'storage:delete_downloads'
+            ? shellText(locale, 'deleteDownloads')!
+            : job.type === 'unity:import'
+              ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
+              : job.type.startsWith('ai:')
+                ? shellText(locale, 'aiTags')!
+                : label(
+                    isStoreJob(job.type)
+                      ? /login$/i.test(job.type)
+                        ? 'signIn'
+                        : /update$/i.test(job.type)
+                          ? 'update'
+                          : 'sync'
+                      : job.type === 'download'
+                        ? 'download'
+                        : job.type === 'storage:migrate_root'
+                          ? 'move'
+                          : job.type === 'storage:export_backup'
+                            ? 'export'
+                            : job.type === 'storage:restore_backup' ||
+                                job.type === 'storage:import_local'
+                              ? 'import'
+                              : job.type === 'storage:export_zip'
+                                ? 'exportZip'
+                                : 'storage',
+                  );
   // Waiting for its store's list or out its store's limit, or running: the files it is
   // receiving with their bytes, or the archive it is extracting.
   function downloadState(job: Job) {
@@ -421,7 +423,8 @@ export default function ActivityHistory({
               isStoreJob(job.type) ||
               job.type === 'download' ||
               job.type === 'storage:import_local' ||
-              job.type === 'storage:delete_local_products';
+              job.type === 'storage:delete_local_products' ||
+              job.type === 'storage:delete_downloads';
             const accountRemoved = isStoreJob(job.type) && !!job.accountId && !account;
             const accountBusy =
               isStoreJob(job.type) &&
@@ -546,7 +549,9 @@ export default function ActivityHistory({
                       )}
                     </>
                   ) : active(job) ? (
-                    job.type === 'storage:delete_local_products' ? null : (
+                    // A removal of downloaded files stops only while it waits.
+                    job.type === 'storage:delete_local_products' ||
+                    (job.type === 'storage:delete_downloads' && job.state === 'running') ? null : (
                       <button
                         type="button"
                         disabled={job.cancelRequested === true}
