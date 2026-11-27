@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1 Beta - 2026-11-27
+
+### Added
+
+- An archive that needs a password says so on its row in Files, or says that the password given was wrong. The key beside it opens a password field under the file's name, and Enter or the check mark extracts the archive with that password, reusing the original already downloaded. The password serves that one extraction and is never saved.
+
+### Changed
+
+- Activity shows what a running download is doing: the place of the file it is receiving and its bytes, such as 1/5 · 300.0 MB / 500.0 MB, a range such as 1–3/5 while several files download at once, and then Extracting with the archive's place and percent.
+- When BOOTH refuses downloads after many in a row, the App waits and tries again after 1, 2, 4, 8, 15 and then 30 minutes instead of failing the rest of the batch. Activity reads Retrying at with the time, the waiting file reads Not downloaded in Files instead of Failed, and other stores' downloads go on meanwhile. After an hour of waits without a file, the refusal ends the download as before. A 429 answer from any store waits the same way.
+- Delete downloaded files closes at once and removes the files in the background. Each asset's removal is its own Activity job that runs after the download in progress and before queued downloads; you can cancel it while it waits or retry it if it fails, and one interrupted by closing the App finishes at the next start. A download of several assets leaves out the ones whose files are waiting to be removed.
+- While a local import copies files, starting another local import, a download or an extraction with a password queues it instead of answering busy. Local imports still go after the download in progress and before queued downloads.
+- Import › BOOTH: free assets closes as soon as its job is queued, and the downloads it asks for go ahead of downloads already queued.
+- An asset whose store refused a file is updated at once and goes on downloading from the updated list, while Activity reads Updating. Other downloads go on while that update waits behind a sync of the same store.
+- New download folders keep the first 32 characters of an asset's title, a file's name or an archive's name instead of 64, which keeps paths further below Windows' 260-character limit. Folders already downloaded or extracted keep their names and places, and updates of those assets still go into their existing folders.
+- One-handed drag actions is on by default in Settings › Appearance, where Reduce motion is now listed last. A choice you already made stays.
+
+### Fixed
+
+- An archive holding a name Windows does not allow, such as `a:b.png`, a folder ending in a dot or a space, or `aux.png`, is extracted instead of failing as a whole. Those files and folders get the name 7-Zip gives them, with `_` in place of the character or in front of the name, and the rest keep their names. A local import renames such names the same way.
+
+### Release notes
+
+- A ZIP locked with the older ZipCrypto method whose password has characters outside your Windows language opens only if it was made on Windows with the same language.
+- BOOTH's download limit itself was not reproduced, so how long its refusals last is not known.
+- The Unity Bridge is unchanged and stays at [0.4.0 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.4.0); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.4.0 Beta - 2026-11-24
 
 ### Added
