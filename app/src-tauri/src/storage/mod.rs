@@ -77,6 +77,7 @@ pub struct StorageService {
     stores: Arc<StoreService>,
     started: Arc<AtomicBool>,
     queue_gate: Arc<AsyncMutex<()>>,
+    local_delete_queue: Arc<AsyncMutex<()>>,
     closing_local_imports: Arc<AtomicBool>,
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
@@ -280,6 +281,7 @@ impl StorageService {
             stores,
             started: Arc::new(AtomicBool::new(false)),
             queue_gate: Arc::new(AsyncMutex::new(())),
+            local_delete_queue: Arc::new(AsyncMutex::new(())),
             closing_local_imports: Arc::new(AtomicBool::new(false)),
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
@@ -412,7 +414,9 @@ impl StorageService {
                         .is_some_and(|t| t.starts_with("storage:")),
                 "invalid_job"
             );
-            if !matches!(before["state"].as_str(), Some("queued" | "running")) {
+            if before["type"] == local_delete::JOB_TYPE
+                || !matches!(before["state"].as_str(), Some("queued" | "running"))
+            {
                 return api::answer(api::CancelRequested {
                     cancel_requested: false,
                 });
@@ -1025,6 +1029,9 @@ impl StorageService {
                         self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
                         continue;
                     }
+                    if job["type"] == local_delete::JOB_TYPE && job["state"] == "queued" {
+                        continue;
+                    }
                     if RESUMED_AT_STARTUP.contains(&job["type"].as_str().unwrap_or("")) {
                         self.put_job(&mut job, "queued", None)?;
                     } else if job["type"]
@@ -1056,6 +1063,21 @@ impl StorageService {
             let _ = service.reevaluate_automatic().await;
             while !service.closing_local_imports.load(Ordering::Acquire) {
                 let _ = service.drain_automatic_changes().await;
+                let events = service.clone();
+                let handle = app.clone();
+                if service
+                    .process_next_local_delete(move |id, finished| {
+                        if finished {
+                            events.changed(&handle, Some(id));
+                        } else {
+                            events.jobs_changed(&handle, id);
+                        }
+                    })
+                    .await
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let work = match service.catalogue.begin_catalogue_work() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -1599,7 +1621,7 @@ impl StorageService {
         let result = match action {
             "import_local" => self.enqueue_local(&args).await,
             "local_files" => self.mutate_local_files(&args).await,
-            "delete_local_products" => self.delete_local_products(&args, None).await,
+            "delete_local_products" => self.enqueue_local_delete(&args, None).await,
             "enqueue_products" => self.enqueue(&args).await,
             "enqueue_file" => self.enqueue_file(&args).await,
             "extract_with_password" => self.extract_with_password(&args).await,
@@ -1628,7 +1650,7 @@ impl StorageService {
                         .get("job", id)?
                         .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
                     if job["type"] == "storage:delete_local_products" {
-                        let result = self.delete_local_products(&args, Some(id)).await;
+                        let result = self.enqueue_local_delete(&args, Some(id)).await;
                         self.changed(app, Some(id));
                         return result;
                     }

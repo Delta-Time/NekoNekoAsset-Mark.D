@@ -424,7 +424,6 @@ pub struct RestartRequired {
 enum Retried {
     Downloads(DownloadJobs),
     Import(LocalJob),
-    Deleted(DeletedProducts),
 }
 
 /// What moving the library answers: its job, or a moved portable library.
@@ -444,7 +443,7 @@ enum Moved {
 struct StorageResponses {
     import_local: LocalJob,
     local_files: LocalJob,
-    delete_local_products: DeletedProducts,
+    delete_local_products: DownloadJobs,
     enqueue_products: DownloadJobs,
     enqueue_file: DownloadJobs,
     extract_with_password: DownloadJobs,

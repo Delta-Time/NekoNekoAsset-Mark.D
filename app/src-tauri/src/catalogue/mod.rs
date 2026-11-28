@@ -1280,6 +1280,14 @@ impl Catalogue {
         })
     }
     pub(crate) fn begin_restore_work(&self) -> Result<CatalogueWorkPermit> {
+        self.begin_exclusive_work(false)
+    }
+
+    pub(crate) fn begin_local_delete_work(&self) -> Result<CatalogueWorkPermit> {
+        self.begin_exclusive_work(true)
+    }
+
+    fn begin_exclusive_work(&self, local_delete: bool) -> Result<CatalogueWorkPermit> {
         self.check_library_access()?;
         let mut state = self
             .work_gate
@@ -1294,10 +1302,12 @@ impl Catalogue {
         };
         // Queued work has no live permit yet, but can still be picked up later.
         ensure!(
-            !self
-                .list("job")?
-                .iter()
-                .any(|job| { matches!(job["state"].as_str(), Some("queued" | "running")) }),
+            !self.list("job")?.iter().any(|job| matches!(
+                job["state"].as_str(),
+                Some("queued" | "running")
+            ) && !(local_delete
+                && job["type"] == "storage:delete_local_products"
+                && job["state"] == "queued")),
             "storage_busy"
         );
         Ok(permit)

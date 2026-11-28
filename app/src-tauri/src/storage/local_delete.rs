@@ -3,7 +3,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fs};
 
-const JOB_TYPE: &str = "storage:delete_local_products";
+pub(super) const JOB_TYPE: &str = "storage:delete_local_products";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,28 +100,148 @@ impl StorageService {
             .map_err(|_| anyhow::anyhow!("local_delete_unsafe_path"))?;
         Ok(path.canonicalize()?)
     }
-    pub(super) async fn delete_local_products(
+    pub(super) async fn enqueue_local_delete(
         &self,
         args: &Value,
         retry: Option<&str>,
     ) -> Result<Value> {
-        // Keep both guards inside the blocking task: dropping an IPC future must
-        // not release them while filesystem changes are still in progress.
-        let work = self.catalogue.begin_restore_work()?;
-        let operation = self
-            .operations
-            .clone()
-            .try_write_owned()
-            .map_err(|_| anyhow::anyhow!("storage_busy"))?;
+        let gate = self.local_delete_queue.clone().lock_owned().await;
         let service = self.clone();
         let args = args.clone();
         let retry = retry.map(str::to_owned);
         tokio::task::spawn_blocking(move || {
-            let (_work, _operation) = (work, operation);
-            service.run_local_delete(&args, retry.as_deref())
+            let _gate = gate;
+            service.queue_local_delete_request(&args, retry.as_deref())
         })
-        .await
-        .map_err(|_| anyhow::anyhow!("storage_failed"))?
+        .await?
+    }
+
+    fn queue_local_delete_request(&self, args: &Value, retry: Option<&str>) -> Result<Value> {
+        let _work = self.catalogue.begin_catalogue_work()?;
+        let mut job = if let Some(id) = retry {
+            let job = self.catalogue.get("job", id)?.context("job_missing")?;
+            ensure!(
+                job["type"] == JOB_TYPE && job["localDelete"].is_object(),
+                "invalid_job"
+            );
+            ensure!(
+                self.catalogue.library_root().is_none()
+                    || job["originDeviceId"] == self.catalogue.device_id(),
+                "local_other_device"
+            );
+            job
+        } else {
+            let ids = strings(&args["productIds"]);
+            ensure!(
+                !ids.is_empty()
+                    && args["productIds"].as_array().map(Vec::len) == Some(ids.len())
+                    && ids.iter().all(|id| !id.is_empty())
+                    && ids.iter().collect::<BTreeSet<_>>().len() == ids.len(),
+                "invalid_arguments"
+            );
+            let mut existing = None;
+            for job in self.catalogue.list("job")? {
+                if job["type"] != JOB_TYPE
+                    || job["state"] == "completed"
+                    || job["state"] == "cancelled"
+                {
+                    continue;
+                }
+                let other = strings(&job["productIds"]);
+                if other.iter().any(|id| ids.contains(id)) {
+                    ensure!(
+                        other.len() == ids.len()
+                            && other.iter().all(|id| ids.contains(id))
+                            && (job["state"] == "queued"
+                                || job["state"] == "running"
+                                || job["localDelete"]["directories"].is_null())
+                            && (self.catalogue.library_root().is_none()
+                                || job["originDeviceId"] == self.catalogue.device_id()),
+                        "storage_busy"
+                    );
+                    existing = Some(job);
+                    break;
+                }
+            }
+            if let Some(job) = existing {
+                job
+            } else {
+                for id in &ids {
+                    let product = self
+                        .catalogue
+                        .get("product", id)?
+                        .context("product_missing")?;
+                    ensure!(product["provider"] == "local", "local_product_required");
+                }
+                json!({"id":uuid::Uuid::new_v4().to_string(),"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"productIds":ids,"createdAt":now(),"localDelete":{"recordsDeleted":false}})
+            }
+        };
+        let id = io::required_string(&job, "id")?.to_owned();
+        if !matches!(
+            job["state"].as_str(),
+            Some("queued" | "running" | "completed")
+        ) {
+            self.put_job(&mut job, "queued", None)?;
+        }
+        super::api::answer(super::api::DownloadJobs { job_ids: vec![id] })
+    }
+
+    /// Claim only when older work has drained. A busy result lets the worker run that work.
+    pub(super) async fn process_next_local_delete(
+        &self,
+        on_change: impl Fn(&str, bool) + Send + 'static,
+    ) -> Result<bool> {
+        let Some(job) = self
+            .catalogue
+            .queued_jobs(Some(JOB_TYPE), None)?
+            .into_iter()
+            .filter(|job| {
+                self.catalogue.library_root().is_none()
+                    || job["originDeviceId"] == self.catalogue.device_id()
+            })
+            .min_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()))
+        else {
+            return Ok(false);
+        };
+        let Ok(operation) = self.operations.clone().try_write_owned() else {
+            return Ok(false);
+        };
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            let _work = match service.catalogue.begin_local_delete_work() {
+                Ok(permit) => permit,
+                Err(e) if e.to_string() == "storage_busy" => return Ok(false),
+                Err(e) => return Err(e),
+            };
+            let id = io::required_string(&job, "id")?.to_owned();
+            let mut running = job.clone();
+            running["state"] = json!("running");
+            running["updatedAt"] = json!(now());
+            if !service.catalogue.put_many_if_unchanged(
+                vec![("job".into(), id.clone(), running.clone())],
+                vec![("job".into(), id.clone(), Some(job))],
+            )? {
+                return Ok(false);
+            }
+            on_change(&id, false);
+            let result = service.run_local_delete(running);
+            if let Err(error) = &result {
+                if let Some(mut current) = service.catalogue.get("job", &id)? {
+                    if current["state"] == "running" {
+                        service.put_job(
+                            &mut current,
+                            "needsAction",
+                            Some(io::stable_error(error)),
+                        )?;
+                    }
+                }
+            }
+            drop(_work);
+            on_change(&id, true);
+            result.map(|_| true)
+        })
+        .await?
     }
 
     fn delete_plan(&self, ids: &[String], job_id: &str) -> Result<Vec<DeleteDirectory>> {
@@ -308,48 +428,7 @@ impl StorageService {
         Ok(())
     }
 
-    fn run_local_delete(&self, args: &Value, retry: Option<&str>) -> Result<Value> {
-        let mut job = if let Some(id) = retry {
-            let job = self
-                .catalogue
-                .get("job", id)?
-                .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
-            ensure!(
-                job["type"] == JOB_TYPE && job["localDelete"].is_object(),
-                "invalid_job"
-            );
-            ensure!(
-                self.catalogue.library_root().is_none()
-                    || job["originDeviceId"] == self.catalogue.device_id(),
-                "local_other_device"
-            );
-            job
-        } else {
-            let values = args["productIds"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("invalid_arguments"))?;
-            let ids = strings(&args["productIds"]);
-            ensure!(
-                !ids.is_empty()
-                    && ids.len() == values.len()
-                    && ids.iter().all(|id| !id.is_empty())
-                    && ids.iter().collect::<HashSet<_>>().len() == ids.len(),
-                "invalid_arguments"
-            );
-            ensure!(
-                !self
-                    .catalogue
-                    .list("job")?
-                    .iter()
-                    .any(|job| job["type"] == JOB_TYPE
-                        && job["state"] != "completed"
-                        && strings(&job["productIds"])
-                            .iter()
-                            .any(|id| ids.contains(id))),
-                "storage_busy"
-            );
-            json!({"id":uuid::Uuid::new_v4().to_string(),"type":JOB_TYPE,"originDeviceId":self.catalogue.device_id(),"productIds":ids,"state":"running","createdAt":now(),"updatedAt":now(),"localDelete":{"recordsDeleted":false}})
-        };
+    fn run_local_delete(&self, mut job: Value) -> Result<Value> {
         let id = io::required_string(&job, "id")?.to_owned();
         let ids = strings(&job["productIds"]);
         if job["localDelete"]["recordsDeleted"] != true {
