@@ -808,3 +808,74 @@ async fn stopped_local_import_can_be_discarded_from_another_device() {
     drop(catalogue);
     fs::remove_dir_all(path).unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn an_interrupted_import_keeps_an_extraction_made_under_the_earlier_longer_name() {
+    // 0.4.0 kept 64 characters of a name. An import an update interrupted after it extracted,
+    // and before it recorded the extraction, resumes under a build that keeps fewer.
+    let (path, service) = fixture();
+    let root = path.join("library");
+    let prefix = format!(
+        "assets/{}",
+        io::readable_component("Authored local", "local:authored")
+    );
+    let stem = "衣".repeat(40);
+    let source = root.join(&prefix).join(format!("{stem}.zip"));
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let payload = path.join("payload/model.unitypackage");
+    fs::create_dir_all(payload.parent().unwrap()).unwrap();
+    fs::write(&payload, b"authored package").unwrap();
+    let tool = native_seven_zip_test_tool();
+    let made = std::process::Command::new(&tool)
+        .args(["a", "-tzip", "-y", "-bd"])
+        .arg(&source)
+        .arg(&payload)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let identity = source.to_str().unwrap();
+    let earlier = format!(
+        "{prefix}/extracted/{}",
+        io::readable_component_of(&stem, identity, io::EARLIER_READABLE_UNITS)
+    );
+    let current = format!(
+        "{prefix}/extracted/{}",
+        io::readable_component(&stem, identity)
+    );
+    assert_ne!(earlier, current);
+    fs::create_dir_all(root.join(&earlier)).unwrap();
+    fs::write(
+        root.join(&earlier).join("model.unitypackage"),
+        b"authored package",
+    )
+    .unwrap();
+    let group = LocalGroup {
+        product_id: "local:authored".into(),
+        title: "Authored local".into(),
+        prefix,
+        files: vec![],
+        directories: vec![],
+        metadata: None,
+        remove_file_ids: vec![],
+        membership: false,
+        expected_mutation: None,
+    };
+    let (relative, inventory, _) = service
+        .extract_local_archive(
+            &root,
+            &group,
+            &source,
+            std::slice::from_ref(&source),
+            None,
+            &[],
+            &tool,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(relative, earlier);
+    assert_eq!(inventory.as_array().unwrap().len(), 1);
+    assert!(!root.join(&current).exists());
+    drop(service);
+    fs::remove_dir_all(path).unwrap();
+}

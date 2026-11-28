@@ -307,7 +307,7 @@ export default function UnityWorkflow({
                 onClick={() =>
                   void openExternal(
                     bridgeRelease?.unitypackageUrl ??
-                      'https://github.com/Yan-K/NekoNekoAsset-Public/releases',
+                      'https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases',
                   ).catch((error) => setError(errorCode(error)))
                 }
               >

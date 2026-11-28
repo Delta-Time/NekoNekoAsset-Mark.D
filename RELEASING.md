@@ -1,8 +1,24 @@
 # Releasing NekoNekoAsset
 
-This document records the upstream maintainer's release process.
 Mark.D builds locally and uses the same `+D1` revision suffix for the App
 and its paired Bridge. Contributors need [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Mark.D local releases
+
+Build the Windows NSIS installer with the Mark.D public key in Tauri config.
+Sign the final installer with the corresponding updater key and pass the full
+App version, including `+D1`, to `tauri signer sign --app-version`.
+If using Windows Authenticode, apply it before creating the Tauri signature.
+
+Run `python scripts/release.py collect-app --bundle <nsis-folder> --output <assets>`
+and `python scripts/release.py update-manifest --artifacts <assets> --notes <release-notes.md>`.
+Upload `app-update.json`, the installer and its `.sig` to the same Mark.D GitHub
+Release. The App checks the fork's public Releases, including pre-releases.
+Add the Bridge archives to that release when the Bridge version changes.
+
+## Upstream release process
+
+The procedure below describes upstream's CI and Pages setup.
 
 Each release has one numeric App version (`0.3.5`) and tag (`v0.3.5`). Keep
 `app/package.json`, Cargo and Tauri config in agreement. The Bridge keeps the

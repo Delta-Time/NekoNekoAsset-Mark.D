@@ -160,13 +160,32 @@ fn source_error(error: std::io::Error) -> anyhow::Error {
         error.into()
     }
 }
+/// The name an item's copy gets: a name Windows cannot store, such as `aux.png`, gets the
+/// name 7-Zip would give it, as members of an archive do. One still unsafe is refused.
 fn path_name(path: &Path) -> Result<String> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?;
-    archive::validate_relative_path(name)?;
-    Ok(name.to_owned())
+    let name = archive::written_name(name);
+    archive::validate_relative_path(&name)?;
+    Ok(name)
+}
+/// Windows and portable archives must not alias distinct source entries, nor may two names
+/// that map to the same copy.
+fn ensure_distinct(group: &LocalGroup) -> Result<()> {
+    let mut names = HashSet::new();
+    for relative in group
+        .directories
+        .iter()
+        .chain(group.files.iter().map(|f| &f.relative))
+    {
+        ensure!(
+            names.insert(relative.to_lowercase()),
+            "archive_path_collision"
+        );
+    }
+    Ok(())
 }
 fn enumerate(
     path: &Path,
@@ -510,8 +529,9 @@ impl StorageService {
             while names.contains(&relative.to_lowercase())
                 || io::safe_join(&root_path, &format!("{}/{relative}", group.prefix))?.exists()
             {
+                // Both halves come from the copy's name, which may differ from the source's.
                 let stem = Path::new(&original).file_stem().unwrap().to_string_lossy();
-                relative = match path
+                relative = match Path::new(&original)
                     .extension()
                     .and_then(|e| e.to_str())
                     .filter(|_| path.is_file())
@@ -524,6 +544,7 @@ impl StorageService {
             names.insert(relative.to_lowercase());
             enumerate(&path, &relative, &mut group, None)?;
         }
+        ensure_distinct(&group)?;
         let plan = LocalPlan {
             draft_id: draft,
             groups: vec![group],
@@ -793,18 +814,7 @@ impl StorageService {
                 enumerate(source, &relative, &mut group, cancel)?;
             }
             ensure!(!group.files.is_empty(), "no_import_files");
-            // Windows and portable archives must not alias distinct source entries.
-            let mut names = HashSet::new();
-            for relative in group
-                .directories
-                .iter()
-                .chain(group.files.iter().map(|f| &f.relative))
-            {
-                ensure!(
-                    names.insert(relative.to_lowercase()),
-                    "archive_path_collision"
-                );
-            }
+            ensure_distinct(&group)?;
             group.directories.sort();
             groups.push(group);
         }
@@ -1929,24 +1939,29 @@ impl StorageService {
         tool: &Path,
         cancel: &AtomicBool,
     ) -> Result<(String, Value, Vec<PathBuf>)> {
-        let mut relative = format!(
-            "{}/extracted/{}",
-            group.prefix,
-            io::readable_component(
-                source
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Archive"),
-                source
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?
+        let stem = source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Archive");
+        let identity = source
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?;
+        let named = |units| {
+            format!(
+                "{}/extracted/{}",
+                group.prefix,
+                io::readable_component_of(stem, identity, units)
             )
-        );
+        };
+        let mut relative = named(io::READABLE_UNITS);
+        // An import an update interrupted may have extracted, unrecorded, under 0.4.0's name.
+        let mut earlier = Some(named(io::EARLIER_READABLE_UNITS)).filter(|name| *name != relative);
         if let Some(prior) = prior
             .and_then(|a| a["extractedPath"].as_str())
             .filter(|p| p.starts_with(&format!("{}/extracted/", group.prefix)))
         {
             relative = prior.to_owned();
+            earlier = None;
         }
         let mut target = io::safe_join(root, &relative)?;
         if let Some(prior) = prior.filter(|a| {
@@ -2023,27 +2038,41 @@ impl StorageService {
         let _empty_staging_parent =
             io::EmptyDirectoryGuard(staging.parent().unwrap().to_path_buf());
         let _empty_staging = io::EmptyDirectoryGuard(staging.clone());
-        let extraction = archive::extract_archive(tool, source, available, &staging, cancel)?;
+        let extraction = archive::extract_archive(
+            tool,
+            source,
+            available,
+            &staging,
+            cancel,
+            &archive::ExtractionProgress::default(),
+            None,
+        )?;
         io::check_cancel(cancel)?;
         let inventory = serde_json::to_value(&extraction.inventory)?;
-        if target.exists() {
-            // A prior extraction can survive a crash before group publication.
-            let expected = extraction
-                .inventory
-                .iter()
-                .map(|entry| archive::ArchiveEntry {
-                    relative_path: entry.relative_path.clone(),
-                    size_bytes: entry.size_bytes,
-                    is_directory: entry.is_directory,
-                    crc32: None,
-                })
-                .collect::<Vec<_>>();
-            let matches = archive::verify_extracted_inventory(&target, &expected, cancel)
+        let expected = extraction
+            .inventory
+            .iter()
+            .map(|entry| archive::ArchiveEntry {
+                relative_path: entry.relative_path.clone(),
+                size_bytes: entry.size_bytes,
+                is_directory: entry.is_directory,
+                crc32: None,
+            })
+            .collect::<Vec<_>>();
+        // A prior extraction can survive a crash before group publication.
+        for candidate in std::iter::once(relative.clone()).chain(earlier) {
+            let path = io::safe_join(root, &candidate)?;
+            if !path.exists() {
+                continue;
+            }
+            let matches = archive::verify_extracted_inventory(&path, &expected, cancel)
                 .is_ok_and(|actual| actual == extraction.inventory);
             io::check_cancel(cancel)?;
             if matches {
-                return Ok((relative, inventory, extraction.source_paths.clone()));
+                return Ok((candidate, inventory, extraction.source_paths.clone()));
             }
+        }
+        if target.exists() {
             // Retain damaged or user-modified trees. Only a fresh managed path is published.
             relative = io::unused_relative(root, &relative)?;
             target = io::safe_join(root, &relative)?;
@@ -2134,7 +2163,7 @@ impl StorageService {
     }
 
     pub(super) async fn process_local_job(&self, app: &tauri::AppHandle, job: Value) {
-        let _operation = self.operations.write().await;
+        let _operation = self.operations.read().await;
         let Some(id) = job["id"].as_str() else { return };
         let Ok(Some((mut job, cancel))) = self.claim_local_job(id, Some(app)).await else {
             return;

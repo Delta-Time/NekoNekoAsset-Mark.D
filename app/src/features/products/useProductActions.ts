@@ -38,7 +38,18 @@ export function useProductActions({
       ids: string[];
       names: string[];
     } | null>(null),
-    [deletingDownloads, setDeletingDownloads] = useState<ReadonlySet<string>>(new Set());
+    [requestedDeletes, setRequestedDeletes] = useState<ReadonlySet<string>>(new Set());
+  // Asked for until their jobs show, then waiting or running.
+  const deletingDownloads: ReadonlySet<string> = new Set([
+    ...requestedDeletes,
+    ...nativeState.jobs.flatMap((job) =>
+      job.type === 'storage:delete_downloads' &&
+      ['queued', 'running'].includes(job.state) &&
+      job.productId
+        ? [job.productId]
+        : [],
+    ),
+  ]);
   const activeDownloads = (productId: string) =>
     nativeState.jobs.filter(
       (job) =>
@@ -68,11 +79,11 @@ export function useProductActions({
       });
   };
   const deleteDownloads = async (args: Record<string, unknown>, ids: string[]) => {
-    setDeletingDownloads((old) => new Set([...old, ...ids]));
+    setRequestedDeletes((old) => new Set([...old, ...ids]));
     try {
       await invokeAction('storage', 'delete_downloads', args);
     } finally {
-      setDeletingDownloads((old) => new Set([...old].filter((id) => !ids.includes(id))));
+      setRequestedDeletes((old) => new Set([...old].filter((id) => !ids.includes(id))));
     }
   };
   const download = (ids: string[]) => {
@@ -80,6 +91,9 @@ export function useProductActions({
   };
   const downloadFile = (fileId: string, redownload: boolean) =>
     run(onNative('storage', 'enqueue_file', { fileId, redownload }));
+  /** Extracts a downloaded archive that asked for a password; the App keeps it only in memory. */
+  const extractWithPassword = (fileId: string, password: string) =>
+    run(onNative('storage', 'extract_with_password', { fileId, password }));
   const update = (ids: string[]) => {
     if (ids.length) run(onNative('booth', 'update_products', { productIds: ids }));
   };
@@ -122,6 +136,7 @@ export function useProductActions({
     deleteDownloads,
     download,
     downloadFile,
+    extractWithPassword,
     update,
     syncLicenses,
     needsAttention,

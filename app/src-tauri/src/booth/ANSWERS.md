@@ -28,11 +28,16 @@ sign-in page, or 403 from a BOOTH host); which one was not recorded.
 - 2026-11-23, download check with instrumented runs (final responses only): the zip's
   GET answered 200 and passed `validate_download_response` in three runs, and its hash
   matched. BOOTH lists no file sizes.
+- 2026-11-27, from a user's report (0.4.0): downloading 50 or more assets in a row, BOOTH
+  refused the files of most later assets, several files of one asset and assets of
+  different shops alike, the way it refuses a removed file (`store_access_denied`). Which
+  answer (401, sign-in page or 403) and how long the refusals lasted were not recorded.
 
 ## How the code reads answers
 
 - Only an account list can say the account is signed out (`AUTH_REQUIRED`). A refused
-  item, receipt or file fails only that asset.
+  item, receipt or file fails only that asset, except that storage waits out a refused
+  download (below).
 - `validate_download_response` in `mod.rs`: 401, BOOTH's sign-in page or a 403 from a
   BOOTH host is `PERMISSION_DENIED`; a 403 from another host is `SIGNED_LINK_EXPIRED`;
   404 or 410 is `FILE_UNAVAILABLE`; 429 is `RATE_LIMITED`; 5xx is
@@ -41,4 +46,9 @@ sign-in page, or 403 from a BOOTH host); which one was not recorded.
 - Because a removed file is refused rather than 404, a refusal makes the download
   reread the page that last listed the file, then at most three receipts (or the free
   item's page). Only a complete listing of the same product and variation without the
-  file makes it `FILE_UNAVAILABLE`, which counts the file as dropped.
+  file makes it `FILE_UNAVAILABLE`, which counts the file as dropped. An account list
+  sent to sign in makes it `AUTH_REQUIRED`.
+- Any other refusal may be BOOTH's limit on downloads (2026-11-27 report), so storage
+  waits it out: no other BOOTH download starts until a wait of 1, 2, 4, 8, 15, then 30
+  minutes ends, and only after an hour of waits without BOOTH serving a file does the
+  refusal end the download.

@@ -312,6 +312,10 @@ fn readable_managed_paths_are_contained_collision_safe_and_partial_cleanup_is_ow
         archive::validate_relative_path(&component).unwrap();
         assert!(!component.contains('/'));
     }
+    // A long title keeps its first 32 UTF-16 units, then `--` and 12 of its identity.
+    let long = io::readable_component(&"衣".repeat(40), "synthetic-product");
+    assert_eq!(long.encode_utf16().count(), io::READABLE_UNITS + 14);
+    assert!(long.starts_with(&format!("{}--", "衣".repeat(io::READABLE_UNITS))));
     let directory = format!(
         "assets/{}",
         io::readable_component("Synthetic outfit", "42")
@@ -445,6 +449,7 @@ async fn extraction_group_does_not_hash_unrelated_corrupt_originals() {
             &mut artifact,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -517,7 +522,7 @@ async fn verified_downloads_real_extraction_certification_and_reopen_preserve_re
     for artifact in [&mut archive_a, &mut archive_b] {
         let files = f.service.remote_files("42").unwrap().0;
         f.service
-            .extract_for_download(&tool, &root, artifact, &files, &cancel)
+            .extract_for_download(&tool, &root, artifact, &files, &cancel, &Default::default())
             .await
             .unwrap();
         assert_eq!(artifact["status"], "ready");
@@ -694,6 +699,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut failed,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap_err();
@@ -748,6 +754,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut repaired,
             &files,
             &Arc::new(AtomicBool::new(true)),
+            &Default::default(),
         )
         .await
         .unwrap_err();
@@ -788,6 +795,7 @@ async fn real_extraction_failure_retains_original_and_retry_cancel_are_distinct_
             &mut repaired,
             &files,
             &Arc::new(AtomicBool::new(false)),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -999,4 +1007,117 @@ async fn an_archive_kept_beside_its_ready_extraction_is_removed_like_an_extracte
         .remove_kept_original(&root, &library, &second)
         .await;
     assert!(original.is_file());
+}
+
+#[tokio::test]
+#[cfg_attr(not(windows), ignore = "requires explicit NNA_7ZIP on non-Windows")]
+async fn a_locked_archive_extracts_once_with_the_password_given_and_never_records_it() {
+    async fn extract(f: &Fixture, tool: &Path, artifact: &mut Value) -> String {
+        let root = f.service.root(Some("test-root")).unwrap();
+        let files = f.service.remote_files("42").unwrap().0;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = f
+            .service
+            .extract_for_download(tool, &root, artifact, &files, &cancel, &Default::default())
+            .await;
+        result.map_or_else(|error| io::stable_error(&error).into(), |()| "ready".into())
+    }
+    let tool = native_seven_zip_test_tool();
+    let f = Fixture::new();
+    f.seed(1, true);
+    let source = f.path.join("authored/衣装");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("model.unitypackage"),
+        b"authored locked package",
+    )
+    .unwrap();
+    let locked = f.path.join("authored/locked.zip");
+    let made = std::process::Command::new(&tool)
+        .args(["a", "-tzip", "-pAuthoredPass1", "-y", "-bd"])
+        .arg(&locked)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let (mut artifact, original) =
+        f.publish_authored_download(0, "locked.zip", &std::fs::read(&locked).unwrap());
+    assert_eq!(
+        extract(&f, &tool, &mut artifact).await,
+        "archive_password_required"
+    );
+    assert_eq!(artifact["status"], "extractionFailed");
+    let ask = |password: &str| json!({"fileId":"test-file-0","password":password});
+    // Nothing is kept for a password that cannot be one or a file that waits for none.
+    let long = "x".repeat(257);
+    for password in ["", "line\nbreak", long.as_str()] {
+        let refused = f.service.extract_with_password(&ask(password)).await;
+        assert_eq!(refused.unwrap_err().to_string(), "invalid_arguments");
+    }
+    let missing = json!({"fileId":"test-file-9","password":"AuthoredPass1"});
+    let refused = f.service.extract_with_password(&missing).await;
+    assert_eq!(refused.unwrap_err().to_string(), "file_missing");
+    assert!(f.service.archive_passwords.lock().unwrap().is_empty());
+    // A download cancelled before it runs takes its password with it.
+    let cancelled = f
+        .service
+        .extract_with_password(&ask("authored cancelled"))
+        .await
+        .unwrap();
+    f.service
+        .cancel_job(cancelled["jobIds"][0].as_str().unwrap())
+        .unwrap();
+    assert!(f.service.archive_passwords.lock().unwrap().is_empty());
+    // A password queues that file's download, which reuses the original and extracts once.
+    let queued = f
+        .service
+        .extract_with_password(&ask("authored wrong"))
+        .await
+        .unwrap();
+    let job = f
+        .service
+        .catalogue
+        .get("job", queued["jobIds"][0].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(job["selectedFileIds"], json!(["test-file-0"]));
+    assert_eq!(job["redownload"], false);
+    assert_eq!(
+        extract(&f, &tool, &mut artifact).await,
+        "archive_password_wrong"
+    );
+    assert_eq!(artifact["errorCode"], "archive_password_wrong");
+    assert!(original.is_file());
+    assert_eq!(
+        extract(&f, &tool, &mut artifact).await,
+        "archive_password_required"
+    );
+    // The queued download covers the next password too.
+    let again = f
+        .service
+        .extract_with_password(&ask("AuthoredPass1"))
+        .await
+        .unwrap();
+    assert_eq!(again, queued);
+    assert_eq!(extract(&f, &tool, &mut artifact).await, "ready");
+    assert_eq!(artifact["originalAvailable"], false);
+    assert!(!original.exists());
+    let extracted = f
+        .service
+        .verify_extracted_at(&artifact, &f.path.join("library"), &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(extracted.join("衣装/model.unitypackage")).unwrap(),
+        b"authored locked package"
+    );
+    for kind in ["job", "artifact", "remote_file"] {
+        let records = serde_json::to_string(&f.service.catalogue.list(kind).unwrap()).unwrap();
+        assert!(
+            !records.contains("AuthoredPass1") && !records.contains("authored wrong"),
+            "{kind}"
+        );
+    }
+    let ready = f.service.extract_with_password(&ask("AuthoredPass1")).await;
+    assert_eq!(ready.unwrap_err().to_string(), "file_not_usable");
+    assert!(f.service.archive_passwords.lock().unwrap().is_empty());
 }

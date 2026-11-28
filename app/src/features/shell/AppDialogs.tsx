@@ -94,7 +94,7 @@ export default function AppDialogs({
     deleteLocalProducts,
     setDeleteLocalSelection,
   } = edits;
-  const { notify } = notices;
+  const { notify, run } = notices;
   const {
     updateBlocker,
     currentUpdateBlocker,
@@ -290,7 +290,8 @@ export default function AppDialogs({
               await invokeAction('storage', 'enqueue_products', {
                 productIds: productConfirm.ids,
               });
-            else await deleteDownloads({ productIds: productConfirm.ids }, productConfirm.ids);
+            // The removal waits its turn behind the download in progress; nothing waits for it.
+            else run(deleteDownloads({ productIds: productConfirm.ids }, productConfirm.ids));
           }}
           onClose={() => setProductConfirm(null)}
         />

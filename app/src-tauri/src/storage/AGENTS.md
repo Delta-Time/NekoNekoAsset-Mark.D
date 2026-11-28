@@ -8,9 +8,15 @@
   refused as no longer offered counts as dropped); source membership coverage stays
   a separate fact.
 - Auto-extract supported archives, preserve internal names and structure, and keep
-  originals on failure. Delete eligible originals only after validated durable
+  originals on failure. A name Windows cannot store (`a:b`, `Folder.`, `aux.png`)
+  lands under the name 7-Zip writes for it, in archives and local imports alike, and
+  the rest extract as usual. Delete eligible originals only after validated durable
   extraction; keep unitypackages. Use readable stable paths; metadata edits do not
-  move files. Clean only outputs owned by the operation.
+  move files. A new folder name keeps 32 characters of its title; recorded paths
+  never change. Clean only outputs owned by the operation.
+- An archive password the user types serves only that file's next extraction. It
+  reaches 7-Zip on its input, never the command line, and never enters a job, the
+  catalogue or a log.
 - Local files, folders and ZIPs are copied into managed storage without changing
   the originals. The default one-product mode accepts many inputs; batch mode has
   independent folder and ZIP product drafts. Loose files share a product directory.
@@ -19,3 +25,8 @@
   any failure stays unknown, and a price shows only beside the listing it came from.
 - Store errors arrive classified (`stores::StoreError`); `io.rs`'s `stable_error`
   never matches message text.
+- A request that removes or copies files only queues a job and answers at once. The
+  storage worker runs one job at a time: removals of downloaded files, then local
+  imports, go after the download in progress and before queued downloads. A local
+  import holds storage shared, as a download does, so requests made while it copies
+  queue too; moves, backups and deleting local assets wait for it or answer busy.

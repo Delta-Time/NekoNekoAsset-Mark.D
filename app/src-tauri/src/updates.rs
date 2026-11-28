@@ -15,8 +15,31 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::Mutex;
 use url::Url;
 
-const BRIDGE_ENDPOINT: &str = "https://yan-k.github.io/NekoNekoAsset-Public/bridge/latest.json";
-const RELEASE_ROOT: &str = "https://github.com/Yan-K/NekoNekoAsset-Public/releases";
+const RELEASE_INDEX: &str =
+    "https://api.github.com/repos/Delta-Time/NekoNekoAsset-Mark.D/releases?per_page=100";
+const RELEASE_ROOT: &str = "https://github.com/Delta-Time/NekoNekoAsset-Mark.D/releases";
+const APP_MANIFEST: &str = "app-update.json";
+
+#[derive(Deserialize)]
+struct PublishedRelease {
+    tag_name: String,
+    draft: bool,
+    assets: Vec<PublishedAsset>,
+}
+
+#[derive(Deserialize)]
+struct PublishedAsset {
+    name: String,
+    state: String,
+}
+
+impl PublishedRelease {
+    fn has_asset(&self, name: &str) -> bool {
+        self.assets
+            .iter()
+            .any(|asset| asset.name == name && asset.state == "uploaded")
+    }
+}
 
 #[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +49,7 @@ pub(crate) struct AppRelease {
     release_url: String,
 }
 
-#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeRelease {
     version: String,
@@ -103,45 +126,62 @@ fn release_url(version: &str) -> String {
     format!("{RELEASE_ROOT}/tag/v{version}")
 }
 
-fn valid_asset_url(value: &Url, version: &str, suffix: &str) -> bool {
-    let prefix = format!("/Yan-K/NekoNekoAsset-Public/releases/download/v{version}/");
-    value.scheme() == "https"
-        && value.host_str() == Some("github.com")
-        && value.username().is_empty()
-        && value.password().is_none()
-        && value.port().is_none()
-        && value.query().is_none()
-        && value.fragment().is_none()
-        && value.path().strip_prefix(&prefix).is_some_and(|name| {
-            !name.is_empty() && !name.contains('/') && name.to_ascii_lowercase().ends_with(suffix)
+fn mark_d_version(version: &Version) -> Option<(u64, u64, u64, u64)> {
+    let digits = version.build.as_str().strip_prefix('D')?;
+    let revision = digits.parse().ok()?;
+    if !version.pre.is_empty()
+        || digits.starts_with('0')
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((version.major, version.minor, version.patch, revision))
+}
+
+fn asset_url(version: &str, name: &str) -> String {
+    format!("{RELEASE_ROOT}/download/v{version}/{name}")
+}
+
+fn installer_name(version: &str) -> String {
+    format!("NekoNekoAsset_{version}_x64-setup.exe")
+}
+
+fn bridge_name(version: &str) -> String {
+    format!("com.yank.nekonekoasset.bridge-{version}.unitypackage")
+}
+
+fn valid_installer_url(value: &Url, version: &str) -> bool {
+    value.as_str().replace("%2B", "+").replace("%2b", "+")
+        == asset_url(version, &installer_name(version))
+}
+
+fn latest_release(
+    releases: &[PublishedRelease],
+    has_assets: impl Fn(&PublishedRelease, &str) -> bool,
+) -> Option<Version> {
+    releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            let tag = release.tag_name.strip_prefix('v')?;
+            let version = Version::parse(tag).ok()?;
+            let order = mark_d_version(&version)?;
+            has_assets(release, tag).then_some((order, version))
         })
+        .max_by_key(|(order, _)| *order)
+        .map(|(_, version)| version)
 }
 
-fn validate_bridge(release: BridgeRelease) -> Result<BridgeRelease> {
-    let version = Version::parse(&release.version).context("updates_invalid_manifest")?;
-    ensure!(
-        version.to_string() == release.version,
-        "updates_invalid_manifest"
-    );
-    let asset = Url::parse(&release.unitypackage_url).context("updates_invalid_manifest")?;
-    ensure!(
-        valid_asset_url(&asset, &release.version, ".unitypackage")
-            && release.release_url == release_url(&release.version),
-        "updates_invalid_manifest"
-    );
-    Ok(release)
-}
-
-async fn check_bridge() -> Result<BridgeRelease> {
+async fn published_releases() -> Result<Vec<PublishedRelease>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("updates_unavailable")?;
     let mut response = client
-        .get(BRIDGE_ENDPOINT)
-        .header("Accept", "application/json")
-        .header("Cache-Control", "no-cache")
+        .get(RELEASE_INDEX)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "NekoNekoAsset-Mark.D")
         .send()
         .await
         .context("updates_unavailable")?
@@ -150,12 +190,12 @@ async fn check_bridge() -> Result<BridgeRelease> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.context("updates_unavailable")? {
         ensure!(
-            bytes.len() + chunk.len() <= 64 * 1024,
+            bytes.len() + chunk.len() <= 4 * 1024 * 1024,
             "updates_invalid_manifest"
         );
         bytes.extend_from_slice(&chunk);
     }
-    validate_bridge(serde_json::from_slice(&bytes).context("updates_invalid_manifest")?)
+    serde_json::from_slice(&bytes).context("updates_invalid_manifest")
 }
 
 fn public_error(error: &anyhow::Error) -> String {
@@ -203,35 +243,52 @@ impl UpdateState {
     pub(crate) async fn check(&self, app: &AppHandle) -> Result<UpdateCheck> {
         ensure!(!self.installing.load(Ordering::Acquire), "updates_busy");
         let _check = self.checking.lock().await;
+        let releases = published_releases().await;
         let check_app = async {
             if !cfg!(all(windows, target_arch = "x86_64")) {
                 return Ok(None);
             }
+            let releases = releases
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!(public_error(error)))?;
+            let Some(latest) = latest_release(releases, |release, version| {
+                let installer = installer_name(version);
+                release.has_asset(APP_MANIFEST)
+                    && release.has_asset(&installer)
+                    && release.has_asset(&format!("{installer}.sig"))
+            }) else {
+                return Ok(None);
+            };
+            let current = app.package_info().version.clone();
+            if mark_d_version(&latest) <= mark_d_version(&current) {
+                return Ok(None);
+            }
+
+            let version = latest.to_string();
+            let endpoint = Url::parse(&asset_url(&version, APP_MANIFEST))?;
             let updater = app
                 .updater_builder()
+                .endpoints(vec![endpoint])
+                .context("updates_unavailable")?
+                .version_comparator(move |_, release| release.version == latest)
                 // Windows launch can fail after this callback; leave the App usable for retry.
                 .on_before_exit(|| {})
                 .timeout(Duration::from_secs(15))
                 .header("Cache-Control", "no-cache")
-                .map_err(|_| anyhow::anyhow!("updates_unavailable"))?
+                .context("updates_unavailable")?
                 .build()
-                .map_err(|_| anyhow::anyhow!("updates_unavailable"))?;
-            let update = updater
-                .check()
-                .await
-                .map_err(|_| anyhow::anyhow!("updates_unavailable"))?;
-            if let Some(update) = &update {
-                ensure!(
-                    Version::parse(&update.version).is_ok()
-                        && valid_asset_url(&update.download_url, &update.version, "-setup.exe")
-                        && !update.signature.trim().is_empty(),
-                    "updates_invalid_manifest"
-                );
-            }
+                .context("updates_unavailable")?;
+            let update = updater.check().await.context("updates_unavailable")?;
+            ensure!(
+                update.as_ref().is_some_and(|update| {
+                    valid_installer_url(&update.download_url, &version)
+                        && !update.signature.trim().is_empty()
+                }),
+                "updates_invalid_manifest"
+            );
             Ok::<_, anyhow::Error>(update)
         };
-        let (app_result, bridge_result) = tokio::join!(check_app, check_bridge());
-        let (update, app_error) = match app_result {
+        let (update, app_error) = match check_app.await {
             Ok(update) => (update, None),
             Err(error) => (None, Some(public_error(&error))),
         };
@@ -241,8 +298,21 @@ impl UpdateState {
             release_url: release_url(&update.version),
         });
         *self.checked.lock().await = update;
-        let (bridge, bridge_error) = match bridge_result {
-            Ok(release) => (Some(release), None),
+        let (bridge, bridge_error) = match releases {
+            Ok(releases) => {
+                let bridge = latest_release(&releases, |release, version| {
+                    release.has_asset(&bridge_name(version))
+                })
+                .map(|version| {
+                    let version = version.to_string();
+                    BridgeRelease {
+                        unitypackage_url: asset_url(&version, &bridge_name(&version)),
+                        release_url: release_url(&version),
+                        version,
+                    }
+                });
+                (bridge, None)
+            }
             Err(error) => (None, Some(public_error(&error))),
         };
         Ok(UpdateCheck {
@@ -268,7 +338,7 @@ impl UpdateState {
         let mut update = self.checked.lock().await.clone().context("updates_stale")?;
         ensure!(update.version == expected_version, "updates_stale");
         ensure!(
-            valid_asset_url(&update.download_url, &update.version, "-setup.exe"),
+            valid_installer_url(&update.download_url, &update.version),
             "updates_invalid_manifest"
         );
         update.timeout = Some(Duration::from_secs(600));
@@ -351,44 +421,47 @@ pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
 mod tests {
     use super::*;
     #[test]
-    fn release_assets_are_bound_to_repo_version_and_format() {
-        let good = "https://github.com/Yan-K/NekoNekoAsset-Public/releases/download/v0.2.1/NekoNekoAsset_0.2.1_x64-setup.exe";
-        assert!(valid_asset_url(
-            &Url::parse(good).unwrap(),
-            "0.2.1",
-            "-setup.exe"
-        ));
+    fn release_assets_are_bound_to_mark_d_repo_version_and_format() {
+        let version = "0.4.0+D1";
+        let good = asset_url(version, &installer_name(version));
+        for url in [&good, &good.replace('+', "%2B")] {
+            assert!(valid_installer_url(&Url::parse(url).unwrap(), version));
+        }
         for bad in [
             good.replace("https:", "http:"),
-            good.replace("Yan-K/", "other/"),
-            good.replace("v0.2.1/", "v0.2.0/"),
+            good.replace(
+                "Delta-Time/NekoNekoAsset-Mark.D",
+                "Yan-K/NekoNekoAsset-Public",
+            ),
+            good.replace("v0.4.0+D1/", "v0.4.0+D2/"),
             format!("{good}?source=elsewhere"),
             good.replace("-setup.exe", "-portable.zip"),
         ] {
-            assert!(!valid_asset_url(
-                &Url::parse(&bad).unwrap(),
-                "0.2.1",
-                "-setup.exe"
-            ));
+            assert!(!valid_installer_url(&Url::parse(&bad).unwrap(), version));
         }
     }
+
     #[test]
-    fn bridge_manifest_rejects_invalid_or_mismatched_release() {
-        let fixture = BridgeRelease {
-            version: "0.2.0".into(),
-            unitypackage_url: format!(
-                "{RELEASE_ROOT}/download/v0.2.0/NekoNekoAsset-Bridge-0.2.0.unitypackage"
-            ),
-            release_url: release_url("0.2.0"),
-        };
-        assert!(validate_bridge(fixture.clone()).is_ok());
-        let mut changed = fixture.clone();
-        changed.version = "0.3.0".into();
-        assert!(validate_bridge(changed).is_err());
-        let mut changed = fixture;
-        changed.version = "beta".into();
-        assert!(validate_bridge(changed).is_err());
+    fn latest_release_requires_mark_d_and_uploaded_assets_and_orders_revisions_numerically() {
+        let releases = [
+            ("v1.0.0", false, "uploaded"),
+            ("v0.4.0+D2", false, "uploaded"),
+            ("v0.4.0+D10", false, "uploaded"),
+            ("v0.4.1+D1", false, "new"),
+            ("v0.4.2+D1", true, "uploaded"),
+        ]
+        .map(|(tag, draft, state)| PublishedRelease {
+            tag_name: tag.into(),
+            draft,
+            assets: vec![PublishedAsset {
+                name: APP_MANIFEST.into(),
+                state: state.into(),
+            }],
+        });
+        let latest = latest_release(&releases, |release, _| release.has_asset(APP_MANIFEST));
+        assert_eq!(latest, Some(Version::parse("0.4.0+D10").unwrap()));
     }
+
     #[test]
     fn only_active_jobs_that_do_not_resume_block_installation() {
         let job = |kind: &str, state: &str| serde_json::json!({"type":kind,"state":state});

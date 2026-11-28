@@ -1265,9 +1265,10 @@ impl BoothService {
         http::build_client(jar, download)
     }
     /// Why BOOTH refused a file, when a page says so: a free offer that ended, read as a
-    /// sync counts it, or a file a complete listing no longer has. BOOTH refuses a file
-    /// a seller removed instead of answering 404. Any other answer, including a page that
-    /// still lists the file, leaves the refusal as it was.
+    /// sync counts it, a file a complete listing no longer has, or an account list sent to
+    /// sign in. BOOTH refuses a file a seller removed instead of answering 404. Any other
+    /// answer, including a page that still lists the file, leaves the refusal as it was,
+    /// which storage waits out as BOOTH's limit on downloads.
     async fn refusal_reason(
         &self,
         client: &reqwest::Client,
@@ -1293,7 +1294,8 @@ impl BoothService {
             let (status, body) = match self.inner.http.get(client, url).await {
                 Ok(read) => read,
                 // A list page that moved, or lies past a verification run's cap, says
-                // nothing; signing out, throttling or an outage end the check.
+                // nothing. Only an account list answers sign-in: the session ended, which no
+                // wait mends. Throttling or an outage end the check.
                 Err(error)
                     if matches!(
                         code(&error).as_str(),
@@ -1302,6 +1304,7 @@ impl BoothService {
                 {
                     continue
                 }
+                Err(error) if code(&error) == "AUTH_REQUIRED" => return Some("AUTH_REQUIRED"),
                 Err(_) => return None,
             };
             let Some(page) = status
