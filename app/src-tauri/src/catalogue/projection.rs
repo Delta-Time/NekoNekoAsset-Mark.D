@@ -725,6 +725,7 @@ fn refresh_local(
                 "originalAvailable",
                 "extractedPath",
                 "extractedInventory",
+                "archivePasswordRequired",
                 "errorCode",
                 "attentionDismissed",
                 "verifiedHash",
@@ -744,6 +745,7 @@ fn refresh_local(
                     "originalAvailable",
                     "extractedPath",
                     "extractedInventory",
+                    "archivePasswordRequired",
                     "errorCode",
                     "attentionDismissed",
                 ] {
@@ -1353,6 +1355,7 @@ fn apply_files(
                 "originalAvailable",
                 "extractedPath",
                 "extractedInventory",
+                "archivePasswordRequired",
                 "errorCode",
                 "attentionDismissed",
             ] {

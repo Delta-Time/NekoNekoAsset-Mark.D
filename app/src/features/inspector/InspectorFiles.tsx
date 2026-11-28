@@ -10,82 +10,16 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { nativeFileAction } from '../../backend';
+import { appText } from '../../shared/app-text';
+import ArchivePassword from './ArchivePassword';
 import type { Locale, Product } from '../../model';
 import { byteLabel, fileCountLabel, isFileDownloaded, isProductDownloaded } from '../../model';
 import { table } from '../../messages';
 import { hasLocalCopy, provenanceLines } from './inspector-facts';
 import type { InspectorPanes } from './useInspectorPanes';
 import type { InspectorFacts } from './useInspectorFacts';
-
-/** A password for a file's archive: Enter extracts with it, Escape closes. */
-function ArchivePassword({
-  fileName,
-  L,
-  onExtract,
-  onClose,
-}: {
-  fileName: string;
-  L: (key: string) => string;
-  onExtract: (password: string) => void;
-  onClose: () => void;
-}) {
-  const [password, setPassword] = useState('');
-  const extract = () => {
-    if (password) onExtract(password);
-  };
-  // Focus goes back to the row's key, which stays when the field closes unsent.
-  const close = (from: HTMLElement) => {
-    from
-      .closest('.asset-inspector-file')
-      ?.querySelector<HTMLButtonElement>('.asset-inspector-file-unlock')
-      ?.focus();
-    onClose();
-  };
-  return (
-    <div className="asset-inspector-file-password">
-      <input
-        type="password"
-        autoFocus
-        autoComplete="off"
-        spellCheck={false}
-        maxLength={256}
-        placeholder={L('enterArchivePassword')}
-        aria-label={L('enterArchivePassword') + ' ' + fileName}
-        value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return;
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            close(event.currentTarget);
-          } else if (event.key === 'Enter') {
-            event.preventDefault();
-            extract();
-          }
-        }}
-      />
-      <button
-        type="button"
-        title={L('extractArchive')}
-        aria-label={L('extractArchive') + ' ' + fileName}
-        disabled={!password}
-        onClick={extract}
-      >
-        <Check size={13} />
-      </button>
-      <button
-        type="button"
-        title={L('cancel')}
-        aria-label={L('cancel')}
-        onClick={(event) => close(event.currentTarget)}
-      >
-        <X size={13} />
-      </button>
-    </div>
-  );
-}
 
 /** The files pane: count, Download all, cancel, open folder and delete, then each file with its
  * status and its own open, retry, cancel and delete, and a password for an archive that asks. */
@@ -136,7 +70,9 @@ export default function InspectorFiles({
   cancellableFileIds: readonly string[];
   onFileDelete: ((fileId: string) => void) | undefined;
   onLocalFileRemove: ((fileId: string) => void) | undefined;
-  onArchivePassword: ((fileId: string, password: string) => void) | undefined;
+  onArchivePassword:
+    | ((fileId: string, password: string | null, save?: boolean) => Promise<unknown>)
+    | undefined;
 }) {
   const { fileScroll, removingFile, setRemovingFile, unlockingFile, setUnlockingFile } = panes;
   const { L, sourceAccounts } = facts;
@@ -245,15 +181,17 @@ export default function InspectorFiles({
           // While its download waits or runs again, an earlier failure is no longer news.
           status = busy && file.status === 'failed' ? 'notDownloaded' : file.status,
           // The archive asked for a password, or the one given was wrong.
+          manual = /(?:\.rar|\.r\d{2}|\.7z(?:\.\d{3,})?)$/i.test(file.name),
           locked =
-            file.status === 'extractionFailed' &&
+            file.archivePasswordRequired === true ||
             ['archive_password_required', 'archive_password_wrong'].includes(file.errorCode ?? ''),
+          unchecked =
+            manual && file.archivePasswordRequired === undefined && file.originalAvailable,
           unlockable =
             !!onArchivePassword &&
-            locked &&
+            (locked || unchecked) &&
             file.originalAvailable &&
-            p.provider !== 'local' &&
-            !file.kept &&
+            (manual || !file.archivePassword) &&
             !busy;
         return (
           <div className="asset-inspector-file" key={file.id}>
@@ -305,6 +243,46 @@ export default function InspectorFiles({
                         : 'fileMissing',
                   )}
                 </small>
+              )}
+              {file.archivePassword ? (
+                <div className="archive-password-saved">
+                  {manual && (
+                    <>
+                      <input
+                        readOnly
+                        value={file.archivePassword}
+                        aria-label={L('saveArchivePassword')}
+                        onFocus={(event) => event.currentTarget.select()}
+                      />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          const field = event.currentTarget
+                            .previousElementSibling as HTMLInputElement;
+                          field.focus();
+                          field.select();
+                          const text = field.value;
+                          const copy = isTauri()
+                            ? nativeFileAction('copy_text', { text })
+                            : navigator.clipboard.writeText(text);
+                          void copy.catch(() => field.select());
+                        }}
+                      >
+                        {L('copyArchivePassword')}
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onArchivePassword?.(file.id, null).catch(() => {});
+                    }}
+                  >
+                    {L('forgetArchivePassword')}
+                  </button>
+                </div>
+              ) : (
+                (locked || unchecked) && <small>{L('archivePasswordNotSaved')}</small>
               )}
               {file.offerEnded && status !== 'failed' && !busy && (
                 <small className="asset-inspector-file-error">{L('fileUnavailable')}</small>
@@ -446,9 +424,10 @@ export default function InspectorFiles({
             {unlockable && unlockingFile === file.id && (
               <ArchivePassword
                 fileName={file.name}
-                L={L}
-                onExtract={(password) => {
-                  onArchivePassword?.(file.id, password);
+                L={(key) => appText(locale, key)}
+                manual={manual}
+                onExtract={async (password, save) => {
+                  await onArchivePassword?.(file.id, password, save);
                   setUnlockingFile(null);
                 }}
                 onClose={() => setUnlockingFile(null)}

@@ -7,16 +7,16 @@
 - Downloaded requires every currently attached file to be usable (a file its store
   refused as no longer offered counts as dropped); source membership coverage stays
   a separate fact.
-- Auto-extract supported archives, preserve internal names and structure, and keep
+- Auto-extract ZIP archives, preserve internal names and structure, and keep
   originals on failure. A name Windows cannot store (`a:b`, `Folder.`, `aux.png`)
   lands under the name 7-Zip writes for it, in archives and local imports alike, and
   the rest extract as usual. Delete eligible originals only after validated durable
   extraction; keep unitypackages. Use readable stable paths; metadata edits do not
   move files. A new folder name keeps 32 characters of its title; recorded paths
   never change. Clean only outputs owned by the operation.
-- An archive password the user types serves only that file's next extraction. It
-  reaches 7-Zip on its input, never the command line, and never enters a job, the
-  catalogue or a log.
+- Verify archive passwords against the contents before optional plaintext catalogue storage.
+  Bind them to the file and content hash. RAR and 7z stay available for manual extraction.
+  Pass passwords on 7-Zip's standard input and keep them out of jobs and logs.
 - Local files, folders and ZIPs are copied into managed storage without changing
   the originals. The default one-product mode accepts many inputs; batch mode has
   independent folder and ZIP product drafts. Loose files share a product directory.

@@ -51,7 +51,7 @@ const STORE_WAIT: &str = "storeWait";
 const STORE_WAIT_MINUTES: [i64; 6] = [1, 2, 4, 8, 15, 30];
 
 use crate::{catalogue::Catalogue, stores::StoreService};
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1482,6 +1482,84 @@ impl StorageService {
         }
         queued
     }
+    fn prompt_archive_password(&self, app: &tauri::AppHandle, artifact: &Value) {
+        if artifact["archivePasswordRequired"] != true
+            || self
+                .saved_archive_password(artifact)
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            return;
+        }
+        if let (Some(id), Some(path)) = (
+            artifact["fileId"].as_str(),
+            artifact["relativePath"].as_str(),
+        ) {
+            let path = Path::new(path);
+            let _ = app.emit("archive:password-required", json!({"fileId":id,
+                "name":path.file_name().and_then(|s|s.to_str()),"manual":!archive::auto_extract(path)}));
+        }
+    }
+
+    fn saved_archive_password(&self, artifact: &Value) -> Result<Option<String>> {
+        Ok(self
+            .catalogue
+            .get("archive_password", io::required_string(artifact, "fileId")?)?
+            .filter(|r| r["hash"].is_string() && r["hash"] == artifact["hash"])
+            .and_then(|r| r["archivePassword"].as_str().map(str::to_owned)))
+    }
+
+    async fn register_archive_password(&self, tool: &Path, args: &Value) -> Result<Value> {
+        let id = io::required_string(args, "fileId")?;
+        let password = io::required_string(args, "password")?;
+        ensure!(
+            password.chars().count() <= 256 && !password.chars().any(char::is_control),
+            "invalid_arguments"
+        );
+        let _operation = self.operations.write().await;
+        let file = self
+            .catalogue
+            .get("remote_file", id)?
+            .context("file_missing")?;
+        let mut artifact = self
+            .catalogue
+            .get("artifact", &artifact_id(&file))?
+            .context("file_missing")?;
+        ensure!(artifact["originalAvailable"] == true, "file_not_usable");
+        let product = io::required_string(&file, "productId")?;
+        let root = self.root(Some(io::required_string(&artifact, "rootId")?))?;
+        let path = io::safe_join(
+            &self.root_path(&root)?,
+            io::required_string(&artifact, "relativePath")?,
+        )?;
+        ensure!(archive::is_supported_archive(&path), "archive_unsupported");
+        let files = self.catalogue.related("remote_file", product)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        ensure!(
+            artifact["archivePasswordRequired"] == true
+                || matches!(
+                    artifact["errorCode"].as_str(),
+                    Some("archive_password_required" | "archive_password_wrong")
+                )
+                || (!archive::auto_extract(&path)
+                    && artifact.get("archivePasswordRequired").is_none()),
+            "file_not_usable"
+        );
+        self.process_archive(
+            tool,
+            &root,
+            &mut artifact,
+            &files,
+            &cancel,
+            &Default::default(),
+            Some(password),
+            args["save"] != false,
+        )
+        .await?;
+        Ok(json!(true))
+    }
+
     pub async fn command(
         &self,
         app: &tauri::AppHandle,
@@ -1525,6 +1603,16 @@ impl StorageService {
             "enqueue_products" => self.enqueue(&args).await,
             "enqueue_file" => self.enqueue_file(&args).await,
             "extract_with_password" => self.extract_with_password(&args).await,
+            "register_archive_password" => {
+                self.register_archive_password(&self.seven_zip(app)?, &args)
+                    .await
+            }
+            "forget_archive_password" => {
+                let _operation = self.operations.write().await;
+                self.catalogue
+                    .delete("archive_password", io::required_string(&args, "fileId")?)?;
+                Ok(json!(true))
+            }
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
                 let _gate = self.queue_gate.lock().await;

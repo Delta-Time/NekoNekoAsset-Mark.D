@@ -20,6 +20,8 @@ pub enum StorageRequest {
     EnqueueFile(FileDownload),
     /// Extracts a downloaded archive with the password it asked for.
     ExtractWithPassword(ArchivePassword),
+    RegisterArchivePassword(ArchivePassword),
+    ForgetArchivePassword(FileRef),
     CancelJob(StorageJob),
     /// Cancels the downloads of `productIds`, or all of them.
     CancelDownloads(OptionalProductIds),
@@ -185,12 +187,15 @@ pub struct FileDownload {
     pub rest: Map<String, Value>,
 }
 
-/// A file's archive password, held only in memory for that file's next extraction.
+/// An archive password supplied for extraction or explicit registration.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchivePassword {
     pub file_id: String,
     pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub save: Option<bool>,
     #[serde(flatten)]
     #[ts(skip)]
     pub rest: Map<String, Value>,
@@ -443,6 +448,8 @@ struct StorageResponses {
     enqueue_products: DownloadJobs,
     enqueue_file: DownloadJobs,
     extract_with_password: DownloadJobs,
+    register_archive_password: bool,
+    forget_archive_password: bool,
     cancel_job: CancelRequested,
     cancel_downloads: DownloadsCancelled,
     delete_downloads: DownloadJobs,

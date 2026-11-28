@@ -1427,3 +1427,63 @@ fn local_batch_assets_keep_the_order_they_were_added_in() {
         "2026-01-02T03:04:00.000000000Z"
     );
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn local_registration_can_skip_then_unlock_without_saving_or_removing_the_original() {
+    let tool = native_seven_zip_test_tool();
+    let f = Fixture::new();
+    let member = f.path.join("member.txt");
+    let zip = f.path.join("locked.zip");
+    std::fs::write(&member, b"authored").unwrap();
+    assert!(std::process::Command::new(&tool)
+        .args(["a", "-pLocalTest", "-bd"])
+        .arg(&zip)
+        .arg(&member)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let mut job = local_job(&f, std::slice::from_ref(&zip), "single");
+    f.service
+        .run_local_import(&mut job, &tool, &AtomicBool::new(false))
+        .unwrap();
+    let product = &job["completedProductIds"][0];
+    let details = || {
+        f.service
+            .catalogue
+            .command("product_details", json!({"id":product}))
+            .unwrap()
+    };
+    let file = details()["files"][0].clone();
+    assert_eq!(file["archivePasswordRequired"], true);
+    assert!(file.get("archivePassword").is_none());
+    f.service
+        .register_archive_password(
+            &tool,
+            &json!({"fileId":file["id"],"password":"LocalTest","save":false}),
+        )
+        .await
+        .unwrap();
+    let file = details()["files"][0].clone();
+    assert_eq!(file["status"], "ready");
+    assert_eq!(file["originalAvailable"], true);
+    assert!(file.get("archivePassword").is_none());
+    assert!(zip.is_file());
+    assert!(f
+        .service
+        .catalogue
+        .list("archive_password")
+        .unwrap()
+        .is_empty());
+    let extracted_path = file["extractedPath"].clone();
+    f.service
+        .register_archive_password(
+            &tool,
+            &json!({"fileId":file["id"],"password":"LocalTest","save":true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(details()["files"][0]["extractedPath"], extracted_path);
+    assert_eq!(details()["files"][0]["archivePassword"], "LocalTest");
+}

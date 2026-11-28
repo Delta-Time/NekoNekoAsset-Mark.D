@@ -841,6 +841,16 @@ fn real_7zip_roundtrip_split_password_corruption_and_retention() {
     );
     let rar = root.join("complete.rar");
     fs::write(&rar, tiny_rar_fixture("衣装/synthetic.txt", None)).unwrap();
+    assert!(!inspect_password(
+        &executable,
+        &rar,
+        &[],
+        &root.join("manual-probe"),
+        &cancelled,
+        None
+    )
+    .unwrap());
+    assert!(rar.is_file());
     let rar_result = extract_archive(
         &executable,
         &rar,
@@ -1067,4 +1077,21 @@ fn extraction_output_reads_progress_and_keeps_only_messages() {
     let kept = read_extraction_output(&long[..], 1024, overflow.clone(), &percent).unwrap();
     assert!(kept.is_empty() && !overflow.load(Ordering::Relaxed));
     assert_eq!(percent.load(Ordering::Relaxed), 99);
+}
+
+#[test]
+fn mark_d_archive_policy_includes_split_zip_and_keeps_rar_and_seven_zip_manual() {
+    for name in ["sample.ZIP", "sample.zip.001", "sample.z01"] {
+        assert!(auto_extract(Path::new(name)));
+    }
+    for name in [
+        "sample.rar",
+        "sample.r00",
+        "sample.part2.rar",
+        "sample.7z",
+        "sample.7z.001",
+        "sample.unitypackage",
+    ] {
+        assert!(!auto_extract(Path::new(name)));
+    }
 }

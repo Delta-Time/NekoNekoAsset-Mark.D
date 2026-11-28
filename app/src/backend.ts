@@ -259,6 +259,13 @@ export async function subscribeUpdateProgress(
     ? listen<UpdateProgress>('updates:progress', (event) => callback(event.payload))
     : () => {};
 }
+export type LockedArchive = { fileId: string; name: string; manual: boolean };
+export function subscribeArchivePasswords(callback: (file: LockedArchive) => void) {
+  return isTauri()
+    ? listen<LockedArchive>('archive:password-required', (event) => callback(event.payload))
+    : Promise.resolve(() => {});
+}
+
 export type LocalImportProgress = {
   jobId: string;
   phase: 'preparing' | 'copying' | 'verifying' | 'extracting' | 'finalizing';

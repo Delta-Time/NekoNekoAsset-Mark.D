@@ -41,7 +41,7 @@ interface AssetInspectorProps {
   onFileCancel?: (fileId: string) => void;
   onDeleteDownloads?: () => void;
   onFileDelete?: (fileId: string) => void;
-  onArchivePassword?: (fileId: string, password: string) => void;
+  onArchivePassword?: (fileId: string, password: string | null, save?: boolean) => Promise<unknown>;
   deleteDisabled?: boolean;
   onLocalFilesAdd?: (folder: boolean) => void;
   onLocalFileRemove?: (fileId: string) => void;

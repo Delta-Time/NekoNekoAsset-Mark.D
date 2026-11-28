@@ -289,6 +289,12 @@ pub struct AssetFile {
     pub original_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub archive_password_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub archive_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub root_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

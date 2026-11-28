@@ -29,6 +29,8 @@ export type StorageRequest =
   | ({ action: 'enqueue_products' } & Downloads)
   | ({ action: 'enqueue_file' } & FileDownload)
   | ({ action: 'extract_with_password' } & ArchivePassword)
+  | ({ action: 'register_archive_password' } & ArchivePassword)
+  | ({ action: 'forget_archive_password' } & FileRef)
   | ({ action: 'cancel_job' } & StorageJob)
   | ({ action: 'cancel_downloads' } & OptionalProductIds)
   | ({ action: 'delete_downloads' } & DownloadRemoval)

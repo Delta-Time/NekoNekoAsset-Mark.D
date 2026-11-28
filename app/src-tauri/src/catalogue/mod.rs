@@ -46,6 +46,7 @@ const KINDS: &[&str] = &[
     "acquisition",
     "entitlement",
     "remote_file",
+    "archive_password",
     "artifact",
     "account",
     "root",
@@ -910,6 +911,21 @@ fn validate(kind: &str, id: &str, value: &Value) -> Result<()> {
         !id.is_empty() && id.len() <= 2048 && value.is_object() && value["id"].as_str() == Some(id),
         "catalogue.invalid_record"
     );
+    if kind == "archive_password" {
+        ensure!(
+            value.as_object().is_some_and(|v| v.len() == 4)
+                && value["productId"].is_string()
+                && value["hash"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                && value["archivePassword"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()
+                        && s.chars().count() <= 256
+                        && !s.chars().any(char::is_control)),
+            "catalogue.invalid_record"
+        );
+    }
     portable::validate_no_secrets(value)?;
     if kind == "preferences" {
         validate_ai_preferences(value)?;
@@ -2517,6 +2533,20 @@ impl Catalogue {
                 let accounts: Option<Vec<Value>> =
                     account_ids.map(|ids| ids.into_iter().map(Value::String).collect());
                 acquisition::apply_scope(&mut product, accounts.as_ref());
+                if let Some(files) = product["files"].as_array_mut() {
+                    let passwords = related(&conn, "archive_password", &id)?;
+                    let passwords: std::collections::HashMap<_, _> = passwords
+                        .iter()
+                        .filter_map(|record| Some((record["id"].as_str()?, record)))
+                        .collect();
+                    for file in files {
+                        if let Some(saved) = file["id"].as_str().and_then(|id| passwords.get(id)) {
+                            if saved["hash"].is_string() && saved["hash"] == file["verifiedHash"] {
+                                file["archivePassword"] = saved["archivePassword"].clone();
+                            }
+                        }
+                    }
+                }
                 Ok(product)
             }
             Request::Collections => {

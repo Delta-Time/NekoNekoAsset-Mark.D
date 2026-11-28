@@ -21,6 +21,8 @@ export type AssetFile = {
   revision: string | null;
   provenance: Array<FileProvenance>;
   originalAvailable: boolean;
+  archivePasswordRequired?: boolean;
+  archivePassword?: string;
   rootId?: string;
   relativePath?: string;
   verifiedHash?: string | null;

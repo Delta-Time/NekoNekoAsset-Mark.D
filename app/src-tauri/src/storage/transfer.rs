@@ -918,6 +918,7 @@ impl StorageService {
                     }
                 }
             };
+            self.prompt_archive_password(app, &artifact);
             if let Err(e) = result {
                 let file_id = file["id"].as_str().unwrap_or("");
                 job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&e)});
@@ -984,7 +985,7 @@ impl StorageService {
         }
         Ok(())
     }
-    fn seven_zip(&self, app: &tauri::AppHandle) -> Result<PathBuf> {
+    pub(super) fn seven_zip(&self, app: &tauri::AppHandle) -> Result<PathBuf> {
         // Test overrides require a debug build and explicitly isolated synthetic data.
         if cfg!(debug_assertions) && std::env::var_os("NNA_DATA_DIR").is_some() {
             if let Some(path) = std::env::var_os("NNA_7ZIP") {
@@ -1907,6 +1908,12 @@ impl StorageService {
                 .remove("attentionDismissed");
             artifact["status"] = json!("extractionFailed");
             artifact["errorCode"] = json!(io::stable_error(error));
+            if matches!(
+                io::stable_error(error),
+                "archive_password_required" | "archive_password_wrong"
+            ) {
+                artifact["archivePasswordRequired"] = json!(true);
+            }
             self.catalogue.put(
                 "artifact",
                 io::required_string(artifact, "id")?,
@@ -1925,6 +1932,47 @@ impl StorageService {
         cancel: &Arc<AtomicBool>,
         progress: &Arc<archive::ExtractionProgress>,
     ) -> Result<()> {
+        if archive::auto_extract(Path::new(io::required_string(artifact, "relativePath")?)) {
+            artifact["status"] = json!("extracting");
+            self.catalogue.put(
+                "artifact",
+                io::required_string(artifact, "id")?,
+                artifact.clone(),
+            )?;
+        }
+        let password = self
+            .archive_passwords
+            .lock()
+            .unwrap()
+            .remove(io::required_string(artifact, "fileId")?);
+        let password = match password {
+            Some(password) => Some(password),
+            None => self.saved_archive_password(artifact)?,
+        };
+        self.process_archive(
+            seven_zip,
+            root,
+            artifact,
+            files,
+            cancel,
+            progress,
+            password.as_deref(),
+            false,
+        )
+        .await
+    }
+
+    pub(super) async fn process_archive(
+        &self,
+        seven_zip: &Path,
+        root: &Value,
+        artifact: &mut Value,
+        files: &[Value],
+        cancel: &Arc<AtomicBool>,
+        progress: &Arc<archive::ExtractionProgress>,
+        password: Option<&str>,
+        save: bool,
+    ) -> Result<()> {
         let _permit = self.extraction.acquire().await?;
         io::check_cancel(cancel)?;
         let root_path = self.root_path(root)?;
@@ -1935,13 +1983,15 @@ impl StorageService {
             .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
         let mut candidates = HashMap::new();
         for file in files {
-            if file["accountId"] != current_file["accountId"]
+            if file["productId"] != current_file["productId"]
+                || file["originKind"] != current_file["originKind"]
+                || file["accountId"] != current_file["accountId"]
                 || file["variantId"] != current_file["variantId"]
             {
                 continue;
             }
             if let Some(a) = self.catalogue.get("artifact", &artifact_id(file))? {
-                if a["originalAvailable"] == true {
+                if a["originalAvailable"] == true && a["rootId"] == root["id"] {
                     let path = io::safe_join(&root_path, io::required_string(&a, "relativePath")?)?;
                     if path.file_name() == source.file_name() && path != source {
                         continue;
@@ -1966,9 +2016,51 @@ impl StorageService {
             tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
         }
         let id = io::required_string(artifact, "id")?.to_owned();
-        artifact["status"] = json!("extracting");
-        self.catalogue.put("artifact", &id, artifact.clone())?;
+        let record_ready = |artifact: &Value| -> Result<()> {
+            if let Some(password) = password.filter(|_| save) {
+                let file_id = io::required_string(artifact, "fileId")?;
+                self.catalogue.put_many(vec![
+                    ("artifact".into(), id.clone(), artifact.clone()),
+                    ("archive_password".into(), file_id.into(), json!({"id":file_id,
+                     "productId":artifact["productId"], "hash":artifact["hash"], "archivePassword":password})),
+                ])
+            } else {
+                self.catalogue.put("artifact", &id, artifact.clone())
+            }
+        };
         let staging = io::safe_join(&root_path, ".nna-staging")?;
+        // A local ZIP may already have been extracted once without saving its password.
+        // Verify the original when registering later without producing a second extraction.
+        if !archive::auto_extract(&source)
+            || (save && artifact["status"] == "ready" && artifact["extractedPath"].is_string())
+        {
+            let tool = seven_zip.to_owned();
+            let stop = cancel.clone();
+            let password = password.map(str::to_owned);
+            let checked = volumes.clone();
+            let required = tokio::task::spawn_blocking(move || {
+                archive::inspect_password(
+                    &tool,
+                    &source,
+                    &volumes,
+                    &staging,
+                    &stop,
+                    password.as_deref(),
+                )
+            })
+            .await??;
+            if save {
+                ensure!(required, "file_not_usable");
+            }
+            for path in checked {
+                let (hash, size) = candidates[&path].clone();
+                tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
+            }
+            artifact["archivePasswordRequired"] = json!(required);
+            artifact["status"] = json!("ready");
+            artifact["errorCode"] = Value::Null;
+            return record_ready(artifact);
+        }
         std::fs::create_dir_all(&staging)?;
         let _empty_staging = io::EmptyDirectoryGuard(staging.clone());
         let archive_directory = io::readable_component(
@@ -1981,12 +2073,7 @@ impl StorageService {
         let tool = seven_zip.to_owned();
         let cancel2 = cancel.clone();
         let progress = progress.clone();
-        // A password the user gave for this file serves this one attempt.
-        let password = self
-            .archive_passwords
-            .lock()
-            .unwrap()
-            .remove(io::required_string(artifact, "fileId")?);
+        let password = password.map(str::to_owned);
         let extracted = tokio::task::spawn_blocking(move || {
             archive::extract_archive(
                 &tool,
@@ -2009,8 +2096,10 @@ impl StorageService {
             let (path, hash, size) = (path.clone(), hash.clone(), *size);
             tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
         }
-        let product_directory =
-            self.managed_product_directory(io::required_string(artifact, "productId")?)?;
+        let product_directory = match artifact["productDirectory"].as_str() {
+            Some(dir) => dir.to_owned(),
+            None => self.managed_product_directory(io::required_string(artifact, "productId")?)?,
+        };
         let relative = io::unused_relative(
             &root_path,
             &format!("{}/extracted/{}", product_directory, archive_directory),
@@ -2026,7 +2115,7 @@ impl StorageService {
         artifact["extractedInventory"] = serde_json::to_value(&extracted.inventory)?;
         artifact["errorCode"] = Value::Null;
         // Critical ordering: usable inventory is durable before any archive is considered removable.
-        self.catalogue.put("artifact", &id, artifact.clone())?;
+        record_ready(artifact)?;
         // Each volume retains its own original hash while sharing one complete extracted inventory.
         let mut group_updates = Vec::new();
         for mut peer in self
@@ -2056,6 +2145,9 @@ impl StorageService {
             }
         }
         self.catalogue.put_many(group_updates)?;
+        if current_file["originKind"] == "local" {
+            return Ok(());
+        }
         let product = io::required_string(artifact, "productId")?.to_owned();
         for record in self
             .remove_extracted_originals(

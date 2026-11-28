@@ -31,6 +31,7 @@ import NavDivider from './features/sidebar/NavDivider';
 import AiPane from './features/ai/AiPane';
 import LibraryView from './features/results/LibraryView';
 import Statusbar from './features/shell/Statusbar';
+import ArchivePasswordPrompt from './features/inspector/ArchivePasswordPrompt';
 import AppDialogs from './features/shell/AppDialogs';
 export default function App() {
   const uiPrefs = useUiPreferences();
@@ -294,6 +295,11 @@ export default function App() {
       </div>
       {statusbar}
       {dialogs}
+      <ArchivePasswordPrompt
+        blocked={!!dialog || !!flow || updateOpen || !!themeDeleteTarget}
+        register={actions.extractWithPassword}
+        q={q}
+      />
     </div>
   );
 }

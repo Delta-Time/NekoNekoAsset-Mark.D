@@ -1342,27 +1342,8 @@ pub fn extract_archive(
             >= 16 * 1024 * 1024,
         "storage_low_space"
     );
-    let workspace_id = uuid::Uuid::new_v4();
-    let workspace = staging_parent.join(format!("archive-{workspace_id}"));
-    fs::create_dir(&workspace).context("storage_write_failed")?;
-    let mut guard = WorkspaceGuard {
-        root: workspace.clone(),
-        parent: staging_parent,
-        armed: true,
-        owner: None,
-    };
-    let mut owner = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(workspace.join(WORKSPACE_MARKER))
-        .context("storage_write_failed")?;
-    fs2::FileExt::try_lock_exclusive(&owner).context("storage_write_failed")?;
-    owner
-        .write_all(format!("{WORKSPACE_OWNER}{workspace_id}\n").as_bytes())
-        .context("storage_write_failed")?;
-    owner.sync_all().context("storage_write_failed")?;
-    guard.owner = Some(owner);
+    let guard = archive_workspace(staging_parent)?;
+    let workspace = guard.root.clone();
     let inputs = workspace.join("sources");
     let content = workspace.join("content");
     fs::create_dir(&content).context("storage_write_failed")?;
@@ -1494,6 +1475,83 @@ pub fn extract_archive(
         source_paths: sources,
         _workspace: guard,
     })
+}
+
+fn archive_workspace(staging_parent: PathBuf) -> Result<WorkspaceGuard> {
+    let workspace_id = uuid::Uuid::new_v4();
+    let workspace = staging_parent.join(format!("archive-{workspace_id}"));
+    fs::create_dir(&workspace).context("storage_write_failed")?;
+    let mut guard = WorkspaceGuard {
+        root: workspace.clone(),
+        parent: staging_parent,
+        armed: true,
+        owner: None,
+    };
+    let mut owner = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(workspace.join(WORKSPACE_MARKER))
+        .context("storage_write_failed")?;
+    fs2::FileExt::try_lock_exclusive(&owner).context("storage_write_failed")?;
+    owner
+        .write_all(format!("{WORKSPACE_OWNER}{workspace_id}\n").as_bytes())
+        .context("storage_write_failed")?;
+    owner.sync_all().context("storage_write_failed")?;
+    guard.owner = Some(owner);
+    Ok(guard)
+}
+
+pub(super) fn auto_extract(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .and_then(volume_name)
+        .is_some_and(|v| {
+            v.kind == VolumeKind::SplitZip
+                || (v.kind == VolumeKind::Numbered && v.key.ends_with(".zip"))
+        })
+}
+
+/// Inspect the exact supplied volumes. Test encrypted data without writing any members.
+pub(super) fn inspect_password(
+    tool: &Path,
+    source: &Path,
+    available: &[PathBuf],
+    staging: &Path,
+    cancel: &AtomicBool,
+    password: Option<&str>,
+) -> Result<bool> {
+    let volumes = validate_volume_group(source, available)?;
+    for path in &volumes {
+        validate_no_links(path)?;
+    }
+    validate_no_links(staging)?;
+    fs::create_dir_all(staging)?;
+    let _empty = super::io::EmptyDirectoryGuard(staging.to_owned());
+    let workspace = archive_workspace(staging.canonicalize()?)?;
+    let first = first_volume(
+        &volumes,
+        &workspace.root.join("sources"),
+        &workspace.root,
+        cancel,
+    )?;
+    match list_archive(tool, &first, cancel, None) {
+        Ok(_) => return Ok(false),
+        Err(e) if super::io::stable_error(&e) == "archive_password_required" => (),
+        Err(e) => return Err(e),
+    }
+    if let Some(password) = password {
+        let (page, _) = list_archive(tool, &first, cancel, Some(password))?;
+        run_7zip(
+            tool,
+            &cli_args("t", &first, page, true),
+            cancel,
+            false,
+            None,
+            Some(password),
+        )?;
+    }
+    Ok(true)
 }
 
 /// The first volume 7-Zip reads: in place for one complete archive, else a private link or copy.

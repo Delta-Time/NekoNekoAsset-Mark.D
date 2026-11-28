@@ -189,8 +189,10 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
   rule changes only folders made after it. Extraction predicts every path 7-Zip
   writes, including its names for names Windows cannot store, and verifies the
   result; it keeps the original on failure, keeps `.unitypackage` files and cleans
-  up only what it wrote. An archive that asks for a password extracts with the one
-  the user types on its row, which stays in memory for that one extraction.
+  up only what it wrote. ZIP files extract automatically. Users can supply a password once or register it
+  after verification. RAR and 7z stay as original files for manual extraction.
+  The library stores registered archive passwords as optional file records bound to the
+  verified content hash, and exposes them through file details.
 - A refused page proves nothing about the session. Only an account-level page on
   the store's own host (BOOTH's lists, Gumroad's library, Jinxxy's inventory) can
   ask the user to sign in again; a refused product or file fails only that asset.

@@ -404,6 +404,7 @@ impl StorageService {
                 self.catalogue
                     .delete("artifact", io::required_string(artifact, "id")?)?;
             }
+            self.catalogue.delete("archive_password", removed)?;
             self.catalogue.delete("remote_file", removed)?;
         }
         Ok(())
@@ -1678,11 +1679,21 @@ impl StorageService {
                 }
             }
         }
+        let locked: Vec<_> = writes
+            .iter()
+            .filter(|(kind, _, artifact)| {
+                kind == "artifact" && artifact["archivePasswordRequired"] == true
+            })
+            .map(|(_, _, artifact)| artifact.clone())
+            .collect();
         self.catalogue.put_many(writes)?;
         // The terminal worker must only persist completion facts that committed.
         *job = next_job;
         if let Some(app) = app {
             self.changed(app, job["id"].as_str());
+            for artifact in &locked {
+                self.prompt_archive_password(app, artifact);
+            }
         }
         if group.membership {
             self.cleanup_removed_local(group)?;
@@ -1859,6 +1870,27 @@ impl StorageService {
                 .filter(|(_, file)| file.source.parent() == group.files[n].source.parent())
                 .map(|(a, _)| io::safe_join(root_path, io::required_string(a, "relativePath")?))
                 .collect::<Result<Vec<_>>>()?;
+            if !archive::auto_extract(&path) {
+                let password = self.saved_archive_password(&artifacts[n])?;
+                let staging = io::safe_join(root_path, ".nna-import-staging")?;
+                match archive::inspect_password(
+                    seven_zip,
+                    &path,
+                    &available,
+                    &staging,
+                    cancel,
+                    password.as_deref(),
+                ) {
+                    Ok(required) => artifacts[n]["archivePasswordRequired"] = json!(required),
+                    Err(e) if local_error(&e) == "cancelled" => return Err(e),
+                    Err(e) => {
+                        artifacts[n]["status"] = json!("extractionFailed");
+                        artifacts[n]["errorCode"] = json!(local_error(&e));
+                        error.get_or_insert(local_error(&e));
+                    }
+                }
+                continue;
+            }
             let prior = self
                 .catalogue
                 .get("artifact", io::required_string(&artifacts[n], "id")?)?;
@@ -1921,7 +1953,11 @@ impl StorageService {
                     let code = local_error(&e);
                     artifacts[n]["status"] = json!("extractionFailed");
                     artifacts[n]["errorCode"] = json!(code);
-                    error.get_or_insert(code);
+                    if matches!(code, "archive_password_required" | "archive_password_wrong") {
+                        artifacts[n]["archivePasswordRequired"] = json!(true);
+                    } else {
+                        error.get_or_insert(code);
+                    }
                 }
             }
         }
@@ -2038,6 +2074,18 @@ impl StorageService {
         let _empty_staging_parent =
             io::EmptyDirectoryGuard(staging.parent().unwrap().to_path_buf());
         let _empty_staging = io::EmptyDirectoryGuard(staging.clone());
+        let password = artifacts
+            .iter()
+            .find(|a| {
+                a["relativePath"]
+                    .as_str()
+                    .and_then(|p| io::safe_join(root, p).ok())
+                    .as_deref()
+                    == Some(source)
+            })
+            .map(|a| self.saved_archive_password(a))
+            .transpose()?
+            .flatten();
         let extraction = archive::extract_archive(
             tool,
             source,
@@ -2045,7 +2093,7 @@ impl StorageService {
             &staging,
             cancel,
             &archive::ExtractionProgress::default(),
-            None,
+            password.as_deref(),
         )?;
         io::check_cancel(cancel)?;
         let inventory = serde_json::to_value(&extraction.inventory)?;

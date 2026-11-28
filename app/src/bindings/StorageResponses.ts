@@ -24,6 +24,8 @@ export type StorageResponses = {
   enqueue_products: DownloadJobs;
   enqueue_file: DownloadJobs;
   extract_with_password: DownloadJobs;
+  register_archive_password: boolean;
+  forget_archive_password: boolean;
   cancel_job: CancelRequested;
   cancel_downloads: DownloadsCancelled;
   delete_downloads: DownloadJobs;

@@ -8,6 +8,7 @@ const PORTABLE: &[&str] = &[
     "entitlement",
     "remote_file",
     "artifact",
+    "archive_password",
     "account",
     "root",
     "collection",
@@ -175,8 +176,8 @@ fn validate_manifest(manifest: &Value) -> Result<Vec<(String, String, Value)>> {
     let mut records = vec![];
     for kind in PORTABLE {
         let values = match manifest["records"].get(*kind) {
-            // Backups made before custom categories existed have none.
-            None if *kind == "custom_category" => continue,
+            // Optional records introduced after the original manifest format.
+            None if matches!(*kind, "custom_category" | "archive_password") => continue,
             values => values
                 .and_then(Value::as_array)
                 .context("catalogue.incomplete_manifest")?,

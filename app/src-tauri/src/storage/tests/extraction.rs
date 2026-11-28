@@ -1121,3 +1121,143 @@ async fn a_locked_archive_extracts_once_with_the_password_given_and_never_record
     assert_eq!(ready.unwrap_err().to_string(), "file_not_usable");
     assert!(f.service.archive_passwords.lock().unwrap().is_empty());
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn archive_password_registration_verifies_bytes_and_survives_reopening() {
+    let tool = native_seven_zip_test_tool();
+    let f = Fixture::new();
+    f.seed(2, true);
+    let member = f.path.join("member.txt");
+    std::fs::write(&member, b"authored member").unwrap();
+    for (index, extension) in ["7z", "zip"].iter().enumerate() {
+        let name = format!("authored.{extension}");
+        let path = f.path.join(&name);
+        assert!(std::process::Command::new(&tool)
+            .args(["a", "-pAuthoredPass1", "-bd"])
+            .arg(&path)
+            .arg(&member)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let (mut artifact, original) =
+            f.publish_authored_download(index, &name, &std::fs::read(&path).unwrap());
+        let root = f.service.root(Some("test-root")).unwrap();
+        let files = f.service.remote_files("42").unwrap().0;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = f
+            .service
+            .extract_for_download(
+                &tool,
+                &root,
+                &mut artifact,
+                &files,
+                &cancel,
+                &Default::default(),
+            )
+            .await;
+        if *extension == "zip" {
+            assert_eq!(
+                io::stable_error(&result.unwrap_err()),
+                "archive_password_required"
+            );
+        } else {
+            result.unwrap();
+            assert_eq!(artifact["status"], "ready");
+        }
+        assert_eq!(artifact["archivePasswordRequired"], true);
+        let id = artifact["fileId"].as_str().unwrap();
+        let arg = |password: &str| json!({"fileId":id,"password":password,"save":true});
+        assert!(f
+            .service
+            .saved_archive_password(&artifact)
+            .unwrap()
+            .is_none());
+        let error = f
+            .service
+            .register_archive_password(&tool, &arg("incorrect"))
+            .await
+            .unwrap_err();
+        assert_eq!(io::stable_error(&error), "archive_password_wrong");
+        assert!(f
+            .service
+            .saved_archive_password(&artifact)
+            .unwrap()
+            .is_none());
+        f.service
+            .register_archive_password(&tool, &arg("AuthoredPass1"))
+            .await
+            .unwrap();
+        assert_eq!(original.is_file(), *extension == "7z");
+        let saved = f
+            .service
+            .catalogue
+            .get("artifact", artifact["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved["extractedPath"].is_string(), *extension == "zip");
+        let reopened = Catalogue::open(&f.path.join("data")).unwrap();
+        let details = reopened
+            .command("product_details", json!({"id":"42"}))
+            .unwrap();
+        let shown = details["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == id)
+            .unwrap();
+        assert_eq!(shown["archivePassword"], "AuthoredPass1");
+        let mut changed = saved.clone();
+        changed["hash"] = json!("different");
+        assert!(f
+            .service
+            .saved_archive_password(&changed)
+            .unwrap()
+            .is_none());
+        if *extension == "zip" {
+            std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+            std::fs::copy(&path, &original).unwrap();
+            artifact["originalAvailable"] = json!(true);
+            f.service
+                .catalogue
+                .put(
+                    "artifact",
+                    artifact["id"].as_str().unwrap(),
+                    artifact.clone(),
+                )
+                .unwrap();
+            f.service
+                .extract_one(
+                    &tool,
+                    &root,
+                    &mut artifact,
+                    &files,
+                    &cancel,
+                    &Default::default(),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    let restored = Catalogue::open(&f.path.join("restored")).unwrap();
+    let mut manifest = f.service.catalogue.manifest().unwrap();
+    restored.restore_manifest(manifest.clone()).unwrap();
+    assert_eq!(restored.list("archive_password").unwrap().len(), 2);
+    // Upstream and legacy backups have no rows or manifest section for this feature.
+    manifest["records"]
+        .as_object_mut()
+        .unwrap()
+        .remove("archive_password");
+    restored.restore_manifest(manifest).unwrap();
+    assert!(restored.list("archive_password").unwrap().is_empty());
+    let legacy = restored
+        .command("product_details", json!({"id":"42"}))
+        .unwrap();
+    assert!(legacy["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|file| file.get("archivePassword").is_none()));
+}
