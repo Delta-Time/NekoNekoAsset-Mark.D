@@ -333,7 +333,10 @@ export function useNative({
         setLibraryOpening(true);
         return result;
       }
-      if (service === 'booth' && !action.startsWith('fetch_')) await refreshState();
+      // A free import's dialog closes as soon as its job is queued, however busy downloads are.
+      if (service === 'booth' && action === 'import_free')
+        void refreshState().catch((error) => notify(q(errorCode(error))));
+      else if (service === 'booth' && !action.startsWith('fetch_')) await refreshState();
       return result;
     } catch (error) {
       notify(q(errorCode(error)));

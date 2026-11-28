@@ -80,6 +80,19 @@ impl Fixture {
             .unwrap()
             .to_owned()
     }
+    /// Queues a removal and runs every waiting one as the storage worker would; answers the
+    /// files whose bytes are gone.
+    async fn delete(&self, args: Value) -> Result<Vec<String>> {
+        self.service.delete_downloads(&args).await?;
+        let mut deleted = Vec::new();
+        while let Some(job) = self.service.queued_delete()? {
+            deleted.extend(
+                self.service
+                    .run_delete_job(job["id"].as_str().unwrap(), || {})?,
+            );
+        }
+        Ok(deleted)
+    }
     fn finish(self) {
         let Self { path, service, .. } = self;
         drop(service);
@@ -113,25 +126,15 @@ async fn product_delete_keeps_files_the_store_cannot_provide_again() {
     c.put("artifact","artifact-mine",json!({"id":"artifact-mine","productId":"alpha","fileId":"local-file:mine","rootId":"root","relativePath":relative,"productDirectory":directory,"revision":revision,"hash":hash,"sizeBytes":size,"status":"ready","originalAvailable":true})).unwrap();
     let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
 
-    let result = f
-        .service
-        .delete_downloads(&json!({"productIds":["alpha"]}))
-        .await
-        .unwrap();
-    assert_eq!(result["deletedFileIds"], json!(["alpha-New.zip"]));
+    let deleted = f.delete(json!({"productIds":["alpha"]})).await.unwrap();
+    assert_eq!(deleted, ["alpha-New.zip"]);
     assert!(old.exists() && mine.exists() && hidden.exists());
     assert_eq!(f.file_status("alpha", "alpha-Old.zip"), "ready");
     assert_eq!(f.file_status("alpha", "local-file:mine"), "ready");
 
     // Each file's own delete removes them; an added file leaves with its record.
-    f.service
-        .delete_downloads(&json!({"fileId":"local-file:mine"}))
-        .await
-        .unwrap();
-    f.service
-        .delete_downloads(&json!({"fileId":"alpha-Old.zip"}))
-        .await
-        .unwrap();
+    f.delete(json!({"fileId":"local-file:mine"})).await.unwrap();
+    f.delete(json!({"fileId":"alpha-Old.zip"})).await.unwrap();
     assert!(!old.exists() && !mine.exists());
     assert!(c.get("remote_file", "local-file:mine").unwrap().is_none());
     assert!(c.get("remote_file", "alpha-Old.zip").unwrap().is_some());
@@ -156,12 +159,8 @@ async fn product_delete_keeps_a_downloaded_file_its_store_refused() {
     let pending = format!("pending-{}", io::key("beta-Old.zip"));
     c.put("artifact",&pending,json!({"id":pending,"productId":"beta","fileId":"beta-Old.zip","rootId":"root","relativePath":format!("{directory}/Old.zip--dir-1/Old.zip"),"productDirectory":directory,"revision":null,"status":"notDownloaded","errorCode":"store_file_unavailable","originalAvailable":false})).unwrap();
     let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
-    let result = f
-        .service
-        .delete_downloads(&json!({"productIds":["beta"]}))
-        .await
-        .unwrap();
-    assert_eq!(result["deletedFileIds"], json!(["beta-New.zip"]));
+    let deleted = f.delete(json!({"productIds":["beta"]})).await.unwrap();
+    assert_eq!(deleted, ["beta-New.zip"]);
     assert!(old.exists());
     let details = c.command("product_details", json!({"id":"beta"})).unwrap();
     let row = details["files"]
@@ -176,10 +175,7 @@ async fn product_delete_keeps_a_downloaded_file_its_store_refused() {
         (json!(true), json!("ready"))
     );
     // Its own delete removes the bytes and keeps the refusal, so it leaves the list.
-    f.service
-        .delete_downloads(&json!({"fileId":"beta-Old.zip"}))
-        .await
-        .unwrap();
+    f.delete(json!({"fileId":"beta-Old.zip"})).await.unwrap();
     assert!(!old.exists());
     assert!(c.get("artifact", &pending).unwrap().is_some());
     let details = c.command("product_details", json!({"id":"beta"})).unwrap();
@@ -216,15 +212,8 @@ async fn product_delete_removes_downloads_and_keeps_records_and_user_files() {
     fs::write(f.library.join(&directory).join("notes.txt"), b"user notes").unwrap();
     assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "ready");
 
-    let result = f
-        .service
-        .delete_downloads(&json!({"productIds":["alpha"]}))
-        .await
-        .unwrap();
-    assert_eq!(
-        result["deletedFileIds"],
-        json!(["alpha-Body.unitypackage", "alpha-Texture.zip"])
-    );
+    let deleted = f.delete(json!({"productIds":["alpha"]})).await.unwrap();
+    assert_eq!(deleted, ["alpha-Body.unitypackage", "alpha-Texture.zip"]);
     assert!(!extracted.exists());
     assert!(!f
         .library
@@ -278,7 +267,14 @@ async fn product_delete_removes_downloads_and_keeps_records_and_user_files() {
         .evaluate_automatic(&HashSet::from(["alpha".to_owned(), "beta".to_owned()]))
         .await
         .unwrap();
-    let jobs = f.service.catalogue.list("job").unwrap();
+    let jobs: Vec<_> = f
+        .service
+        .catalogue
+        .list("job")
+        .unwrap()
+        .into_iter()
+        .filter(|job| job["type"] == "download")
+        .collect();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0]["productId"], "beta");
     f.finish();
@@ -308,8 +304,7 @@ async fn file_delete_keeps_bytes_another_file_still_records() {
         .catalogue
         .put("artifact", "artifact-alpha-Copy.unitypackage", copy)
         .unwrap();
-    f.service
-        .delete_downloads(&json!({"fileId":"alpha-Body.unitypackage"}))
+    f.delete(json!({"fileId":"alpha-Body.unitypackage"}))
         .await
         .unwrap();
     assert!(f.library.join(shared.as_str().unwrap()).is_file());
@@ -326,8 +321,7 @@ async fn file_delete_keeps_bytes_another_file_still_records() {
         .unwrap()
         .is_none());
     // Removing the last record also removes the shared bytes and empty folders.
-    f.service
-        .delete_downloads(&json!({"fileId":"alpha-Copy.unitypackage"}))
+    f.delete(json!({"fileId":"alpha-Copy.unitypackage"}))
         .await
         .unwrap();
     assert!(!f.library.join(shared.as_str().unwrap()).exists());
@@ -388,12 +382,45 @@ async fn delete_refuses_active_work_and_invalid_targets_without_removing_bytes()
             code
         );
     }
-    // A queued download for a product being removed is refused, not merged.
-    let claim = DeleteClaim {
-        claimed: f.service.deleting.clone(),
-        ids: vec!["alpha".into()],
-    };
-    f.service.deleting.lock().unwrap().insert("alpha".into());
+    assert!(bytes.is_file());
+    assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "ready");
+    f.finish();
+}
+
+#[tokio::test]
+async fn removals_wait_their_turn_and_hold_their_products_meanwhile() {
+    let f = Fixture::new();
+    f.product("alpha", &["Body.unitypackage"]);
+    let directory = f.product("beta", &["Hair.unitypackage"]);
+    let c = &f.service.catalogue;
+    let job = |answer: Value| answer["jobIds"][0].as_str().unwrap().to_owned();
+    let first = job(f
+        .service
+        .delete_downloads(&json!({"productIds":["beta"]}))
+        .await
+        .unwrap());
+    std::thread::sleep(Duration::from_millis(2));
+    let second = job(f
+        .service
+        .delete_downloads(&json!({"productIds":["alpha"]}))
+        .await
+        .unwrap());
+    // Asking again answers the waiting removal, which also covers each file.
+    assert_eq!(
+        f.service
+            .delete_downloads(&json!({"fileId":"alpha-Body.unitypackage"}))
+            .await
+            .unwrap()["jobIds"],
+        json!([second])
+    );
+    // Nothing goes before the worker runs them. Their products show in progress, and no
+    // download of them is queued meanwhile: one asked for is refused, not merged, and
+    // download-all leaves them alone.
+    assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "ready");
+    assert_eq!(
+        c.command("product_details", json!({"id":"alpha"})).unwrap()["status"],
+        "processing"
+    );
     assert_eq!(
         f.service
             .enqueue(&json!({"productIds":["alpha"]}))
@@ -402,10 +429,74 @@ async fn delete_refuses_active_work_and_invalid_targets_without_removing_bytes()
             .to_string(),
         "storage_busy"
     );
-    drop(claim);
-    assert!(f.service.deleting.lock().unwrap().is_empty());
-    assert!(bytes.is_file());
-    assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "ready");
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":["alpha"],"automatic":true}))
+            .await
+            .unwrap()["jobIds"],
+        json!([])
+    );
+    // Several products at once go on without them, and are busy with nothing else to do.
+    f.product("gamma", &["Tail.unitypackage"]);
+    let others = f
+        .service
+        .enqueue(&json!({"productIds":["alpha","gamma"]}))
+        .await
+        .unwrap()["jobIds"]
+        .clone();
+    let gamma = others[0].as_str().unwrap();
+    assert_eq!(others.as_array().unwrap().len(), 1);
+    assert_eq!(c.get("job", gamma).unwrap().unwrap()["productId"], "gamma");
+    c.delete("job", gamma).unwrap();
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":["alpha","beta"]}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "storage_busy"
+    );
+    // The oldest goes first, unless a Unity transfer holds its product's files.
+    c.put(
+        "job",
+        "unity",
+        json!({"id":"unity","type":"unity:import","productIds":["beta"],"state":"running"}),
+    )
+    .unwrap();
+    assert_eq!(f.service.queued_delete().unwrap().unwrap()["id"], second);
+    c.delete("job", "unity").unwrap();
+    assert_eq!(f.service.queued_delete().unwrap().unwrap()["id"], first);
+    // A cancelled one removes nothing; Retry queues it again as it was asked for.
+    f.service.cancel_job(&first).unwrap();
+    assert!(f
+        .service
+        .run_delete_job(&first, || unreachable!())
+        .unwrap()
+        .is_empty());
+    assert!(f.library.join(&directory).exists());
+    f.service.retry_delete(&first).await.unwrap();
+    assert_eq!(c.get("job", &first).unwrap().unwrap()["state"], "queued");
+    assert_eq!(
+        f.service.run_delete_job(&first, || {}).unwrap(),
+        ["beta-Hair.unitypackage"]
+    );
+    assert_eq!(c.get("job", &first).unwrap().unwrap()["state"], "completed");
+    assert_eq!(
+        f.file_status("beta", "beta-Hair.unitypackage"),
+        "notDownloaded"
+    );
+    // Once it has run, its product takes downloads again.
+    f.service.run_delete_job(&second, || {}).unwrap();
+    assert_eq!(
+        f.service
+            .enqueue(&json!({"productIds":["alpha"]}))
+            .await
+            .unwrap()["jobIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     f.finish();
 }
 
@@ -425,12 +516,16 @@ async fn a_file_held_open_is_kept_and_shown_missing_until_retried() {
         .open(&held)
         .unwrap();
     assert_eq!(
-        f.service
-            .delete_downloads(&json!({"productIds":["alpha"]}))
+        f.delete(json!({"productIds":["alpha"]}))
             .await
             .unwrap_err()
             .to_string(),
         "download_delete_incomplete"
+    );
+    let jobs = f.service.catalogue.list("job").unwrap();
+    assert_eq!(
+        (&jobs[0]["state"], &jobs[0]["errorCode"]),
+        (&json!("needsAction"), &json!("download_delete_incomplete"))
     );
     assert!(held.is_file());
     assert_eq!(f.file_status("alpha", "alpha-Body.unitypackage"), "missing");
@@ -439,8 +534,7 @@ async fn a_file_held_open_is_kept_and_shown_missing_until_retried() {
         "notDownloaded"
     );
     drop(handle);
-    f.service
-        .delete_downloads(&json!({"fileId":"alpha-Body.unitypackage"}))
+    f.delete(json!({"fileId":"alpha-Body.unitypackage"}))
         .await
         .unwrap();
     assert!(!held.exists());

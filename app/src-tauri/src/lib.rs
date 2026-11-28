@@ -927,9 +927,11 @@ async fn storage_action(
         request,
         Request::EnqueueProducts(_)
             | Request::EnqueueFile(_)
+            | Request::DeleteDownloads(_)
             | Request::CancelJob(_)
             | Request::RetryJob(_)
             | Request::DiscardImport(_)
+            | Request::ExtractWithPassword(_)
     );
     let root_change = matches!(request, Request::ConfigureRoot(_) | Request::RemapRoot(_));
     let result = services

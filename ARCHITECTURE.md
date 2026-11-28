@@ -185,11 +185,20 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - A product is Ready when every attached file is usable. Source coverage is a
   separate fact.
 - Managed paths are readable and stable, and editing metadata never moves files.
-  Extraction keeps the original on failure, keeps `.unitypackage` files and cleans
-  up only what it wrote.
+  Each path is recorded when it is made and only ever read back, so a new naming
+  rule changes only folders made after it. Extraction predicts every path 7-Zip
+  writes, including its names for names Windows cannot store, and verifies the
+  result; it keeps the original on failure, keeps `.unitypackage` files and cleans
+  up only what it wrote. ZIP files extract automatically. Users can supply a password once or register it
+  after verification. RAR and 7z stay as original files for manual extraction.
+  The library stores registered archive passwords as optional file records bound to the
+  verified content hash, and exposes them through file details.
 - A refused page proves nothing about the session. Only an account-level page on
   the store's own host (BOOTH's lists, Gumroad's library, Jinxxy's inventory) can
   ask the user to sign in again; a refused product or file fails only that asset.
+  A refusal a store's limit on downloads may explain (BOOTH refusing a file it still
+  lists, any store's 429) holds that store's downloads for a wait instead, an hour of
+  waits at most, while other stores' go on.
 
 ### Code
 
@@ -234,8 +243,10 @@ Each rule is kept by code and tests. Changing one is a design change, not a fix.
 - **Jobs and concurrency.** Store, download, import, AI and Unity work
   hold a `catalogue::CatalogueWorkPermit` while queued or running; a restore takes
   the exclusive one. Different stores sync at the same time, while accounts of one
-  store queue. Database locks are never held across network waits or long file
-  work.
+  store queue. Storage work runs one job at a time: removing downloaded files, then a
+  local import, goes after the download in progress and before queued ones, and the
+  UI never waits for either to run. Database locks are never held across network
+  waits or long file work.
 - **Errors.** Every error the UI sees is a stable code, translated through
   `error-i18n.ts` and the locale files.
 - **Privacy.** Cookies, tokens, order details, page bodies and downloaded files

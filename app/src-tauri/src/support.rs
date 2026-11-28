@@ -177,7 +177,7 @@ pub(crate) fn safe_code(value: &str) -> &'static str {
         "network_timeout", "source_changed", "source_tree_incomplete", "download_size_mismatch",
         "download_resolver_failed", "download_http_failed", "manifest_changed", "manifest_incomplete",
         "file_missing", "store_file_unavailable", "free_offer_unavailable", "store_access_denied", "file_integrity_failed", "file_not_usable", "original_unavailable",
-        "archive_password_required", "archive_missing_volume", "archive_corrupt", "archive_unsafe_path",
+        "archive_password_required", "archive_password_wrong", "archive_missing_volume", "archive_corrupt", "archive_unsafe_path",
         "archive_unsafe_link", "archive_path_collision", "archive_tool_unavailable", "revision_unknown",
         "unsupported_backup_version", "backup_payload_missing", "destination_not_empty", "storage_busy",
         "storage_failed", "storage_source_locked", "file_in_use", "unsafe_link", "local_membership_changed", "local_product_required", "local_delete_unsafe_path",

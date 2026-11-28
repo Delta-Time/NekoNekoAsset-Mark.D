@@ -269,12 +269,13 @@ impl BoothService {
         Ok(None)
     }
 
-    /// Asks for the item's files like Download does, so they download once it publishes.
+    /// Asks for the item's files like Download does, so they download once it publishes,
+    /// ahead of the downloads already queued.
     fn want_download(&self, product: &str) -> Result<()> {
         self.inner.catalogue.put(
             "download_intent",
             product,
-            json!({"id":product,"wantDownload":true}),
+            json!({"id":product,"wantDownload":true,"priority":true}),
         )
     }
 }

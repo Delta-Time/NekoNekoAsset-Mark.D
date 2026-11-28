@@ -1386,9 +1386,11 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
         .unwrap());
     assert_eq!(stored("b-product")["state"], "queued");
     assert_eq!(stored("b-product")["stage"], "storeUpdate");
-    // Its product stays in progress, and nothing runs before its update even starts.
+    // Its product stays in progress, and nothing runs before its update even starts: not
+    // another asset queued meanwhile, whatever its place in the queue.
     let status = || c.command("product_details", json!({"id":"42"})).unwrap()["status"].clone();
     assert_eq!(status(), "processing");
+    c.put("job","0-other",json!({"id":"0-other","type":"download","productId":"43","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
     assert!(f.service.queued_download().unwrap().0.is_none());
     let before = stored("b-product");
     let mut started = before.clone();
@@ -1399,21 +1401,38 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
         .unwrap());
     // A single refused file waits on the same update.
     c.put("job","a-single",json!({"id":"a-single","type":"download","productId":"42","state":"queued","stage":"storeUpdate","storeUpdated":true,"selectedFileIds":["test-file-0"],"fileIds":["test-file-0"],"updateJobIds":["update"]})).unwrap();
-    c.put(
-        "job",
-        "update",
-        json!({"id":"update","type":"boothUpdate","state":"running"}),
-    )
-    .unwrap();
+    let update = |state: &str| {
+        c.put(
+            "job",
+            "update",
+            json!({"id":"update","type":"boothUpdate","store":"BOOTH","state":state}),
+        )
+        .unwrap()
+    };
+    let sync = |kind: &str, store: &str| {
+        c.put(
+            "job",
+            "sync",
+            json!({"id":"sync","type":kind,"store":store,"state":"running"}),
+        )
+        .unwrap()
+    };
+    // Queued with nothing ahead of it, or behind another store's sync, it is about to read.
+    update("queued");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    sync("gumroadSync", "Gumroad");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    // Queued behind its store's sync, which may take long, it lets other assets go.
+    sync("boothSync", "BOOTH");
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "0-other"
+    );
+    update("running");
     assert!(f.service.queued_download().unwrap().0.is_none());
     assert_eq!(status(), "processing");
     // Once it ends, the single file's refusal stands and the product download goes on.
-    c.put(
-        "job",
-        "update",
-        json!({"id":"update","type":"boothUpdate","state":"completed"}),
-    )
-    .unwrap();
+    update("completed");
     let (next, changed) = f.service.queued_download().unwrap();
     assert!(changed);
     let next = next.unwrap();
@@ -1421,10 +1440,15 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
     assert!(next.get("stage").is_none() && next.get("updateJobIds").is_none());
     assert_eq!(stored("a-single")["state"], "needsAction");
     assert_eq!(stored("a-single")["errorCode"], "store_file_unavailable");
-    // Refused again on its second pass, or cancelled, it ends as before.
+    // Refused again on its second pass, or cancelled, it ends as before. The other asset
+    // goes once it runs.
     let mut again = next.clone();
     again["state"] = json!("running");
     c.put("job", "b-product", again.clone()).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "0-other"
+    );
     assert!(!f
         .service
         .wait_for_store_list(&mut again, &refused, &cancel)
@@ -1446,6 +1470,132 @@ async fn a_refused_download_waits_for_its_stores_list_then_goes_on_once() {
         .wait_for_store_list(&mut job, &refused, &cancel)
         .unwrap());
     assert_eq!(stored("d-cancelling")["state"], "running");
+}
+
+#[test]
+fn a_limited_download_waits_out_its_store_while_other_stores_go_on() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let c = &f.service.catalogue;
+    let cancel = AtomicBool::new(false);
+    let stored = |id: &str| c.get("job", id).unwrap().unwrap();
+    let wait = |id: &str| {
+        let at = chrono::DateTime::parse_from_rfc3339(stored(id)["retryAt"].as_str().unwrap());
+        (at.unwrap().with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds()
+    };
+    let refused = |id: &str, product: &str, code: &str| {
+        let job = json!({"id":id,"type":"download","productId":product,"state":"running","selectedFileIds":null,"fileIds":["test-file-0","test-file-1"],"failures":{"test-file-0":{"fileId":"test-file-0","errorCode":code}}});
+        c.put("job", id, job.clone()).unwrap();
+        job
+    };
+    let running = |id: &str| {
+        let mut job = stored(id);
+        job["state"] = json!("running");
+        c.put("job", id, job).unwrap();
+    };
+    let limit: Result<()> = Err(crate::stores::StoreError::classify(anyhow::anyhow!(
+        "PERMISSION_DENIED"
+    )));
+    // BOOTH refusing a file sends its download back to wait a minute.
+    let mut job = refused("b-limited", "42", "store_access_denied");
+    assert!(f
+        .service
+        .wait_for_store_limit(&mut job, &limit, &cancel)
+        .unwrap());
+    assert_eq!(stored("b-limited")["state"], "queued");
+    assert_eq!(stored("b-limited")["stage"], "storeWait");
+    assert!(stored("b-limited")["errorCode"].is_null());
+    assert!((55..=60).contains(&wait("b-limited")));
+    // Meanwhile no other BOOTH download starts, while another store's does.
+    c.put("job","a-booth",json!({"id":"a-booth","type":"download","productId":"43","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
+    c.put("job","c-gumroad",json!({"id":"c-gumroad","type":"download","productId":"gumroad:p","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "c-gumroad"
+    );
+    running("c-gumroad");
+    assert!(f.service.queued_download().unwrap().0.is_none());
+    // Once the wait ends, a BOOTH download that never waited tries the store first.
+    let mut ended = stored("b-limited");
+    ended["retryAt"] = json!((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
+    c.put("job", "b-limited", ended).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "a-booth"
+    );
+    running("a-booth");
+    let (next, changed) = f.service.queued_download().unwrap();
+    assert!(changed);
+    let next = next.unwrap();
+    assert_eq!(next["id"], "b-limited");
+    assert!(next.get("stage").is_none() && next.get("retryAt").is_none());
+    // Refused again while BOOTH serves none, each wait is longer, an hour in all; then a
+    // refusal ends the download as before.
+    for minutes in &STORE_WAIT_MINUTES[1..] {
+        let mut job = refused("b-limited", "42", "store_access_denied");
+        assert!(f
+            .service
+            .wait_for_store_limit(&mut job, &limit, &cancel)
+            .unwrap());
+        assert!((minutes * 60 - 5..=minutes * 60).contains(&wait("b-limited")));
+    }
+    assert_eq!(STORE_WAIT_MINUTES.iter().sum::<i64>(), 60);
+    let mut job = refused("b-limited", "42", "store_access_denied");
+    assert!(!f
+        .service
+        .wait_for_store_limit(&mut job, &limit, &cancel)
+        .unwrap());
+    assert_eq!(stored("b-limited")["state"], "running");
+    // A download BOOTH serves starts its waits over.
+    f.service.store_served("booth");
+    assert!(f
+        .service
+        .wait_for_store_limit(&mut job, &limit, &cancel)
+        .unwrap());
+    assert!((55..=60).contains(&wait("b-limited")));
+    // Another store's refusal is the file's own, as is any other failure; any store's 429
+    // waits.
+    for (product, code, waits) in [
+        ("gumroad:p", "PERMISSION_DENIED", false),
+        ("42", "NETWORK_UNAVAILABLE", false),
+        ("gumroad:p", "RATE_LIMITED", true),
+        ("jinxxy:p", "RATE_LIMITED", true),
+    ] {
+        let mut job = refused("d-other", product, "store_access_denied");
+        let result: Result<()> = Err(crate::stores::StoreError::classify(anyhow::anyhow!(
+            "{code}"
+        )));
+        assert_eq!(
+            f.service
+                .wait_for_store_limit(&mut job, &result, &cancel)
+                .unwrap(),
+            waits,
+            "{product} {code}"
+        );
+    }
+    // Only the pass's outcome counts: a refusal an earlier pass left in the job does not.
+    for result in [Ok(()), Err(anyhow::anyhow!("root_offline"))] {
+        let mut job = refused("d-other", "42", "store_access_denied");
+        assert!(!f
+            .service
+            .wait_for_store_limit(&mut job, &result, &cancel)
+            .unwrap());
+    }
+    // A cancel requested meanwhile ends it instead.
+    let mut job = refused("e-cancelled", "42", "store_access_denied");
+    job["cancelRequested"] = json!(true);
+    c.put("job", "e-cancelled", job.clone()).unwrap();
+    assert!(!f
+        .service
+        .wait_for_store_limit(&mut job, &limit, &cancel)
+        .unwrap());
+    let mut job = refused("f-cancelling", "42", "store_access_denied");
+    cancel.store(true, Ordering::Release);
+    assert!(!f
+        .service
+        .wait_for_store_limit(&mut job, &limit, &cancel)
+        .unwrap());
+    assert_eq!(stored("f-cancelling")["state"], "running");
 }
 
 #[test]
@@ -1493,5 +1643,44 @@ fn a_download_left_with_nothing_says_why() {
     assert_eq!(
         ensure_files(&updated, &[]).unwrap_err().to_string(),
         "store_file_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn a_free_import_download_goes_ahead_of_the_queued_ones_once() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let c = &f.service.catalogue;
+    c.put("job","0-queued",json!({"id":"0-queued","type":"download","productId":"43","state":"queued","selectedFileIds":null,"fileIds":[]})).unwrap();
+    // The import asked for the item's files: their download goes first, and the intent the
+    // download writes no longer says so.
+    c.put(
+        "download_intent",
+        "42",
+        json!({"id":"42","wantDownload":true,"priority":true}),
+    )
+    .unwrap();
+    let answer = f
+        .service
+        .enqueue(&json!({"productIds":["42"]}))
+        .await
+        .unwrap();
+    let imported = answer["jobIds"][0].as_str().unwrap();
+    assert_eq!(c.get("job", imported).unwrap().unwrap()["priority"], true);
+    assert!(c
+        .get("download_intent", "42")
+        .unwrap()
+        .unwrap()
+        .get("priority")
+        .is_none());
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        imported
+    );
+    // A download waiting for its store's list still goes before it.
+    c.put("job","1-update",json!({"id":"1-update","type":"download","productId":"44","state":"queued","stage":"storeUpdate","updateJobIds":[],"selectedFileIds":null,"fileIds":[]})).unwrap();
+    assert_eq!(
+        f.service.queued_download().unwrap().0.unwrap()["id"],
+        "1-update"
     );
 }

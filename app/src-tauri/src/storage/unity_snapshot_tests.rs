@@ -116,6 +116,26 @@ async fn unity_snapshot_binds_original_and_inventory_member_and_releases_gate() 
             .unwrap(),
         None
     );
+    // While a local import of the asset waits or runs, the package goes by transfer.
+    service
+        .catalogue
+        .put(
+            "job",
+            "local-import:authored",
+            json!({"id":"local-import:authored","type":"storage:import_local","productIds":products,"state":"queued"}),
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .unity_package_path(&products, &package.leaf_ref)
+            .await
+            .unwrap(),
+        None
+    );
+    service
+        .catalogue
+        .delete("job", "local-import:authored")
+        .unwrap();
     assert_eq!(
         service
             .unity_package_path(&products, "missing")

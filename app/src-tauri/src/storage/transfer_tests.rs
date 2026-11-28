@@ -56,7 +56,14 @@ async fn selected_source_sibling_reuses_actual_extraction_after_archive_original
         let cancel = Arc::new(AtomicBool::new(false));
         let tool = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
         service
-            .extract_one(&tool, &mapped_root, &mut artifact, &files, &cancel)
+            .extract_one(
+                &tool,
+                &mapped_root,
+                &mut artifact,
+                &files,
+                &cancel,
+                &Default::default(),
+            )
             .await
             .unwrap();
         assert!(!original.exists());
@@ -722,5 +729,60 @@ fn source_hash_mismatch_fails_but_historical_hash_does_not_override_new_content(
             .unwrap()
             .0,
         "sha256:new"
+    );
+}
+
+#[test]
+fn activity_shows_the_files_in_flight_with_their_bytes() {
+    let files: Vec<Value> = (0..5).map(|i| json!({"id": format!("file-{i}")})).collect();
+    let flight = Flight::new(&files);
+    let view = |shown: Shown| {
+        let transfer = shown.1.unwrap();
+        (
+            shown.0,
+            transfer.first,
+            transfer.last,
+            transfer.total,
+            transfer.received,
+            transfer.size,
+        )
+    };
+    let now = || flight.shown(&mut flight.state.lock().unwrap());
+    // Started without bytes yet, a file shows only its place.
+    assert_eq!(
+        view(flight.start("file-0").unwrap()),
+        (0.0, 1, 1, 5, None, None)
+    );
+    flight.start("file-1");
+    flight.start("file-2");
+    // Bytes sum over the files in flight; their size only once every size is known.
+    flight.receive("file-0", 300, Some(500));
+    flight.receive("file-2", 50, None);
+    assert_eq!(view(now()), (12.0, 1, 3, 5, Some(350), None));
+    flight.receive("file-1", 0, Some(200));
+    flight.receive("file-2", 100, Some(100));
+    assert_eq!(view(now()), (32.0, 1, 3, 5, Some(400), Some(800)));
+    // A finished file shows its full size once; a failed one just leaves.
+    assert_eq!(
+        view(flight.settle("file-1", true).unwrap()),
+        (52.0, 1, 3, 5, Some(600), Some(800))
+    );
+    assert!(flight.settle("file-2", false).is_none());
+    assert_eq!(
+        view(flight.start("file-3").unwrap()),
+        (52.0, 1, 4, 5, Some(300), None)
+    );
+    // An archive's extraction fills its share of the bar across the job's archives.
+    let (bar, transfer) = extraction_shown(2, 3, 50);
+    let transfer = transfer.unwrap();
+    assert_eq!(bar, 50.0);
+    assert_eq!(
+        (
+            transfer.phase.as_str(),
+            transfer.first,
+            transfer.total,
+            transfer.percent
+        ),
+        ("extract", 2, 3, Some(50))
     );
 }

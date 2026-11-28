@@ -249,6 +249,10 @@ fn storage_requests_give_back_the_arguments_they_were_sent() {
             json!({"productIds":["1"],"rootId":"r","selectedFileIds":null,"redownload":true}),
         ),
         ("enqueue_file", json!({"fileId":"f","redownload":false})),
+        (
+            "extract_with_password",
+            json!({"fileId":"f","password":"authored"}),
+        ),
         ("cancel_job", json!({"jobId":"j"})),
         ("cancel_downloads", json!({})),
         ("delete_downloads", json!({"productIds":["1"],"fileId":"f"})),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::api::Transfer;
 
 /// A dropped transfer restarts from the first byte after 2, 4, 8 and 16 s, so a Wi-Fi drop or
 /// waking from sleep does not fail the download; final size and hash are still checked.
@@ -265,6 +266,122 @@ struct DownloadTarget<'a> {
     root_path: &'a PathBuf,
     part: &'a PathBuf,
     destination: &'a PathBuf,
+}
+
+/// What a download writes into its job for Activity: its bar, and the files or archive it
+/// is on.
+type Shown = (f64, Option<Transfer>);
+
+/// A running download's files by their places in its list: the share of each done, for the
+/// bar, and the bytes of those in flight.
+struct Flight {
+    ids: Vec<String>,
+    state: Mutex<FlightState>,
+}
+
+#[derive(Default)]
+struct FlightState {
+    done: Vec<f64>,
+    /// Received and, once known, expected bytes of each file in flight.
+    active: BTreeMap<usize, (u64, Option<u64>)>,
+    written: Option<std::time::Instant>,
+}
+
+impl Flight {
+    fn new(files: &[Value]) -> Self {
+        let ids: Vec<String> = files
+            .iter()
+            .map(|file| file["id"].as_str().unwrap_or("").to_owned())
+            .collect();
+        let state = FlightState {
+            done: vec![0.0; ids.len()],
+            ..FlightState::default()
+        };
+        Self {
+            ids,
+            state: Mutex::new(state),
+        }
+    }
+
+    fn place(&self, id: &str) -> Option<usize> {
+        self.ids.iter().position(|known| known == id)
+    }
+
+    fn start(&self, id: &str) -> Option<Shown> {
+        let place = self.place(id)?;
+        let mut state = self.state.lock().unwrap();
+        state.active.insert(place, (0, None));
+        Some(self.shown(&mut state))
+    }
+
+    /// Byte counts write at most twice a second, however many files are in flight.
+    fn receive(&self, id: &str, received: u64, size: Option<u64>) -> Option<Shown> {
+        let place = self.place(id)?;
+        let mut state = self.state.lock().unwrap();
+        state.active.insert(place, (received, size));
+        if let Some(size) = size.filter(|size| *size > 0) {
+            state.done[place] = (received as f64 / size as f64).min(1.0);
+        }
+        if state
+            .written
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(500))
+        {
+            return None;
+        }
+        Some(self.shown(&mut state))
+    }
+
+    /// A downloaded file shows its full size until the next one starts.
+    fn settle(&self, id: &str, downloaded: bool) -> Option<Shown> {
+        let place = self.place(id)?;
+        let mut state = self.state.lock().unwrap();
+        let shown = downloaded.then(|| {
+            state.done[place] = 1.0;
+            if let Some((received, Some(size))) = state.active.get_mut(&place) {
+                *received = *size;
+            }
+            self.shown(&mut state)
+        });
+        state.active.remove(&place);
+        shown
+    }
+
+    fn shown(&self, state: &mut FlightState) -> Shown {
+        state.written = Some(std::time::Instant::now());
+        let percent = 100.0 * state.done.iter().sum::<f64>() / self.ids.len().max(1) as f64;
+        let first = state.active.first_key_value().map(|(place, _)| *place);
+        let last = state.active.last_key_value().map(|(place, _)| *place);
+        let transfer = first.zip(last).map(|(first, last)| {
+            let received = state.active.values().map(|(received, _)| received).sum();
+            let size: Option<u64> = state.active.values().map(|(_, size)| *size).sum();
+            Transfer {
+                phase: "download".into(),
+                first: first as u64 + 1,
+                last: last as u64 + 1,
+                total: self.ids.len() as u64,
+                received: (received > 0 || size.is_some()).then_some(received),
+                size,
+                percent: None,
+            }
+        });
+        (percent, transfer)
+    }
+}
+
+/// The archive at `place` of `total` is `percent` extracted; the bar covers them all.
+fn extraction_shown(place: u64, total: u64, percent: u64) -> Shown {
+    let total = total.max(place);
+    let bar = (100 * (place - 1) + percent) as f64 / total as f64;
+    let transfer = Transfer {
+        phase: "extract".into(),
+        first: place,
+        last: place,
+        total,
+        received: None,
+        size: None,
+        percent: Some(percent),
+    };
+    (bar, Some(transfer))
 }
 
 impl StorageService {
@@ -541,10 +658,20 @@ impl StorageService {
         let job_id = io::required_string(job, "id")?.to_owned();
         let redownload = job["redownload"] == true;
         let selected = job["selectedFileIds"].is_array();
+        let flight = Flight::new(&files);
         let mut waiting = files.iter().cloned();
         let mut next = waiting.next();
         let mut in_flight = FuturesUnordered::new();
         let mut results = Vec::new();
+        // A store that refused or limited one file would the next: the files in flight finish
+        // and no other starts, so the job can wait out the limit.
+        let store = product_store(&product);
+        let limit = |result: &Result<()>| {
+            result
+                .as_ref()
+                .is_err_and(|error| store_limit(store, io::stable_error(error)))
+        };
+        let mut limited = false;
         while next.is_some() || !in_flight.is_empty() {
             let concurrency = adaptive_download_count(
                 &self.preferences()?["downloadConcurrency"],
@@ -553,32 +680,45 @@ impl StorageService {
             );
             // Sync reduces new launches for the same provider. Existing transfers
             // finish normally; each completion rechecks sync and saved preferences.
-            while next.is_some() && in_flight.len() < concurrency && !cancel.load(Ordering::Acquire)
+            while next.is_some()
+                && !limited
+                && in_flight.len() < concurrency
+                && !cancel.load(Ordering::Acquire)
             {
                 let file = next.take().unwrap();
                 let cancel = cancel.clone();
                 let root = root.clone();
                 let job_id = job_id.clone();
+                let flight = &flight;
                 in_flight.push(async move {
-                    let mut result = self
-                        .download_one(app, &job_id, &root, &file, &cancel, redownload, selected)
-                        .await;
+                    let id = file["id"].as_str().unwrap_or("").to_owned();
+                    let mut result = self.put_progress(app, &job_id, flight.start(&id)).await;
                     if result.is_ok() {
                         result = self
-                            .file_progress(app, &job_id, file["id"].as_str().unwrap_or(""), 1.0)
+                            .download_one(
+                                app, &job_id, &root, &file, &cancel, redownload, selected, flight,
+                            )
                             .await;
+                    }
+                    let settled = flight.settle(&id, result.is_ok());
+                    let written = self.put_progress(app, &job_id, settled).await;
+                    if result.is_ok() {
+                        result = written;
                     }
                     (file, result)
                 });
                 next = waiting.next();
             }
             if let Some(result) = in_flight.next().await {
+                limited |= limit(&result.1);
                 results.push(result);
             } else {
                 break;
             }
         }
         io::check_cancel(cancel)?;
+        // The store's limit is the pass's outcome, so the job waits it out (`wait_for_store_limit`).
+        results.sort_by_key(|(_, result)| !limit(result));
         // A failed sibling never discards completed bytes. Extract only after all volumes have arrived.
         let mut error = None;
         let mut verified = HashSet::new();
@@ -599,7 +739,6 @@ impl StorageService {
         }
         if let Some(latest) = self.catalogue.get("job", &job_id)? {
             job["progress"] = latest["progress"].clone();
-            job["fileProgress"] = latest["fileProgress"].clone();
         }
         let (all_files, _) = self.remote_files(&product)?;
         let files = self.job_files(job, all_files.clone())?;
@@ -686,7 +825,8 @@ impl StorageService {
         error: &mut Option<anyhow::Error>,
     ) -> Result<()> {
         let seven_zip = self.seven_zip(app)?;
-        for file in files {
+        let mut extracted = 0;
+        for (index, file) in files.iter().enumerate() {
             io::check_cancel(cancel)?;
             let id = artifact_id(file);
             let Some(mut artifact) = self.catalogue.get("artifact", &id)? else {
@@ -754,9 +894,31 @@ impl StorageService {
                 self.catalogue.put("artifact", &id, artifact)?;
                 continue;
             }
-            let result = self
-                .extract_for_download(&seven_zip, root, &mut artifact, all_files, cancel)
-                .await;
+            // Of the archives this job extracts, those done and those still waiting, this one
+            // among them; a split archive's other volumes leave the count once it is done.
+            extracted += 1;
+            let total = extracted - 1 + self.archives_waiting(&files[index..])?;
+            let progress = Arc::new(archive::ExtractionProgress::default());
+            let result = {
+                let mut extraction = std::pin::pin!(self.extract_for_download(
+                    &seven_zip,
+                    root,
+                    &mut artifact,
+                    all_files,
+                    cancel,
+                    &progress
+                ));
+                loop {
+                    let shown = extraction_shown(extracted, total, progress.percent());
+                    let _ = self.put_progress(app, job_id, Some(shown)).await;
+                    if let Ok(result) =
+                        tokio::time::timeout(Duration::from_millis(500), &mut extraction).await
+                    {
+                        break result;
+                    }
+                }
+            };
+            self.prompt_archive_password(app, &artifact);
             if let Err(e) = result {
                 let file_id = file["id"].as_str().unwrap_or("");
                 job["failures"][file_id] = json!({"fileId":file_id,"fileName":file["name"],"errorCode":io::stable_error(&e)});
@@ -768,29 +930,62 @@ impl StorageService {
         }
         Ok(())
     }
-    async fn file_progress(
+    /// The archives among `files` still waiting to be extracted.
+    fn archives_waiting(&self, files: &[Value]) -> Result<u64> {
+        let mut count = 0;
+        for file in files {
+            if self
+                .catalogue
+                .get("artifact", &artifact_id(file))?
+                .is_some_and(|artifact| {
+                    matches!(
+                        artifact["status"].as_str(),
+                        Some("downloaded" | "extractionFailed")
+                    ) && artifact["relativePath"]
+                        .as_str()
+                        .is_some_and(|path| archive::is_supported_archive(Path::new(path)))
+                })
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Writes a running download's bar, and what Activity shows beside it when given, into
+    /// its job as the job now stands, so a cancel written meanwhile stays.
+    async fn put_progress(
         &self,
         app: &tauri::AppHandle,
         job_id: &str,
-        file_id: &str,
-        fraction: f64,
+        shown: Option<Shown>,
     ) -> Result<()> {
+        let Some((percent, transfer)) = shown else {
+            return Ok(());
+        };
+        let transfer = transfer.map(serde_json::to_value).transpose()?;
         let _gate = self.queue_gate.lock().await;
-        if let Some(mut job) = self.catalogue.get("job", job_id)? {
-            job["fileProgress"][file_id] = json!(fraction.clamp(0.0, 1.0));
-            let ids = strings(&job["fileIds"]);
-            let sum: f64 = ids
-                .iter()
-                .map(|id| job["fileProgress"][id].as_f64().unwrap_or(0.0))
-                .sum();
-            job["progress"] = json!(90.0 * sum / ids.len().max(1) as f64);
+        for _ in 0..4 {
+            let Some(before) = self.catalogue.get("job", job_id)? else {
+                return Ok(());
+            };
+            let mut job = before.clone();
+            job["progress"] = json!(percent);
+            if let Some(transfer) = &transfer {
+                job["transfer"] = transfer.clone();
+            }
             job["updatedAt"] = json!(now());
-            self.catalogue.put("job", job_id, job)?;
-            self.jobs_changed(app, job_id);
+            if self.catalogue.put_many_if_unchanged(
+                vec![("job".into(), job_id.to_owned(), job)],
+                vec![("job".into(), job_id.to_owned(), Some(before))],
+            )? {
+                self.jobs_changed(app, job_id);
+                break;
+            }
         }
         Ok(())
     }
-    fn seven_zip(&self, app: &tauri::AppHandle) -> Result<PathBuf> {
+    pub(super) fn seven_zip(&self, app: &tauri::AppHandle) -> Result<PathBuf> {
         // Test overrides require a debug build and explicitly isolated synthetic data.
         if cfg!(debug_assertions) && std::env::var_os("NNA_DATA_DIR").is_some() {
             if let Some(path) = std::env::var_os("NNA_7ZIP") {
@@ -855,6 +1050,7 @@ impl StorageService {
         cancel: &Arc<AtomicBool>,
         redownload: bool,
         selected: bool,
+        flight: &Flight,
     ) -> Result<()> {
         io::check_cancel(cancel)?;
         let root_path = self.root_path(root)?;
@@ -967,7 +1163,7 @@ impl StorageService {
         let mut artifact = json!({"id":id,"productId":product,"fileId":file["id"],"rootId":root["id"],"relativePath":relative,"productDirectory":product_directory,"revision":null,"initialCategory":category,"status":"downloading","originalAvailable":false,"updatedAt":now()});
         self.catalogue.put("artifact", &id, artifact.clone())?;
         let result = self
-            .stream_download(app, job_id, file, &part, &root_path, cancel)
+            .stream_download(app, job_id, file, &part, &root_path, cancel, flight)
             .await;
         let outcome = match result {
             Ok((hash, size, revision, basis, observed)) => {
@@ -1429,6 +1625,7 @@ impl StorageService {
         part: &Path,
         root: &Path,
         cancel: &AtomicBool,
+        flight: &Flight,
     ) -> Result<(String, u64, String, String, Value)> {
         let mut last = anyhow::anyhow!("download_failed");
         for attempt in 0..DOWNLOAD_ATTEMPTS {
@@ -1539,6 +1736,7 @@ impl StorageService {
                 ticket.expected_origin.as_ref(),
             )?;
             ensure!(status.is_success(), "download_http_failed");
+            self.store_served(ticket.provider.key());
             let response_revision = response
                 .headers()
                 .get(reqwest::header::ETAG)
@@ -1571,6 +1769,7 @@ impl StorageService {
                     size_error,
                     attempt,
                     &mut last,
+                    flight,
                 )
                 .await?
             {
@@ -1596,6 +1795,7 @@ impl StorageService {
         size_error: &str,
         attempt: u32,
         last: &mut anyhow::Error,
+        flight: &Flight,
     ) -> Result<Option<(String, u64, String, String, Value)>> {
         archive::validate_no_links(part)?;
         tokio::fs::create_dir_all(
@@ -1613,12 +1813,15 @@ impl StorageService {
         let mut hasher = Sha256::new();
         let mut size = 0u64;
         let mut chunks = response.bytes_stream();
-        let mut last_progress = std::time::Instant::now();
+        let mut rate_read = std::time::Instant::now();
         let mut next_space_check = 0u64;
         let mut rate = self.preferences()?["downloadRateBytesPerSecond"]
             .as_u64()
             .unwrap_or(0);
         let slots = download_count(&self.preferences()?["downloadConcurrency"]) as f64;
+        let file_id = io::required_string(file, "id")?;
+        self.put_progress(app, job_id, flight.receive(file_id, 0, expected))
+            .await?;
         let result = async {
             while let Some(chunk) = io::cancellable(
                 cancel,
@@ -1639,21 +1842,13 @@ impl StorageService {
                 if let Some(expected) = expected {
                     ensure!(size <= expected, "{size_error}");
                 }
-                if last_progress.elapsed() >= Duration::from_millis(750) {
-                    self.file_progress(
-                        app,
-                        job_id,
-                        io::required_string(file, "id")?,
-                        expected
-                            .filter(|n| *n > 0)
-                            .map(|n| size as f64 / n as f64)
-                            .unwrap_or(0.0),
-                    )
+                self.put_progress(app, job_id, flight.receive(file_id, size, expected))
                     .await?;
+                if rate_read.elapsed() >= Duration::from_millis(750) {
                     rate = self.preferences()?["downloadRateBytesPerSecond"]
                         .as_u64()
                         .unwrap_or(0);
-                    last_progress = std::time::Instant::now();
+                    rate_read = std::time::Instant::now();
                 }
                 if rate > 0 {
                     io::delay(
@@ -1701,9 +1896,10 @@ impl StorageService {
         artifact: &mut Value,
         files: &[Value],
         cancel: &Arc<AtomicBool>,
+        progress: &Arc<archive::ExtractionProgress>,
     ) -> Result<()> {
         let result = self
-            .extract_one(seven_zip, root, artifact, files, cancel)
+            .extract_one(seven_zip, root, artifact, files, cancel, progress)
             .await;
         if let Err(error) = &result {
             artifact
@@ -1712,6 +1908,12 @@ impl StorageService {
                 .remove("attentionDismissed");
             artifact["status"] = json!("extractionFailed");
             artifact["errorCode"] = json!(io::stable_error(error));
+            if matches!(
+                io::stable_error(error),
+                "archive_password_required" | "archive_password_wrong"
+            ) {
+                artifact["archivePasswordRequired"] = json!(true);
+            }
             self.catalogue.put(
                 "artifact",
                 io::required_string(artifact, "id")?,
@@ -1728,6 +1930,48 @@ impl StorageService {
         artifact: &mut Value,
         files: &[Value],
         cancel: &Arc<AtomicBool>,
+        progress: &Arc<archive::ExtractionProgress>,
+    ) -> Result<()> {
+        if archive::auto_extract(Path::new(io::required_string(artifact, "relativePath")?)) {
+            artifact["status"] = json!("extracting");
+            self.catalogue.put(
+                "artifact",
+                io::required_string(artifact, "id")?,
+                artifact.clone(),
+            )?;
+        }
+        let password = self
+            .archive_passwords
+            .lock()
+            .unwrap()
+            .remove(io::required_string(artifact, "fileId")?);
+        let password = match password {
+            Some(password) => Some(password),
+            None => self.saved_archive_password(artifact)?,
+        };
+        self.process_archive(
+            seven_zip,
+            root,
+            artifact,
+            files,
+            cancel,
+            progress,
+            password.as_deref(),
+            false,
+        )
+        .await
+    }
+
+    pub(super) async fn process_archive(
+        &self,
+        seven_zip: &Path,
+        root: &Value,
+        artifact: &mut Value,
+        files: &[Value],
+        cancel: &Arc<AtomicBool>,
+        progress: &Arc<archive::ExtractionProgress>,
+        password: Option<&str>,
+        save: bool,
     ) -> Result<()> {
         let _permit = self.extraction.acquire().await?;
         io::check_cancel(cancel)?;
@@ -1739,13 +1983,15 @@ impl StorageService {
             .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
         let mut candidates = HashMap::new();
         for file in files {
-            if file["accountId"] != current_file["accountId"]
+            if file["productId"] != current_file["productId"]
+                || file["originKind"] != current_file["originKind"]
+                || file["accountId"] != current_file["accountId"]
                 || file["variantId"] != current_file["variantId"]
             {
                 continue;
             }
             if let Some(a) = self.catalogue.get("artifact", &artifact_id(file))? {
-                if a["originalAvailable"] == true {
+                if a["originalAvailable"] == true && a["rootId"] == root["id"] {
                     let path = io::safe_join(&root_path, io::required_string(&a, "relativePath")?)?;
                     if path.file_name() == source.file_name() && path != source {
                         continue;
@@ -1770,9 +2016,51 @@ impl StorageService {
             tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
         }
         let id = io::required_string(artifact, "id")?.to_owned();
-        artifact["status"] = json!("extracting");
-        self.catalogue.put("artifact", &id, artifact.clone())?;
+        let record_ready = |artifact: &Value| -> Result<()> {
+            if let Some(password) = password.filter(|_| save) {
+                let file_id = io::required_string(artifact, "fileId")?;
+                self.catalogue.put_many(vec![
+                    ("artifact".into(), id.clone(), artifact.clone()),
+                    ("archive_password".into(), file_id.into(), json!({"id":file_id,
+                     "productId":artifact["productId"], "hash":artifact["hash"], "archivePassword":password})),
+                ])
+            } else {
+                self.catalogue.put("artifact", &id, artifact.clone())
+            }
+        };
         let staging = io::safe_join(&root_path, ".nna-staging")?;
+        // A local ZIP may already have been extracted once without saving its password.
+        // Verify the original when registering later without producing a second extraction.
+        if !archive::auto_extract(&source)
+            || (save && artifact["status"] == "ready" && artifact["extractedPath"].is_string())
+        {
+            let tool = seven_zip.to_owned();
+            let stop = cancel.clone();
+            let password = password.map(str::to_owned);
+            let checked = volumes.clone();
+            let required = tokio::task::spawn_blocking(move || {
+                archive::inspect_password(
+                    &tool,
+                    &source,
+                    &volumes,
+                    &staging,
+                    &stop,
+                    password.as_deref(),
+                )
+            })
+            .await??;
+            if save {
+                ensure!(required, "file_not_usable");
+            }
+            for path in checked {
+                let (hash, size) = candidates[&path].clone();
+                tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
+            }
+            artifact["archivePasswordRequired"] = json!(required);
+            artifact["status"] = json!("ready");
+            artifact["errorCode"] = Value::Null;
+            return record_ready(artifact);
+        }
         std::fs::create_dir_all(&staging)?;
         let _empty_staging = io::EmptyDirectoryGuard(staging.clone());
         let archive_directory = io::readable_component(
@@ -1784,8 +2072,18 @@ impl StorageService {
         );
         let tool = seven_zip.to_owned();
         let cancel2 = cancel.clone();
+        let progress = progress.clone();
+        let password = password.map(str::to_owned);
         let extracted = tokio::task::spawn_blocking(move || {
-            archive::extract_archive(&tool, &source, &volumes, &staging, &cancel2)
+            archive::extract_archive(
+                &tool,
+                &source,
+                &volumes,
+                &staging,
+                &cancel2,
+                &progress,
+                password.as_deref(),
+            )
         })
         .await??;
         io::check_cancel(cancel)?;
@@ -1798,8 +2096,10 @@ impl StorageService {
             let (path, hash, size) = (path.clone(), hash.clone(), *size);
             tokio::task::spawn_blocking(move || io::verify(&path, &hash, size)).await??;
         }
-        let product_directory =
-            self.managed_product_directory(io::required_string(artifact, "productId")?)?;
+        let product_directory = match artifact["productDirectory"].as_str() {
+            Some(dir) => dir.to_owned(),
+            None => self.managed_product_directory(io::required_string(artifact, "productId")?)?,
+        };
         let relative = io::unused_relative(
             &root_path,
             &format!("{}/extracted/{}", product_directory, archive_directory),
@@ -1815,7 +2115,7 @@ impl StorageService {
         artifact["extractedInventory"] = serde_json::to_value(&extracted.inventory)?;
         artifact["errorCode"] = Value::Null;
         // Critical ordering: usable inventory is durable before any archive is considered removable.
-        self.catalogue.put("artifact", &id, artifact.clone())?;
+        record_ready(artifact)?;
         // Each volume retains its own original hash while sharing one complete extracted inventory.
         let mut group_updates = Vec::new();
         for mut peer in self
@@ -1845,6 +2145,9 @@ impl StorageService {
             }
         }
         self.catalogue.put_many(group_updates)?;
+        if current_file["originKind"] == "local" {
+            return Ok(());
+        }
         let product = io::required_string(artifact, "productId")?.to_owned();
         for record in self
             .remove_extracted_originals(

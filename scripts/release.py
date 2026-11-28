@@ -20,8 +20,9 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "com.yank.nekonekoasset.bridge"
-REPOSITORY = "Yan-K/NekoNekoAsset-Public"
-PAGES = "https://yan-k.github.io/NekoNekoAsset-Public"
+REPOSITORY = "Delta-Time/NekoNekoAsset-Mark.D"
+PAGES = "https://delta-time.github.io/NekoNekoAsset-Mark.D"
+APP_MANIFEST = "app-update.json"
 CORE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 APP_VERSION = CORE_VERSION + r"(?:\+D[1-9][0-9]*)?"
 VERSION = re.compile(CORE_VERSION)
@@ -177,8 +178,8 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
     updater = config.get("plugins", {}).get("updater", {})
     if config["bundle"].get("targets") != ["nsis"] or config["bundle"].get("createUpdaterArtifacts") is not True:
         raise ValueError("Public builds require NSIS only and signed Tauri v2 updater artifacts")
-    if updater.get("endpoints") != [PAGES + "/app/latest.json"] or not updater.get("pubkey"):
-        raise ValueError("The fixed public updater endpoint and public signing key are required")
+    if updater.get("endpoints") or not updater.get("pubkey"):
+        raise ValueError("Mark.D needs a public signing key and resolves update manifests from its GitHub Releases")
     public_key = base64.b64decode(updater["pubkey"], validate=True)
     if not public_key.startswith(b"untrusted comment:") or len(public_key) < 64:
         raise ValueError("Invalid Tauri updater public signing key format")
@@ -200,6 +201,8 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
 def asset_names(current: str, bridge: bool) -> set[str]:
     app = f"NekoNekoAsset_{current}_x64-setup.exe"
     names = {app, app + ".sig", "SHA256SUMS.txt"}
+    if "+D" in current:
+        names.add(APP_MANIFEST)
     if bridge:
         names |= {f"{PACKAGE}-{current}{suffix}" for suffix in (".unitypackage", ".tgz", ".zip", ".inventory.json")}
     return names
@@ -240,6 +243,27 @@ def collect_app(bundle: Path, output: Path) -> None:
     shutil.copyfile(signature, output / (name + ".sig"))
 
 
+def app_update_manifest(directory: Path, current: str, notes: str) -> dict:
+    installer = f"NekoNekoAsset_{current}_x64-setup.exe"
+    if not (directory / installer).is_file():
+        raise ValueError("The installer must be present before creating its update manifest")
+    public_key = read_json("app/src-tauri/tauri.conf.json")["plugins"]["updater"]["pubkey"]
+    signature = signature_value(
+        (directory / (installer + ".sig")).read_text(encoding="ascii"), current, public_key
+    )
+    url = f"https://github.com/{REPOSITORY}/releases/download/v{current}/{installer}"
+    return {"version": current, "notes": notes, "platforms": {
+        "windows-x86_64": {"url": url, "signature": signature}
+    }}
+
+
+def write_app_update_manifest(directory: Path, current: str, notes: str) -> None:
+    manifest = app_update_manifest(directory, current, notes)
+    (directory / APP_MANIFEST).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+
+
 def check_artifacts(directory: Path, current: str, with_checksums: bool, bridge: bool) -> list[Path]:
     expected = asset_names(current, bridge) - (set() if with_checksums else {"SHA256SUMS.txt"})
     files = sorted(directory.iterdir())
@@ -249,6 +273,10 @@ def check_artifacts(directory: Path, current: str, with_checksums: bool, bridge:
         raise ValueError("A release asset is empty")
     signature_value((directory / f"NekoNekoAsset_{current}_x64-setup.exe.sig").read_text(encoding="ascii"), current,
                     read_json("app/src-tauri/tauri.conf.json")["plugins"]["updater"]["pubkey"])
+    if "+D" in current:
+        manifest = json.loads((directory / APP_MANIFEST).read_text(encoding="utf-8"))
+        if not isinstance(manifest.get("notes"), str) or manifest != app_update_manifest(directory, current, manifest["notes"]):
+            raise ValueError("Invalid Mark.D update manifest")
     if not bridge:
         return files
     inventory = json.loads((directory / f"{PACKAGE}-{current}.inventory.json").read_text(encoding="utf-8"))
@@ -269,7 +297,7 @@ class GitHub:
     def __init__(self) -> None:
         self.repo = os.environ.get("GITHUB_REPOSITORY", REPOSITORY)
         if self.repo != REPOSITORY:
-            raise ValueError("Publishing is restricted to the NekoNekoAsset public repository")
+            raise ValueError("Publishing is restricted to the NekoNekoAsset Mark.D fork")
         self.token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if not self.token:
             raise ValueError("GitHub token is required for release operations")
@@ -369,6 +397,8 @@ def publish(tag: str, directory: Path) -> None:
         return
     notes = release_notes(current)
     bridge = bridge_version(current) == current
+    if "+D" in current:
+        write_app_update_manifest(directory, current, notes)
     files = check_artifacts(directory, current, False, bridge)
     checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in files)
     (directory / "SHA256SUMS.txt").write_text(checksums, encoding="ascii", newline="\n")
@@ -395,7 +425,7 @@ def published_releases(api: GitHub) -> list[dict]:
         if not isinstance(batch, list):
             raise ValueError("Unable to list public releases")
         result.extend(release for release in batch if not release["draft"]
-                      and release["tag_name"].startswith("v") and VERSION.fullmatch(release["tag_name"][1:]))
+                      and release["tag_name"].startswith("v") and re.fullmatch(APP_VERSION, release["tag_name"][1:]))
         if len(batch) < 100:
             return result
         page += 1
@@ -412,7 +442,11 @@ def pages(output: Path) -> None:
     carriers = [value for value in releases if any(asset["name"].startswith(PACKAGE + "-") for asset in value["assets"])]
     if not releases or not carriers:
         raise ValueError("No published App and Bridge releases exist")
-    newest = lambda values: max(values, key=lambda value: numeric(value["tag_name"][1:]))
+    def release_order(release: dict) -> tuple[int, ...]:
+        core, _, revision = release["tag_name"][1:].partition("+D")
+        return (*numeric(core), int(revision or 0))
+
+    newest = lambda values: max(values, key=release_order)
     release, bridge_release = newest(releases), newest(carriers)
     current, bridge = release["tag_name"][1:], bridge_release["tag_name"][1:]
     assets, bridge_assets = uploaded(release), uploaded(bridge_release)
@@ -471,6 +505,9 @@ def main() -> None:
     collect = commands.add_parser("collect-app")
     collect.add_argument("--bundle", type=Path, required=True)
     collect.add_argument("--output", type=Path, required=True)
+    manifest = commands.add_parser("update-manifest")
+    manifest.add_argument("--artifacts", type=Path, required=True)
+    manifest.add_argument("--notes", type=Path)
     publishing = commands.add_parser("publish")
     publishing.add_argument("--tag", required=True)
     publishing.add_argument("--artifacts", type=Path, required=True)
@@ -485,6 +522,10 @@ def main() -> None:
         prepare(args.tag)
     elif args.command == "collect-app":
         collect_app(args.bundle, args.output)
+    elif args.command == "update-manifest":
+        current = version()
+        notes = args.notes.read_text(encoding="utf-8") if args.notes else release_notes(current)
+        write_app_update_manifest(args.artifacts, current, notes)
     elif args.command == "publish":
         publish(args.tag, args.artifacts)
     elif args.command == "pages":

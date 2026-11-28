@@ -35,7 +35,7 @@ export function useProductEdits({
   const { notify } = notices;
   const { productMap, setProductDetails, active } = selectedProducts;
   const { query } = filters;
-  const { setQueryResult, setProducts, summaryCache } = results;
+  const { setQueryResult, setProducts } = results;
   const { setSelected, setFocusId } = selection;
   const { setDialog } = nav;
   const [deleteLocalSelection, setDeleteLocalSelection] = useState<{
@@ -151,30 +151,9 @@ export function useProductEdits({
     await reload();
   };
   const deleteLocalProducts = async (ids: string[]) => {
-    try {
-      const result = (await onNative('storage', 'delete_local_products', { productIds: ids })) as {
-        deletedProductIds: string[];
-      };
-      const removed = new Set(result.deletedProductIds);
-      for (const id of removed) summaryCache.current.delete(id);
-      setQueryResult((result) =>
-        result
-          ? {
-              ...result,
-              products: result.products.filter((product) => !removed.has(product.id)),
-              matchedIds: result.matchedIds.filter((id) => !removed.has(id)),
-              total: Math.max(0, result.total - removed.size),
-            }
-          : null,
-      );
-      setProducts((rows) => rows.filter((product) => !removed.has(product.id)));
-      setSelected((rows) => rows.filter((id) => !removed.has(id)));
-      setFocusId((id) => (removed.has(id) ? '' : id));
-      setProductDetails(null);
-      setUndo(null);
-    } finally {
-      await reload();
-    }
+    const { jobIds } = await onNative('storage', 'delete_local_products', { productIds: ids });
+    setUndo(null);
+    notify(q('deleteLocalProducts') + ' · ' + q('queued'), jobIds[0]);
   };
   const undoAction = async () => {
     if (!undo) return;

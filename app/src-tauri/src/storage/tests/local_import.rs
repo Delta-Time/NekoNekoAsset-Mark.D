@@ -458,6 +458,55 @@ fn local_import_batch_failure_does_not_block_later_groups_or_recheck_completed_m
     assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 2);
 }
 
+#[cfg(windows)]
+#[test]
+fn local_import_copies_a_name_windows_reserves_under_the_name_7zip_gives_it() {
+    let f = Fixture::new();
+    let folder = f.path.join("source").join("素材");
+    std::fs::create_dir_all(&folder).unwrap();
+    // A verbatim path stores aux.png as a file on any Windows; Windows 11 needs none.
+    let folder = folder.canonicalize().unwrap();
+    std::fs::write(folder.join("aux.png"), b"device-named texture").unwrap();
+    std::fs::write(folder.join("normal.png"), b"ordinary texture").unwrap();
+    let mut job = local_job(&f, std::slice::from_ref(&folder), "single");
+    f.service
+        .run_local_import(
+            &mut job,
+            Path::new("missing-synthetic-sevenzip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let product = job["productIds"][0].as_str().unwrap();
+    let mut copies: Vec<_> = f
+        .service
+        .catalogue
+        .related("artifact", product)
+        .unwrap()
+        .iter()
+        .map(|artifact| {
+            let relative = artifact["relativePath"].as_str().unwrap().to_owned();
+            let bytes = std::fs::read(io::safe_join(&f.path.join("library"), &relative).unwrap());
+            (
+                relative.rsplit('/').next().unwrap().to_owned(),
+                bytes.unwrap(),
+            )
+        })
+        .collect();
+    copies.sort();
+    assert_eq!(
+        copies,
+        [
+            ("_aux.png".to_owned(), b"device-named texture".to_vec()),
+            ("normal.png".to_owned(), b"ordinary texture".to_vec())
+        ]
+    );
+    assert_eq!(
+        std::fs::read(folder.join("aux.png")).unwrap(),
+        b"device-named texture"
+    );
+    std::fs::remove_file(folder.join("aux.png")).unwrap();
+}
+
 #[test]
 #[cfg_attr(not(windows), ignore = "requires explicit NNA_7ZIP on non-Windows")]
 fn local_import_preserves_leading_space_names_in_an_archive_with_trailing_data() {
@@ -1377,4 +1426,64 @@ fn local_batch_assets_keep_the_order_they_were_added_in() {
             .unwrap()["acquiredSortKey"],
         "2026-01-02T03:04:00.000000000Z"
     );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn local_registration_can_skip_then_unlock_without_saving_or_removing_the_original() {
+    let tool = native_seven_zip_test_tool();
+    let f = Fixture::new();
+    let member = f.path.join("member.txt");
+    let zip = f.path.join("locked.zip");
+    std::fs::write(&member, b"authored").unwrap();
+    assert!(std::process::Command::new(&tool)
+        .args(["a", "-pLocalTest", "-bd"])
+        .arg(&zip)
+        .arg(&member)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let mut job = local_job(&f, std::slice::from_ref(&zip), "single");
+    f.service
+        .run_local_import(&mut job, &tool, &AtomicBool::new(false))
+        .unwrap();
+    let product = &job["completedProductIds"][0];
+    let details = || {
+        f.service
+            .catalogue
+            .command("product_details", json!({"id":product}))
+            .unwrap()
+    };
+    let file = details()["files"][0].clone();
+    assert_eq!(file["archivePasswordRequired"], true);
+    assert!(file.get("archivePassword").is_none());
+    f.service
+        .register_archive_password(
+            &tool,
+            &json!({"fileId":file["id"],"password":"LocalTest","save":false}),
+        )
+        .await
+        .unwrap();
+    let file = details()["files"][0].clone();
+    assert_eq!(file["status"], "ready");
+    assert_eq!(file["originalAvailable"], true);
+    assert!(file.get("archivePassword").is_none());
+    assert!(zip.is_file());
+    assert!(f
+        .service
+        .catalogue
+        .list("archive_password")
+        .unwrap()
+        .is_empty());
+    let extracted_path = file["extractedPath"].clone();
+    f.service
+        .register_archive_password(
+            &tool,
+            &json!({"fileId":file["id"],"password":"LocalTest","save":true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(details()["files"][0]["extractedPath"], extracted_path);
+    assert_eq!(details()["files"][0]["archivePassword"], "LocalTest");
 }

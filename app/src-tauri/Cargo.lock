@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "nekonekoasset"
-version = "0.4.0+D1"
+version = "0.4.1+D1"
 dependencies = [
  "anyhow",
  "automerge",

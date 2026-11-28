@@ -34,6 +34,17 @@ struct Fixture {
     service: StorageService,
 }
 impl Fixture {
+    /// Run the same acceptance and worker paths as the app, returning its durable result.
+    async fn run_removal(&self, args: &Value, retry: Option<&str>) -> Result<Value> {
+        let ack = self.service.enqueue_local_delete(args, retry).await?;
+        let id = ack["jobIds"][0].as_str().unwrap();
+        ensure!(
+            self.service.process_next_local_delete(|_, _| {}).await?,
+            "storage_busy"
+        );
+        Ok(self.service.catalogue.get("job", id)?.unwrap()["result"].clone())
+    }
+
     fn new() -> Self {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/verification/offline-delete")
@@ -125,8 +136,7 @@ async fn delete_local_products_removes_complete_owned_folders_and_preserves_orig
         )
         .unwrap();
     let result = f
-        .service
-        .delete_local_products(&json!({"productIds":[a,b]}), None)
+        .run_removal(&json!({"productIds":[a,b]}), None)
         .await
         .unwrap();
     assert_eq!(result["deletedProductIds"], json!([a, b]));
@@ -184,11 +194,7 @@ async fn delete_local_products_rejects_mixed_missing_duplicate_and_invalid_selec
         (json!({"productIds":[]}), "invalid_arguments"),
     ] {
         assert_eq!(
-            f.service
-                .delete_local_products(&args, None)
-                .await
-                .unwrap_err()
-                .to_string(),
+            f.run_removal(&args, None).await.unwrap_err().to_string(),
             code
         );
         assert!(dir.exists() && original.exists());
@@ -219,8 +225,7 @@ async fn delete_local_products_rejects_unsafe_and_shared_directory_references() 
             .put("artifact", artifact_id, bad)
             .unwrap();
         assert_eq!(
-            f.service
-                .delete_local_products(&json!({"productIds":[a]}), None)
+            f.run_removal(&json!({"productIds":[a]}), None)
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -240,8 +245,7 @@ async fn delete_local_products_rejects_unsafe_and_shared_directory_references() 
         .put("artifact", "shared", shared)
         .unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
+        f.run_removal(&json!({"productIds":[a]}), None)
             .await
             .unwrap_err()
             .to_string(),
@@ -260,8 +264,7 @@ async fn delete_local_products_rolls_staging_back_when_catalogue_transaction_fai
             .unwrap();
     connection.execute_batch("CREATE TRIGGER authored_delete_failure BEFORE DELETE ON entities WHEN OLD.kind='product' BEGIN SELECT RAISE(ABORT,'fixture deletion failure'); END;").unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
+        f.run_removal(&json!({"productIds":[a]}), None)
             .await
             .unwrap_err()
             .to_string(),
@@ -290,28 +293,36 @@ async fn delete_local_products_rolls_staging_back_when_catalogue_transaction_fai
         .execute_batch("DROP TRIGGER authored_delete_failure;")
         .unwrap();
     drop(connection);
-    f.service
-        .delete_local_products(&json!({}), job["id"].as_str())
-        .await
-        .unwrap();
+    f.run_removal(&json!({}), job["id"].as_str()).await.unwrap();
     assert!(!directory.exists());
     f.finish();
 }
 
 #[tokio::test]
-async fn delete_local_products_refuses_active_work_and_queued_jobs() {
+async fn delete_local_products_queues_during_startup_then_waits_for_other_jobs() {
     let f = Fixture::new();
-    let (a, dir, _) = f.import("Busy");
+    let (a, dir, original) = f.import("Busy");
     let work = f.service.catalogue.begin_catalogue_work().unwrap();
+    let gate = f.service.queue_gate.lock().await;
+    let args = json!({"productIds":[a]});
+    let ack = f.service.enqueue_local_delete(&args, None).await.unwrap();
+    let id = ack["jobIds"][0].as_str().unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
-            .await
-            .unwrap_err()
-            .to_string(),
-        "storage_busy"
+        f.service.enqueue_local_delete(&args, None).await.unwrap(),
+        ack
     );
+    assert_eq!(
+        f.service.catalogue.get("job", id).unwrap().unwrap()["state"],
+        "queued"
+    );
+    assert!(!f
+        .service
+        .process_next_local_delete(|_, _| {})
+        .await
+        .unwrap());
+    assert!(dir.exists());
     drop(work);
+    drop(gate);
     f.service
         .catalogue
         .put(
@@ -320,15 +331,23 @@ async fn delete_local_products_refuses_active_work_and_queued_jobs() {
             json!({"id":"busy","type":"unity:import","state":"queued"}),
         )
         .unwrap();
-    assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
-            .await
-            .unwrap_err()
-            .to_string(),
-        "storage_busy"
-    );
+    assert!(!f
+        .service
+        .process_next_local_delete(|_, _| {})
+        .await
+        .unwrap());
     assert!(dir.exists());
+    f.service.catalogue.delete("job", "busy").unwrap();
+    assert!(f
+        .service
+        .process_next_local_delete(|_, _| {})
+        .await
+        .unwrap());
+    assert_eq!(
+        f.service.catalogue.get("job", id).unwrap().unwrap()["state"],
+        "completed"
+    );
+    assert!(!dir.exists() && original.exists());
     f.finish();
 }
 
@@ -364,8 +383,7 @@ async fn delete_local_products_keeps_empty_product_folder_ownership_after_activi
         .get("local_source", &a)
         .unwrap()
         .is_some());
-    f.service
-        .delete_local_products(&json!({"productIds":[a]}), None)
+    f.run_removal(&json!({"productIds":[a]}), None)
         .await
         .unwrap();
     assert!(!dir.exists() && original.exists());
@@ -384,8 +402,7 @@ async fn delete_local_products_keeps_empty_product_folder_ownership_after_activi
             json!({"id":"local:metadata","provider":"local","title":"Authored metadata only"}),
         )
         .unwrap();
-    f.service
-        .delete_local_products(&json!({"productIds":["local:metadata"]}), None)
+    f.run_removal(&json!({"productIds":["local:metadata"]}), None)
         .await
         .unwrap();
     f.finish();
@@ -402,18 +419,14 @@ async fn delete_local_products_restores_interrupted_precommit_staging_before_ret
     f.service.catalogue.put("job", &id, job).unwrap();
     fs::rename(&dir, &staged).unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
+        f.run_removal(&json!({"productIds":[a]}), None)
             .await
             .unwrap_err()
             .to_string(),
         "storage_busy"
     );
     assert!(f.service.catalogue.get("product", &a).unwrap().is_some());
-    f.service
-        .delete_local_products(&json!({}), Some(&id))
-        .await
-        .unwrap();
+    f.run_removal(&json!({}), Some(&id)).await.unwrap();
     assert!(!dir.exists() && !staged.exists() && original.exists());
     f.finish();
 }
@@ -438,8 +451,7 @@ async fn delete_local_products_keeps_other_batch_groups_without_recreating_delet
     f.service.put_job(&mut job, "completed", None).unwrap();
     let removed = job["productIds"][0].as_str().unwrap().to_owned();
     let retained = job["productIds"][1].as_str().unwrap().to_owned();
-    f.service
-        .delete_local_products(&json!({"productIds":[removed]}), None)
+    f.run_removal(&json!({"productIds":[removed]}), None)
         .await
         .unwrap();
     let mut pruned = f
@@ -480,8 +492,7 @@ async fn delete_local_products_rejects_directory_junction_without_touching_targe
     let link = dir.join("junction");
     create_junction(&link, &outside);
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
+        f.run_removal(&json!({"productIds":[a]}), None)
             .await
             .unwrap_err()
             .to_string(),
@@ -512,8 +523,7 @@ async fn delete_local_products_rejects_root_ancestor_junction_before_canonicaliz
         )
         .unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({"productIds":[a]}), None)
+        f.run_removal(&json!({"productIds":[a]}), None)
             .await
             .unwrap_err()
             .to_string(),
@@ -555,8 +565,7 @@ async fn delete_local_products_cleanup_failure_survives_clear_and_retries_owned_
         .open(&managed_file)
         .unwrap();
     assert_eq!(
-        f.service
-            .delete_local_products(&json!({}), Some(&id))
+        f.run_removal(&json!({}), Some(&id))
             .await
             .unwrap_err()
             .to_string(),
@@ -584,10 +593,7 @@ async fn delete_local_products_cleanup_failure_survives_clear_and_retries_owned_
         .unwrap()
         .is_some());
     drop(cleanup_blocker);
-    f.service
-        .delete_local_products(&json!({}), job["id"].as_str())
-        .await
-        .unwrap();
+    f.run_removal(&json!({}), job["id"].as_str()).await.unwrap();
     assert!(!staged.exists() && !directory.exists());
     f.finish();
 }

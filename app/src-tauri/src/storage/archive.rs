@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -44,6 +44,7 @@ const CRC_TABLE: [u32; 256] = {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveEntry {
+    /// `/`-separated: the member's own path in a listing, and where it lands in a plan.
     pub relative_path: String,
     pub size_bytes: u64,
     pub is_directory: bool,
@@ -68,6 +69,29 @@ pub struct ArchiveExtraction {
     // Prepared content remains helper-owned until the caller moves it into
     // durable storage. Any publication/verification failure cleans staging.
     _workspace: WorkspaceGuard,
+}
+
+/// How far an extraction is, for another thread to show while it runs: 7-Zip's own percent
+/// is the first half, and checking what it wrote the second.
+#[derive(Debug, Default)]
+pub struct ExtractionProgress {
+    written: AtomicU64,
+    checked: AtomicU64,
+    size: AtomicU64,
+}
+
+impl ExtractionProgress {
+    pub fn percent(&self) -> u64 {
+        let size = self.size.load(Ordering::Relaxed);
+        let checked = match size {
+            0 => 0,
+            size => {
+                let checked = self.checked.load(Ordering::Relaxed).min(size);
+                (u128::from(checked) * 100 / u128::from(size)) as u64
+            }
+        };
+        (self.written.load(Ordering::Relaxed).min(100) + checked) / 2
+    }
 }
 
 #[derive(Debug)]
@@ -276,6 +300,91 @@ pub(super) fn reserved_device(component: &str) -> bool {
         ))
 }
 
+/// A member's own path in a listing, `/`-separated. It must stay below the extraction folder
+/// and hold no control character, which a technical listing or a list file cannot carry
+/// safely. A name Windows cannot store is kept here; `written_path` says where it lands.
+fn member_path(value: &str) -> Result<String> {
+    ensure!(
+        !value.is_empty() && value.len() <= 32_000,
+        "archive_unsafe_path"
+    );
+    ensure!(!value.starts_with(['/', '\\']), "archive_unsafe_path");
+    let path = value.replace('\\', "/");
+    // A drive prefix (C:x) would read as absolute to anything less careful than 7-Zip.
+    let bytes = path.as_bytes();
+    ensure!(
+        !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'),
+        "archive_unsafe_path"
+    );
+    for component in path.split('/') {
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "archive_unsafe_path"
+        );
+        ensure!(
+            !component.chars().any(char::is_control),
+            "archive_unsafe_path"
+        );
+    }
+    Ok(path)
+}
+
+/// The name the bundled 7-Zip (26.04, `Correct_FsPath`) writes on Windows for a member
+/// named `name`: `: * ? " < > |` and control characters become `_`, so does each trailing
+/// dot or space, and a device name (CON, PRN, AUX, NUL, or COM or LPT and a digit, alone or
+/// before a dot, in any case) gains a leading `_`. Any other name is unchanged.
+pub(super) fn written_name(name: &str) -> String {
+    let mut chars: Vec<char> = name
+        .chars()
+        .map(|c| match c {
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c < ' ' => '_',
+            c => c,
+        })
+        .collect();
+    for c in chars.iter_mut().rev() {
+        if !matches!(c, '.' | ' ') {
+            break;
+        }
+        *c = '_';
+    }
+    let name: String = chars.into_iter().collect();
+    let bytes = name.as_bytes();
+    let device = bytes.get(..3).is_some_and(|stem| {
+        let rest = if ["CON", "PRN", "AUX", "NUL"]
+            .iter()
+            .any(|device| stem.eq_ignore_ascii_case(device.as_bytes()))
+        {
+            &bytes[3..]
+        } else if (stem.eq_ignore_ascii_case(b"COM") || stem.eq_ignore_ascii_case(b"LPT"))
+            && bytes.get(3).is_some_and(u8::is_ascii_digit)
+        {
+            &bytes[4..]
+        } else {
+            return false;
+        };
+        matches!(rest.iter().find(|byte| **byte != b' '), None | Some(&b'.'))
+    });
+    if device {
+        format!("_{name}")
+    } else {
+        name
+    }
+}
+
+/// Where a member lands below the extraction folder: each name as 7-Zip writes it. A path
+/// still unsafe after that, such as a superscript device name 7-Zip leaves alone, is refused
+/// before anything is extracted.
+fn written_path(member: &str) -> Result<String> {
+    let path = member
+        .split('/')
+        .map(written_name)
+        .collect::<Vec<_>>()
+        .join("/");
+    validate_relative_path(&path)?;
+    Ok(path)
+}
+
 fn portable_path(path: &Path) -> Result<String> {
     Ok(path
         .to_str()
@@ -442,8 +551,9 @@ pub fn validate_volume_group(archive: &Path, available: &[PathBuf]) -> Result<Ve
     Ok(members.into_values().collect())
 }
 
-/// Parse only the member section after 7-Zip's technical-list separator.
-pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
+/// Parse only the member section after 7-Zip's technical-list separator. An encrypted
+/// member needs `password`.
+pub fn parse_listing(listing: &str, password: bool) -> Result<Vec<ArchiveEntry>> {
     let normalized = listing.replace("\r\n", "\n");
     let (_, members) = normalized
         .split_once("\n----------\n")
@@ -468,7 +578,7 @@ pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
             );
         }
         let raw_path = fields.get("Path").context("archive_listing_invalid")?;
-        let path = portable_path(&validate_relative_path(raw_path)?)?;
+        let path = member_path(raw_path)?;
         for key in [
             "Symbolic Link",
             "Hard Link",
@@ -483,7 +593,7 @@ pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
             );
         }
         ensure!(
-            fields.get("Encrypted") != Some(&"+"),
+            password || fields.get("Encrypted") != Some(&"+"),
             "archive_password_required"
         );
         for key in ["Alternate Stream", "Anti", "Deleted"] {
@@ -560,8 +670,18 @@ struct ExtractionPlan {
 /// Folders that differ only by letter case merge into the first-seen spelling, as Windows
 /// does. Folders are created before extraction, so a file whose path is taken by a folder
 /// or an earlier file is kept too: 7-Zip's -aou writes it as `name_1.ext`, `name_2.ext`…
-/// and never overwrites. This predicts those names so the result can be verified exactly.
-fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
+/// and never overwrites. A name Windows cannot store lands under the name 7-Zip gives it
+/// (`written_path`). This predicts every path so the result can be verified exactly.
+fn plan_extraction(entries: &[ArchiveEntry]) -> Result<ExtractionPlan> {
+    let entries = entries
+        .iter()
+        .map(|entry| {
+            Ok(ArchiveEntry {
+                relative_path: written_path(&entry.relative_path)?,
+                ..entry.clone()
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut folders: BTreeMap<String, String> = BTreeMap::new();
     let mut spell = |path: &str| {
         let mut spelling = String::new();
@@ -578,7 +698,7 @@ fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
     let mut outputs: Vec<ArchiveEntry> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut files = Vec::new();
-    for entry in entries {
+    for entry in &entries {
         if entry.is_directory {
             let path = spell(&entry.relative_path);
             if explicit.insert(fold_case(&path)) {
@@ -623,7 +743,7 @@ fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
             ..entry.clone()
         });
     }
-    ExtractionPlan { outputs, identical }
+    Ok(ExtractionPlan { outputs, identical })
 }
 
 /// 7-Zip's -aou name: `name_N.ext` (the last dot not leading the name starts the
@@ -691,17 +811,82 @@ fn read_bounded(mut reader: impl Read, limit: usize, overflow: Arc<AtomicBool>) 
     Ok(result)
 }
 
+/// Reads 7-Zip's output while it extracts. A progress line (`" 45% 3 - name"` between
+/// carriage returns) only sets `percent`, and the blank ones that clear it are dropped, so a
+/// long extraction cannot fill what is kept for classifying an error.
+fn read_extraction_output(
+    mut reader: impl Read,
+    limit: usize,
+    overflow: Arc<AtomicBool>,
+    percent: &AtomicU64,
+) -> Result<Vec<u8>> {
+    let mut kept = Vec::new();
+    let mut line = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer).context("archive_process_io")?;
+        for &byte in &buffer[..count] {
+            line.push(byte);
+            if matches!(byte, b'\r' | b'\n') {
+                keep_output_line(&mut kept, &mut line, limit, &overflow, percent);
+            } else if line.len() > limit {
+                overflow.store(true, Ordering::Relaxed);
+                line.clear();
+            }
+        }
+        if count == 0 {
+            keep_output_line(&mut kept, &mut line, limit, &overflow, percent);
+            return Ok(kept);
+        }
+    }
+}
+
+fn keep_output_line(
+    kept: &mut Vec<u8>,
+    line: &mut Vec<u8>,
+    limit: usize,
+    overflow: &AtomicBool,
+    percent: &AtomicU64,
+) {
+    let text = line.trim_ascii();
+    let digits = text.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    match text.get(digits) {
+        Some(b'%') if digits > 0 => {
+            if let Some(value) = std::str::from_utf8(&text[..digits])
+                .ok()
+                .and_then(|digits| digits.parse::<u64>().ok())
+            {
+                percent.store(value.min(100), Ordering::Relaxed);
+            }
+        }
+        // MiB done, which 7-Zip prints when it knows no total.
+        Some(b'M') if digits > 0 => {}
+        _ if text.is_empty() => {}
+        _ if kept.len() + line.len() > limit => overflow.store(true, Ordering::Relaxed),
+        _ => kept.extend_from_slice(line),
+    }
+    line.clear();
+}
+
+/// Runs 7-Zip with `args`. A `password` reaches it on its input, never on the command line:
+/// 7-Zip's own parser cannot carry every character there, and other programs can read it.
 fn run_7zip(
     executable: &Path,
     args: &[OsString],
     cancelled: &AtomicBool,
     listing: bool,
+    progress: Option<&ExtractionProgress>,
+    password: Option<&str>,
 ) -> Result<Vec<u8>> {
     check_cancel(cancelled)?;
     let mut command = Command::new(executable);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if password.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -720,21 +905,24 @@ fn run_7zip(
         let _ = child.wait();
         return Err(error);
     }
+    if let (Some(password), Some(mut input)) = (password, child.stdin.take()) {
+        // 7-Zip reads it as one line when it first needs it, or never. The short line waits
+        // in the pipe either way; closing the input ends any further question.
+        let _ = input.write_all(format!("{password}\n").as_bytes());
+    }
     let overflow = Arc::new(AtomicBool::new(false));
     let out_pipe = child.stdout.take().context("archive_process_io")?;
     let err_pipe = child.stderr.take().context("archive_process_io")?;
     let out_overflow = overflow.clone();
     let err_overflow = overflow.clone();
+    let written = Arc::new(AtomicU64::new(0));
+    let out_written = written.clone();
     let out = thread::spawn(move || {
-        read_bounded(
-            out_pipe,
-            if listing {
-                MAX_LISTING_BYTES
-            } else {
-                1024 * 1024
-            },
-            out_overflow,
-        )
+        if listing {
+            read_bounded(out_pipe, MAX_LISTING_BYTES, out_overflow)
+        } else {
+            read_extraction_output(out_pipe, 1024 * 1024, out_overflow, &out_written)
+        }
     });
     let err = thread::spawn(move || read_bounded(err_pipe, 1024 * 1024, err_overflow));
     let mut interrupted = None;
@@ -745,6 +933,11 @@ fn run_7zip(
         Duration::from_secs(60 * 60)
     };
     let status = loop {
+        if let Some(progress) = progress {
+            progress
+                .written
+                .store(written.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         if cancelled.load(Ordering::Relaxed)
             || overflow.load(Ordering::Relaxed)
             || started.elapsed() >= timeout
@@ -782,7 +975,12 @@ fn run_7zip(
     // Only fixed classifications leave this boundary, never private CLI output.
     let status = status.context("archive_process_io")?;
     if !status.success() {
-        bail!(classify_process_error(status.code(), &output, &stderr));
+        let code = classify_process_error(status.code(), &output, &stderr);
+        // Asked for a password it was given, 7-Zip found that password wrong.
+        bail!(match code {
+            "archive_password_required" if password.is_some() => "archive_password_wrong",
+            code => code,
+        });
     }
     Ok(output)
 }
@@ -837,19 +1035,21 @@ fn is_zip(archive: &Path) -> bool {
 
 /// `code_page` decodes ZIP names that carry no UTF-8 marker; 7-Zip honors explicit
 /// UTF-8/Unicode name metadata either way. Listing and extraction use the same one.
-fn cli_args(operation: &str, archive: &Path, code_page: u32) -> Vec<OsString> {
+/// `-sccUTF-8` also reads a given `password` from the input as UTF-8.
+fn cli_args(operation: &str, archive: &Path, code_page: u32, password: bool) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         OsString::from(operation),
         "-y".into(),
         "-bd".into(),
         "-bb0".into(),
         "-sccUTF-8".into(),
-        // Never prompt for credentials. Encrypted members are rejected by preflight.
-        "-pNNA-no-password-supplied".into(),
-        "--".into(),
-        archive.as_os_str().to_owned(),
     ]
     .into();
+    if !password {
+        // Never prompt for credentials. Encrypted members are rejected by preflight.
+        args.push("-pNNA-no-password-supplied".into());
+    }
+    args.extend(["--".into(), archive.as_os_str().to_owned()]);
     if is_zip(archive) {
         args.insert(1, format!("-mcp={code_page}").into());
     }
@@ -863,14 +1063,18 @@ fn list_archive(
     seven_zip: &Path,
     first: &Path,
     cancelled: &AtomicBool,
+    password: Option<&str>,
 ) -> Result<(u32, Vec<ArchiveEntry>)> {
     let list = |code_page| -> Result<Vec<u8>> {
-        let mut args = cli_args("l", first, code_page);
+        let mut args = cli_args("l", first, code_page, password.is_some());
         args.insert(1, "-slt".into());
-        run_7zip(seven_zip, &args, cancelled, true)
+        run_7zip(seven_zip, &args, cancelled, true, None, password)
     };
     let parse = |listing: &[u8]| {
-        parse_listing(std::str::from_utf8(listing).context("archive_listing_invalid")?)
+        parse_listing(
+            std::str::from_utf8(listing).context("archive_listing_invalid")?,
+            password.is_some(),
+        )
     };
     if is_zip(first) {
         // A tool failure does not depend on name decoding; a name the listing rejects may.
@@ -885,7 +1089,12 @@ fn list_archive(
     Ok((932, parse(&list(932)?)?))
 }
 
-fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> {
+/// Also adds each read's bytes to `checked`.
+fn hash_file(
+    path: &Path,
+    cancelled: &AtomicBool,
+    checked: &AtomicU64,
+) -> Result<(u64, String, u32)> {
     let mut file = File::open(path).context("storage_read_failed")?;
     let mut digest = Sha256::new();
     let mut crc = !0u32;
@@ -897,6 +1106,7 @@ fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> 
         if count == 0 {
             break;
         }
+        checked.fetch_add(count as u64, Ordering::Relaxed);
         digest.update(&buffer[..count]);
         for byte in &buffer[..count] {
             crc = (crc >> 8) ^ CRC_TABLE[((crc ^ u32::from(*byte)) & 0xff) as usize];
@@ -938,7 +1148,7 @@ fn copy_source(source: &Path, destination: &Path, cancelled: &AtomicBool) -> Res
     output.sync_all().context("storage_write_failed")?;
     drop(output);
     ensure!(
-        hex::encode(hash.finalize()) == hash_file(destination, cancelled)?.1,
+        hex::encode(hash.finalize()) == hash_file(destination, cancelled, &AtomicU64::new(0))?.1,
         "storage_copy_verification_failed"
     );
     Ok(())
@@ -1000,6 +1210,16 @@ pub fn verify_extracted_inventory(
     expected: &[ArchiveEntry],
     cancelled: &AtomicBool,
 ) -> Result<Vec<VerifiedEntry>> {
+    verify_inventory(root, expected, cancelled, &AtomicU64::new(0))
+}
+
+/// As `verify_extracted_inventory`, adding the bytes it reads to `checked`.
+fn verify_inventory(
+    root: &Path,
+    expected: &[ArchiveEntry],
+    cancelled: &AtomicBool,
+    checked: &AtomicU64,
+) -> Result<Vec<VerifiedEntry>> {
     validate_no_links(root)?;
     let mut remaining = validate_inventory_paths(expected)?;
     let expected_files: BTreeMap<_, _> = expected
@@ -1059,7 +1279,7 @@ pub fn verify_extracted_inventory(
             #[cfg(not(windows))]
             let _ = original_permissions;
             flushed.context("storage_write_failed")?;
-            let (size, hash, crc) = hash_file(&path, cancelled)?;
+            let (size, hash, crc) = hash_file(&path, cancelled, checked)?;
             let expected_file = expected_files
                 .get(relative.as_str())
                 .context("archive_inventory_mismatch")?;
@@ -1088,12 +1308,15 @@ pub fn verify_extracted_inventory(
 
 /// Produces a verified staging directory without expanding nested archives.
 /// Failure/cancellation removes only this invocation's private staging tree.
+/// An encrypted archive needs its `password`.
 pub fn extract_archive(
     seven_zip: &Path,
     archive: &Path,
     available_volumes: &[PathBuf],
     staging_parent: &Path,
     cancelled: &AtomicBool,
+    progress: &ExtractionProgress,
+    password: Option<&str>,
 ) -> Result<ArchiveExtraction> {
     check_cancel(cancelled)?;
     validate_no_links(staging_parent)?;
@@ -1119,33 +1342,14 @@ pub fn extract_archive(
             >= 16 * 1024 * 1024,
         "storage_low_space"
     );
-    let workspace_id = uuid::Uuid::new_v4();
-    let workspace = staging_parent.join(format!("archive-{workspace_id}"));
-    fs::create_dir(&workspace).context("storage_write_failed")?;
-    let mut guard = WorkspaceGuard {
-        root: workspace.clone(),
-        parent: staging_parent,
-        armed: true,
-        owner: None,
-    };
-    let mut owner = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(workspace.join(WORKSPACE_MARKER))
-        .context("storage_write_failed")?;
-    fs2::FileExt::try_lock_exclusive(&owner).context("storage_write_failed")?;
-    owner
-        .write_all(format!("{WORKSPACE_OWNER}{workspace_id}\n").as_bytes())
-        .context("storage_write_failed")?;
-    owner.sync_all().context("storage_write_failed")?;
-    guard.owner = Some(owner);
+    let guard = archive_workspace(staging_parent)?;
+    let workspace = guard.root.clone();
     let inputs = workspace.join("sources");
     let content = workspace.join("content");
     fs::create_dir(&content).context("storage_write_failed")?;
     let first = first_volume(&sources, &inputs, &workspace, cancelled)?;
-    let (code_page, entries) = list_archive(seven_zip, &first, cancelled)?;
-    let plan = plan_extraction(&entries);
+    let (code_page, entries) = list_archive(seven_zip, &first, cancelled, password)?;
+    let plan = plan_extraction(&entries)?;
     let expanded_size = entries.iter().try_fold(0u64, |total, entry| {
         total
             .checked_add(entry.size_bytes)
@@ -1156,6 +1360,7 @@ pub fn extract_archive(
             >= expanded_size.saturating_add(16 * 1024 * 1024),
         "storage_low_space"
     );
+    progress.size.store(expanded_size, Ordering::Relaxed);
     // Bind writes to literal validated file names. Technical listings are text:
     // a malicious name containing a newline must never smuggle an unlisted
     // member into extraction. Never select a directory recursively.
@@ -1181,15 +1386,21 @@ pub fn extract_archive(
     }
     let mut file_count = 0usize;
     for entry in entries.iter().filter(|entry| !entry.is_directory) {
-        // 7-Zip trims unquoted listfile lines. Quotes retain a leading
-        // space in a literal member name; validated paths cannot contain quotes.
+        // The archive's own names select members. 7-Zip trims each line and then drops one
+        // enclosing pair of quotes, so a leading space or a quote in a name survives.
         writeln!(names, "\"{}\"", entry.relative_path).context("storage_write_failed")?;
         file_count += 1;
     }
     names.flush().context("storage_write_failed")?;
     drop(names);
     if file_count > 0 {
-        let mut extraction_args = cli_args("x", &first, code_page);
+        let mut extraction_args = cli_args("x", &first, code_page, password.is_some());
+        for arg in extraction_args
+            .iter_mut()
+            .filter(|arg| arg.as_os_str() == "-bd")
+        {
+            *arg = "-bsp1".into();
+        }
         let mut output_arg = OsString::from("-o");
         output_arg.push(&content);
         let mut include_arg = OsString::from("-i@");
@@ -1206,9 +1417,17 @@ pub fn extract_archive(
                 "-aou".into(),
             ],
         );
-        run_7zip(seven_zip, &extraction_args, cancelled, false)?;
+        run_7zip(
+            seven_zip,
+            &extraction_args,
+            cancelled,
+            false,
+            Some(progress),
+            password,
+        )?;
     }
-    let mut inventory = verify_extracted_inventory(&content, &plan.outputs, cancelled)?;
+    progress.written.store(100, Ordering::Relaxed);
+    let mut inventory = verify_inventory(&content, &plan.outputs, cancelled, &progress.checked)?;
     // Keep one of identical copies; a CRC match must also be a content match.
     for (copy, kept) in &plan.identical {
         let hash = |path: &String| {
@@ -1256,6 +1475,83 @@ pub fn extract_archive(
         source_paths: sources,
         _workspace: guard,
     })
+}
+
+fn archive_workspace(staging_parent: PathBuf) -> Result<WorkspaceGuard> {
+    let workspace_id = uuid::Uuid::new_v4();
+    let workspace = staging_parent.join(format!("archive-{workspace_id}"));
+    fs::create_dir(&workspace).context("storage_write_failed")?;
+    let mut guard = WorkspaceGuard {
+        root: workspace.clone(),
+        parent: staging_parent,
+        armed: true,
+        owner: None,
+    };
+    let mut owner = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(workspace.join(WORKSPACE_MARKER))
+        .context("storage_write_failed")?;
+    fs2::FileExt::try_lock_exclusive(&owner).context("storage_write_failed")?;
+    owner
+        .write_all(format!("{WORKSPACE_OWNER}{workspace_id}\n").as_bytes())
+        .context("storage_write_failed")?;
+    owner.sync_all().context("storage_write_failed")?;
+    guard.owner = Some(owner);
+    Ok(guard)
+}
+
+pub(super) fn auto_extract(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .and_then(volume_name)
+        .is_some_and(|v| {
+            v.kind == VolumeKind::SplitZip
+                || (v.kind == VolumeKind::Numbered && v.key.ends_with(".zip"))
+        })
+}
+
+/// Inspect the exact supplied volumes. Test encrypted data without writing any members.
+pub(super) fn inspect_password(
+    tool: &Path,
+    source: &Path,
+    available: &[PathBuf],
+    staging: &Path,
+    cancel: &AtomicBool,
+    password: Option<&str>,
+) -> Result<bool> {
+    let volumes = validate_volume_group(source, available)?;
+    for path in &volumes {
+        validate_no_links(path)?;
+    }
+    validate_no_links(staging)?;
+    fs::create_dir_all(staging)?;
+    let _empty = super::io::EmptyDirectoryGuard(staging.to_owned());
+    let workspace = archive_workspace(staging.canonicalize()?)?;
+    let first = first_volume(
+        &volumes,
+        &workspace.root.join("sources"),
+        &workspace.root,
+        cancel,
+    )?;
+    match list_archive(tool, &first, cancel, None) {
+        Ok(_) => return Ok(false),
+        Err(e) if super::io::stable_error(&e) == "archive_password_required" => (),
+        Err(e) => return Err(e),
+    }
+    if let Some(password) = password {
+        let (page, _) = list_archive(tool, &first, cancel, Some(password))?;
+        run_7zip(
+            tool,
+            &cli_args("t", &first, page, true),
+            cancel,
+            false,
+            None,
+            Some(password),
+        )?;
+    }
+    Ok(true)
 }
 
 /// The first volume 7-Zip reads: in place for one complete archive, else a private link or copy.

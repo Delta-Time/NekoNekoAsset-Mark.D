@@ -18,6 +18,10 @@ pub enum StorageRequest {
     /// Downloads every file of `productIds`, or `selectedFileIds` of one product.
     EnqueueProducts(Downloads),
     EnqueueFile(FileDownload),
+    /// Extracts a downloaded archive with the password it asked for.
+    ExtractWithPassword(ArchivePassword),
+    RegisterArchivePassword(ArchivePassword),
+    ForgetArchivePassword(FileRef),
     CancelJob(StorageJob),
     /// Cancels the downloads of `productIds`, or all of them.
     CancelDownloads(OptionalProductIds),
@@ -183,6 +187,20 @@ pub struct FileDownload {
     pub rest: Map<String, Value>,
 }
 
+/// An archive password supplied for extraction or explicit registration.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivePassword {
+    pub file_id: String,
+    pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub save: Option<bool>,
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub rest: Map<String, Value>,
+}
+
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageJob {
@@ -192,7 +210,7 @@ pub struct StorageJob {
     pub rest: Map<String, Value>,
 }
 
-/// Deletes the downloaded files of `productIds`, or one file.
+/// Queues the removal of the downloaded files of `productIds`, or of one file.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadRemoval {
@@ -308,7 +326,8 @@ pub struct LocalJob {
     pub state: Option<String>,
 }
 
-/// The download jobs that cover the request, new or already queued.
+/// The jobs that cover the request, new or already queued: downloads, or removals of
+/// downloaded files.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -321,13 +340,6 @@ pub struct DownloadJobs {
 #[ts(export)]
 pub struct DeletedProducts {
     pub deleted_product_ids: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct DeletedFiles {
-    pub deleted_file_ids: Vec<String>,
 }
 
 /// Whether the job was still running and is now asked to stop.
@@ -403,8 +415,8 @@ pub struct RestartRequired {
     pub restart_required: bool,
 }
 
-/// What a retry answers: downloads for a download or file, the import job for an import,
-/// and the deletion for a local product deletion.
+/// What a retry answers: the jobs for a download, file or removal of downloaded files, the
+/// import job for an import, and the deletion for a local product deletion.
 #[cfg(test)]
 #[derive(Serialize, TS)]
 #[serde(untagged)]
@@ -412,7 +424,6 @@ pub struct RestartRequired {
 enum Retried {
     Downloads(DownloadJobs),
     Import(LocalJob),
-    Deleted(DeletedProducts),
 }
 
 /// What moving the library answers: its job, or a moved portable library.
@@ -432,12 +443,15 @@ enum Moved {
 struct StorageResponses {
     import_local: LocalJob,
     local_files: LocalJob,
-    delete_local_products: DeletedProducts,
+    delete_local_products: DownloadJobs,
     enqueue_products: DownloadJobs,
     enqueue_file: DownloadJobs,
+    extract_with_password: DownloadJobs,
+    register_archive_password: bool,
+    forget_archive_password: bool,
     cancel_job: CancelRequested,
     cancel_downloads: DownloadsCancelled,
-    delete_downloads: DeletedFiles,
+    delete_downloads: DownloadJobs,
     retry_job: Retried,
     discard_import: ImportDiscarded,
     configure_root: crate::catalogue::api::Root,

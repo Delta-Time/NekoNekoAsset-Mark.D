@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
-import type { Account, AssetFile, Locale, Product } from './model';
+import { byteLabel, type Account, type AssetFile, type Locale, type Product } from './model';
 import {
   errorCode,
   invokeAction,
@@ -234,30 +234,60 @@ export default function ActivityHistory({
         ? licenseText(locale, 'licenseSync')!
         : job.type === 'storage:delete_local_products'
           ? shellText(locale, 'deleteLocalProducts')!
-          : job.type === 'unity:import'
-            ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
-            : job.type.startsWith('ai:')
-              ? shellText(locale, 'aiTags')!
-              : label(
-                  isStoreJob(job.type)
-                    ? /login$/i.test(job.type)
-                      ? 'signIn'
-                      : /update$/i.test(job.type)
-                        ? 'update'
-                        : 'sync'
-                    : job.type === 'download'
-                      ? 'download'
-                      : job.type === 'storage:migrate_root'
-                        ? 'move'
-                        : job.type === 'storage:export_backup'
-                          ? 'export'
-                          : job.type === 'storage:restore_backup' ||
-                              job.type === 'storage:import_local'
-                            ? 'import'
-                            : job.type === 'storage:export_zip'
-                              ? 'exportZip'
-                              : 'storage',
-                );
+          : job.type === 'storage:delete_downloads'
+            ? shellText(locale, 'deleteDownloads')!
+            : job.type === 'unity:import'
+              ? (uxText(locale, 'importUnity') ?? nativeWorkflowText(locale, 'unity'))
+              : job.type.startsWith('ai:')
+                ? shellText(locale, 'aiTags')!
+                : label(
+                    isStoreJob(job.type)
+                      ? /login$/i.test(job.type)
+                        ? 'signIn'
+                        : /update$/i.test(job.type)
+                          ? 'update'
+                          : 'sync'
+                      : job.type === 'download'
+                        ? 'download'
+                        : job.type === 'storage:migrate_root'
+                          ? 'move'
+                          : job.type === 'storage:export_backup'
+                            ? 'export'
+                            : job.type === 'storage:restore_backup' ||
+                                job.type === 'storage:import_local'
+                              ? 'import'
+                              : job.type === 'storage:export_zip'
+                                ? 'exportZip'
+                                : 'storage',
+                  );
+  // Waiting for its store's list or out its store's limit, or running: the files it is
+  // receiving with their bytes, or the archive it is extracting.
+  function downloadState(job: Job) {
+    if (job.state === 'queued' && job.stage === 'storeUpdate') return label('updating');
+    const retryAt = Date.parse(job.retryAt ?? '');
+    if (job.state === 'queued' && job.stage === 'storeWait' && retryAt > Date.now())
+      return label('retryingAt').replace(
+        '{time}',
+        new Date(retryAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
+      );
+    const transfer = job.state === 'running' ? job.transfer : undefined;
+    if (!transfer) return label(job.state);
+    const count = (value: number) => value.toLocaleString(locale);
+    const place = `${
+      transfer.first === transfer.last
+        ? count(transfer.first)
+        : `${count(transfer.first)}–${count(transfer.last)}`
+    }/${count(transfer.total)}`;
+    if (transfer.phase === 'extract')
+      return `${label('extracting')} · ${place} · ${count(transfer.percent ?? 0)}%`;
+    const bytes =
+      transfer.received === undefined
+        ? ''
+        : transfer.size === undefined
+          ? byteLabel(locale, transfer.received)
+          : `${byteLabel(locale, transfer.received)} / ${byteLabel(locale, transfer.size)}`;
+    return [place, bytes].filter(Boolean).join(' · ');
+  }
   function failures(job: ActivityJob) {
     const result: { key: string; name: string; reason: string }[] = [];
     const ids = productIds(job),
@@ -449,7 +479,7 @@ export default function ActivityHistory({
             const totalBytes = transfer?.totalBytes;
             const copyPercent =
               bytes != null && totalBytes ? (100 * bytes) / totalBytes : undefined;
-            const errors = failures(job),
+            const errors = job.type === 'download' && active(job) ? [] : failures(job),
               percent = transfer ? copyPercent : progressPercent(job),
               date = Date.parse(job.completedAt ?? job.updatedAt ?? job.createdAt ?? '');
             const canRetry =
@@ -458,7 +488,8 @@ export default function ActivityHistory({
               isStoreJob(job.type) ||
               job.type === 'download' ||
               job.type === 'storage:import_local' ||
-              job.type === 'storage:delete_local_products';
+              job.type === 'storage:delete_local_products' ||
+              job.type === 'storage:delete_downloads';
             const accountRemoved = isStoreJob(job.type) && !!job.accountId && !account;
             const accountBusy =
               isStoreJob(job.type) &&
@@ -485,7 +516,9 @@ export default function ActivityHistory({
                           ? syncProgressLabel(locale, job)
                           : transfer
                             ? localImportText(locale, transfer.phase)
-                            : label(job.state)}
+                            : job.type === 'download'
+                              ? downloadState(job)
+                              : label(job.state)}
                     </span>
                   </div>
                   {isStoreJob(job.type) && names.length === 1 && (
@@ -604,7 +637,9 @@ export default function ActivityHistory({
                       )}
                     </>
                   ) : active(job) ? (
-                    job.type === 'storage:delete_local_products' ? null : (
+                    // A removal of downloaded files stops only while it waits.
+                    job.type === 'storage:delete_local_products' ||
+                    (job.type === 'storage:delete_downloads' && job.state === 'running') ? null : (
                       <button
                         type="button"
                         disabled={job.cancelRequested === true}

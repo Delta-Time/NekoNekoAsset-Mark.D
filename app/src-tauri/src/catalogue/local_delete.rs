@@ -24,6 +24,7 @@ impl Catalogue {
                     "acquisition",
                     "entitlement",
                     "remote_file",
+                    "archive_password",
                     "artifact",
                     "download_intent",
                     "local_source",

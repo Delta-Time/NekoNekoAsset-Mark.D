@@ -46,6 +46,7 @@ const KINDS: &[&str] = &[
     "acquisition",
     "entitlement",
     "remote_file",
+    "archive_password",
     "artifact",
     "account",
     "root",
@@ -910,6 +911,21 @@ fn validate(kind: &str, id: &str, value: &Value) -> Result<()> {
         !id.is_empty() && id.len() <= 2048 && value.is_object() && value["id"].as_str() == Some(id),
         "catalogue.invalid_record"
     );
+    if kind == "archive_password" {
+        ensure!(
+            value.as_object().is_some_and(|v| v.len() == 4)
+                && value["productId"].is_string()
+                && value["hash"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                && value["archivePassword"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()
+                        && s.chars().count() <= 256
+                        && !s.chars().any(char::is_control)),
+            "catalogue.invalid_record"
+        );
+    }
     portable::validate_no_secrets(value)?;
     if kind == "preferences" {
         validate_ai_preferences(value)?;
@@ -1264,6 +1280,14 @@ impl Catalogue {
         })
     }
     pub(crate) fn begin_restore_work(&self) -> Result<CatalogueWorkPermit> {
+        self.begin_exclusive_work(false)
+    }
+
+    pub(crate) fn begin_local_delete_work(&self) -> Result<CatalogueWorkPermit> {
+        self.begin_exclusive_work(true)
+    }
+
+    fn begin_exclusive_work(&self, local_delete: bool) -> Result<CatalogueWorkPermit> {
         self.check_library_access()?;
         let mut state = self
             .work_gate
@@ -1278,10 +1302,12 @@ impl Catalogue {
         };
         // Queued work has no live permit yet, but can still be picked up later.
         ensure!(
-            !self
-                .list("job")?
-                .iter()
-                .any(|job| { matches!(job["state"].as_str(), Some("queued" | "running")) }),
+            !self.list("job")?.iter().any(|job| matches!(
+                job["state"].as_str(),
+                Some("queued" | "running")
+            ) && !(local_delete
+                && job["type"] == "storage:delete_local_products"
+                && job["state"] == "queued")),
             "storage_busy"
         );
         Ok(permit)
@@ -1765,6 +1791,19 @@ impl Catalogue {
             params![job_type, self.device_id()],
             |row| row.get(0),
         )?)
+    }
+
+    /// Whether a job of this store is running now.
+    pub(crate) fn store_job_running(&self, store: &str) -> Result<bool> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='job' AND json_extract(body,'$.state')='running' AND json_extract(body,'$.store')=?1)",
+                [store],
+                |row| row.get(0),
+            )?)
     }
     pub fn related(&self, kind: &str, product_id: &str) -> Result<Vec<Value>> {
         kind_valid(kind)?;
@@ -2504,6 +2543,20 @@ impl Catalogue {
                 let accounts: Option<Vec<Value>> =
                     account_ids.map(|ids| ids.into_iter().map(Value::String).collect());
                 acquisition::apply_scope(&mut product, accounts.as_ref());
+                if let Some(files) = product["files"].as_array_mut() {
+                    let passwords = related(&conn, "archive_password", &id)?;
+                    let passwords: std::collections::HashMap<_, _> = passwords
+                        .iter()
+                        .filter_map(|record| Some((record["id"].as_str()?, record)))
+                        .collect();
+                    for file in files {
+                        if let Some(saved) = file["id"].as_str().and_then(|id| passwords.get(id)) {
+                            if saved["hash"].is_string() && saved["hash"] == file["verifiedHash"] {
+                                file["archivePassword"] = saved["archivePassword"].clone();
+                            }
+                        }
+                    }
+                }
                 Ok(product)
             }
             Request::Collections => {

@@ -31,15 +31,27 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
     archive::validate_no_links(path)
 }
 
-/// Startup queues these again: a download restarts only its unfinished file and a
-/// local import only its uncopied ones, so an App update need not wait for them.
-pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
+/// Startup queues these again: a download restarts only its unfinished file, a local
+/// import only its uncopied ones and a removal only what is left, so an App update need not
+/// wait for them.
+pub(crate) const RESUMED_AT_STARTUP: [&str; 3] = [
+    "download",
+    "storage:import_local",
+    download_delete::DELETE_JOB,
+];
 /// A queued download whose store refused a file, waiting for that store's list to be read
-/// again; its product stays in progress meanwhile.
+/// again; its product stays in progress meanwhile. No other download starts before the wait
+/// ends, except while the update waits behind another job of its store, such as a sync.
 const STORE_UPDATE: &str = "storeUpdate";
+/// A queued download its store refused or limited, waiting until `retryAt` to try again. No
+/// other download of that store starts meanwhile; other stores' go on.
+const STORE_WAIT: &str = "storeWait";
+/// The waits in minutes while a store refuses or limits downloads and serves none, an hour
+/// in all; past them a refusal ends the download.
+const STORE_WAIT_MINUTES: [i64; 6] = [1, 2, 4, 8, 15, 30];
 
 use crate::{catalogue::Catalogue, stores::StoreService};
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -65,14 +77,18 @@ pub struct StorageService {
     stores: Arc<StoreService>,
     started: Arc<AtomicBool>,
     queue_gate: Arc<AsyncMutex<()>>,
+    local_delete_queue: Arc<AsyncMutex<()>>,
     closing_local_imports: Arc<AtomicBool>,
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
+    /// Archive passwords the user gave, by file, kept only in memory until that file's next
+    /// extraction uses one.
+    archive_passwords: Arc<Mutex<HashMap<String, String>>>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    /// Products whose downloaded files are being removed.
-    deleting: Arc<Mutex<HashSet<String>>>,
     process_lock: Arc<Mutex<Option<File>>>,
     automatic_pending: Arc<Mutex<AutomaticPending>>,
+    /// Waits in a row per store since it last served a download; a restart starts over.
+    store_waits: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 #[derive(Default)]
@@ -236,6 +252,15 @@ fn ensure_files(job: &Value, files: &[Value]) -> Result<()> {
     }
     bail!("manifest_incomplete")
 }
+/// The store of a product: its ID's prefix. BOOTH's IDs are bare numbers.
+fn product_store(product: &str) -> &str {
+    product.split_once(':').map_or("booth", |(store, _)| store)
+}
+/// A download failure a store's limit may explain: past many downloads BOOTH refuses them as
+/// it refuses a file, and any store may answer 429.
+fn store_limit(store: &str, code: &str) -> bool {
+    code == "rate_limited" || (store == "booth" && code == "store_access_denied")
+}
 #[cfg(test)]
 fn native_seven_zip_test_tool() -> PathBuf {
     let path = std::env::var_os("NNA_7ZIP")
@@ -256,13 +281,15 @@ impl StorageService {
             stores,
             started: Arc::new(AtomicBool::new(false)),
             queue_gate: Arc::new(AsyncMutex::new(())),
+            local_delete_queue: Arc::new(AsyncMutex::new(())),
             closing_local_imports: Arc::new(AtomicBool::new(false)),
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
+            archive_passwords: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
-            deleting: Arc::new(Mutex::new(HashSet::new())),
             process_lock: Arc::new(Mutex::new(None)),
             automatic_pending: Arc::new(Mutex::new(AutomaticPending::default())),
+            store_waits: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     fn changed(&self, app: &tauri::AppHandle, id: Option<&str>) {
@@ -363,6 +390,17 @@ impl StorageService {
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
     }
+    /// A password serves the download it was given for. Once that job ends, even without
+    /// reaching the extraction, or is cancelled before it runs, nothing extracts with it.
+    fn forget_passwords(&self, job: &Value) {
+        let mut passwords = self.archive_passwords.lock().unwrap();
+        for id in strings(&job["selectedFileIds"])
+            .into_iter()
+            .chain(strings(&job["fileIds"]))
+        {
+            passwords.remove(&id);
+        }
+    }
     fn cancel_job(&self, id: &str) -> Result<Value> {
         loop {
             let before = self
@@ -376,7 +414,9 @@ impl StorageService {
                         .is_some_and(|t| t.starts_with("storage:")),
                 "invalid_job"
             );
-            if !matches!(before["state"].as_str(), Some("queued" | "running")) {
+            if before["type"] == local_delete::JOB_TYPE
+                || !matches!(before["state"].as_str(), Some("queued" | "running"))
+            {
                 return api::answer(api::CancelRequested {
                     cancel_requested: false,
                 });
@@ -388,10 +428,14 @@ impl StorageService {
                 job["state"] = json!("cancelled");
                 job["errorCode"] = Value::Null;
             }
+            let queued = job["state"] == "cancelled" && before["type"] == "download";
             if self.catalogue.put_many_if_unchanged(
                 vec![("job".into(), id.to_owned(), job)],
-                vec![("job".into(), id.to_owned(), Some(before))],
+                vec![("job".into(), id.to_owned(), Some(before.clone()))],
             )? {
+                if queued {
+                    self.forget_passwords(&before);
+                }
                 self.cancellation(id).store(true, Ordering::Release);
                 return api::answer(api::CancelRequested {
                     cancel_requested: true,
@@ -433,9 +477,13 @@ impl StorageService {
                 expected.push(("job".into(), id, Some(before.clone())));
             }
             if active.is_empty() || self.catalogue.put_many_if_unchanged(records, expected)? {
-                for job in active.iter().filter(|job| job["state"] == "running") {
-                    self.cancellation(job["id"].as_str().unwrap_or(""))
-                        .store(true, Ordering::Release);
+                for job in &active {
+                    if job["state"] == "running" {
+                        self.cancellation(job["id"].as_str().unwrap_or(""))
+                            .store(true, Ordering::Release);
+                    } else {
+                        self.forget_passwords(job);
+                    }
                 }
                 return api::answer(api::DownloadsCancelled {
                     cancelled: active.len(),
@@ -686,17 +734,49 @@ impl StorageService {
         )
     }
     fn queued_download(&self) -> Result<(Option<Value>, bool)> {
-        let jobs = self.catalogue.queued_jobs(Some("download"), None)?;
+        let mut jobs = self.catalogue.queued_jobs(Some("download"), None)?;
+        // A free import's download goes ahead of the others; the store waits below still go
+        // first or last.
+        jobs.sort_by_key(|job| job["priority"] != true);
         if jobs.is_empty() {
             return Ok((None, false));
         }
+        // A download that waits for its store's list goes on first, so its asset is done before
+        // any other starts. One that waited out its store's limit goes after that store's
+        // others, which try the store first.
+        jobs.sort_by_key(|job| (job["stage"] != STORE_UPDATE, job["stage"] == STORE_WAIT));
+        let now = chrono::Utc::now();
+        let held: HashSet<String> = jobs
+            .iter()
+            .filter(|job| {
+                job["stage"] == STORE_WAIT
+                    && job["retryAt"]
+                        .as_str()
+                        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                        .is_some_and(|at| at > now)
+            })
+            .map(|job| product_store(job["productId"].as_str().unwrap_or("")).to_owned())
+            .collect();
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
             let mut before = job.clone();
             if job["stage"] == STORE_UPDATE {
-                if !job["updateJobIds"].is_array() || self.store_update_active(&job)? {
-                    continue;
+                if !job["updateJobIds"].is_array() {
+                    return Ok((None, changed));
+                }
+                let updates = self.active_store_updates(&job)?;
+                if let Some(update) = updates.first() {
+                    // Queued behind another job of its store, such as its account's sync, an
+                    // update may wait long, so other downloads go on until it reads.
+                    if updates.iter().all(|update| update["state"] == "queued")
+                        && self
+                            .catalogue
+                            .store_job_running(update["store"].as_str().unwrap_or(""))?
+                    {
+                        continue;
+                    }
+                    return Ok((None, changed));
                 }
                 let fields = job.as_object_mut().unwrap();
                 fields.remove("stage");
@@ -709,8 +789,22 @@ impl StorageService {
                         "needsAction",
                         Some("store_file_unavailable"),
                     )?;
+                    self.forget_passwords(&job);
                     continue;
                 }
+                if !self.put_queued_download(&before, &mut job, "queued", None)? {
+                    continue;
+                }
+                changed = true;
+                before = job.clone();
+            }
+            if held.contains(product_store(job["productId"].as_str().unwrap_or(""))) {
+                continue;
+            }
+            if job["stage"] == STORE_WAIT {
+                let fields = job.as_object_mut().unwrap();
+                fields.remove("stage");
+                fields.remove("retryAt");
                 if !self.put_queued_download(&before, &mut job, "queued", None)? {
                     continue;
                 }
@@ -740,15 +834,17 @@ impl StorageService {
         }
         Ok((None, changed))
     }
-    fn store_update_active(&self, job: &Value) -> Result<bool> {
+    /// The store updates a download waits for that have not ended.
+    fn active_store_updates(&self, job: &Value) -> Result<Vec<Value>> {
+        let mut active = Vec::new();
         for id in strings(&job["updateJobIds"]) {
-            if self.catalogue.get("job", &id)?.is_some_and(|update| {
-                matches!(update["state"].as_str(), Some("queued" | "running"))
-            }) {
-                return Ok(true);
-            }
+            active.extend(
+                self.catalogue.get("job", &id)?.filter(|update| {
+                    matches!(update["state"].as_str(), Some("queued" | "running"))
+                }),
+            );
         }
-        Ok(false)
+        Ok(active)
     }
     /// A file its store refused may have been replaced, so the download goes back to the
     /// queue, once, until its store's list has been read again. A cancel requested
@@ -782,15 +878,72 @@ impl StorageService {
         job["storeUpdated"] = json!(true);
         job["state"] = json!("queued");
         job["errorCode"] = Value::Null;
+        // Its bar has no share to show until the update ends.
+        job["progress"] = Value::Null;
         job["updatedAt"] = json!(now());
         self.catalogue.put_many_if_unchanged(
             vec![("job".into(), id.clone(), job.clone())],
             vec![("job".into(), id, Some(before))],
         )
     }
-    /// Once nothing else can download, one update per store reads again the lists of the
-    /// products waiting for one: an update slows its store's transfers to one, and one
-    /// store's busy or signed-out account must not fail another's.
+    /// A download its store refused or limited (`store_limit`, which `run_download` makes its
+    /// outcome) goes back to the queue until a wait ends, and no other download of that store
+    /// starts before then. Each wait in a row is longer; once the store has served none for an
+    /// hour of waits, a refusal ends the download as before. A cancel requested meanwhile ends
+    /// it instead.
+    fn wait_for_store_limit(
+        &self,
+        job: &mut Value,
+        result: &Result<()>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        let store = product_store(job["productId"].as_str().unwrap_or("")).to_owned();
+        let limited = result
+            .as_ref()
+            .is_err_and(|error| store_limit(&store, io::stable_error(error)));
+        if !limited || cancel.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let waits = self
+            .store_waits
+            .lock()
+            .unwrap()
+            .get(&store)
+            .copied()
+            .unwrap_or(0);
+        let Some(minutes) = STORE_WAIT_MINUTES.get(waits) else {
+            return Ok(false);
+        };
+        let id = io::required_string(job, "id")?.to_owned();
+        let Some(before) = self
+            .catalogue
+            .get("job", &id)?
+            .filter(|stored| stored["state"] == "running" && stored["cancelRequested"] != true)
+        else {
+            return Ok(false);
+        };
+        job["stage"] = json!(STORE_WAIT);
+        job["retryAt"] =
+            json!((chrono::Utc::now() + chrono::Duration::minutes(*minutes)).to_rfc3339());
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        if !self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.clone(), job.clone())],
+            vec![("job".into(), id, Some(before))],
+        )? {
+            return Ok(false);
+        }
+        self.store_waits.lock().unwrap().insert(store, waits + 1);
+        Ok(true)
+    }
+    /// A store that serves a download again starts its next refusal's waits from the first.
+    fn store_served(&self, store: &str) {
+        self.store_waits.lock().unwrap().remove(store);
+    }
+    /// One update per store reads again the lists of the products waiting for one, as soon
+    /// as the queue holds for them: one store's busy or signed-out account must not fail
+    /// another's.
     async fn start_store_updates(&self, app: &tauri::AppHandle) -> Result<bool> {
         let waiting: Vec<_> = self
             .catalogue
@@ -804,9 +957,10 @@ impl StorageService {
         let mut stores: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for job in &waiting {
             let product = job["productId"].as_str().unwrap_or("");
-            // Store product IDs carry their store; BOOTH's are bare numbers.
-            let store = product.split_once(':').map_or("booth", |(store, _)| store);
-            stores.entry(store).or_default().insert(product);
+            stores
+                .entry(product_store(product))
+                .or_default()
+                .insert(product);
         }
         let mut updates = HashMap::new();
         for products in stores.values() {
@@ -875,6 +1029,9 @@ impl StorageService {
                         self.put_job(&mut job, "needsAction", Some("local_other_device"))?;
                         continue;
                     }
+                    if job["type"] == local_delete::JOB_TYPE && job["state"] == "queued" {
+                        continue;
+                    }
                     if RESUMED_AT_STARTUP.contains(&job["type"].as_str().unwrap_or("")) {
                         self.put_job(&mut job, "queued", None)?;
                     } else if job["type"]
@@ -906,6 +1063,21 @@ impl StorageService {
             let _ = service.reevaluate_automatic().await;
             while !service.closing_local_imports.load(Ordering::Acquire) {
                 let _ = service.drain_automatic_changes().await;
+                let events = service.clone();
+                let handle = app.clone();
+                if service
+                    .process_next_local_delete(move |id, finished| {
+                        if finished {
+                            events.changed(&handle, Some(id));
+                        } else {
+                            events.jobs_changed(&handle, id);
+                        }
+                    })
+                    .await
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let work = match service.catalogue.begin_catalogue_work() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -913,6 +1085,12 @@ impl StorageService {
                         continue;
                     }
                 };
+                // Removals of downloaded files, then local imports, go before every queued
+                // download: each waits only for the download in progress.
+                if let Ok(Some(job)) = service.queued_delete() {
+                    service.process_delete_job(&app, job).await;
+                    continue;
+                }
                 let local = service
                     .catalogue
                     .queued_jobs(Some("storage:import_local"), None)
@@ -945,6 +1123,10 @@ impl StorageService {
                     if job["cancelRequested"] == true {
                         cancel.store(true, Ordering::Release);
                     }
+                    // What an earlier run was doing, and the per-file shares earlier versions kept.
+                    let fields = job.as_object_mut().unwrap();
+                    fields.remove("transfer");
+                    fields.remove("fileProgress");
                     if service
                         .put_queued_download(&before, &mut job, "running", None)
                         .unwrap_or(false)
@@ -954,6 +1136,9 @@ impl StorageService {
                         if service
                             .wait_for_store_list(&mut job, &result, &cancel)
                             .unwrap_or(false)
+                            || service
+                                .wait_for_store_limit(&mut job, &result, &cancel)
+                                .unwrap_or(false)
                         {
                             service.changed(&app, Some(&id));
                             service.cancellations.lock().unwrap().remove(&id);
@@ -976,6 +1161,7 @@ impl StorageService {
                                             | "store_file_unavailable"
                                             | "free_offer_unavailable"
                                             | "archive_password_required"
+                                            | "archive_password_wrong"
                                             | "archive_missing_volume"
                                             | "source_tree_incomplete"
                                     ) {
@@ -990,6 +1176,7 @@ impl StorageService {
                         // Before the job ends, so a delete of its files cannot start in between.
                         let _ = service.remember_attempt(&job);
                         let _ = service.put_job(&mut job, state, error);
+                        service.forget_passwords(&job);
                         service.changed(&app, Some(&id));
                         if let Some(product) = job["productId"].as_str() {
                             // A source update received while this job was active
@@ -1157,8 +1344,10 @@ impl StorageService {
                     && matches!(j["state"].as_str(), Some("queued" | "running"))
             })
             .collect();
+        let deleting = download_delete::deleting(&jobs);
         let mut writes = Vec::new();
         let mut source_required = false;
+        let mut removing = false;
         for id in ids.into_iter().collect::<HashSet<_>>() {
             let Some(product) = self.catalogue.get("product", &id)? else {
                 if automatic {
@@ -1166,8 +1355,11 @@ impl StorageService {
                 }
                 bail!("product_missing");
             };
-            if self.deleting.lock().unwrap().contains(&id) {
-                if automatic {
+            if deleting.contains(id.as_str()) {
+                // Several products at once go on without one whose files wait to be removed;
+                // asked for alone, or with nothing else to do, it is busy.
+                if automatic || bulk {
+                    removing = true;
                     continue;
                 }
                 bail!("storage_busy");
@@ -1233,12 +1425,25 @@ impl StorageService {
                 continue;
             }
             let job_id = uuid::Uuid::new_v4().to_string();
-            let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
+            let mut job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
+            // What a free import asked for goes ahead of the queued downloads, once: the
+            // intent written above no longer says so.
+            if selected.is_null()
+                && self
+                    .catalogue
+                    .get("download_intent", &id)?
+                    .is_some_and(|intent| intent["priority"] == true)
+            {
+                job["priority"] = json!(true);
+            }
             writes.push(("job".into(), job_id.clone(), job));
             result.push(json!(job_id));
         }
         if source_required && result.is_empty() && !automatic {
             bail!("local_source_required");
+        }
+        if removing && result.is_empty() && !automatic {
+            bail!("storage_busy");
         }
         self.catalogue.put_many(writes)?;
         api::answer(api::DownloadJobs {
@@ -1265,6 +1470,118 @@ impl StorageService {
             .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
         self.enqueue(&json!({"productIds":[file["productId"]],"selectedFileIds":[id],"rootId":args["rootId"],"redownload":args["redownload"]==true})).await
     }
+    /// Extracts a downloaded archive that failed for want of a password with `password`: a
+    /// download of that file alone, which reuses the original kept on disk. The password stays
+    /// in memory until that extraction and never enters the job, the catalogue or a log.
+    async fn extract_with_password(&self, args: &Value) -> Result<Value> {
+        let id = io::required_string(args, "fileId")?;
+        let password = io::required_string(args, "password")?;
+        ensure!(
+            !password.is_empty()
+                && password.chars().count() <= 256
+                && !password.chars().any(char::is_control),
+            "invalid_arguments"
+        );
+        let file = self
+            .catalogue
+            .get("remote_file", id)?
+            .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
+        ensure!(
+            self.catalogue
+                .get("artifact", &artifact_id(&file))?
+                .is_some_and(
+                    |a| a["status"] == "extractionFailed" && a["originalAvailable"] == true
+                ),
+            "file_not_usable"
+        );
+        self.archive_passwords
+            .lock()
+            .unwrap()
+            .insert(id.to_owned(), password.to_owned());
+        let queued = self.enqueue_file(&json!({ "fileId": id })).await;
+        if queued.is_err() {
+            self.archive_passwords.lock().unwrap().remove(id);
+        }
+        queued
+    }
+    fn prompt_archive_password(&self, app: &tauri::AppHandle, artifact: &Value) {
+        if artifact["archivePasswordRequired"] != true
+            || self
+                .saved_archive_password(artifact)
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            return;
+        }
+        if let (Some(id), Some(path)) = (
+            artifact["fileId"].as_str(),
+            artifact["relativePath"].as_str(),
+        ) {
+            let path = Path::new(path);
+            let _ = app.emit("archive:password-required", json!({"fileId":id,
+                "name":path.file_name().and_then(|s|s.to_str()),"manual":!archive::auto_extract(path)}));
+        }
+    }
+
+    fn saved_archive_password(&self, artifact: &Value) -> Result<Option<String>> {
+        Ok(self
+            .catalogue
+            .get("archive_password", io::required_string(artifact, "fileId")?)?
+            .filter(|r| r["hash"].is_string() && r["hash"] == artifact["hash"])
+            .and_then(|r| r["archivePassword"].as_str().map(str::to_owned)))
+    }
+
+    async fn register_archive_password(&self, tool: &Path, args: &Value) -> Result<Value> {
+        let id = io::required_string(args, "fileId")?;
+        let password = io::required_string(args, "password")?;
+        ensure!(
+            password.chars().count() <= 256 && !password.chars().any(char::is_control),
+            "invalid_arguments"
+        );
+        let _operation = self.operations.write().await;
+        let file = self
+            .catalogue
+            .get("remote_file", id)?
+            .context("file_missing")?;
+        let mut artifact = self
+            .catalogue
+            .get("artifact", &artifact_id(&file))?
+            .context("file_missing")?;
+        ensure!(artifact["originalAvailable"] == true, "file_not_usable");
+        let product = io::required_string(&file, "productId")?;
+        let root = self.root(Some(io::required_string(&artifact, "rootId")?))?;
+        let path = io::safe_join(
+            &self.root_path(&root)?,
+            io::required_string(&artifact, "relativePath")?,
+        )?;
+        ensure!(archive::is_supported_archive(&path), "archive_unsupported");
+        let files = self.catalogue.related("remote_file", product)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        ensure!(
+            artifact["archivePasswordRequired"] == true
+                || matches!(
+                    artifact["errorCode"].as_str(),
+                    Some("archive_password_required" | "archive_password_wrong")
+                )
+                || (!archive::auto_extract(&path)
+                    && artifact.get("archivePasswordRequired").is_none()),
+            "file_not_usable"
+        );
+        self.process_archive(
+            tool,
+            &root,
+            &mut artifact,
+            &files,
+            &cancel,
+            &Default::default(),
+            Some(password),
+            args["save"] != false,
+        )
+        .await?;
+        Ok(json!(true))
+    }
+
     pub async fn command(
         &self,
         app: &tauri::AppHandle,
@@ -1304,9 +1621,20 @@ impl StorageService {
         let result = match action {
             "import_local" => self.enqueue_local(&args).await,
             "local_files" => self.mutate_local_files(&args).await,
-            "delete_local_products" => self.delete_local_products(&args, None).await,
+            "delete_local_products" => self.enqueue_local_delete(&args, None).await,
             "enqueue_products" => self.enqueue(&args).await,
             "enqueue_file" => self.enqueue_file(&args).await,
+            "extract_with_password" => self.extract_with_password(&args).await,
+            "register_archive_password" => {
+                self.register_archive_password(&self.seven_zip(app)?, &args)
+                    .await
+            }
+            "forget_archive_password" => {
+                let _operation = self.operations.write().await;
+                self.catalogue
+                    .delete("archive_password", io::required_string(&args, "fileId")?)?;
+                Ok(json!(true))
+            }
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
                 let _gate = self.queue_gate.lock().await;
@@ -1322,12 +1650,17 @@ impl StorageService {
                         .get("job", id)?
                         .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
                     if job["type"] == "storage:delete_local_products" {
-                        let result = self.delete_local_products(&args, Some(id)).await;
+                        let result = self.enqueue_local_delete(&args, Some(id)).await;
                         self.changed(app, Some(id));
                         return result;
                     }
                     if job["type"] == "storage:import_local" {
                         let result = self.retry_local_import(id).await;
+                        self.changed(app, Some(id));
+                        return result;
+                    }
+                    if job["type"] == download_delete::DELETE_JOB {
+                        let result = self.retry_delete(id).await;
                         self.changed(app, Some(id));
                         return result;
                     }
